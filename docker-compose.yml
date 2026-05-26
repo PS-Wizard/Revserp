@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: docker.io/library/postgres:17
+    environment:
+      POSTGRES_USER: revserp
+      POSTGRES_PASSWORD: revserp
+      POSTGRES_DB: revserp_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
