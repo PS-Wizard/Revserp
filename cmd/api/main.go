@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/ps-wizard/revserp/internal/app"
+	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 )
@@ -21,7 +22,12 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	application := app.New(cfg, dbPool)
+	authVerifier, err := internalauth.NewVerifier(ctx, cfg.AuthProvider, cfg.SupabaseJWTIssuer, cfg.SupabaseJWKSURL, cfg.SupabaseJWTAudience)
+	if err != nil {
+		log.Fatalf("initialize auth verifier: %v", err)
+	}
+
+	application := app.New(cfg, dbPool, authVerifier)
 
 	server := &http.Server{
 		Addr:    cfg.HTTPAddr,

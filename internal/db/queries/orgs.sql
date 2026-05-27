@@ -16,7 +16,11 @@ INSERT INTO organization_members (
 RETURNING org_id, user_id, role, created_at;
 
 -- name: ListOrganizationsForUser :many
-SELECT o.id, o.name, o.created_at
+SELECT
+    o.id,
+    o.name,
+    o.created_at,
+    om.role
 FROM organizations AS o
 INNER JOIN organization_members AS om ON om.org_id = o.id
 WHERE om.user_id = $1

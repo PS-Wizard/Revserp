@@ -56,23 +56,39 @@ func (q *Queries) CreateOrganization(ctx context.Context, name string) (Organiza
 }
 
 const listOrganizationsForUser = `-- name: ListOrganizationsForUser :many
-SELECT o.id, o.name, o.created_at
+SELECT
+    o.id,
+    o.name,
+    o.created_at,
+    om.role
 FROM organizations AS o
 INNER JOIN organization_members AS om ON om.org_id = o.id
 WHERE om.user_id = $1
 ORDER BY o.created_at ASC
 `
 
-func (q *Queries) ListOrganizationsForUser(ctx context.Context, userID pgtype.UUID) ([]Organization, error) {
+type ListOrganizationsForUserRow struct {
+	ID        pgtype.UUID
+	Name      string
+	CreatedAt pgtype.Timestamptz
+	Role      string
+}
+
+func (q *Queries) ListOrganizationsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrganizationsForUserRow, error) {
 	rows, err := q.db.Query(ctx, listOrganizationsForUser, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Organization
+	var items []ListOrganizationsForUserRow
 	for rows.Next() {
-		var i Organization
-		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+		var i ListOrganizationsForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.CreatedAt,
+			&i.Role,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

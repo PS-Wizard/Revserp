@@ -6,6 +6,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+
+	internalauth "github.com/ps-wizard/revserp/internal/auth"
 )
 
 // Router builds the HTTP router.
@@ -18,10 +20,8 @@ func (a *App) Router() http.Handler {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: []string{
 			"http://localhost:3000",
-			"http://localhost:4173",
 			"http://localhost:5173",
 			"http://127.0.0.1:3000",
-			"http://127.0.0.1:4173",
 			"http://127.0.0.1:5173",
 		},
 		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -30,6 +30,11 @@ func (a *App) Router() http.Handler {
 	}))
 
 	r.Get("/health", a.handleHealth)
+
+	r.Group(func(protected chi.Router) {
+		protected.Use(internalauth.RequireAuth(a.AuthVerifier))
+		protected.Get("/me", a.handleMe)
+	})
 
 	return r
 }
