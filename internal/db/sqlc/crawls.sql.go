@@ -23,7 +23,7 @@ INSERT INTO crawls (
     $3,
     $4
 )
-RETURNING id, project_id, status, config_snapshot, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at
+RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at
 `
 
 type CreateCrawlParams struct {
@@ -33,19 +33,43 @@ type CreateCrawlParams struct {
 	StartedAt      pgtype.Timestamptz
 }
 
-func (q *Queries) CreateCrawl(ctx context.Context, arg CreateCrawlParams) (Crawl, error) {
+type CreateCrawlRow struct {
+	ID               pgtype.UUID
+	ProjectID        pgtype.UUID
+	Status           string
+	ConfigSnapshot   []byte
+	UrlsDiscovered   int32
+	UrlsCrawled      int32
+	MaxDepthReached  int32
+	GooglePsiResults []byte
+	HasLlmsTxt       pgtype.Bool
+	SeoScore         pgtype.Int4
+	AeoScore         pgtype.Int4
+	PagespeedScore   pgtype.Int4
+	OverallScore     pgtype.Int4
+	StartedAt        pgtype.Timestamptz
+	CompletedAt      pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) CreateCrawl(ctx context.Context, arg CreateCrawlParams) (CreateCrawlRow, error) {
 	row := q.db.QueryRow(ctx, createCrawl,
 		arg.ProjectID,
 		arg.Status,
 		arg.ConfigSnapshot,
 		arg.StartedAt,
 	)
-	var i Crawl
+	var i CreateCrawlRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
 		&i.Status,
 		&i.ConfigSnapshot,
+		&i.UrlsDiscovered,
+		&i.UrlsCrawled,
+		&i.MaxDepthReached,
+		&i.GooglePsiResults,
+		&i.HasLlmsTxt,
 		&i.SeoScore,
 		&i.AeoScore,
 		&i.PagespeedScore,
@@ -63,6 +87,11 @@ SELECT
     c.project_id,
     c.status,
     c.config_snapshot,
+    c.urls_discovered,
+    c.urls_crawled,
+    c.max_depth_reached,
+    c.google_psi_results,
+    c.has_llms_txt,
     c.seo_score,
     c.aeo_score,
     c.pagespeed_score,
@@ -83,14 +112,38 @@ type GetCrawlByIDForUserParams struct {
 	UserID pgtype.UUID
 }
 
-func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUserParams) (Crawl, error) {
+type GetCrawlByIDForUserRow struct {
+	ID               pgtype.UUID
+	ProjectID        pgtype.UUID
+	Status           string
+	ConfigSnapshot   []byte
+	UrlsDiscovered   int32
+	UrlsCrawled      int32
+	MaxDepthReached  int32
+	GooglePsiResults []byte
+	HasLlmsTxt       pgtype.Bool
+	SeoScore         pgtype.Int4
+	AeoScore         pgtype.Int4
+	PagespeedScore   pgtype.Int4
+	OverallScore     pgtype.Int4
+	StartedAt        pgtype.Timestamptz
+	CompletedAt      pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUserParams) (GetCrawlByIDForUserRow, error) {
 	row := q.db.QueryRow(ctx, getCrawlByIDForUser, arg.ID, arg.UserID)
-	var i Crawl
+	var i GetCrawlByIDForUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
 		&i.Status,
 		&i.ConfigSnapshot,
+		&i.UrlsDiscovered,
+		&i.UrlsCrawled,
+		&i.MaxDepthReached,
+		&i.GooglePsiResults,
+		&i.HasLlmsTxt,
 		&i.SeoScore,
 		&i.AeoScore,
 		&i.PagespeedScore,
@@ -108,6 +161,11 @@ SELECT
     project_id,
     status,
     config_snapshot,
+    urls_discovered,
+    urls_crawled,
+    max_depth_reached,
+    google_psi_results,
+    has_llms_txt,
     seo_score,
     aeo_score,
     pagespeed_score,
@@ -120,20 +178,44 @@ WHERE project_id = $1
 ORDER BY created_at DESC
 `
 
-func (q *Queries) ListCrawlsForProject(ctx context.Context, projectID pgtype.UUID) ([]Crawl, error) {
+type ListCrawlsForProjectRow struct {
+	ID               pgtype.UUID
+	ProjectID        pgtype.UUID
+	Status           string
+	ConfigSnapshot   []byte
+	UrlsDiscovered   int32
+	UrlsCrawled      int32
+	MaxDepthReached  int32
+	GooglePsiResults []byte
+	HasLlmsTxt       pgtype.Bool
+	SeoScore         pgtype.Int4
+	AeoScore         pgtype.Int4
+	PagespeedScore   pgtype.Int4
+	OverallScore     pgtype.Int4
+	StartedAt        pgtype.Timestamptz
+	CompletedAt      pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) ListCrawlsForProject(ctx context.Context, projectID pgtype.UUID) ([]ListCrawlsForProjectRow, error) {
 	rows, err := q.db.Query(ctx, listCrawlsForProject, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Crawl
+	var items []ListCrawlsForProjectRow
 	for rows.Next() {
-		var i Crawl
+		var i ListCrawlsForProjectRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
 			&i.Status,
 			&i.ConfigSnapshot,
+			&i.UrlsDiscovered,
+			&i.UrlsCrawled,
+			&i.MaxDepthReached,
+			&i.GooglePsiResults,
+			&i.HasLlmsTxt,
 			&i.SeoScore,
 			&i.AeoScore,
 			&i.PagespeedScore,

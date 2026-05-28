@@ -10,7 +10,7 @@ INSERT INTO crawls (
     $3,
     $4
 )
-RETURNING id, project_id, status, config_snapshot, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at;
+RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at;
 
 -- name: GetCrawlByIDForUser :one
 SELECT
@@ -18,6 +18,11 @@ SELECT
     c.project_id,
     c.status,
     c.config_snapshot,
+    c.urls_discovered,
+    c.urls_crawled,
+    c.max_depth_reached,
+    c.google_psi_results,
+    c.has_llms_txt,
     c.seo_score,
     c.aeo_score,
     c.pagespeed_score,
@@ -38,6 +43,11 @@ SELECT
     project_id,
     status,
     config_snapshot,
+    urls_discovered,
+    urls_crawled,
+    max_depth_reached,
+    google_psi_results,
+    has_llms_txt,
     seo_score,
     aeo_score,
     pagespeed_score,

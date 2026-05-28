@@ -19,17 +19,22 @@ type createCrawlRequest struct {
 }
 
 type crawlResponse struct {
-	ID             string          `json:"id"`
-	ProjectID      string          `json:"project_id"`
-	Status         string          `json:"status"`
-	ConfigSnapshot json.RawMessage `json:"config_snapshot,omitempty"`
-	SEOScore       *int32          `json:"seo_score,omitempty"`
-	AEOScore       *int32          `json:"aeo_score,omitempty"`
-	PageSpeedScore *int32          `json:"pagespeed_score,omitempty"`
-	OverallScore   *int32          `json:"overall_score,omitempty"`
-	StartedAt      string          `json:"started_at,omitempty"`
-	CompletedAt    string          `json:"completed_at,omitempty"`
-	CreatedAt      string          `json:"created_at"`
+	ID               string          `json:"id"`
+	ProjectID        string          `json:"project_id"`
+	Status           string          `json:"status"`
+	ConfigSnapshot   json.RawMessage `json:"config_snapshot,omitempty"`
+	URLsDiscovered   int32           `json:"urls_discovered"`
+	URLsCrawled      int32           `json:"urls_crawled"`
+	MaxDepthReached  int32           `json:"max_depth_reached"`
+	GooglePSIResults json.RawMessage `json:"google_psi_results,omitempty"`
+	HasLLMsTxt       *bool           `json:"has_llms_txt,omitempty"`
+	SEOScore         *int32          `json:"seo_score,omitempty"`
+	AEOScore         *int32          `json:"aeo_score,omitempty"`
+	PageSpeedScore   *int32          `json:"pagespeed_score,omitempty"`
+	OverallScore     *int32          `json:"overall_score,omitempty"`
+	StartedAt        string          `json:"started_at,omitempty"`
+	CompletedAt      string          `json:"completed_at,omitempty"`
+	CreatedAt        string          `json:"created_at"`
 }
 
 // handleCreateCrawl creates a crawl record for a project the user can access.
@@ -86,7 +91,7 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, newCrawlResponse(crawl))
+	writeJSON(w, http.StatusCreated, newCrawlResponseFromCreateRow(crawl))
 }
 
 // handleListCrawls lists crawls for a project the user can access.
@@ -134,7 +139,7 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 
 	responses := make([]crawlResponse, 0, len(crawls))
 	for _, crawl := range crawls {
-		responses = append(responses, newCrawlResponse(crawl))
+		responses = append(responses, newCrawlResponseFromListRow(crawl))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"crawls": responses})
@@ -178,38 +183,130 @@ func (a *App) handleGetCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newCrawlResponse(crawl))
+	writeJSON(w, http.StatusOK, newCrawlResponseFromGetRow(crawl))
 }
 
-// newCrawlResponse converts a DB crawl into an API response.
-func newCrawlResponse(crawl sqlc.Crawl) crawlResponse {
+// newCrawlResponseFromCreateRow converts a created crawl row into an API response.
+func newCrawlResponseFromCreateRow(crawl sqlc.CreateCrawlRow) crawlResponse {
+	return buildCrawlResponse(
+		crawl.ID,
+		crawl.ProjectID,
+		crawl.Status,
+		crawl.ConfigSnapshot,
+		crawl.UrlsDiscovered,
+		crawl.UrlsCrawled,
+		crawl.MaxDepthReached,
+		crawl.GooglePsiResults,
+		crawl.HasLlmsTxt,
+		crawl.SeoScore,
+		crawl.AeoScore,
+		crawl.PagespeedScore,
+		crawl.OverallScore,
+		crawl.StartedAt,
+		crawl.CompletedAt,
+		crawl.CreatedAt,
+	)
+}
+
+// newCrawlResponseFromGetRow converts a fetched crawl row into an API response.
+func newCrawlResponseFromGetRow(crawl sqlc.GetCrawlByIDForUserRow) crawlResponse {
+	return buildCrawlResponse(
+		crawl.ID,
+		crawl.ProjectID,
+		crawl.Status,
+		crawl.ConfigSnapshot,
+		crawl.UrlsDiscovered,
+		crawl.UrlsCrawled,
+		crawl.MaxDepthReached,
+		crawl.GooglePsiResults,
+		crawl.HasLlmsTxt,
+		crawl.SeoScore,
+		crawl.AeoScore,
+		crawl.PagespeedScore,
+		crawl.OverallScore,
+		crawl.StartedAt,
+		crawl.CompletedAt,
+		crawl.CreatedAt,
+	)
+}
+
+// newCrawlResponseFromListRow converts a listed crawl row into an API response.
+func newCrawlResponseFromListRow(crawl sqlc.ListCrawlsForProjectRow) crawlResponse {
+	return buildCrawlResponse(
+		crawl.ID,
+		crawl.ProjectID,
+		crawl.Status,
+		crawl.ConfigSnapshot,
+		crawl.UrlsDiscovered,
+		crawl.UrlsCrawled,
+		crawl.MaxDepthReached,
+		crawl.GooglePsiResults,
+		crawl.HasLlmsTxt,
+		crawl.SeoScore,
+		crawl.AeoScore,
+		crawl.PagespeedScore,
+		crawl.OverallScore,
+		crawl.StartedAt,
+		crawl.CompletedAt,
+		crawl.CreatedAt,
+	)
+}
+
+// buildCrawlResponse converts crawl fields into an API response.
+func buildCrawlResponse(
+	id pgtype.UUID,
+	projectID pgtype.UUID,
+	status string,
+	configSnapshot []byte,
+	urlsDiscovered int32,
+	urlsCrawled int32,
+	maxDepthReached int32,
+	googlePSIResults []byte,
+	hasLLMsTxt pgtype.Bool,
+	seoScore pgtype.Int4,
+	aeoScore pgtype.Int4,
+	pageSpeedScore pgtype.Int4,
+	overallScore pgtype.Int4,
+	startedAt pgtype.Timestamptz,
+	completedAt pgtype.Timestamptz,
+	createdAt pgtype.Timestamptz,
+) crawlResponse {
 	response := crawlResponse{
-		ID:        crawl.ID.String(),
-		ProjectID: crawl.ProjectID.String(),
-		Status:    crawl.Status,
-		CreatedAt: formatTimestamp(crawl.CreatedAt),
+		ID:              id.String(),
+		ProjectID:       projectID.String(),
+		Status:          status,
+		URLsDiscovered:  urlsDiscovered,
+		URLsCrawled:     urlsCrawled,
+		MaxDepthReached: maxDepthReached,
+		CreatedAt:       formatTimestamp(createdAt),
 	}
 
-	if len(crawl.ConfigSnapshot) > 0 {
-		response.ConfigSnapshot = json.RawMessage(crawl.ConfigSnapshot)
+	if len(configSnapshot) > 0 {
+		response.ConfigSnapshot = json.RawMessage(configSnapshot)
 	}
-	if crawl.SeoScore.Valid {
-		response.SEOScore = &crawl.SeoScore.Int32
+	if len(googlePSIResults) > 0 {
+		response.GooglePSIResults = json.RawMessage(googlePSIResults)
 	}
-	if crawl.AeoScore.Valid {
-		response.AEOScore = &crawl.AeoScore.Int32
+	if hasLLMsTxt.Valid {
+		response.HasLLMsTxt = &hasLLMsTxt.Bool
 	}
-	if crawl.PagespeedScore.Valid {
-		response.PageSpeedScore = &crawl.PagespeedScore.Int32
+	if seoScore.Valid {
+		response.SEOScore = &seoScore.Int32
 	}
-	if crawl.OverallScore.Valid {
-		response.OverallScore = &crawl.OverallScore.Int32
+	if aeoScore.Valid {
+		response.AEOScore = &aeoScore.Int32
 	}
-	if crawl.StartedAt.Valid {
-		response.StartedAt = formatTimestamp(crawl.StartedAt)
+	if pageSpeedScore.Valid {
+		response.PageSpeedScore = &pageSpeedScore.Int32
 	}
-	if crawl.CompletedAt.Valid {
-		response.CompletedAt = formatTimestamp(crawl.CompletedAt)
+	if overallScore.Valid {
+		response.OverallScore = &overallScore.Int32
+	}
+	if startedAt.Valid {
+		response.StartedAt = formatTimestamp(startedAt)
+	}
+	if completedAt.Valid {
+		response.CompletedAt = formatTimestamp(completedAt)
 	}
 
 	return response
