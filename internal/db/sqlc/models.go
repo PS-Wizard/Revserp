@@ -27,6 +27,42 @@ type Crawl struct {
 	HasLlmsTxt       pgtype.Bool
 }
 
+type CrawlPage struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	H2Headings              []byte
+	H3Headings              []byte
+	HeadingOutline          []byte
+	OgTags                  []byte
+	JsonLd                  []byte
+	CreatedAt               pgtype.Timestamptz
+}
+
 type Organization struct {
 	ID        pgtype.UUID
 	Name      string
