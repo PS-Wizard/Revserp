@@ -4,6 +4,8 @@ up:
 	podman-compose up -d
 
 down:
+	pids=$$(ss -ltnp '( sport = :8080 )' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); \
+	if [ -n "$$pids" ]; then kill $$pids || true; fi
 	podman-compose down
 
 sqlc:

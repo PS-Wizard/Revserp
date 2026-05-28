@@ -8,6 +8,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Crawl struct {
+	ID             pgtype.UUID
+	ProjectID      pgtype.UUID
+	Status         string
+	ConfigSnapshot []byte
+	SeoScore       pgtype.Int4
+	AeoScore       pgtype.Int4
+	PagespeedScore pgtype.Int4
+	OverallScore   pgtype.Int4
+	StartedAt      pgtype.Timestamptz
+	CompletedAt    pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+}
+
 type Organization struct {
 	ID        pgtype.UUID
 	Name      string
