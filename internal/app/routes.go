@@ -34,6 +34,9 @@ func (a *App) Router() http.Handler {
 	r.Group(func(protected chi.Router) {
 		protected.Use(internalauth.RequireAuth(a.AuthVerifier))
 		protected.Get("/me", a.handleMe)
+		protected.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
+		protected.Get("/organizations/{organizationID}/projects", a.handleListProjects)
+		protected.Get("/projects/{projectID}", a.handleGetProject)
 	})
 
 	return r

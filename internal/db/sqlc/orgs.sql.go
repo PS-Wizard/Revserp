@@ -55,6 +55,35 @@ func (q *Queries) CreateOrganization(ctx context.Context, name string) (Organiza
 	return i, err
 }
 
+const getOrganizationMember = `-- name: GetOrganizationMember :one
+SELECT
+    org_id,
+    user_id,
+    role,
+    created_at
+FROM organization_members
+WHERE org_id = $1
+  AND user_id = $2
+LIMIT 1
+`
+
+type GetOrganizationMemberParams struct {
+	OrgID  pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (OrganizationMember, error) {
+	row := q.db.QueryRow(ctx, getOrganizationMember, arg.OrgID, arg.UserID)
+	var i OrganizationMember
+	err := row.Scan(
+		&i.OrgID,
+		&i.UserID,
+		&i.Role,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listOrganizationsForUser = `-- name: ListOrganizationsForUser :many
 SELECT
     o.id,

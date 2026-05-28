@@ -21,6 +21,14 @@ type OrganizationMember struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type Project struct {
+	ID             pgtype.UUID
+	OrganizationID pgtype.UUID
+	Name           string
+	BaseUrl        string
+	CreatedAt      pgtype.Timestamptz
+}
+
 type User struct {
 	ID           pgtype.UUID
 	AuthProvider string

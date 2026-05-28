@@ -1,0 +1,53 @@
+@api_url = http://localhost:8080
+
+@access_token1 = PASTE_ACCESS_TOKEN_FOR_EMAIL1_HERE
+@access_token2 = PASTE_ACCESS_TOKEN_FOR_EMAIL2_HERE
+
+@organization_id1 = PASTE_ORG_ID_FOR_USER1_HERE
+@organization_id2 = PASTE_ORG_ID_FOR_USER2_HERE
+
+@project_id1 = PASTE_PROJECT_ID_FOR_USER1_HERE
+
+### Me user 1
+GET {{api_url}}/me
+Authorization: Bearer {{access_token1}}
+
+### Me user 2
+GET {{api_url}}/me
+Authorization: Bearer {{access_token2}}
+
+### Create project in user 1 org
+POST {{api_url}}/organizations/{{organization_id1}}/projects
+Authorization: Bearer {{access_token1}}
+Content-Type: application/json
+
+{
+  "name": "Main Site",
+  "base_url": "https://example.com"
+}
+
+### List projects in user 1 org
+GET {{api_url}}/organizations/{{organization_id1}}/projects
+Authorization: Bearer {{access_token1}}
+
+### Get one project as user 1
+GET {{api_url}}/projects/{{project_id1}}
+Authorization: Bearer {{access_token1}}
+
+### Forbidden create in user 1 org as user 2
+POST {{api_url}}/organizations/{{organization_id1}}/projects
+Authorization: Bearer {{access_token2}}
+Content-Type: application/json
+
+{
+  "name": "Should Fail",
+  "base_url": "https://forbidden.example.com"
+}
+
+### Forbidden list in user 1 org as user 2
+GET {{api_url}}/organizations/{{organization_id1}}/projects
+Authorization: Bearer {{access_token2}}
+
+### Hidden project as user 2
+GET {{api_url}}/projects/{{project_id1}}
+Authorization: Bearer {{access_token2}}

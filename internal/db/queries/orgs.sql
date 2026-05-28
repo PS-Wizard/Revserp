@@ -15,6 +15,17 @@ INSERT INTO organization_members (
 )
 RETURNING org_id, user_id, role, created_at;
 
+-- name: GetOrganizationMember :one
+SELECT
+    org_id,
+    user_id,
+    role,
+    created_at
+FROM organization_members
+WHERE org_id = $1
+  AND user_id = $2
+LIMIT 1;
+
 -- name: ListOrganizationsForUser :many
 SELECT
     o.id,
