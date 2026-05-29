@@ -172,6 +172,61 @@ func loadCrawlerTestEnv(t *testing.T) {
 	_ = godotenv.Load(envFilePath)
 }
 
+func TestStoreMarksCrawlProgress(t *testing.T) {
+	loadCrawlerTestEnv(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	crawlID, cleanup := createTestCrawl(t, ctx, pool)
+	defer cleanup()
+
+	store := NewStore(pool)
+	if err := store.MarkCrawlRunning(ctx, crawlID); err != nil {
+		t.Fatalf("mark crawl running: %v", err)
+	}
+
+	if err := store.MarkCrawlCompleted(ctx, crawlID, 12, 10, 3); err != nil {
+		t.Fatalf("mark crawl completed: %v", err)
+	}
+
+	var status string
+	var urlsDiscovered int
+	var urlsCrawled int
+	var maxDepthReached int
+	var startedAt pgtype.Timestamptz
+	var completedAt pgtype.Timestamptz
+	if err := pool.QueryRow(ctx, `
+		SELECT status, urls_discovered, urls_crawled, max_depth_reached, started_at, completed_at
+		FROM crawls
+		WHERE id = $1
+	`, crawlID).Scan(&status, &urlsDiscovered, &urlsCrawled, &maxDepthReached, &startedAt, &completedAt); err != nil {
+		t.Fatalf("load crawl: %v", err)
+	}
+
+	if status != "completed" {
+		t.Fatalf("got status %q", status)
+	}
+	if urlsDiscovered != 12 || urlsCrawled != 10 || maxDepthReached != 3 {
+		t.Fatalf("got counters discovered=%d crawled=%d maxDepth=%d", urlsDiscovered, urlsCrawled, maxDepthReached)
+	}
+	if !startedAt.Valid {
+		t.Fatalf("expected started_at to be set")
+	}
+	if !completedAt.Valid {
+		t.Fatalf("expected completed_at to be set")
+	}
+}
+
 func createTestCrawl(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (pgtype.UUID, func()) {
 	t.Helper()
 

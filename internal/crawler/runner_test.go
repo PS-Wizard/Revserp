@@ -129,6 +129,18 @@ func TestRunnerRunAndPersistCallsStore(t *testing.T) {
 	if store.persistedCount != 2 {
 		t.Fatalf("got persisted count %d, want 2", store.persistedCount)
 	}
+
+	if !store.markedRunning {
+		t.Fatalf("expected crawl to be marked running")
+	}
+
+	if !store.markedCompleted {
+		t.Fatalf("expected crawl to be marked completed")
+	}
+
+	if store.completedDiscovered != 2 || store.completedCrawled != 2 || store.completedMaxDepth != 1 {
+		t.Fatalf("got final counters discovered=%d crawled=%d maxDepth=%d", store.completedDiscovered, store.completedCrawled, store.completedMaxDepth)
+	}
 }
 
 func TestRunnerRunAndPersistFailsOnStoreError(t *testing.T) {
@@ -154,11 +166,49 @@ func TestRunnerRunAndPersistFailsOnStoreError(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
+
+	failingStore := runner.store.(*testResultStore)
+	if !failingStore.markedRunning {
+		t.Fatalf("expected crawl to be marked running")
+	}
+	if !failingStore.markedFailed {
+		t.Fatalf("expected crawl to be marked failed")
+	}
+	if failingStore.completedDiscovered != 1 || failingStore.completedCrawled != 1 || failingStore.completedMaxDepth != 0 {
+		t.Fatalf("got failed counters discovered=%d crawled=%d maxDepth=%d", failingStore.completedDiscovered, failingStore.completedCrawled, failingStore.completedMaxDepth)
+	}
 }
 
 type testResultStore struct {
-	persistedCount int
-	persistErr     error
+	persistedCount      int
+	persistErr          error
+	markedRunning       bool
+	markedCompleted     bool
+	markedFailed        bool
+	completedDiscovered int
+	completedCrawled    int
+	completedMaxDepth   int
+}
+
+func (store *testResultStore) MarkCrawlRunning(_ context.Context, _ pgtype.UUID) error {
+	store.markedRunning = true
+	return nil
+}
+
+func (store *testResultStore) MarkCrawlCompleted(_ context.Context, _ pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+	store.markedCompleted = true
+	store.completedDiscovered = urlsDiscovered
+	store.completedCrawled = urlsCrawled
+	store.completedMaxDepth = maxDepthReached
+	return nil
+}
+
+func (store *testResultStore) MarkCrawlFailed(_ context.Context, _ pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+	store.markedFailed = true
+	store.completedDiscovered = urlsDiscovered
+	store.completedCrawled = urlsCrawled
+	store.completedMaxDepth = maxDepthReached
+	return nil
 }
 
 func (store *testResultStore) PersistResult(_ context.Context, _ pgtype.UUID, _ string, _ CrawlResult) error {

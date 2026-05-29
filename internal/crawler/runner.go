@@ -9,6 +9,9 @@ import (
 
 // Runner coordinates an in-memory BFS crawl over the worker pool.
 type resultPersister interface {
+	MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) error
+	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
+	MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
 	PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error
 }
 
@@ -71,12 +74,20 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	jobs := make(chan CrawlJob, runner.workerCount)
 	results := StartWorkerPool(runContext, runner.workerCount, runner.fetcher, runner.parser, jobs)
 
+	if shouldPersist {
+		if err := runner.store.MarkCrawlRunning(runContext, crawlID); err != nil {
+			return nil, fmt.Errorf("mark crawl running: %w", err)
+		}
+	}
+
 	seenURLs := map[string]struct{}{
 		normalizedRootURL.String(): {},
 	}
 
 	scheduledPages := 1
 	pendingJobs := 1
+	urlsCrawled := 0
+	maxDepthReached := 0
 	jobs <- CrawlJob{URL: normalizedRootURL.String(), Depth: 0}
 
 	var crawlResults []CrawlResult
@@ -84,11 +95,18 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	for result := range results {
 		crawlResults = append(crawlResults, result)
 		pendingJobs--
+		urlsCrawled++
+		if result.Job.Depth > maxDepthReached {
+			maxDepthReached = result.Job.Depth
+		}
 
 		if shouldPersist {
 			if err := runner.store.PersistResult(runContext, crawlID, normalizedRootURL.String(), result); err != nil {
 				cancelRun()
 				close(jobs)
+				if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); failErr != nil {
+					return crawlResults, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
+				}
 				return crawlResults, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
 			}
 		}
@@ -125,6 +143,12 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 
 		if pendingJobs == 0 {
 			close(jobs)
+		}
+	}
+
+	if shouldPersist {
+		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); err != nil {
+			return crawlResults, fmt.Errorf("mark crawl completed: %w", err)
 		}
 	}
 

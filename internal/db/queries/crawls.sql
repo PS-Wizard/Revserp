@@ -58,3 +58,28 @@ SELECT
 FROM crawls
 WHERE project_id = $1
 ORDER BY created_at DESC;
+
+-- name: MarkCrawlRunning :exec
+UPDATE crawls
+SET status = 'running',
+    started_at = now(),
+    completed_at = NULL
+WHERE id = $1;
+
+-- name: MarkCrawlCompleted :exec
+UPDATE crawls
+SET status = 'completed',
+    urls_discovered = $2,
+    urls_crawled = $3,
+    max_depth_reached = $4,
+    completed_at = now()
+WHERE id = $1;
+
+-- name: MarkCrawlFailed :exec
+UPDATE crawls
+SET status = 'failed',
+    urls_discovered = $2,
+    urls_crawled = $3,
+    max_depth_reached = $4,
+    completed_at = now()
+WHERE id = $1;

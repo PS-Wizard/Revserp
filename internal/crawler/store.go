@@ -40,6 +40,43 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	}
 }
 
+// MarkCrawlRunning marks a crawl as started.
+func (store *Store) MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) error {
+	if err := store.queries.MarkCrawlRunning(ctx, crawlID); err != nil {
+		return fmt.Errorf("mark crawl running: %w", err)
+	}
+
+	return nil
+}
+
+// MarkCrawlCompleted writes final crawl counters and completion status.
+func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+	if err := store.queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{
+		ID:              crawlID,
+		UrlsDiscovered:  int32(urlsDiscovered),
+		UrlsCrawled:     int32(urlsCrawled),
+		MaxDepthReached: int32(maxDepthReached),
+	}); err != nil {
+		return fmt.Errorf("mark crawl completed: %w", err)
+	}
+
+	return nil
+}
+
+// MarkCrawlFailed writes final crawl counters and failed status.
+func (store *Store) MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+	if err := store.queries.MarkCrawlFailed(ctx, sqlc.MarkCrawlFailedParams{
+		ID:              crawlID,
+		UrlsDiscovered:  int32(urlsDiscovered),
+		UrlsCrawled:     int32(urlsCrawled),
+		MaxDepthReached: int32(maxDepthReached),
+	}); err != nil {
+		return fmt.Errorf("mark crawl failed: %w", err)
+	}
+
+	return nil
+}
+
 // PersistResult stores one processed crawl result and its discovered links.
 func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error {
 	if result.ProcessErr != nil {
