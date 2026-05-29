@@ -46,6 +46,9 @@ func (a *App) Router() http.Handler {
 		protected.Post("/crawls/{crawlID}/links", a.handleCreateCrawlLink)
 		protected.Get("/crawls/{crawlID}/links", a.handleListCrawlLinks)
 		protected.Get("/crawl-links/{linkID}", a.handleGetCrawlLink)
+		protected.Post("/crawls/{crawlID}/issues", a.handleCreateCrawlIssue)
+		protected.Get("/crawls/{crawlID}/issues", a.handleListCrawlIssues)
+		protected.Get("/crawl-issues/{issueID}", a.handleGetCrawlIssue)
 	})
 
 	return r
