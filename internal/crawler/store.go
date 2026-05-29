@@ -14,6 +14,18 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
+const insertCrawlLinkSQL = `
+INSERT INTO crawl_links (
+    crawl_id,
+    source_url,
+    target_url,
+    anchor_text,
+    is_internal,
+    target_status,
+    nofollow
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
 // Store persists crawler results into crawl_pages and crawl_links.
 type Store struct {
 	pool    *pgxpool.Pool
@@ -45,10 +57,8 @@ func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, root
 		return fmt.Errorf("create crawl page: %w", err)
 	}
 
-	for _, parsedLink := range dedupeParsedLinks(result.ParsedPage) {
-		if _, err := txQueries.CreateCrawlLink(ctx, buildCreateCrawlLinkParams(crawlID, result, parsedLink)); err != nil {
-			return fmt.Errorf("create crawl link: %w", err)
-		}
+	if err := store.insertCrawlLinksBatch(ctx, tx, crawlID, result, dedupeParsedLinks(result.ParsedPage)); err != nil {
+		return fmt.Errorf("create crawl links batch: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -111,17 +121,36 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 	}
 }
 
-// buildCreateCrawlLinkParams maps one parsed link into crawl_links insert params.
-func buildCreateCrawlLinkParams(crawlID pgtype.UUID, result CrawlResult, parsedLink ParsedLink) sqlc.CreateCrawlLinkParams {
-	return sqlc.CreateCrawlLinkParams{
-		CrawlID:      crawlID,
-		SourceUrl:    result.Fetch.FinalURL,
-		TargetUrl:    parsedLink.TargetURL,
-		AnchorText:   nullableText(parsedLink.AnchorText),
-		IsInternal:   nullableBool(parsedLink.IsInternal),
-		TargetStatus: pgtype.Int4{},
-		Nofollow:     nullableBool(parsedLink.NoFollow),
+// insertCrawlLinksBatch inserts one page's deduped links in a single pgx batch.
+func (store *Store) insertCrawlLinksBatch(ctx context.Context, tx pgx.Tx, crawlID pgtype.UUID, result CrawlResult, parsedLinks []ParsedLink) error {
+	if len(parsedLinks) == 0 {
+		return nil
 	}
+
+	var batch pgx.Batch
+	for _, parsedLink := range parsedLinks {
+		batch.Queue(
+			insertCrawlLinkSQL,
+			crawlID,
+			result.Fetch.FinalURL,
+			parsedLink.TargetURL,
+			nullableText(parsedLink.AnchorText),
+			nullableBool(parsedLink.IsInternal),
+			pgtype.Int4{},
+			nullableBool(parsedLink.NoFollow),
+		)
+	}
+
+	batchResults := tx.SendBatch(ctx, &batch)
+	defer batchResults.Close()
+
+	for range parsedLinks {
+		if _, err := batchResults.Exec(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // dedupeParsedLinks removes duplicate source-target-anchor combinations from one page result.

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestRunnerRunCrawlsInternalPagesUpToMaxDepth(t *testing.T) {
@@ -97,6 +99,75 @@ func TestRunnerRunRespectsMaxPages(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
 	}
+}
+
+func TestRunnerRunAndPersistCallsStore(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body><a href="/about">About</a></body></html>`)
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "")
+	parser := NewParser()
+	store := &testResultStore{}
+	runner := NewRunner(CrawlerConfig{
+		AllowedHost: mustParseURL(t, server.URL).Host,
+		MaxDepth:    1,
+		MaxPages:    2,
+	}, 2, fetcher, parser).WithStore(store)
+
+	results, err := runner.RunAndPersist(context.Background(), pgtype.UUID{}, server.URL)
+	if err != nil {
+		t.Fatalf("run and persist crawler: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+
+	if store.persistedCount != 2 {
+		t.Fatalf("got persisted count %d, want 2", store.persistedCount)
+	}
+}
+
+func TestRunnerRunAndPersistFailsOnStoreError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body></body></html>`)
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "")
+	parser := NewParser()
+	runner := NewRunner(CrawlerConfig{
+		AllowedHost: mustParseURL(t, server.URL).Host,
+		MaxDepth:    0,
+		MaxPages:    1,
+	}, 1, fetcher, parser).WithStore(&testResultStore{persistErr: fmt.Errorf("boom")})
+
+	results, err := runner.RunAndPersist(context.Background(), pgtype.UUID{}, server.URL)
+	if err == nil {
+		t.Fatalf("expected persist error but got nil")
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+}
+
+type testResultStore struct {
+	persistedCount int
+	persistErr     error
+}
+
+func (store *testResultStore) PersistResult(_ context.Context, _ pgtype.UUID, _ string, _ CrawlResult) error {
+	if store.persistErr != nil {
+		return store.persistErr
+	}
+
+	store.persistedCount++
+	return nil
 }
 
 func mustParseURL(t *testing.T, rawURL string) *url.URL {
