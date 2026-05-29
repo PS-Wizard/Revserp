@@ -27,6 +27,18 @@ type Crawl struct {
 	HasLlmsTxt       pgtype.Bool
 }
 
+type CrawlLink struct {
+	ID           pgtype.UUID
+	CrawlID      pgtype.UUID
+	SourceUrl    string
+	TargetUrl    string
+	AnchorText   pgtype.Text
+	IsInternal   pgtype.Bool
+	TargetStatus pgtype.Int4
+	Nofollow     pgtype.Bool
+	CreatedAt    pgtype.Timestamptz
+}
+
 type CrawlPage struct {
 	ID                      pgtype.UUID
 	CrawlID                 pgtype.UUID
