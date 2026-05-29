@@ -1,0 +1,29 @@
+package crawler
+
+import "time"
+
+// CrawlerConfig holds crawl execution settings.
+type CrawlerConfig struct {
+	AllowedHost  string
+	MaxDepth     int
+	MaxPages     int
+	FetchTimeout time.Duration
+	UserAgent    string
+}
+
+// CrawlJob represents one URL scheduled for crawling.
+type CrawlJob struct {
+	URL   string
+	Depth int
+}
+
+// FetchResult holds the outcome of one HTTP fetch.
+type FetchResult struct {
+	FinalURL       string
+	StatusCode     int
+	ContentType    string
+	Body           []byte
+	ResponseTime   time.Duration
+	ResponseSize   int
+	FetchError     error
+}
