@@ -159,6 +159,96 @@ func TestStorePersistResult(t *testing.T) {
 	}
 }
 
+func TestStorePersistResultWithProcessErrorStillStoresPage(t *testing.T) {
+	loadCrawlerTestEnv(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	crawlID, cleanup := createTestCrawl(t, ctx, pool)
+	defer cleanup()
+
+	store := NewStore(pool)
+	result := CrawlResult{
+		Job: CrawlJob{
+			URL:   "https://example.com/broken",
+			Depth: 1,
+		},
+		Fetch: FetchResult{
+			ResponseTime: 2 * time.Second,
+		},
+		ProcessErr: context.DeadlineExceeded,
+	}
+
+	if err := store.PersistResult(ctx, crawlID, "https://example.com/", result); err != nil {
+		t.Fatalf("persist result with process error: %v", err)
+	}
+
+	var storedPage struct {
+		URL            string
+		Depth          pgtype.Int4
+		StatusCode     pgtype.Int4
+		ResponseTimeMs pgtype.Int4
+		Title          pgtype.Text
+		InternalLinks  pgtype.Int4
+		ExternalLinks  pgtype.Int4
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT url, depth, status_code, response_time_ms, title, internal_links, external_links
+		FROM crawl_pages
+		WHERE crawl_id = $1
+	`, crawlID).Scan(
+		&storedPage.URL,
+		&storedPage.Depth,
+		&storedPage.StatusCode,
+		&storedPage.ResponseTimeMs,
+		&storedPage.Title,
+		&storedPage.InternalLinks,
+		&storedPage.ExternalLinks,
+	); err != nil {
+		t.Fatalf("load crawl page: %v", err)
+	}
+
+	if storedPage.URL != "https://example.com/broken" {
+		t.Fatalf("got page url %q", storedPage.URL)
+	}
+	if storedPage.Depth.Int32 != 1 {
+		t.Fatalf("got page depth %d", storedPage.Depth.Int32)
+	}
+	if storedPage.StatusCode.Valid {
+		t.Fatalf("expected status code to be null")
+	}
+	if storedPage.ResponseTimeMs.Int32 != 2000 {
+		t.Fatalf("got response time %d", storedPage.ResponseTimeMs.Int32)
+	}
+	if storedPage.Title.Valid {
+		t.Fatalf("expected title to be null")
+	}
+	if storedPage.InternalLinks.Int32 != 0 {
+		t.Fatalf("got internal links %d", storedPage.InternalLinks.Int32)
+	}
+	if storedPage.ExternalLinks.Int32 != 0 {
+		t.Fatalf("got external links %d", storedPage.ExternalLinks.Int32)
+	}
+
+	var linkCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM crawl_links WHERE crawl_id = $1`, crawlID).Scan(&linkCount); err != nil {
+		t.Fatalf("count crawl links: %v", err)
+	}
+	if linkCount != 0 {
+		t.Fatalf("got %d crawl links, want 0", linkCount)
+	}
+}
+
 func loadCrawlerTestEnv(t *testing.T) {
 	t.Helper()
 

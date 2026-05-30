@@ -83,67 +83,103 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	seenURLs := map[string]struct{}{
 		normalizedRootURL.String(): {},
 	}
+	processedPageURLs := make(map[string]struct{})
 
 	scheduledPages := 1
-	pendingJobs := 1
+	activeJobs := 0
 	urlsCrawled := 0
 	maxDepthReached := 0
-	jobs <- CrawlJob{URL: normalizedRootURL.String(), Depth: 0}
+	pendingQueue := []CrawlJob{{URL: normalizedRootURL.String(), Depth: 0}}
 
 	var crawlResults []CrawlResult
 
-	for result := range results {
-		crawlResults = append(crawlResults, result)
-		pendingJobs--
-		urlsCrawled++
-		if result.Job.Depth > maxDepthReached {
-			maxDepthReached = result.Job.Depth
+	for len(pendingQueue) > 0 || activeJobs > 0 {
+		var nextJob CrawlJob
+		var jobsChannel chan<- CrawlJob
+		if len(pendingQueue) > 0 {
+			nextJob = pendingQueue[0]
+			jobsChannel = jobs
 		}
 
-		if shouldPersist {
-			if err := runner.store.PersistResult(runContext, crawlID, normalizedRootURL.String(), result); err != nil {
-				cancelRun()
-				close(jobs)
-				if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); failErr != nil {
-					return crawlResults, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
-				}
-				return crawlResults, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
+		select {
+		case jobsChannel <- nextJob:
+			pendingQueue = pendingQueue[1:]
+			activeJobs++
+		case result, ok := <-results:
+			if !ok {
+				return crawlResults, fmt.Errorf("worker pool closed unexpectedly")
 			}
-		}
 
-		if result.ProcessErr == nil && result.ParsedPage != nil && result.Job.Depth < runner.config.MaxDepth {
-			for _, parsedLink := range result.ParsedPage.Links {
-				if !parsedLink.IsInternal {
-					continue
-				}
-
-				if scheduledPages >= runner.config.MaxPages {
-					break
-				}
-
-				normalizedLinkURL, normalizeErr := NormalizeURL(parsedLink.TargetURL, nil)
-				if normalizeErr != nil {
-					continue
-				}
-
-				if runner.config.AllowedHost != "" && normalizedLinkURL.Host != runner.config.AllowedHost {
-					continue
-				}
-
-				if _, alreadySeen := seenURLs[normalizedLinkURL.String()]; alreadySeen {
-					continue
-				}
-
-				seenURLs[normalizedLinkURL.String()] = struct{}{}
-				scheduledPages++
-				pendingJobs++
-				jobs <- CrawlJob{URL: normalizedLinkURL.String(), Depth: result.Job.Depth + 1}
+			activeJobs--
+			crawlResults = append(crawlResults, result)
+			urlsCrawled++
+			if result.Job.Depth > maxDepthReached {
+				maxDepthReached = result.Job.Depth
 			}
-		}
 
-		if pendingJobs == 0 {
+			isDuplicateProcessedPage := false
+			normalizedResultURL, normalizeErr := NormalizeURL(crawlPageURL(result), nil)
+			if normalizeErr == nil {
+				if _, alreadyProcessed := processedPageURLs[normalizedResultURL.String()]; alreadyProcessed {
+					isDuplicateProcessedPage = true
+				} else {
+					processedPageURLs[normalizedResultURL.String()] = struct{}{}
+					seenURLs[normalizedResultURL.String()] = struct{}{}
+				}
+			}
+
+			if !isDuplicateProcessedPage && shouldPersist {
+				if err := runner.store.PersistResult(runContext, crawlID, normalizedRootURL.String(), result); err != nil {
+					cancelRun()
+					close(jobs)
+					if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); failErr != nil {
+						return crawlResults, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
+					}
+					return crawlResults, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
+				}
+			}
+
+			if !isDuplicateProcessedPage && result.ProcessErr == nil && result.ParsedPage != nil && result.Job.Depth < runner.config.MaxDepth {
+				for _, parsedLink := range result.ParsedPage.Links {
+					if !parsedLink.IsInternal {
+						continue
+					}
+
+					if scheduledPages >= runner.config.MaxPages {
+						break
+					}
+
+					normalizedLinkURL, normalizeErr := NormalizeURL(parsedLink.TargetURL, nil)
+					if normalizeErr != nil {
+						continue
+					}
+
+					if runner.config.AllowedHost != "" && normalizedLinkURL.Host != runner.config.AllowedHost {
+						continue
+					}
+
+					if _, alreadySeen := seenURLs[normalizedLinkURL.String()]; alreadySeen {
+						continue
+					}
+
+					seenURLs[normalizedLinkURL.String()] = struct{}{}
+					scheduledPages++
+					pendingQueue = append(pendingQueue, CrawlJob{URL: normalizedLinkURL.String(), Depth: result.Job.Depth + 1})
+				}
+			}
+		case <-runContext.Done():
 			close(jobs)
+			if shouldPersist {
+				if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); failErr != nil {
+					return crawlResults, fmt.Errorf("crawl canceled: %w (also failed to mark crawl failed: %v)", runContext.Err(), failErr)
+				}
+			}
+			return crawlResults, fmt.Errorf("crawl canceled: %w", runContext.Err())
 		}
+	}
+
+	close(jobs)
+	for range results {
 	}
 
 	if shouldPersist {

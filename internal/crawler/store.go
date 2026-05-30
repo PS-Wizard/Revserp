@@ -3,10 +3,12 @@ package crawler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -78,10 +80,6 @@ func (store *Store) MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, ur
 
 // PersistResult stores one processed crawl result and its discovered links.
 func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error {
-	if result.ProcessErr != nil {
-		return result.ProcessErr
-	}
-
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin crawl result transaction: %w", err)
@@ -90,11 +88,17 @@ func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, root
 
 	txQueries := store.queries.WithTx(tx)
 	if _, err := txQueries.CreateCrawlPage(ctx, buildCreateCrawlPageParams(crawlID, rootURL, result)); err != nil {
+		if isUniqueViolation(err) {
+			return nil
+		}
+
 		return fmt.Errorf("create crawl page: %w", err)
 	}
 
-	if err := store.insertCrawlLinksBatch(ctx, tx, crawlID, result, dedupeParsedLinks(result.ParsedPage)); err != nil {
-		return fmt.Errorf("create crawl links batch: %w", err)
+	if result.ProcessErr == nil {
+		if err := store.insertCrawlLinksBatch(ctx, tx, crawlID, result, dedupeParsedLinks(result.ParsedPage)); err != nil {
+			return fmt.Errorf("create crawl links batch: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -102,6 +106,16 @@ func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, root
 	}
 
 	return nil
+}
+
+// isUniqueViolation reports whether an error is a Postgres unique constraint violation.
+func isUniqueViolation(err error) bool {
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		return false
+	}
+
+	return postgresError.Code == "23505"
 }
 
 // buildCreateCrawlPageParams maps one crawl result into crawl_pages insert params.
@@ -116,25 +130,25 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 	h3Headings := extractH3Headings(parsedPage)
 
 	return sqlc.CreateCrawlPageParams{
-		CrawlID:   crawlID,
-		Url:       result.Fetch.FinalURL,
-		StatusCode: nullableInt4(result.Fetch.StatusCode),
-		ContentType: nullableText(result.Fetch.ContentType),
-		SizeBytes:   nullableInt4(result.Fetch.ResponseSize),
-		IsInternal:  nullableBool(isResultInternal(rootURL, result)),
-		Depth:       nullableInt4(result.Job.Depth),
-		Title:       nullableText(extractPageTitle(parsedPage)),
-		MetaDescription: nullableText(extractMetaDescription(parsedPage)),
-		H1:              nullableText(extractPageH1(parsedPage)),
-		H1Count:         nullableInt4(extractPageH1Count(parsedPage)),
-		H2Count:         nullableInt4(len(h2Headings)),
-		H3Count:         nullableInt4(len(h3Headings)),
-		WordCount: nullableInt4(countWords(extractPageVisibleText(parsedPage))),
-		Author:    pgtype.Text{},
-		CanonicalUrl: nullableText(extractCanonicalURL(parsedPage)),
-		Lang:         nullableText(extractPageLang(parsedPage)),
-		Viewport:     nullableText(extractPageViewport(parsedPage)),
-		Robots:       nullableText(extractPageRobots(parsedPage)),
+		CrawlID:                 crawlID,
+		Url:                     crawlPageURL(result),
+		StatusCode:              nullableFetchStatusCode(result.Fetch.StatusCode),
+		ContentType:             nullableText(result.Fetch.ContentType),
+		SizeBytes:               nullableFetchResponseSize(result.Fetch.ResponseSize),
+		IsInternal:              nullableBool(isResultInternal(rootURL, result)),
+		Depth:                   nullableInt4(result.Job.Depth),
+		Title:                   nullableText(extractPageTitle(parsedPage)),
+		MetaDescription:         nullableText(extractMetaDescription(parsedPage)),
+		H1:                      nullableText(extractPageH1(parsedPage)),
+		H1Count:                 nullableInt4(extractPageH1Count(parsedPage)),
+		H2Count:                 nullableInt4(len(h2Headings)),
+		H3Count:                 nullableInt4(len(h3Headings)),
+		WordCount:               nullableInt4(countWords(extractPageVisibleText(parsedPage))),
+		Author:                  pgtype.Text{},
+		CanonicalUrl:            nullableText(extractCanonicalURL(parsedPage)),
+		Lang:                    nullableText(extractPageLang(parsedPage)),
+		Viewport:                nullableText(extractPageViewport(parsedPage)),
+		Robots:                  nullableText(extractPageRobots(parsedPage)),
 		ImageCount:              nullableInt4(extractPageImageCount(parsedPage)),
 		ImagesWithoutAltCount:   nullableInt4(extractPageImagesWithoutAltCount(parsedPage)),
 		ImagesWithoutDimensions: nullableInt4(extractPageImagesWithoutDimensions(parsedPage)),
@@ -150,6 +164,15 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		OgTags:         mustMarshalJSON(extractPageOGTags(parsedPage)),
 		JsonLd:         mustMarshalJSON(extractPageJSONLDBlocks(parsedPage)),
 	}
+}
+
+// crawlPageURL returns the best available URL to persist for one crawl result.
+func crawlPageURL(result CrawlResult) string {
+	if result.Fetch.FinalURL != "" {
+		return result.Fetch.FinalURL
+	}
+
+	return result.Job.URL
 }
 
 // insertCrawlLinksBatch inserts one page's deduped links in a single pgx batch.
@@ -405,6 +428,24 @@ func countWords(value string) int {
 	}
 
 	return wordCount
+}
+
+// nullableFetchStatusCode builds a valid pgtype.Int4 for an HTTP status code when available.
+func nullableFetchStatusCode(value int) pgtype.Int4 {
+	if value <= 0 {
+		return pgtype.Int4{}
+	}
+
+	return nullableInt4(value)
+}
+
+// nullableFetchResponseSize builds a valid pgtype.Int4 for a response size when available.
+func nullableFetchResponseSize(value int) pgtype.Int4 {
+	if value <= 0 {
+		return pgtype.Int4{}
+	}
+
+	return nullableInt4(value)
 }
 
 // nullableText builds a valid pgtype.Text from a non-empty string.
