@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
@@ -130,18 +129,15 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		H1Count:         nullableInt4(extractPageH1Count(parsedPage)),
 		H2Count:         nullableInt4(len(h2Headings)),
 		H3Count:         nullableInt4(len(h3Headings)),
-		// TODO: Replace this heading-only fallback with real visible-body text extraction.
 		WordCount: nullableInt4(countWords(extractPageVisibleText(parsedPage))),
 		Author:    pgtype.Text{},
 		CanonicalUrl: nullableText(extractCanonicalURL(parsedPage)),
 		Lang:         nullableText(extractPageLang(parsedPage)),
-		// TODO: Extract viewport from the parsed document.
-		Viewport: pgtype.Text{},
-		Robots:   nullableText(extractPageRobots(parsedPage)),
-		// TODO: Extract real image counts from the parsed document.
-		ImageCount:              pgtype.Int4{},
-		ImagesWithoutAltCount:   pgtype.Int4{},
-		ImagesWithoutDimensions: pgtype.Int4{},
+		Viewport:     nullableText(extractPageViewport(parsedPage)),
+		Robots:       nullableText(extractPageRobots(parsedPage)),
+		ImageCount:              nullableInt4(extractPageImageCount(parsedPage)),
+		ImagesWithoutAltCount:   nullableInt4(extractPageImagesWithoutAltCount(parsedPage)),
+		ImagesWithoutDimensions: nullableInt4(extractPageImagesWithoutDimensions(parsedPage)),
 		ExternalLinks:           nullableInt4(externalLinkCount),
 		InternalLinks:           nullableInt4(internalLinkCount),
 		ResponseTimeMs:          nullableInt4(int(result.Fetch.ResponseTime.Milliseconds())),
@@ -151,10 +147,8 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		H3Headings:         mustMarshalJSON(h3Headings),
 		// TODO: Extract a real heading outline from the parsed document.
 		HeadingOutline: mustMarshalJSON(nil),
-		// TODO: Extract Open Graph tags from the parsed document.
-		OgTags: mustMarshalJSON(nil),
-		// TODO: Extract JSON-LD blocks from the parsed document.
-		JsonLd: mustMarshalJSON(nil),
+		OgTags:         mustMarshalJSON(extractPageOGTags(parsedPage)),
+		JsonLd:         mustMarshalJSON(extractPageJSONLDBlocks(parsedPage)),
 	}
 }
 
@@ -268,6 +262,15 @@ func extractPageLang(parsedPage *ParsedPage) string {
 	return parsedPage.Lang
 }
 
+// extractPageViewport returns the parsed viewport value when available.
+func extractPageViewport(parsedPage *ParsedPage) string {
+	if parsedPage == nil {
+		return ""
+	}
+
+	return parsedPage.Viewport
+}
+
 // extractPageRobots returns the parsed robots value when available.
 func extractPageRobots(parsedPage *ParsedPage) string {
 	if parsedPage == nil {
@@ -295,6 +298,51 @@ func extractPageH1Count(parsedPage *ParsedPage) int {
 	return parsedPage.H1Count
 }
 
+// extractPageOGTags returns parsed Open Graph tags when available.
+func extractPageOGTags(parsedPage *ParsedPage) map[string]string {
+	if parsedPage == nil {
+		return nil
+	}
+
+	return parsedPage.OGTags
+}
+
+// extractPageJSONLDBlocks returns parsed JSON-LD blocks when available.
+func extractPageJSONLDBlocks(parsedPage *ParsedPage) []string {
+	if parsedPage == nil {
+		return nil
+	}
+
+	return parsedPage.JSONLDBlocks
+}
+
+// extractPageImageCount returns the parsed image count when available.
+func extractPageImageCount(parsedPage *ParsedPage) int {
+	if parsedPage == nil {
+		return 0
+	}
+
+	return parsedPage.ImageCount
+}
+
+// extractPageImagesWithoutAltCount returns the parsed missing-alt image count when available.
+func extractPageImagesWithoutAltCount(parsedPage *ParsedPage) int {
+	if parsedPage == nil {
+		return 0
+	}
+
+	return parsedPage.ImagesWithoutAltCount
+}
+
+// extractPageImagesWithoutDimensions returns the parsed missing-dimensions image count when available.
+func extractPageImagesWithoutDimensions(parsedPage *ParsedPage) int {
+	if parsedPage == nil {
+		return 0
+	}
+
+	return parsedPage.ImagesWithoutDimensions
+}
+
 // extractH2Headings returns parsed h2 headings when available.
 func extractH2Headings(parsedPage *ParsedPage) []string {
 	if parsedPage == nil {
@@ -313,20 +361,13 @@ func extractH3Headings(parsedPage *ParsedPage) []string {
 	return parsedPage.H3Headings
 }
 
-// extractPageVisibleText returns basic visible text derived from parsed headings.
+// extractPageVisibleText returns parsed visible body text when available.
 func extractPageVisibleText(parsedPage *ParsedPage) string {
 	if parsedPage == nil {
 		return ""
 	}
 
-	textParts := make([]string, 0, 1+len(parsedPage.H2Headings)+len(parsedPage.H3Headings))
-	if parsedPage.H1 != "" {
-		textParts = append(textParts, parsedPage.H1)
-	}
-	textParts = append(textParts, parsedPage.H2Headings...)
-	textParts = append(textParts, parsedPage.H3Headings...)
-
-	return strings.Join(textParts, " ")
+	return parsedPage.VisibleText
 }
 
 // isResultInternal reports whether a fetched result URL belongs to the crawl root host.

@@ -9,17 +9,26 @@ func TestParserParseHTML(t *testing.T) {
 	<head>
 		<title> Test Page </title>
 		<meta name="description" content=" A useful description. ">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<meta name="robots" content="index,follow">
+		<meta property="og:title" content="OG Test Page">
+		<meta property="og:type" content="website">
 		<link rel="canonical" href="/canonical-page">
+		<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage"}</script>
 	</head>
 	<body>
 		<h1>   Main Heading   </h1>
+		<p>This is a useful paragraph with real body text.</p>
 		<h2>Overview</h2>
 		<h2>Features</h2>
 		<h3>Fast</h3>
 		<h3>Reliable</h3>
+		<img src="/hero.jpg" alt="Hero image" width="1200" height="630">
+		<img src="/logo.jpg" alt="">
+		<img src="/icon.jpg">
 		<a href="/about"> About Us </a>
 		<a href="https://vercel.com" rel="nofollow noopener">Vercel</a>
+		<script>console.log('ignore me')</script>
 	</body>
 	</html>
 `)
@@ -50,8 +59,48 @@ func TestParserParseHTML(t *testing.T) {
 		t.Fatalf("got lang %q", parsedPage.Lang)
 	}
 
+	if parsedPage.Viewport != "width=device-width, initial-scale=1" {
+		t.Fatalf("got viewport %q", parsedPage.Viewport)
+	}
+
 	if parsedPage.Robots != "index,follow" {
 		t.Fatalf("got robots %q", parsedPage.Robots)
+	}
+
+	if len(parsedPage.OGTags) != 2 {
+		t.Fatalf("got %d og tags", len(parsedPage.OGTags))
+	}
+
+	if parsedPage.OGTags["og:title"] != "OG Test Page" {
+		t.Fatalf("got og:title %q", parsedPage.OGTags["og:title"])
+	}
+
+	if parsedPage.OGTags["og:type"] != "website" {
+		t.Fatalf("got og:type %q", parsedPage.OGTags["og:type"])
+	}
+
+	if len(parsedPage.JSONLDBlocks) != 1 {
+		t.Fatalf("got %d json-ld blocks", len(parsedPage.JSONLDBlocks))
+	}
+
+	if parsedPage.JSONLDBlocks[0] != `{"@context":"https://schema.org","@type":"WebPage"}` {
+		t.Fatalf("got json-ld block %q", parsedPage.JSONLDBlocks[0])
+	}
+
+	if parsedPage.VisibleText != "Main Heading This is a useful paragraph with real body text. Overview Features Fast Reliable About Us Vercel" {
+		t.Fatalf("got visible text %q", parsedPage.VisibleText)
+	}
+
+	if parsedPage.ImageCount != 3 {
+		t.Fatalf("got image count %d", parsedPage.ImageCount)
+	}
+
+	if parsedPage.ImagesWithoutAltCount != 2 {
+		t.Fatalf("got images without alt count %d", parsedPage.ImagesWithoutAltCount)
+	}
+
+	if parsedPage.ImagesWithoutDimensions != 2 {
+		t.Fatalf("got images without dimensions count %d", parsedPage.ImagesWithoutDimensions)
 	}
 
 	if parsedPage.H1 != "Main Heading" {

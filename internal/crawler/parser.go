@@ -1,10 +1,10 @@
 package crawler
 
 import (
-	"slices"
 	"bytes"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -20,17 +20,24 @@ type ParsedLink struct {
 
 // ParsedPage holds the basic extracted facts from one HTML page.
 type ParsedPage struct {
-	URL             string
-	Title           string
-	MetaDescription string
-	CanonicalURL    string
-	Lang            string
-	Robots          string
-	H1              string
-	H1Count         int
-	H2Headings      []string
-	H3Headings      []string
-	Links           []ParsedLink
+	URL                      string
+	Title                    string
+	MetaDescription          string
+	CanonicalURL             string
+	Lang                     string
+	Viewport                 string
+	Robots                   string
+	VisibleText              string
+	ImageCount               int
+	ImagesWithoutAltCount    int
+	ImagesWithoutDimensions  int
+	OGTags                   map[string]string
+	JSONLDBlocks             []string
+	H1                       string
+	H1Count                  int
+	H2Headings               []string
+	H3Headings               []string
+	Links                    []ParsedLink
 }
 
 // Parser extracts basic SEO facts and links from HTML documents.
@@ -57,13 +64,21 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 		return ParsedPage{}, fmt.Errorf("parse html: %w", err)
 	}
 
+	imageCount, imagesWithoutAltCount, imagesWithoutDimensions := extractImageCounts(document)
 	parsedPage := ParsedPage{
-		URL:             parsedPageURL.String(),
-		Title:           strings.TrimSpace(document.Find("title").First().Text()),
-		MetaDescription: strings.TrimSpace(document.Find(`meta[name="description"]`).First().AttrOr("content", "")),
-		CanonicalURL:    strings.TrimSpace(document.Find(`link[rel="canonical"]`).First().AttrOr("href", "")),
-		Lang:            strings.TrimSpace(document.Find("html").First().AttrOr("lang", "")),
-		Robots:          strings.TrimSpace(document.Find(`meta[name="robots"]`).First().AttrOr("content", "")),
+		URL:                     parsedPageURL.String(),
+		Title:                   strings.TrimSpace(document.Find("title").First().Text()),
+		MetaDescription:         strings.TrimSpace(document.Find(`meta[name="description"]`).First().AttrOr("content", "")),
+		CanonicalURL:            strings.TrimSpace(document.Find(`link[rel="canonical"]`).First().AttrOr("href", "")),
+		Lang:                    strings.TrimSpace(document.Find("html").First().AttrOr("lang", "")),
+		Viewport:                strings.TrimSpace(document.Find(`meta[name="viewport"]`).First().AttrOr("content", "")),
+		Robots:                  strings.TrimSpace(document.Find(`meta[name="robots"]`).First().AttrOr("content", "")),
+		VisibleText:             extractVisibleText(document),
+		ImageCount:              imageCount,
+		ImagesWithoutAltCount:   imagesWithoutAltCount,
+		ImagesWithoutDimensions: imagesWithoutDimensions,
+		OGTags:                  extractOGTags(document),
+		JSONLDBlocks:            extractJSONLDBlocks(document),
 	}
 
 	parsedPage.H1Count = document.Find("h1").Length()
@@ -107,6 +122,84 @@ func extractHeadingTexts(document *goquery.Document, selector string) []string {
 	})
 
 	return headingTexts
+}
+
+// extractOGTags returns Open Graph meta tags keyed by property name.
+func extractOGTags(document *goquery.Document) map[string]string {
+	ogTags := make(map[string]string)
+
+	document.Find(`meta[property]`).Each(func(_ int, selection *goquery.Selection) {
+		propertyName := strings.TrimSpace(selection.AttrOr("property", ""))
+		if !strings.HasPrefix(strings.ToLower(propertyName), "og:") {
+			return
+		}
+
+		contentValue := strings.TrimSpace(selection.AttrOr("content", ""))
+		if contentValue == "" {
+			return
+		}
+
+		ogTags[propertyName] = contentValue
+	})
+
+	if len(ogTags) == 0 {
+		return nil
+	}
+
+	return ogTags
+}
+
+// extractJSONLDBlocks returns non-empty JSON-LD script contents from a document.
+func extractJSONLDBlocks(document *goquery.Document) []string {
+	var jsonLDBlocks []string
+
+	document.Find(`script[type="application/ld+json"]`).Each(func(_ int, selection *goquery.Selection) {
+		jsonLDBlock := strings.TrimSpace(selection.Text())
+		if jsonLDBlock == "" {
+			return
+		}
+
+		jsonLDBlocks = append(jsonLDBlocks, jsonLDBlock)
+	})
+
+	return jsonLDBlocks
+}
+
+// extractImageCounts returns basic image counts from a document.
+func extractImageCounts(document *goquery.Document) (int, int, int) {
+	imageCount := 0
+	imagesWithoutAltCount := 0
+	imagesWithoutDimensions := 0
+
+	document.Find("img").Each(func(_ int, selection *goquery.Selection) {
+		imageCount++
+
+		altValue := strings.TrimSpace(selection.AttrOr("alt", ""))
+		if altValue == "" {
+			imagesWithoutAltCount++
+		}
+
+		widthValue := strings.TrimSpace(selection.AttrOr("width", ""))
+		heightValue := strings.TrimSpace(selection.AttrOr("height", ""))
+		if widthValue == "" || heightValue == "" {
+			imagesWithoutDimensions++
+		}
+	})
+
+	return imageCount, imagesWithoutAltCount, imagesWithoutDimensions
+}
+
+// extractVisibleText returns normalized body text with obvious non-content nodes removed.
+func extractVisibleText(document *goquery.Document) string {
+	bodySelection := document.Find("body").First()
+	if bodySelection.Length() == 0 {
+		return ""
+	}
+
+	bodyClone := bodySelection.Clone()
+	bodyClone.Find("script, style, noscript").Remove()
+
+	return normalizeWhitespace(bodyClone.Text())
 }
 
 // extractLinks returns normalized anchor links from a document.
