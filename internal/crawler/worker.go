@@ -3,6 +3,7 @@ package crawler
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ type CrawlResult struct {
 }
 
 // ProcessJob fetches and parses one crawl job.
-func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, job CrawlJob) CrawlResult {
+func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer htmlRenderer, job CrawlJob) CrawlResult {
 	fetchResult := fetcher.Fetch(ctx, job.URL)
 	if fetchResult.FetchError != nil {
 		return CrawlResult{
@@ -38,6 +39,27 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, job Crawl
 	if err != nil {
 		crawlResult.ProcessErr = fmt.Errorf("parse job %q: %w", job.URL, err)
 		return crawlResult
+	}
+
+	renderDecision := NeedsJSRender(fetchResult, &parsedPage)
+	if renderer != nil && renderDecision.NeedsRender {
+		log.Printf("js fallback triggered: url=%q reasons=%q", job.URL, renderDecision.Reasons)
+		renderedFetchResult, renderErr := renderer.RenderHTML(ctx, job.URL)
+		if renderErr != nil {
+			log.Printf("js fallback failed: url=%q error=%v", job.URL, renderErr)
+		} else {
+			renderedParsedPage, parseRenderedErr := parser.ParseHTML(renderedFetchResult.FinalURL, renderedFetchResult.ContentType, renderedFetchResult.Body)
+			if parseRenderedErr != nil {
+				log.Printf("js fallback parse failed: url=%q error=%v", job.URL, parseRenderedErr)
+			} else if shouldPreferRenderedPage(parsedPage, renderedParsedPage) {
+				log.Printf("js fallback applied: url=%q", job.URL)
+				crawlResult.Fetch = renderedFetchResult
+				crawlResult.ParsedPage = &renderedParsedPage
+				return crawlResult
+			} else {
+				log.Printf("js fallback discarded: url=%q", job.URL)
+			}
+		}
 	}
 
 	crawlResult.ParsedPage = &parsedPage

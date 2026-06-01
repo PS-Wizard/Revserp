@@ -135,3 +135,33 @@ func countHTMLTag(body []byte, tagName string) int {
 	lowercaseBody := strings.ToLower(string(body))
 	return strings.Count(lowercaseBody, "<"+strings.ToLower(tagName))
 }
+
+// shouldPreferRenderedPage reports whether a rendered page extracted meaningfully more content than the raw page.
+func shouldPreferRenderedPage(rawPage ParsedPage, renderedPage ParsedPage) bool {
+	return pageExtractionQualityScore(renderedPage) > pageExtractionQualityScore(rawPage)
+}
+
+// pageExtractionQualityScore ranks extracted page usefulness for choosing between raw and rendered HTML.
+func pageExtractionQualityScore(parsedPage ParsedPage) int {
+	score := 0
+	if strings.TrimSpace(parsedPage.Title) != "" {
+		score += 2
+	}
+	if strings.TrimSpace(parsedPage.MetaDescription) != "" {
+		score++
+	}
+	if strings.TrimSpace(parsedPage.H1) != "" {
+		score += 2
+	}
+	if len(parsedPage.VisibleText) >= minimumVisibleTextLengthForPlainHTML {
+		score += 3
+	} else if len(strings.TrimSpace(parsedPage.VisibleText)) > 0 {
+		score++
+	}
+	if len(parsedPage.Links) > minimumLinkCountForPlainHTML {
+		score += 2
+	} else if len(parsedPage.Links) > 0 {
+		score++
+	}
+	return score
+}

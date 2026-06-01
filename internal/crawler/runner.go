@@ -21,6 +21,7 @@ type Runner struct {
 	workerCount int
 	fetcher     *Fetcher
 	parser      *Parser
+	renderer    htmlRenderer
 	store       resultPersister
 }
 
@@ -37,6 +38,12 @@ func NewRunner(config CrawlerConfig, workerCount int, fetcher *Fetcher, parser *
 // WithStore attaches a persistence store to the runner.
 func (runner *Runner) WithStore(store resultPersister) *Runner {
 	runner.store = store
+	return runner
+}
+
+// WithRenderer attaches a JavaScript renderer fallback to the runner.
+func (runner *Runner) WithRenderer(renderer htmlRenderer) *Runner {
+	runner.renderer = renderer
 	return runner
 }
 
@@ -72,7 +79,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	defer cancelRun()
 
 	jobs := make(chan CrawlJob, runner.workerCount)
-	results := StartWorkerPool(runContext, runner.workerCount, runner.fetcher, runner.parser, jobs)
+	results := StartWorkerPool(runContext, runner.workerCount, runner.fetcher, runner.parser, runner.renderer, jobs)
 
 	if shouldPersist {
 		if err := runner.store.MarkCrawlRunning(runContext, crawlID); err != nil {

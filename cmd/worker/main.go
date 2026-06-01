@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/ps-wizard/revserp/internal/config"
+	"github.com/ps-wizard/revserp/internal/crawler"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 	"github.com/ps-wizard/revserp/internal/worker"
 )
@@ -20,8 +21,9 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	crawlWorker := worker.New(dbPool, cfg.WorkerConcurrency, cfg.WorkerPollInterval)
-	log.Printf("worker listening for queued crawls: concurrency=%d poll_interval=%s", cfg.WorkerConcurrency, cfg.WorkerPollInterval)
+	renderer := crawler.NewRenderer(cfg.ObscuraPath, cfg.RendererConcurrency, cfg.ObscuraTimeout, cfg.ObscuraKillTimeout)
+	crawlWorker := worker.New(dbPool, cfg.WorkerConcurrency, cfg.WorkerPollInterval, cfg.CrawlPageWorkerCount, renderer)
+	log.Printf("worker listening for queued crawls: concurrency=%d poll_interval=%s crawl_page_worker_count=%d renderer_concurrency=%d obscura_path=%q obscura_timeout=%s obscura_kill_timeout=%s", cfg.WorkerConcurrency, cfg.WorkerPollInterval, cfg.CrawlPageWorkerCount, cfg.RendererConcurrency, cfg.ObscuraPath, cfg.ObscuraTimeout, cfg.ObscuraKillTimeout)
 	if err := crawlWorker.Run(ctx); err != nil {
 		log.Fatalf("run worker: %v", err)
 	}

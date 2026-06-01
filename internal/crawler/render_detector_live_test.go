@@ -21,8 +21,8 @@ func TestNeedsJSRenderLiveURLs(t *testing.T) {
 		wantNeedsRender bool
 	}{
 		{
-			name:            "google enablejs page",
-			url:             "https://www.google.com/httpservice/retry/enablejs?sei=lTsdao7UA62XseMP4efamAc",
+			name:            "google search results page",
+			url:             "https://www.google.com/search?q=hi",
 			wantNeedsRender: true,
 		},
 		{

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title></title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      window.setTimeout(function () {
+        document.title = "Rendered JS Fixture";
+
+        document.getElementById("app").innerHTML = `
+          <main id="rendered-content">
+            <h1>Rendered with JavaScript</h1>
+            <p>
+              This fixture starts as an empty shell and only becomes useful after
+              client-side JavaScript runs.
+            </p>
+            <nav>
+              <a href="/about">About</a>
+              <a href="/pricing">Pricing</a>
+              <a href="/contact">Contact</a>
+            </nav>
+          </main>
+        `;
+      }, 100);
+    </script>
+  </body>
+</html>

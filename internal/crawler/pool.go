@@ -6,7 +6,7 @@ import (
 )
 
 // StartWorkerPool starts crawl workers that process jobs until the jobs channel closes.
-func StartWorkerPool(ctx context.Context, workerCount int, fetcher *Fetcher, parser *Parser, jobs <-chan CrawlJob) <-chan CrawlResult {
+func StartWorkerPool(ctx context.Context, workerCount int, fetcher *Fetcher, parser *Parser, renderer htmlRenderer, jobs <-chan CrawlJob) <-chan CrawlResult {
 	results := make(chan CrawlResult)
 
 	var workerGroup sync.WaitGroup
@@ -21,7 +21,7 @@ func StartWorkerPool(ctx context.Context, workerCount int, fetcher *Fetcher, par
 						return
 					}
 
-					result := ProcessJob(ctx, fetcher, parser, job)
+					result := ProcessJob(ctx, fetcher, parser, renderer, job)
 
 					select {
 					case <-ctx.Done():

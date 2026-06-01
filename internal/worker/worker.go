@@ -16,27 +16,35 @@ import (
 )
 
 // Worker claims queued crawls from Postgres and runs them.
+// Worker claims queued crawls from Postgres and runs them.
 type Worker struct {
-	pool         *pgxpool.Pool
-	queries      *sqlc.Queries
-	concurrency  int
-	pollInterval time.Duration
+	pool                 *pgxpool.Pool
+	queries              *sqlc.Queries
+	concurrency          int
+	pollInterval         time.Duration
+	crawlPageWorkerCount int
+	renderer             *crawler.Renderer
 }
 
 // New builds a crawl worker.
-func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration) *Worker {
+func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlPageWorkerCount int, renderer *crawler.Renderer) *Worker {
 	if concurrency <= 0 {
 		concurrency = 1
 	}
 	if pollInterval <= 0 {
 		pollInterval = 2 * time.Second
 	}
+	if crawlPageWorkerCount <= 0 {
+		crawlPageWorkerCount = crawler.DefaultWorkerCount
+	}
 
 	return &Worker{
-		pool:         pool,
-		queries:      sqlc.New(pool),
-		concurrency:  concurrency,
-		pollInterval: pollInterval,
+		pool:                 pool,
+		queries:              sqlc.New(pool),
+		concurrency:          concurrency,
+		pollInterval:         pollInterval,
+		crawlPageWorkerCount: crawlPageWorkerCount,
+		renderer:             renderer,
 	}
 }
 
@@ -108,7 +116,7 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent)
 	parser := crawler.NewParser()
 	store := crawler.NewStore(worker.pool)
-	runner := crawler.NewRunner(crawlConfig, crawler.DefaultWorkerCount, fetcher, parser).WithStore(store)
+	runner := crawler.NewRunner(crawlConfig, worker.crawlPageWorkerCount, fetcher, parser).WithRenderer(worker.renderer).WithStore(store)
 
 	if _, err := runner.RunAndPersist(ctx, claimedCrawl.ID, claimedCrawl.BaseUrl); err != nil {
 		return fmt.Errorf("run crawl: %w", err)

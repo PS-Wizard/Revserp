@@ -30,7 +30,7 @@ func TestProcessJobParsesHTML(t *testing.T) {
 
 	fetcher := NewFetcher(5*time.Second, "")
 	parser := NewParser()
-	result := ProcessJob(context.Background(), fetcher, parser, CrawlJob{URL: server.URL, Depth: 0})
+	result := ProcessJob(context.Background(), fetcher, parser, nil, CrawlJob{URL: server.URL, Depth: 0})
 
 	if result.ProcessErr != nil {
 		t.Fatalf("process job: %v", result.ProcessErr)
@@ -58,7 +58,7 @@ func TestProcessJobSkipsNonHTML(t *testing.T) {
 
 	fetcher := NewFetcher(5*time.Second, "")
 	parser := NewParser()
-	result := ProcessJob(context.Background(), fetcher, parser, CrawlJob{URL: server.URL, Depth: 0})
+	result := ProcessJob(context.Background(), fetcher, parser, nil, CrawlJob{URL: server.URL, Depth: 0})
 
 	if result.ProcessErr != nil {
 		t.Fatalf("process job: %v", result.ProcessErr)

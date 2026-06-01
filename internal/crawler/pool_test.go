@@ -29,7 +29,7 @@ func TestStartWorkerPoolProcessesJobs(t *testing.T) {
 
 	fetcher := NewFetcher(5*time.Second, "")
 	parser := NewParser()
-	results := StartWorkerPool(context.Background(), 2, fetcher, parser, jobs)
+	results := StartWorkerPool(context.Background(), 2, fetcher, parser, nil, jobs)
 
 	resultCount := 0
 	seenTitles := map[string]bool{}

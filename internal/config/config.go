@@ -10,15 +10,20 @@ import (
 
 // Config holds runtime configuration.
 type Config struct {
-	AppEnv              string
-	HTTPAddr            string
-	DatabaseURL         string
-	AuthProvider        string
-	SupabaseJWTIssuer   string
-	SupabaseJWKSURL     string
-	SupabaseJWTAudience string
-	WorkerConcurrency   int
-	WorkerPollInterval  time.Duration
+	AppEnv               string
+	HTTPAddr             string
+	DatabaseURL          string
+	AuthProvider         string
+	SupabaseJWTIssuer    string
+	SupabaseJWKSURL      string
+	SupabaseJWTAudience  string
+	WorkerConcurrency    int
+	WorkerPollInterval   time.Duration
+	CrawlPageWorkerCount int
+	ObscuraPath          string
+	RendererConcurrency  int
+	ObscuraTimeout       time.Duration
+	ObscuraKillTimeout   time.Duration
 }
 
 // Load reads configuration from the environment.
@@ -26,15 +31,20 @@ func Load() Config {
 	_ = godotenv.Load()
 
 	return Config{
-		AppEnv:              getEnv("APP_ENV", "development"),
-		HTTPAddr:            getEnv("HTTP_ADDR", ":8080"),
-		DatabaseURL:         getEnv("DATABASE_URL", ""),
-		AuthProvider:        getEnv("AUTH_PROVIDER", "supabase"),
-		SupabaseJWTIssuer:   getEnv("SUPABASE_JWT_ISSUER", ""),
-		SupabaseJWKSURL:     getEnv("SUPABASE_JWKS_URL", ""),
-		SupabaseJWTAudience: getEnv("SUPABASE_JWT_AUDIENCE", "authenticated"),
-		WorkerConcurrency:   getEnvInt("WORKER_CONCURRENCY", 2),
-		WorkerPollInterval:  getEnvDuration("WORKER_POLL_INTERVAL", 2*time.Second),
+		AppEnv:               getEnv("APP_ENV", "development"),
+		HTTPAddr:             getEnv("HTTP_ADDR", ":8080"),
+		DatabaseURL:          getEnv("DATABASE_URL", ""),
+		AuthProvider:         getEnv("AUTH_PROVIDER", "supabase"),
+		SupabaseJWTIssuer:    getEnv("SUPABASE_JWT_ISSUER", ""),
+		SupabaseJWKSURL:      getEnv("SUPABASE_JWKS_URL", ""),
+		SupabaseJWTAudience:  getEnv("SUPABASE_JWT_AUDIENCE", "authenticated"),
+		WorkerConcurrency:    getEnvInt("WORKER_CONCURRENCY", 2),
+		WorkerPollInterval:   getEnvDuration("WORKER_POLL_INTERVAL", 2*time.Second),
+		CrawlPageWorkerCount: getEnvInt("CRAWL_PAGE_WORKER_COUNT", 4),
+		ObscuraPath:          getEnv("OBSCURA_PATH", ""),
+		RendererConcurrency:  getEnvInt("RENDERER_CONCURRENCY", 2),
+		ObscuraTimeout:       time.Duration(getEnvInt("OBSCURA_TIMEOUT_SECONDS", 5)) * time.Second,
+		ObscuraKillTimeout:   time.Duration(getEnvInt("OBSCURA_KILL_TIMEOUT_SECONDS", 7)) * time.Second,
 	}
 }
 
