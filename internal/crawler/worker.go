@@ -7,14 +7,6 @@ import (
 	"strings"
 )
 
-// CrawlResult holds the processed outcome of one crawl job.
-type CrawlResult struct {
-	Job        CrawlJob
-	Fetch      FetchResult
-	ParsedPage *ParsedPage
-	ProcessErr error
-}
-
 // ProcessJob fetches and parses one crawl job.
 func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer htmlRenderer, job CrawlJob) CrawlResult {
 	fetchResult := fetcher.Fetch(ctx, job.URL)
@@ -55,6 +47,7 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 				log.Printf("js fallback applied: url=%q", job.URL)
 				crawlResult.Fetch = renderedFetchResult
 				crawlResult.ParsedPage = &renderedParsedPage
+				crawlResult.JavascriptRendered = true
 				return crawlResult
 			} else {
 				log.Printf("js fallback discarded: url=%q", job.URL)

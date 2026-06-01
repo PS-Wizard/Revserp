@@ -144,6 +144,7 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		H2Count:                 nullableInt4(len(h2Headings)),
 		H3Count:                 nullableInt4(len(h3Headings)),
 		WordCount:               nullableInt4(countWords(extractPageVisibleText(parsedPage))),
+		VisibleText:             nullableText(extractPageVisibleText(parsedPage)),
 		Author:                  pgtype.Text{},
 		CanonicalUrl:            nullableText(extractCanonicalURL(parsedPage)),
 		Lang:                    nullableText(extractPageLang(parsedPage)),
@@ -155,10 +156,9 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		ExternalLinks:           nullableInt4(externalLinkCount),
 		InternalLinks:           nullableInt4(internalLinkCount),
 		ResponseTimeMs:          nullableInt4(int(result.Fetch.ResponseTime.Milliseconds())),
-		// TODO: Set this from the renderer path once Obscura fallback is wired in.
-		JavascriptRendered: nullableBool(false),
-		H2Headings:         mustMarshalJSON(h2Headings),
-		H3Headings:         mustMarshalJSON(h3Headings),
+		JavascriptRendered:      nullableBool(result.JavascriptRendered),
+		H2Headings:              mustMarshalJSON(h2Headings),
+		H3Headings:              mustMarshalJSON(h3Headings),
 		// TODO: Extract a real heading outline from the parsed document.
 		HeadingOutline: mustMarshalJSON(nil),
 		OgTags:         mustMarshalJSON(extractPageOGTags(parsedPage)),

@@ -1,10 +1,14 @@
 package crawler
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 const minimumVisibleTextLengthForPlainHTML = 200
 const minimumLinkCountForPlainHTML = 3
 const minimumScriptCountForShellHTML = 5
+const minimumInlineScriptContentLength = 1000
 const minimumBodySizeForShellHTML = 10_000
 const jsRenderScoreThreshold = 5
 
@@ -41,8 +45,9 @@ var javaScriptRequiredMessages = []string{
 	"javascript is disabled",
 	"you need to enable javascript",
 	"please enable javascript",
-	"loading...",
 }
+
+var inlineScriptPattern = regexp.MustCompile(`(?is)<script[^>]*>(.*?)</script>`)
 
 // JSRenderDecision holds the render fallback verdict and the reasons behind it.
 type JSRenderDecision struct {
@@ -60,6 +65,7 @@ func NeedsJSRender(fetchResult FetchResult, parsedPage *ParsedPage) JSRenderDeci
 	decision := JSRenderDecision{}
 	score := 0
 	scriptCount := countHTMLTag(fetchResult.Body, "script")
+	inlineScriptContentLength := countInlineScriptContentLength(fetchResult.Body)
 
 	visibleTextLength := 0
 	linkCount := 0
@@ -85,8 +91,8 @@ func NeedsJSRender(fetchResult FetchResult, parsedPage *ParsedPage) JSRenderDeci
 		decision.Reasons = append(decision.Reasons, "title is empty")
 	}
 
-	if scriptCount >= minimumScriptCountForShellHTML {
-		score += 2
+	if scriptCount >= minimumScriptCountForShellHTML && visibleTextLength < minimumVisibleTextLengthForPlainHTML && linkCount <= minimumLinkCountForPlainHTML {
+		score++
 		decision.Reasons = append(decision.Reasons, "html contains many script tags")
 	}
 
@@ -98,6 +104,11 @@ func NeedsJSRender(fetchResult FetchResult, parsedPage *ParsedPage) JSRenderDeci
 	if containsAnySubstring(bodyText, javaScriptFrameworkMarkers) {
 		score++
 		decision.Reasons = append(decision.Reasons, "html contains javascript framework markers")
+	}
+
+	if inlineScriptContentLength >= minimumInlineScriptContentLength && visibleTextLength < minimumVisibleTextLengthForPlainHTML {
+		score += 3
+		decision.Reasons = append(decision.Reasons, "html contains substantial inline script data")
 	}
 
 	if containsAnySubstring(bodyText, javaScriptRequiredMessages) || strings.Contains(strings.ToLower(fetchResult.FinalURL), "enablejs") {
@@ -134,6 +145,19 @@ func countHTMLTag(body []byte, tagName string) int {
 
 	lowercaseBody := strings.ToLower(string(body))
 	return strings.Count(lowercaseBody, "<"+strings.ToLower(tagName))
+}
+
+// countInlineScriptContentLength sums the text content inside inline script tags.
+func countInlineScriptContentLength(body []byte) int {
+	matches := inlineScriptPattern.FindAllSubmatch(body, -1)
+	inlineScriptContentLength := 0
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		inlineScriptContentLength += len(strings.TrimSpace(string(match[1])))
+	}
+	return inlineScriptContentLength
 }
 
 // shouldPreferRenderedPage reports whether a rendered page extracted meaningfully more content than the raw page.

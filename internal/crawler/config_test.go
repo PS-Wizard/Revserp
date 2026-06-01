@@ -21,16 +21,13 @@ func TestNormalizeConfigSnapshotAppliesDefaults(t *testing.T) {
 	if configSnapshot.FetchTimeoutSeconds != 10 {
 		t.Fatalf("got fetch timeout seconds %d", configSnapshot.FetchTimeoutSeconds)
 	}
-	if configSnapshot.EnableJavascript {
-		t.Fatalf("expected enable_javascript to default to false")
-	}
 	if len(normalizedConfigSnapshot) == 0 {
 		t.Fatalf("expected normalized config snapshot bytes")
 	}
 }
 
 func TestNormalizeConfigSnapshotUsesProvidedValues(t *testing.T) {
-	configSnapshot, _, err := NormalizeConfigSnapshot([]byte(`{"max_depth":1,"max_pages":25,"fetch_timeout_seconds":7,"enable_javascript":true}`))
+	configSnapshot, _, err := NormalizeConfigSnapshot([]byte(`{"max_depth":1,"max_pages":25,"fetch_timeout_seconds":7}`))
 	if err != nil {
 		t.Fatalf("normalize config snapshot: %v", err)
 	}
@@ -43,9 +40,6 @@ func TestNormalizeConfigSnapshotUsesProvidedValues(t *testing.T) {
 	}
 	if configSnapshot.FetchTimeoutSeconds != 7 {
 		t.Fatalf("got fetch timeout seconds %d", configSnapshot.FetchTimeoutSeconds)
-	}
-	if !configSnapshot.EnableJavascript {
-		t.Fatalf("expected enable_javascript to be true")
 	}
 }
 
@@ -88,5 +82,8 @@ func TestNormalizeConfigSnapshotMarshalsExpectedJSON(t *testing.T) {
 	}
 	if decoded["fetch_timeout_seconds"].(float64) != 10 {
 		t.Fatalf("got fetch_timeout_seconds %v", decoded["fetch_timeout_seconds"])
+	}
+	if _, exists := decoded["enable_javascript"]; exists {
+		t.Fatalf("did not expect enable_javascript in normalized snapshot")
 	}
 }

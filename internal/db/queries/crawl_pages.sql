@@ -14,6 +14,7 @@ INSERT INTO crawl_pages (
     h2_count,
     h3_count,
     word_count,
+    visible_text,
     author,
     canonical_url,
     lang,
@@ -62,9 +63,10 @@ INSERT INTO crawl_pages (
     $28,
     $29,
     $30,
-    $31
+    $31,
+    $32
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at;
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at;
 
 -- name: GetCrawlPageByIDForUser :one
 SELECT
@@ -83,6 +85,7 @@ SELECT
     cp.h2_count,
     cp.h3_count,
     cp.word_count,
+    cp.visible_text,
     cp.author,
     cp.canonical_url,
     cp.lang,
@@ -126,6 +129,7 @@ SELECT
     cp.h2_count,
     cp.h3_count,
     cp.word_count,
+    cp.visible_text,
     cp.author,
     cp.canonical_url,
     cp.lang,

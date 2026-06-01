@@ -27,6 +27,7 @@ INSERT INTO crawl_pages (
     h2_count,
     h3_count,
     word_count,
+    visible_text,
     author,
     canonical_url,
     lang,
@@ -75,9 +76,10 @@ INSERT INTO crawl_pages (
     $28,
     $29,
     $30,
-    $31
+    $31,
+    $32
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at
 `
 
 type CreateCrawlPageParams struct {
@@ -95,6 +97,7 @@ type CreateCrawlPageParams struct {
 	H2Count                 pgtype.Int4
 	H3Count                 pgtype.Int4
 	WordCount               pgtype.Int4
+	VisibleText             pgtype.Text
 	Author                  pgtype.Text
 	CanonicalUrl            pgtype.Text
 	Lang                    pgtype.Text
@@ -114,7 +117,44 @@ type CreateCrawlPageParams struct {
 	JsonLd                  []byte
 }
 
-func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams) (CrawlPage, error) {
+type CreateCrawlPageRow struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	VisibleText             pgtype.Text
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	H2Headings              []byte
+	H3Headings              []byte
+	HeadingOutline          []byte
+	OgTags                  []byte
+	JsonLd                  []byte
+	CreatedAt               pgtype.Timestamptz
+}
+
+func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams) (CreateCrawlPageRow, error) {
 	row := q.db.QueryRow(ctx, createCrawlPage,
 		arg.CrawlID,
 		arg.Url,
@@ -130,6 +170,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.H2Count,
 		arg.H3Count,
 		arg.WordCount,
+		arg.VisibleText,
 		arg.Author,
 		arg.CanonicalUrl,
 		arg.Lang,
@@ -148,7 +189,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.OgTags,
 		arg.JsonLd,
 	)
-	var i CrawlPage
+	var i CreateCrawlPageRow
 	err := row.Scan(
 		&i.ID,
 		&i.CrawlID,
@@ -165,6 +206,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		&i.H2Count,
 		&i.H3Count,
 		&i.WordCount,
+		&i.VisibleText,
 		&i.Author,
 		&i.CanonicalUrl,
 		&i.Lang,
@@ -204,6 +246,7 @@ SELECT
     cp.h2_count,
     cp.h3_count,
     cp.word_count,
+    cp.visible_text,
     cp.author,
     cp.canonical_url,
     cp.lang,
@@ -236,9 +279,46 @@ type GetCrawlPageByIDForUserParams struct {
 	UserID pgtype.UUID
 }
 
-func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageByIDForUserParams) (CrawlPage, error) {
+type GetCrawlPageByIDForUserRow struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	VisibleText             pgtype.Text
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	H2Headings              []byte
+	H3Headings              []byte
+	HeadingOutline          []byte
+	OgTags                  []byte
+	JsonLd                  []byte
+	CreatedAt               pgtype.Timestamptz
+}
+
+func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageByIDForUserParams) (GetCrawlPageByIDForUserRow, error) {
 	row := q.db.QueryRow(ctx, getCrawlPageByIDForUser, arg.ID, arg.UserID)
-	var i CrawlPage
+	var i GetCrawlPageByIDForUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.CrawlID,
@@ -255,6 +335,7 @@ func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageB
 		&i.H2Count,
 		&i.H3Count,
 		&i.WordCount,
+		&i.VisibleText,
 		&i.Author,
 		&i.CanonicalUrl,
 		&i.Lang,
@@ -294,6 +375,7 @@ SELECT
     cp.h2_count,
     cp.h3_count,
     cp.word_count,
+    cp.visible_text,
     cp.author,
     cp.canonical_url,
     cp.lang,
@@ -326,15 +408,52 @@ type ListCrawlPagesForCrawlByUserParams struct {
 	UserID  pgtype.UUID
 }
 
-func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCrawlPagesForCrawlByUserParams) ([]CrawlPage, error) {
+type ListCrawlPagesForCrawlByUserRow struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	VisibleText             pgtype.Text
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	H2Headings              []byte
+	H3Headings              []byte
+	HeadingOutline          []byte
+	OgTags                  []byte
+	JsonLd                  []byte
+	CreatedAt               pgtype.Timestamptz
+}
+
+func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCrawlPagesForCrawlByUserParams) ([]ListCrawlPagesForCrawlByUserRow, error) {
 	rows, err := q.db.Query(ctx, listCrawlPagesForCrawlByUser, arg.CrawlID, arg.UserID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CrawlPage
+	var items []ListCrawlPagesForCrawlByUserRow
 	for rows.Next() {
-		var i CrawlPage
+		var i ListCrawlPagesForCrawlByUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CrawlID,
@@ -351,6 +470,7 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 			&i.H2Count,
 			&i.H3Count,
 			&i.WordCount,
+			&i.VisibleText,
 			&i.Author,
 			&i.CanonicalUrl,
 			&i.Lang,

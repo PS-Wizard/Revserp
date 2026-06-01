@@ -29,6 +29,7 @@ type createCrawlPageRequest struct {
 	H2Count                 *int32          `json:"h2_count"`
 	H3Count                 *int32          `json:"h3_count"`
 	WordCount               *int32          `json:"word_count"`
+	VisibleText             string          `json:"visible_text"`
 	Author                  string          `json:"author"`
 	CanonicalURL            string          `json:"canonical_url"`
 	Lang                    string          `json:"lang"`
@@ -64,6 +65,7 @@ type crawlPageResponse struct {
 	H2Count                 *int32          `json:"h2_count,omitempty"`
 	H3Count                 *int32          `json:"h3_count,omitempty"`
 	WordCount               *int32          `json:"word_count,omitempty"`
+	VisibleText             string          `json:"visible_text,omitempty"`
 	Author                  string          `json:"author,omitempty"`
 	CanonicalURL            string          `json:"canonical_url,omitempty"`
 	Lang                    string          `json:"lang,omitempty"`
@@ -143,6 +145,7 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 		H2Count:                 nullableInt4(requestBody.H2Count),
 		H3Count:                 nullableInt4(requestBody.H3Count),
 		WordCount:               nullableInt4(requestBody.WordCount),
+		VisibleText:             nullableText(requestBody.VisibleText),
 		Author:                  nullableText(requestBody.Author),
 		CanonicalUrl:            nullableText(requestBody.CanonicalURL),
 		Lang:                    nullableText(requestBody.Lang),
@@ -177,7 +180,7 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, newCrawlPageResponse(page))
+	writeJSON(w, http.StatusCreated, newCrawlPageResponseFromCreateRow(page))
 }
 
 // handleListCrawlPages lists page rows for a crawl the user can access.
@@ -225,7 +228,7 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 
 	responses := make([]crawlPageResponse, 0, len(pages))
 	for _, page := range pages {
-		responses = append(responses, newCrawlPageResponse(page))
+		responses = append(responses, newCrawlPageResponseFromListRow(page))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"pages": responses})
@@ -269,15 +272,39 @@ func (a *App) handleGetCrawlPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newCrawlPageResponse(page))
+	writeJSON(w, http.StatusOK, newCrawlPageResponseFromGetRow(page))
 }
 
-// newCrawlPageResponse converts a crawl page row into an API response.
-func newCrawlPageResponse(page sqlc.CrawlPage) crawlPageResponse {
+// newCrawlPageResponseFromCreateRow converts a created crawl page row into an API response.
+func newCrawlPageResponseFromCreateRow(page sqlc.CreateCrawlPageRow) crawlPageResponse {
 	return buildCrawlPageResponse(
 		page.ID, page.CrawlID, page.Url, page.StatusCode, page.ContentType, page.SizeBytes, page.IsInternal,
 		page.Depth, page.Title, page.MetaDescription, page.H1, page.H1Count, page.H2Count, page.H3Count,
-		page.WordCount, page.Author, page.CanonicalUrl, page.Lang, page.Viewport, page.Robots, page.ImageCount,
+		page.WordCount, page.VisibleText, page.Author, page.CanonicalUrl, page.Lang, page.Viewport, page.Robots, page.ImageCount,
+		page.ImagesWithoutAltCount, page.ImagesWithoutDimensions, page.ExternalLinks, page.InternalLinks,
+		page.ResponseTimeMs, page.JavascriptRendered, page.H2Headings, page.H3Headings, page.HeadingOutline,
+		page.OgTags, page.JsonLd, page.CreatedAt,
+	)
+}
+
+// newCrawlPageResponseFromListRow converts a listed crawl page row into an API response.
+func newCrawlPageResponseFromListRow(page sqlc.ListCrawlPagesForCrawlByUserRow) crawlPageResponse {
+	return buildCrawlPageResponse(
+		page.ID, page.CrawlID, page.Url, page.StatusCode, page.ContentType, page.SizeBytes, page.IsInternal,
+		page.Depth, page.Title, page.MetaDescription, page.H1, page.H1Count, page.H2Count, page.H3Count,
+		page.WordCount, page.VisibleText, page.Author, page.CanonicalUrl, page.Lang, page.Viewport, page.Robots, page.ImageCount,
+		page.ImagesWithoutAltCount, page.ImagesWithoutDimensions, page.ExternalLinks, page.InternalLinks,
+		page.ResponseTimeMs, page.JavascriptRendered, page.H2Headings, page.H3Headings, page.HeadingOutline,
+		page.OgTags, page.JsonLd, page.CreatedAt,
+	)
+}
+
+// newCrawlPageResponseFromGetRow converts a fetched crawl page row into an API response.
+func newCrawlPageResponseFromGetRow(page sqlc.GetCrawlPageByIDForUserRow) crawlPageResponse {
+	return buildCrawlPageResponse(
+		page.ID, page.CrawlID, page.Url, page.StatusCode, page.ContentType, page.SizeBytes, page.IsInternal,
+		page.Depth, page.Title, page.MetaDescription, page.H1, page.H1Count, page.H2Count, page.H3Count,
+		page.WordCount, page.VisibleText, page.Author, page.CanonicalUrl, page.Lang, page.Viewport, page.Robots, page.ImageCount,
 		page.ImagesWithoutAltCount, page.ImagesWithoutDimensions, page.ExternalLinks, page.InternalLinks,
 		page.ResponseTimeMs, page.JavascriptRendered, page.H2Headings, page.H3Headings, page.HeadingOutline,
 		page.OgTags, page.JsonLd, page.CreatedAt,
@@ -301,6 +328,7 @@ func buildCrawlPageResponse(
 	h2Count pgtype.Int4,
 	h3Count pgtype.Int4,
 	wordCount pgtype.Int4,
+	visibleText pgtype.Text,
 	author pgtype.Text,
 	canonicalURL pgtype.Text,
 	lang pgtype.Text,
@@ -358,6 +386,7 @@ func buildCrawlPageResponse(
 	response.H2Count = setInt4Pointer(h2Count)
 	response.H3Count = setInt4Pointer(h3Count)
 	response.WordCount = setInt4Pointer(wordCount)
+	response.VisibleText = setText(visibleText)
 	response.Author = setText(author)
 	response.CanonicalURL = setText(canonicalURL)
 	response.Lang = setText(lang)

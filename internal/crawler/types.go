@@ -19,11 +19,20 @@ type CrawlJob struct {
 
 // FetchResult holds the outcome of one HTTP fetch.
 type FetchResult struct {
-	FinalURL       string
-	StatusCode     int
-	ContentType    string
-	Body           []byte
-	ResponseTime   time.Duration
-	ResponseSize   int
-	FetchError     error
+	FinalURL     string
+	StatusCode   int
+	ContentType  string
+	Body         []byte
+	ResponseTime time.Duration
+	ResponseSize int
+	FetchError   error
+}
+
+// CrawlResult holds the processed outcome of one crawl job.
+type CrawlResult struct {
+	Job                CrawlJob
+	Fetch              FetchResult
+	ParsedPage         *ParsedPage
+	JavascriptRendered bool
+	ProcessErr         error
 }

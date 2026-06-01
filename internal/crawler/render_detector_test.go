@@ -14,6 +14,23 @@ func TestNeedsJSRender(t *testing.T) {
 		wantReasons     []string
 	}{
 		{
+			name: "inline script data with sparse visible text triggers render",
+			fetchResult: FetchResult{
+				ContentType: "text/html; charset=utf-8",
+				Body:        []byte(`<!DOCTYPE html><html><head><title>Quotes to Scrape</title></head><body><h1>Quotes to Scrape</h1><a href="/login">Login</a><script>var data = [` + strings.Repeat(`{"text":"A quote body with useful data"},`, 80) + `];</script></body></html>`),
+			},
+			parsedPage: &ParsedPage{
+				Title:       "Quotes to Scrape",
+				H1:          "Quotes to Scrape",
+				VisibleText: "Quotes to Scrape Login",
+				Links:       []ParsedLink{{TargetURL: "https://example.com/login"}},
+			},
+			wantNeedsRender: true,
+			wantReasons: []string{
+				"html contains substantial inline script data",
+			},
+		},
+		{
 			name: "enablejs url triggers render even with rich html",
 			fetchResult: FetchResult{
 				FinalURL:    "https://www.google.com/httpservice/retry/enablejs?sei=test",

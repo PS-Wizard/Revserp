@@ -20,14 +20,12 @@ type CrawlConfigSnapshot struct {
 	MaxDepth            int  `json:"max_depth"`
 	MaxPages            *int `json:"max_pages,omitempty"`
 	FetchTimeoutSeconds int  `json:"fetch_timeout_seconds"`
-	EnableJavascript    bool `json:"enable_javascript"`
 }
 
 type crawlConfigSnapshotInput struct {
-	MaxDepth            *int  `json:"max_depth"`
-	MaxPages            *int  `json:"max_pages"`
-	FetchTimeoutSeconds *int  `json:"fetch_timeout_seconds"`
-	EnableJavascript    *bool `json:"enable_javascript"`
+	MaxDepth            *int `json:"max_depth"`
+	MaxPages            *int `json:"max_pages"`
+	FetchTimeoutSeconds *int `json:"fetch_timeout_seconds"`
 }
 
 // NormalizeConfigSnapshot resolves defaults and validates one crawl config snapshot.
@@ -35,7 +33,6 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 	resolvedSnapshot := CrawlConfigSnapshot{
 		MaxDepth:            defaultMaxDepth,
 		FetchTimeoutSeconds: defaultFetchTimeoutSeconds,
-		EnableJavascript:    false,
 	}
 
 	if len(strings.TrimSpace(string(rawConfigSnapshot))) > 0 {
@@ -63,10 +60,6 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 				return CrawlConfigSnapshot{}, nil, errors.New("fetch_timeout_seconds must be greater than zero")
 			}
 			resolvedSnapshot.FetchTimeoutSeconds = *input.FetchTimeoutSeconds
-		}
-
-		if input.EnableJavascript != nil {
-			resolvedSnapshot.EnableJavascript = *input.EnableJavascript
 		}
 	}
 

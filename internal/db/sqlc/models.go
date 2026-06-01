@@ -87,6 +87,7 @@ type CrawlPage struct {
 	OgTags                  []byte
 	JsonLd                  []byte
 	CreatedAt               pgtype.Timestamptz
+	VisibleText             pgtype.Text
 }
 
 type Organization struct {
