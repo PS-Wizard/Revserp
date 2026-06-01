@@ -12,11 +12,11 @@ func TestNormalizeURL(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		candidate   string
-		baseURL     *url.URL
-		wantURL     string
-		wantError   bool
+		name      string
+		candidate string
+		baseURL   *url.URL
+		wantURL   string
+		wantError bool
 	}{
 		{
 			name:      "absolute url lowercases host and strips fragment",
@@ -74,6 +74,11 @@ func TestIsInternalURL(t *testing.T) {
 		t.Fatalf("parse internal url: %v", err)
 	}
 
+	wwwInternalURL, err := url.Parse("https://www.revketer.ai/about")
+	if err != nil {
+		t.Fatalf("parse www internal url: %v", err)
+	}
+
 	externalURL, err := url.Parse("https://vercel.com/")
 	if err != nil {
 		t.Fatalf("parse external url: %v", err)
@@ -83,7 +88,25 @@ func TestIsInternalURL(t *testing.T) {
 		t.Fatalf("expected internal url to be internal")
 	}
 
+	if !IsInternalURL(rootURL, wwwInternalURL) {
+		t.Fatalf("expected www internal url to be internal")
+	}
+
 	if IsInternalURL(rootURL, externalURL) {
 		t.Fatalf("expected external url to be external")
+	}
+}
+
+func TestIsAllowedHost(t *testing.T) {
+	if !IsAllowedHost("pmsquare.com", "www.pmsquare.com") {
+		t.Fatalf("expected www host to match allowed host scope")
+	}
+
+	if !IsAllowedHost("www.pmsquare.com", "pmsquare.com") {
+		t.Fatalf("expected apex host to match allowed host scope")
+	}
+
+	if IsAllowedHost("pmsquare.com", "blogs.pmsquare.com") {
+		t.Fatalf("expected subdomain host to remain outside allowed host scope")
 	}
 }

@@ -34,13 +34,14 @@ SET status = 'running',
 FROM candidate, projects AS p
 WHERE c.id = candidate.id
   AND p.id = c.project_id
-RETURNING c.id, c.project_id, c.requested_by_user_id, p.base_url
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url
 `
 
 type ClaimNextQueuedCrawlRow struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID
 	RequestedByUserID pgtype.UUID
+	ConfigSnapshot    []byte
 	BaseUrl           string
 }
 
@@ -51,6 +52,7 @@ func (q *Queries) ClaimNextQueuedCrawl(ctx context.Context) (ClaimNextQueuedCraw
 		&i.ID,
 		&i.ProjectID,
 		&i.RequestedByUserID,
+		&i.ConfigSnapshot,
 		&i.BaseUrl,
 	)
 	return i, err

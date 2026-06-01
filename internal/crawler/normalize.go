@@ -46,11 +46,31 @@ func NormalizeURL(candidateURL string, baseURL *url.URL) (*url.URL, error) {
 	return resolvedURL, nil
 }
 
-// IsInternalURL reports whether a candidate URL belongs to the root host.
+// IsInternalURL reports whether a candidate URL belongs to the root host scope.
 func IsInternalURL(rootURL *url.URL, candidateURL *url.URL) bool {
 	if rootURL == nil || candidateURL == nil {
 		return false
 	}
 
-	return strings.EqualFold(rootURL.Host, candidateURL.Host)
+	return normalizeHostForScope(rootURL.Hostname()) == normalizeHostForScope(candidateURL.Hostname())
+}
+
+// IsAllowedHost reports whether a candidate host belongs to the configured crawl host scope.
+func IsAllowedHost(allowedHost string, candidateHost string) bool {
+	if allowedHost == "" || candidateHost == "" {
+		return false
+	}
+
+	return normalizeHostForScope(allowedHost) == normalizeHostForScope(candidateHost)
+}
+
+// normalizeHostForScope collapses apex and www variants into the same crawl scope host.
+func normalizeHostForScope(host string) string {
+	normalizedHost := strings.ToLower(strings.TrimSpace(host))
+	if normalizedHost == "" {
+		return ""
+	}
+
+	parsedHostURL := &url.URL{Host: normalizedHost}
+	return strings.TrimPrefix(parsedHostURL.Hostname(), "www.")
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -51,6 +52,12 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	normalizedConfigSnapshot, err := normalizeCreateCrawlConfigSnapshot(requestBody.ConfigSnapshot)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	tx, err := a.DB.Begin(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -79,7 +86,7 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 		ProjectID:         projectID,
 		RequestedByUserID: user.ID,
 		Status:            "queued",
-		ConfigSnapshot:    requestBody.ConfigSnapshot,
+		ConfigSnapshot:    normalizedConfigSnapshot,
 		StartedAt:         pgtype.Timestamptz{},
 	})
 	if err != nil {
@@ -311,6 +318,16 @@ func buildCrawlResponse(
 	}
 
 	return response
+}
+
+// normalizeCreateCrawlConfigSnapshot validates and resolves crawl config defaults before storing them.
+func normalizeCreateCrawlConfigSnapshot(rawConfigSnapshot json.RawMessage) ([]byte, error) {
+	_, normalizedConfigSnapshot, err := crawler.NormalizeConfigSnapshot(rawConfigSnapshot)
+	if err != nil {
+		return nil, err
+	}
+
+	return normalizedConfigSnapshot, nil
 }
 
 // formatTimestamp formats a database timestamp for API responses.

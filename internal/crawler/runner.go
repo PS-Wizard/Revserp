@@ -59,8 +59,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 		return nil, fmt.Errorf("worker count must be greater than zero")
 	}
 
-	if runner.config.MaxPages <= 0 {
-		return nil, fmt.Errorf("max pages must be greater than zero")
+	if runner.config.MaxPages < 0 {
+		return nil, fmt.Errorf("max pages must be greater than or equal to zero")
 	}
 
 	normalizedRootURL, err := NormalizeURL(rootURL, nil)
@@ -145,7 +145,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 						continue
 					}
 
-					if scheduledPages >= runner.config.MaxPages {
+					if runner.config.MaxPages > 0 && scheduledPages >= runner.config.MaxPages {
 						break
 					}
 
@@ -154,7 +154,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 						continue
 					}
 
-					if runner.config.AllowedHost != "" && normalizedLinkURL.Host != runner.config.AllowedHost {
+					if runner.config.AllowedHost != "" && !IsAllowedHost(runner.config.AllowedHost, normalizedLinkURL.Hostname()) {
 						continue
 					}
 

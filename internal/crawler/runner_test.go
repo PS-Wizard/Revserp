@@ -101,6 +101,36 @@ func TestRunnerRunRespectsMaxPages(t *testing.T) {
 	}
 }
 
+func TestRunnerRunAllowsUnlimitedPagesWhenMaxPagesIsZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch request.URL.Path {
+		case "/":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body><a href="/one">One</a><a href="/two">Two</a><a href="/three">Three</a></body></html>`)
+		default:
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>child</title></head><body></body></html>`)
+		}
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "")
+	parser := NewParser()
+	runner := NewRunner(CrawlerConfig{
+		AllowedHost: mustParseURL(t, server.URL).Host,
+		MaxDepth:    1,
+		MaxPages:    0,
+	}, 2, fetcher, parser)
+
+	results, err := runner.Run(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("run crawler: %v", err)
+	}
+
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4", len(results))
+	}
+}
+
 func TestRunnerRunSkipsDuplicateFinalURLs(t *testing.T) {
 	redirectTargetPath := "/final"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

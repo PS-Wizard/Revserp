@@ -96,7 +96,7 @@ func (worker *Worker) runLoop(ctx context.Context, workerID int) error {
 
 // runCrawl executes one claimed crawl.
 func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQueuedCrawlRow) error {
-	crawlConfig, err := crawler.DefaultConfigFromBaseURL(claimedCrawl.BaseUrl)
+	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(claimedCrawl.BaseUrl, claimedCrawl.ConfigSnapshot)
 	if err != nil {
 		store := crawler.NewStore(worker.pool)
 		if failErr := store.MarkCrawlFailed(ctx, claimedCrawl.ID, 0, 0, 0); failErr != nil {

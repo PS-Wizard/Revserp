@@ -109,4 +109,4 @@ SET status = 'running',
 FROM candidate, projects AS p
 WHERE c.id = candidate.id
   AND p.id = c.project_id
-RETURNING c.id, c.project_id, c.requested_by_user_id, p.base_url;
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url;
