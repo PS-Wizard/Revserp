@@ -4,24 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
 type createCrawlRequest struct {
 	ConfigSnapshot json.RawMessage `json:"config_snapshot"`
 }
-
-const defaultCrawlWorkerCount = 4
 
 type crawlResponse struct {
 	ID               string          `json:"id"`
@@ -81,10 +76,11 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	crawl, err := queries.CreateCrawl(r.Context(), sqlc.CreateCrawlParams{
-		ProjectID:      projectID,
-		Status:         "queued",
-		ConfigSnapshot: requestBody.ConfigSnapshot,
-		StartedAt:      pgtype.Timestamptz{},
+		ProjectID:         projectID,
+		RequestedByUserID: user.ID,
+		Status:            "queued",
+		ConfigSnapshot:    requestBody.ConfigSnapshot,
+		StartedAt:         pgtype.Timestamptz{},
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -150,91 +146,6 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"crawls": responses})
 }
 
-// handleRunCrawl runs one queued crawl synchronously through the HTTP crawler pipeline.
-func (a *App) handleRunCrawl(w http.ResponseWriter, r *http.Request) {
-	crawlID, err := parseUUIDParam(chi.URLParam(r, "crawlID"))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
-		return
-	}
-
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	crawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "crawl not found")
-			return
-		}
-
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if crawl.Status != "queued" {
-		writeJSONError(w, http.StatusConflict, "crawl is not runnable")
-		return
-	}
-
-	project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: crawl.ProjectID, UserID: user.ID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "project not found")
-			return
-		}
-
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	crawlConfig, err := newDefaultCrawlerConfig(project.BaseUrl)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "project base_url is invalid")
-		return
-	}
-
-	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent)
-	parser := crawler.NewParser()
-	store := crawler.NewStore(a.DB)
-	runner := crawler.NewRunner(crawlConfig, defaultCrawlWorkerCount, fetcher, parser).WithStore(store)
-
-	if _, err := runner.RunAndPersist(r.Context(), crawlID, project.BaseUrl); err != nil {
-		log.Printf("crawl run failed: crawl_id=%s project_id=%s base_url=%q error=%v", crawlID.String(), project.ID.String(), project.BaseUrl, err)
-		writeJSONError(w, http.StatusInternalServerError, "crawl run failed")
-		return
-	}
-
-	updatedCrawl, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "crawl not found")
-			return
-		}
-
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, newCrawlResponseFromGetRow(updatedCrawl))
-}
-
 // handleGetCrawl returns a crawl only if the current user belongs to the owning organization.
 func (a *App) handleGetCrawl(w http.ResponseWriter, r *http.Request) {
 	crawlID, err := parseUUIDParam(chi.URLParam(r, "crawlID"))
@@ -274,27 +185,6 @@ func (a *App) handleGetCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, newCrawlResponseFromGetRow(crawl))
-}
-
-// newDefaultCrawlerConfig builds the current hardcoded crawler settings for one project root URL.
-// TODO: expose crawl settings via crawl config / user settings.
-func newDefaultCrawlerConfig(baseURL string) (crawler.CrawlerConfig, error) {
-	parsedBaseURL, err := url.Parse(baseURL)
-	if err != nil {
-		return crawler.CrawlerConfig{}, err
-	}
-
-	if parsedBaseURL.Host == "" {
-		return crawler.CrawlerConfig{}, errors.New("missing host")
-	}
-
-	return crawler.CrawlerConfig{
-		AllowedHost:  parsedBaseURL.Host,
-		MaxDepth:     2,
-		MaxPages:     100,
-		FetchTimeout: 10 * time.Second,
-		UserAgent:    "revserp-bot/0.1",
-	}, nil
 }
 
 // newCrawlResponseFromCreateRow converts a created crawl row into an API response.

@@ -9,22 +9,23 @@ import (
 )
 
 type Crawl struct {
-	ID               pgtype.UUID
-	ProjectID        pgtype.UUID
-	Status           string
-	ConfigSnapshot   []byte
-	SeoScore         pgtype.Int4
-	AeoScore         pgtype.Int4
-	PagespeedScore   pgtype.Int4
-	OverallScore     pgtype.Int4
-	StartedAt        pgtype.Timestamptz
-	CompletedAt      pgtype.Timestamptz
-	CreatedAt        pgtype.Timestamptz
-	UrlsDiscovered   int32
-	UrlsCrawled      int32
-	MaxDepthReached  int32
-	GooglePsiResults []byte
-	HasLlmsTxt       pgtype.Bool
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	Status            string
+	ConfigSnapshot    []byte
+	SeoScore          pgtype.Int4
+	AeoScore          pgtype.Int4
+	PagespeedScore    pgtype.Int4
+	OverallScore      pgtype.Int4
+	StartedAt         pgtype.Timestamptz
+	CompletedAt       pgtype.Timestamptz
+	CreatedAt         pgtype.Timestamptz
+	UrlsDiscovered    int32
+	UrlsCrawled       int32
+	MaxDepthReached   int32
+	GooglePsiResults  []byte
+	HasLlmsTxt        pgtype.Bool
+	RequestedByUserID pgtype.UUID
 }
 
 type CrawlIssue struct {

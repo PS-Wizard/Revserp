@@ -11,9 +11,55 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimNextQueuedCrawl = `-- name: ClaimNextQueuedCrawl :one
+WITH candidate AS (
+    SELECT c.id
+    FROM crawls AS c
+    WHERE c.status = 'queued'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM crawls AS running
+          WHERE running.status = 'running'
+            AND running.requested_by_user_id = c.requested_by_user_id
+            AND c.requested_by_user_id IS NOT NULL
+      )
+    ORDER BY c.created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE crawls AS c
+SET status = 'running',
+    started_at = now(),
+    completed_at = NULL
+FROM candidate, projects AS p
+WHERE c.id = candidate.id
+  AND p.id = c.project_id
+RETURNING c.id, c.project_id, c.requested_by_user_id, p.base_url
+`
+
+type ClaimNextQueuedCrawlRow struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	RequestedByUserID pgtype.UUID
+	BaseUrl           string
+}
+
+func (q *Queries) ClaimNextQueuedCrawl(ctx context.Context) (ClaimNextQueuedCrawlRow, error) {
+	row := q.db.QueryRow(ctx, claimNextQueuedCrawl)
+	var i ClaimNextQueuedCrawlRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.RequestedByUserID,
+		&i.BaseUrl,
+	)
+	return i, err
+}
+
 const createCrawl = `-- name: CreateCrawl :one
 INSERT INTO crawls (
     project_id,
+    requested_by_user_id,
     status,
     config_snapshot,
     started_at
@@ -21,16 +67,18 @@ INSERT INTO crawls (
     $1,
     $2,
     $3,
-    $4
+    $4,
+    $5
 )
 RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at
 `
 
 type CreateCrawlParams struct {
-	ProjectID      pgtype.UUID
-	Status         string
-	ConfigSnapshot []byte
-	StartedAt      pgtype.Timestamptz
+	ProjectID         pgtype.UUID
+	RequestedByUserID pgtype.UUID
+	Status            string
+	ConfigSnapshot    []byte
+	StartedAt         pgtype.Timestamptz
 }
 
 type CreateCrawlRow struct {
@@ -55,6 +103,7 @@ type CreateCrawlRow struct {
 func (q *Queries) CreateCrawl(ctx context.Context, arg CreateCrawlParams) (CreateCrawlRow, error) {
 	row := q.db.QueryRow(ctx, createCrawl,
 		arg.ProjectID,
+		arg.RequestedByUserID,
 		arg.Status,
 		arg.ConfigSnapshot,
 		arg.StartedAt,

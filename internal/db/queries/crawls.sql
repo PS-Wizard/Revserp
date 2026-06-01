@@ -1,6 +1,7 @@
 -- name: CreateCrawl :one
 INSERT INTO crawls (
     project_id,
+    requested_by_user_id,
     status,
     config_snapshot,
     started_at
@@ -8,7 +9,8 @@ INSERT INTO crawls (
     $1,
     $2,
     $3,
-    $4
+    $4,
+    $5
 )
 RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at;
 
@@ -83,3 +85,28 @@ SET status = 'failed',
     max_depth_reached = $4,
     completed_at = now()
 WHERE id = $1;
+
+-- name: ClaimNextQueuedCrawl :one
+WITH candidate AS (
+    SELECT c.id
+    FROM crawls AS c
+    WHERE c.status = 'queued'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM crawls AS running
+          WHERE running.status = 'running'
+            AND running.requested_by_user_id = c.requested_by_user_id
+            AND c.requested_by_user_id IS NOT NULL
+      )
+    ORDER BY c.created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE crawls AS c
+SET status = 'running',
+    started_at = now(),
+    completed_at = NULL
+FROM candidate, projects AS p
+WHERE c.id = candidate.id
+  AND p.id = c.project_id
+RETURNING c.id, c.project_id, c.requested_by_user_id, p.base_url;
