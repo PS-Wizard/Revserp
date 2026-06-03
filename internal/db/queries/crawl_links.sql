@@ -37,6 +37,15 @@ WHERE cl.id = $1
   AND om.user_id = $2
 LIMIT 1;
 
+-- name: CountCrawlLinksForCrawlByUser :one
+SELECT COUNT(*)
+FROM crawl_links AS cl
+INNER JOIN crawls AS c ON c.id = cl.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cl.crawl_id = $1
+  AND om.user_id = $2;
+
 -- name: ListCrawlLinksForCrawlByUser :many
 SELECT
     cl.id,
@@ -54,7 +63,9 @@ INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE cl.crawl_id = $1
   AND om.user_id = $2
-ORDER BY cl.created_at ASC;
+ORDER BY cl.created_at ASC
+LIMIT $3
+OFFSET $4;
 
 
 -- name: ListInternalCrawlLinksForCrawl :many

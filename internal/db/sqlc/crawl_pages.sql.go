@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCrawlPagesForCrawlByUser = `-- name: CountCrawlPagesForCrawlByUser :one
+SELECT COUNT(*)
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+`
+
+type CountCrawlPagesForCrawlByUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+}
+
+func (q *Queries) CountCrawlPagesForCrawlByUser(ctx context.Context, arg CountCrawlPagesForCrawlByUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlPagesForCrawlByUser, arg.CrawlID, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCrawlPage = `-- name: CreateCrawlPage :one
 INSERT INTO crawl_pages (
     crawl_id,
@@ -534,11 +556,15 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE cp.crawl_id = $1
   AND om.user_id = $2
 ORDER BY cp.created_at ASC
+LIMIT $3
+OFFSET $4
 `
 
 type ListCrawlPagesForCrawlByUserParams struct {
 	CrawlID pgtype.UUID
 	UserID  pgtype.UUID
+	Limit   int32
+	Offset  int32
 }
 
 type ListCrawlPagesForCrawlByUserRow struct {
@@ -579,7 +605,12 @@ type ListCrawlPagesForCrawlByUserRow struct {
 }
 
 func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCrawlPagesForCrawlByUserParams) ([]ListCrawlPagesForCrawlByUserRow, error) {
-	rows, err := q.db.Query(ctx, listCrawlPagesForCrawlByUser, arg.CrawlID, arg.UserID)
+	rows, err := q.db.Query(ctx, listCrawlPagesForCrawlByUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}

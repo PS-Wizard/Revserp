@@ -40,6 +40,15 @@ WHERE ci.id = $1
   AND om.user_id = $2
 LIMIT 1;
 
+-- name: CountCrawlIssuesForCrawlByUser :one
+SELECT COUNT(*)
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2;
+
 -- name: ListCrawlIssuesForCrawlByUser :many
 SELECT
     ci.id,
@@ -58,7 +67,9 @@ INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ci.crawl_id = $1
   AND om.user_id = $2
-ORDER BY ci.created_at ASC;
+ORDER BY ci.created_at ASC
+LIMIT $3
+OFFSET $4;
 
 
 -- name: DeleteCrawlIssuesForCrawl :exec

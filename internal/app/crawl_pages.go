@@ -190,6 +190,11 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
 		return
 	}
+	limit, offset, err := parsePaginationParams(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	tx, err := a.DB.Begin(r.Context())
 	if err != nil {
@@ -215,7 +220,17 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pages, err := queries.ListCrawlPagesForCrawlByUser(r.Context(), sqlc.ListCrawlPagesForCrawlByUserParams{CrawlID: crawlID, UserID: user.ID})
+	total, err := queries.CountCrawlPagesForCrawlByUser(r.Context(), sqlc.CountCrawlPagesForCrawlByUserParams{CrawlID: crawlID, UserID: user.ID})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	pages, err := queries.ListCrawlPagesForCrawlByUser(r.Context(), sqlc.ListCrawlPagesForCrawlByUserParams{
+		CrawlID: crawlID,
+		UserID:  user.ID,
+		Limit:   limit,
+		Offset:  offset,
+	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -231,7 +246,15 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newCrawlPageResponseFromListRow(page))
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"pages": responses})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pages": responses,
+		"pagination": paginationResponse{
+			Limit:  limit,
+			Offset: offset,
+			Count:  int32(len(responses)),
+			Total:  total,
+		},
+	})
 }
 
 // handleGetCrawlPage returns a page row only if the current user belongs to the owning organization.

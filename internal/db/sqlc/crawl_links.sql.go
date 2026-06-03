@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCrawlLinksForCrawlByUser = `-- name: CountCrawlLinksForCrawlByUser :one
+SELECT COUNT(*)
+FROM crawl_links AS cl
+INNER JOIN crawls AS c ON c.id = cl.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cl.crawl_id = $1
+  AND om.user_id = $2
+`
+
+type CountCrawlLinksForCrawlByUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+}
+
+func (q *Queries) CountCrawlLinksForCrawlByUser(ctx context.Context, arg CountCrawlLinksForCrawlByUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlLinksForCrawlByUser, arg.CrawlID, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCrawlLink = `-- name: CreateCrawlLink :one
 INSERT INTO crawl_links (
     crawl_id,
@@ -127,15 +149,24 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE cl.crawl_id = $1
   AND om.user_id = $2
 ORDER BY cl.created_at ASC
+LIMIT $3
+OFFSET $4
 `
 
 type ListCrawlLinksForCrawlByUserParams struct {
 	CrawlID pgtype.UUID
 	UserID  pgtype.UUID
+	Limit   int32
+	Offset  int32
 }
 
 func (q *Queries) ListCrawlLinksForCrawlByUser(ctx context.Context, arg ListCrawlLinksForCrawlByUserParams) ([]CrawlLink, error) {
-	rows, err := q.db.Query(ctx, listCrawlLinksForCrawlByUser, arg.CrawlID, arg.UserID)
+	rows, err := q.db.Query(ctx, listCrawlLinksForCrawlByUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCrawlIssuesForCrawlByUser = `-- name: CountCrawlIssuesForCrawlByUser :one
+SELECT COUNT(*)
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+`
+
+type CountCrawlIssuesForCrawlByUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+}
+
+func (q *Queries) CountCrawlIssuesForCrawlByUser(ctx context.Context, arg CountCrawlIssuesForCrawlByUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlIssuesForCrawlByUser, arg.CrawlID, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCrawlIssue = `-- name: CreateCrawlIssue :one
 INSERT INTO crawl_issues (
     crawl_id,
@@ -193,15 +215,24 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ci.crawl_id = $1
   AND om.user_id = $2
 ORDER BY ci.created_at ASC
+LIMIT $3
+OFFSET $4
 `
 
 type ListCrawlIssuesForCrawlByUserParams struct {
 	CrawlID pgtype.UUID
 	UserID  pgtype.UUID
+	Limit   int32
+	Offset  int32
 }
 
 func (q *Queries) ListCrawlIssuesForCrawlByUser(ctx context.Context, arg ListCrawlIssuesForCrawlByUserParams) ([]CrawlIssue, error) {
-	rows, err := q.db.Query(ctx, listCrawlIssuesForCrawlByUser, arg.CrawlID, arg.UserID)
+	rows, err := q.db.Query(ctx, listCrawlIssuesForCrawlByUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}

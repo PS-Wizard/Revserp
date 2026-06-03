@@ -112,6 +112,15 @@ WHERE cp.id = $1
   AND om.user_id = $2
 LIMIT 1;
 
+-- name: CountCrawlPagesForCrawlByUser :one
+SELECT COUNT(*)
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2;
+
 -- name: ListCrawlPagesForCrawlByUser :many
 SELECT
     cp.id,
@@ -154,7 +163,9 @@ INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE cp.crawl_id = $1
   AND om.user_id = $2
-ORDER BY cp.created_at ASC;
+ORDER BY cp.created_at ASC
+LIMIT $3
+OFFSET $4;
 
 
 -- name: ListCrawlPagesForCrawl :many
