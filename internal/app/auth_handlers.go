@@ -16,6 +16,11 @@ type authCredentialsRequest struct {
 	Name     string `json:"name"`
 }
 
+type signUpPendingResponse struct {
+	SignupCompletedWithoutSession bool   `json:"signup_completed_without_session"`
+	Email                         string `json:"email"`
+}
+
 // handleSignUp creates one Supabase account, bootstraps local data, and starts a backend session when possible.
 func (a *App) handleSignUp(w http.ResponseWriter, r *http.Request) {
 	var requestBody authCredentialsRequest
@@ -32,13 +37,20 @@ func (a *App) handleSignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	supabaseSession, err := a.SupabaseClient.SignUp(r.Context(), email, password, name)
+	signUpResult, err := a.SupabaseClient.SignUp(r.Context(), email, password, name)
 	if err != nil {
 		a.writeSupabaseAuthError(w, err, http.StatusBadRequest)
 		return
 	}
+	if signUpResult.Session == nil {
+		writeJSON(w, http.StatusOK, signUpPendingResponse{
+			SignupCompletedWithoutSession: true,
+			Email:                         email,
+		})
+		return
+	}
 
-	if err := a.finishBackendSignIn(w, r, supabaseSession); err != nil {
+	if err := a.finishBackendSignIn(w, r, *signUpResult.Session); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
