@@ -111,6 +111,21 @@ type Project struct {
 	CreatedAt      pgtype.Timestamptz
 }
 
+type Session struct {
+	ID                           pgtype.UUID
+	UserID                       pgtype.UUID
+	SessionTokenHash             string
+	SupabaseAccessToken          string
+	SupabaseRefreshToken         string
+	SupabaseAccessTokenExpiresAt pgtype.Timestamptz
+	ActiveOrgID                  pgtype.UUID
+	CreatedAt                    pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
+	LastUsedAt                   pgtype.Timestamptz
+	ExpiresAt                    pgtype.Timestamptz
+	RevokedAt                    pgtype.Timestamptz
+}
+
 type User struct {
 	ID           pgtype.UUID
 	AuthProvider string

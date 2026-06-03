@@ -24,15 +24,19 @@ func (a *App) Router() http.Handler {
 			"http://127.0.0.1:3000",
 			"http://127.0.0.1:5173",
 		},
-		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		MaxAge:         300,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowCredentials: true,
+		MaxAge:           300,
 	}))
 
 	r.Get("/health", a.handleHealth)
+	r.Post("/auth/signup", a.handleSignUp)
+	r.Post("/auth/login", a.handleLogin)
+	r.Post("/auth/logout", a.handleLogout)
 
 	r.Group(func(protected chi.Router) {
-		protected.Use(internalauth.RequireAuth(a.AuthVerifier))
+		protected.Use(internalauth.RequireSession(a.SessionManager))
 		protected.Get("/me", a.handleMe)
 		protected.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
 		protected.Get("/organizations/{organizationID}/projects", a.handleListProjects)

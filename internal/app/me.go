@@ -17,6 +17,7 @@ import (
 type meResponse struct {
 	User          userResponse           `json:"user"`
 	Organizations []organizationResponse `json:"organizations"`
+	ActiveOrgID   string                 `json:"active_org_id"`
 }
 
 type userResponse struct {
@@ -31,9 +32,14 @@ type organizationResponse struct {
 	Role string `json:"role"`
 }
 
-// handleMe returns the current local user and organizations for a valid Supabase identity.
+// handleMe returns the current local user, organizations, and active organization for one backend session.
 func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 	identity, ok := internalauth.IdentityFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	session, ok := internalauth.SessionFromContext(r.Context())
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -53,15 +59,20 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	activeOrganizationID := resolveActiveOrganizationID(session.ActiveOrgID, organizations)
+	if activeOrganizationID.Valid && activeOrganizationID != session.ActiveOrgID {
+		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrganizationID); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, meResponse{
-		User:          newUserResponse(user),
-		Organizations: newOrganizationResponses(organizations),
-	})
+	writeJSON(w, http.StatusOK, newMeResponse(user, organizations, activeOrganizationID))
 }
 
 // ensureUserAndOrganizations maps the auth identity to a local user and default organization.
@@ -142,6 +153,18 @@ func pgText(value string) pgtype.Text {
 	return pgtype.Text{String: value, Valid: true}
 }
 
+// newMeResponse converts user, organizations, and active org state into the /me API response.
+func newMeResponse(user sqlc.User, organizations []sqlc.ListOrganizationsForUserRow, activeOrgID pgtype.UUID) meResponse {
+	response := meResponse{
+		User:          newUserResponse(user),
+		Organizations: newOrganizationResponses(organizations),
+	}
+	if activeOrgID.Valid {
+		response.ActiveOrgID = activeOrgID.String()
+	}
+	return response
+}
+
 // newUserResponse converts a DB user into an API user.
 func newUserResponse(user sqlc.User) userResponse {
 	response := userResponse{
@@ -167,4 +190,16 @@ func newOrganizationResponses(organizations []sqlc.ListOrganizationsForUserRow) 
 	}
 
 	return items
+}
+
+func resolveActiveOrganizationID(currentActiveOrgID pgtype.UUID, organizations []sqlc.ListOrganizationsForUserRow) pgtype.UUID {
+	for _, organization := range organizations {
+		if currentActiveOrgID.Valid && organization.ID == currentActiveOrgID {
+			return currentActiveOrgID
+		}
+	}
+	if len(organizations) == 0 {
+		return pgtype.UUID{}
+	}
+	return organizations[0].ID
 }

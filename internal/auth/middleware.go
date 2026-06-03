@@ -1,39 +1,34 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
-	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
-// RequireAuth verifies a bearer token and stores the identity in context.
-func RequireAuth(verifier *Verifier) func(http.Handler) http.Handler {
+// RequireSession resolves a backend-owned auth session and stores its identity in the request context.
+func RequireSession(sessionManager *SessionManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authorization := strings.TrimSpace(r.Header.Get("Authorization"))
-			if authorization == "" {
+			rawSessionToken := sessionManager.SessionTokenFromRequest(r)
+			if rawSessionToken == "" {
 				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 				return
 			}
 
-			const bearerPrefix = "Bearer "
-			if !strings.HasPrefix(authorization, bearerPrefix) {
-				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-				return
-			}
-
-			token := strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix))
-			if token == "" {
-				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-				return
-			}
-
-			identity, err := verifier.Verify(token)
+			identity, session, err := sessionManager.AuthenticateRequest(r.Context(), rawSessionToken)
 			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+					return
+				}
 				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
+			ctxWithIdentity := WithIdentity(r.Context(), identity)
+			next.ServeHTTP(w, r.WithContext(WithSession(ctxWithIdentity, session)))
 		})
 	}
 }

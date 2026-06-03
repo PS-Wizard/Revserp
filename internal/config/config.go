@@ -17,6 +17,9 @@ type Config struct {
 	SupabaseJWTIssuer    string
 	SupabaseJWKSURL      string
 	SupabaseJWTAudience  string
+	SupabaseAnonKey      string
+	SessionCookieName    string
+	SessionTTL           time.Duration
 	WorkerConcurrency    int
 	WorkerPollInterval   time.Duration
 	CrawlPageWorkerCount int
@@ -38,6 +41,9 @@ func Load() Config {
 		SupabaseJWTIssuer:    getEnv("SUPABASE_JWT_ISSUER", ""),
 		SupabaseJWKSURL:      getEnv("SUPABASE_JWKS_URL", ""),
 		SupabaseJWTAudience:  getEnv("SUPABASE_JWT_AUDIENCE", "authenticated"),
+		SupabaseAnonKey:      getEnv("SUPABASE_ANON_KEY", ""),
+		SessionCookieName:    getEnv("SESSION_COOKIE_NAME", "revserp_session"),
+		SessionTTL:           getEnvDuration("SESSION_TTL", 30*24*time.Hour),
 		WorkerConcurrency:    getEnvInt("WORKER_CONCURRENCY", 2),
 		WorkerPollInterval:   getEnvDuration("WORKER_POLL_INTERVAL", 2*time.Second),
 		CrawlPageWorkerCount: getEnvInt("CRAWL_PAGE_WORKER_COUNT", 4),
