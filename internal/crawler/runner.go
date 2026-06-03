@@ -7,7 +7,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Runner coordinates an in-memory BFS crawl over the worker pool.
+// CrawlRunSummary holds final crawl counters for one run.
+type CrawlRunSummary struct {
+	URLsDiscovered  int
+	URLsCrawled     int
+	MaxDepthReached int
+}
+
+// resultPersister defines the crawl status and persistence hooks used by the runner.
 type resultPersister interface {
 	MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) error
 	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
@@ -17,12 +24,13 @@ type resultPersister interface {
 
 // Runner coordinates an in-memory BFS crawl over the worker pool.
 type Runner struct {
-	config      CrawlerConfig
-	workerCount int
-	fetcher     *Fetcher
-	parser      *Parser
-	renderer    htmlRenderer
-	store       resultPersister
+	config           CrawlerConfig
+	workerCount      int
+	fetcher          *Fetcher
+	parser           *Parser
+	renderer         htmlRenderer
+	store            resultPersister
+	deferFinalStatus bool
 }
 
 // NewRunner builds a crawl runner from the provided dependencies.
@@ -47,32 +55,45 @@ func (runner *Runner) WithRenderer(renderer htmlRenderer) *Runner {
 	return runner
 }
 
+// WithDeferredFinalStatus leaves crawl completion for a later step after persistence succeeds.
+func (runner *Runner) WithDeferredFinalStatus() *Runner {
+	runner.deferFinalStatus = true
+	return runner
+}
+
 // Run crawls one root URL in memory and returns the processed crawl results.
 func (runner *Runner) Run(ctx context.Context, rootURL string) ([]CrawlResult, error) {
-	return runner.run(ctx, pgtype.UUID{}, rootURL, false)
+	crawlResults, _, err := runner.run(ctx, pgtype.UUID{}, rootURL, false)
+	return crawlResults, err
 }
 
 // RunAndPersist crawls one root URL and persists each processed result.
 func (runner *Runner) RunAndPersist(ctx context.Context, crawlID pgtype.UUID, rootURL string) ([]CrawlResult, error) {
+	crawlResults, _, err := runner.RunAndPersistWithSummary(ctx, crawlID, rootURL)
+	return crawlResults, err
+}
+
+// RunAndPersistWithSummary crawls one root URL, persists each result, and returns final crawl counters.
+func (runner *Runner) RunAndPersistWithSummary(ctx context.Context, crawlID pgtype.UUID, rootURL string) ([]CrawlResult, CrawlRunSummary, error) {
 	if runner.store == nil {
-		return nil, fmt.Errorf("runner store is not configured")
+		return nil, CrawlRunSummary{}, fmt.Errorf("runner store is not configured")
 	}
 
 	return runner.run(ctx, crawlID, rootURL, true)
 }
 
-func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL string, shouldPersist bool) ([]CrawlResult, error) {
+// run executes the crawl loop and optionally persists results.
+func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL string, shouldPersist bool) ([]CrawlResult, CrawlRunSummary, error) {
 	if runner.workerCount <= 0 {
-		return nil, fmt.Errorf("worker count must be greater than zero")
+		return nil, CrawlRunSummary{}, fmt.Errorf("worker count must be greater than zero")
 	}
-
 	if runner.config.MaxPages < 0 {
-		return nil, fmt.Errorf("max pages must be greater than or equal to zero")
+		return nil, CrawlRunSummary{}, fmt.Errorf("max pages must be greater than or equal to zero")
 	}
 
 	normalizedRootURL, err := NormalizeURL(rootURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("normalize root url: %w", err)
+		return nil, CrawlRunSummary{}, fmt.Errorf("normalize root url: %w", err)
 	}
 
 	runContext, cancelRun := context.WithCancel(ctx)
@@ -83,7 +104,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 
 	if shouldPersist {
 		if err := runner.store.MarkCrawlRunning(runContext, crawlID); err != nil {
-			return nil, fmt.Errorf("mark crawl running: %w", err)
+			return nil, CrawlRunSummary{}, fmt.Errorf("mark crawl running: %w", err)
 		}
 	}
 
@@ -114,7 +135,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			activeJobs++
 		case result, ok := <-results:
 			if !ok {
-				return crawlResults, fmt.Errorf("worker pool closed unexpectedly")
+				return crawlResults, CrawlRunSummary{}, fmt.Errorf("worker pool closed unexpectedly")
 			}
 
 			activeJobs--
@@ -139,10 +160,11 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				if err := runner.store.PersistResult(runContext, crawlID, normalizedRootURL.String(), result); err != nil {
 					cancelRun()
 					close(jobs)
-					if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); failErr != nil {
-						return crawlResults, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
+					summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+					if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
+						return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
 					}
-					return crawlResults, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
+					return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
 				}
 			}
 
@@ -151,7 +173,6 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 					if !parsedLink.IsInternal {
 						continue
 					}
-
 					if runner.config.MaxPages > 0 && scheduledPages >= runner.config.MaxPages {
 						break
 					}
@@ -160,11 +181,9 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 					if normalizeErr != nil {
 						continue
 					}
-
 					if runner.config.AllowedHost != "" && !IsAllowedHost(runner.config.AllowedHost, normalizedLinkURL.Hostname()) {
 						continue
 					}
-
 					if _, alreadySeen := seenURLs[normalizedLinkURL.String()]; alreadySeen {
 						continue
 					}
@@ -176,12 +195,13 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			}
 		case <-runContext.Done():
 			close(jobs)
+			summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
 			if shouldPersist {
-				if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); failErr != nil {
-					return crawlResults, fmt.Errorf("crawl canceled: %w (also failed to mark crawl failed: %v)", runContext.Err(), failErr)
+				if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
+					return crawlResults, summary, fmt.Errorf("crawl canceled: %w (also failed to mark crawl failed: %v)", runContext.Err(), failErr)
 				}
 			}
-			return crawlResults, fmt.Errorf("crawl canceled: %w", runContext.Err())
+			return crawlResults, summary, fmt.Errorf("crawl canceled: %w", runContext.Err())
 		}
 	}
 
@@ -189,11 +209,12 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	for range results {
 	}
 
-	if shouldPersist {
-		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, scheduledPages, urlsCrawled, maxDepthReached); err != nil {
-			return crawlResults, fmt.Errorf("mark crawl completed: %w", err)
+	summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+	if shouldPersist && !runner.deferFinalStatus {
+		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); err != nil {
+			return crawlResults, summary, fmt.Errorf("mark crawl completed: %w", err)
 		}
 	}
 
-	return crawlResults, nil
+	return crawlResults, summary, nil
 }

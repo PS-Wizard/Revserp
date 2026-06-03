@@ -11,11 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ps-wizard/revserp/internal/analyzer"
 	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-// Worker claims queued crawls from Postgres and runs them.
 // Worker claims queued crawls from Postgres and runs them.
 type Worker struct {
 	pool                 *pgxpool.Pool
@@ -102,7 +102,7 @@ func (worker *Worker) runLoop(ctx context.Context, workerID int) error {
 	}
 }
 
-// runCrawl executes one claimed crawl.
+// runCrawl executes one claimed crawl and derives backend issues from the persisted pages.
 func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQueuedCrawlRow) error {
 	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(claimedCrawl.BaseUrl, claimedCrawl.ConfigSnapshot)
 	if err != nil {
@@ -115,11 +115,29 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 
 	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent)
 	parser := crawler.NewParser()
-	store := crawler.NewStore(worker.pool)
-	runner := crawler.NewRunner(crawlConfig, worker.crawlPageWorkerCount, fetcher, parser).WithRenderer(worker.renderer).WithStore(store)
+	crawlStore := crawler.NewStore(worker.pool)
+	issueStore := analyzer.NewStore(worker.pool)
+	runner := crawler.NewRunner(crawlConfig, worker.crawlPageWorkerCount, fetcher, parser).
+		WithRenderer(worker.renderer).
+		WithStore(crawlStore).
+		WithDeferredFinalStatus()
 
-	if _, err := runner.RunAndPersist(ctx, claimedCrawl.ID, claimedCrawl.BaseUrl); err != nil {
+	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(ctx, claimedCrawl.ID, claimedCrawl.BaseUrl)
+	if err != nil {
 		return fmt.Errorf("run crawl: %w", err)
+	}
+
+	derivedIssueCount, err := issueStore.DeriveIssues(ctx, claimedCrawl.ID)
+	if err != nil {
+		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+			return fmt.Errorf("derive issues: %w (also failed to mark crawl failed: %v)", err, failErr)
+		}
+		return fmt.Errorf("derive issues: %w", err)
+	}
+
+	log.Printf("derived crawl issues: crawl_id=%s count=%d", claimedCrawl.ID.String(), derivedIssueCount)
+	if err := crawlStore.MarkCrawlCompleted(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
+		return fmt.Errorf("mark crawl completed: %w", err)
 	}
 
 	return nil

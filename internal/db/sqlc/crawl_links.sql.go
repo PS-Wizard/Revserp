@@ -163,3 +163,50 @@ func (q *Queries) ListCrawlLinksForCrawlByUser(ctx context.Context, arg ListCraw
 	}
 	return items, nil
 }
+
+const listInternalCrawlLinksForCrawl = `-- name: ListInternalCrawlLinksForCrawl :many
+SELECT
+    id,
+    crawl_id,
+    source_url,
+    target_url,
+    anchor_text,
+    is_internal,
+    target_status,
+    nofollow,
+    created_at
+FROM crawl_links
+WHERE crawl_id = $1
+  AND is_internal = TRUE
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListInternalCrawlLinksForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]CrawlLink, error) {
+	rows, err := q.db.Query(ctx, listInternalCrawlLinksForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CrawlLink
+	for rows.Next() {
+		var i CrawlLink
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.SourceUrl,
+			&i.TargetUrl,
+			&i.AnchorText,
+			&i.IsInternal,
+			&i.TargetStatus,
+			&i.Nofollow,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

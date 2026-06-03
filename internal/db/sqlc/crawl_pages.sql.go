@@ -358,6 +358,139 @@ func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageB
 	return i, err
 }
 
+const listCrawlPagesForCrawl = `-- name: ListCrawlPagesForCrawl :many
+SELECT
+    id,
+    crawl_id,
+    url,
+    status_code,
+    content_type,
+    size_bytes,
+    is_internal,
+    depth,
+    title,
+    meta_description,
+    h1,
+    h1_count,
+    h2_count,
+    h3_count,
+    word_count,
+    visible_text,
+    author,
+    canonical_url,
+    lang,
+    viewport,
+    robots,
+    image_count,
+    images_without_alt_count,
+    images_without_dimensions,
+    external_links,
+    internal_links,
+    response_time_ms,
+    javascript_rendered,
+    h2_headings,
+    h3_headings,
+    heading_outline,
+    og_tags,
+    json_ld,
+    created_at
+FROM crawl_pages
+WHERE crawl_id = $1
+ORDER BY created_at ASC
+`
+
+type ListCrawlPagesForCrawlRow struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	VisibleText             pgtype.Text
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	H2Headings              []byte
+	H3Headings              []byte
+	HeadingOutline          []byte
+	OgTags                  []byte
+	JsonLd                  []byte
+	CreatedAt               pgtype.Timestamptz
+}
+
+func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListCrawlPagesForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlPagesForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCrawlPagesForCrawlRow
+	for rows.Next() {
+		var i ListCrawlPagesForCrawlRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.Url,
+			&i.StatusCode,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.IsInternal,
+			&i.Depth,
+			&i.Title,
+			&i.MetaDescription,
+			&i.H1,
+			&i.H1Count,
+			&i.H2Count,
+			&i.H3Count,
+			&i.WordCount,
+			&i.VisibleText,
+			&i.Author,
+			&i.CanonicalUrl,
+			&i.Lang,
+			&i.Viewport,
+			&i.Robots,
+			&i.ImageCount,
+			&i.ImagesWithoutAltCount,
+			&i.ImagesWithoutDimensions,
+			&i.ExternalLinks,
+			&i.InternalLinks,
+			&i.ResponseTimeMs,
+			&i.JavascriptRendered,
+			&i.H2Headings,
+			&i.H3Headings,
+			&i.HeadingOutline,
+			&i.OgTags,
+			&i.JsonLd,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCrawlPagesForCrawlByUser = `-- name: ListCrawlPagesForCrawlByUser :many
 SELECT
     cp.id,

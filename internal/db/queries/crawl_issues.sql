@@ -59,3 +59,8 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ci.crawl_id = $1
   AND om.user_id = $2
 ORDER BY ci.created_at ASC;
+
+
+-- name: DeleteCrawlIssuesForCrawl :exec
+DELETE FROM crawl_issues
+WHERE crawl_id = $1;

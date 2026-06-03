@@ -55,3 +55,20 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE cl.crawl_id = $1
   AND om.user_id = $2
 ORDER BY cl.created_at ASC;
+
+
+-- name: ListInternalCrawlLinksForCrawl :many
+SELECT
+    id,
+    crawl_id,
+    source_url,
+    target_url,
+    anchor_text,
+    is_internal,
+    target_status,
+    nofollow,
+    created_at
+FROM crawl_links
+WHERE crawl_id = $1
+  AND is_internal = TRUE
+ORDER BY created_at ASC;

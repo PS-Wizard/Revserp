@@ -155,3 +155,44 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE cp.crawl_id = $1
   AND om.user_id = $2
 ORDER BY cp.created_at ASC;
+
+
+-- name: ListCrawlPagesForCrawl :many
+SELECT
+    id,
+    crawl_id,
+    url,
+    status_code,
+    content_type,
+    size_bytes,
+    is_internal,
+    depth,
+    title,
+    meta_description,
+    h1,
+    h1_count,
+    h2_count,
+    h3_count,
+    word_count,
+    visible_text,
+    author,
+    canonical_url,
+    lang,
+    viewport,
+    robots,
+    image_count,
+    images_without_alt_count,
+    images_without_dimensions,
+    external_links,
+    internal_links,
+    response_time_ms,
+    javascript_rendered,
+    h2_headings,
+    h3_headings,
+    heading_outline,
+    og_tags,
+    json_ld,
+    created_at
+FROM crawl_pages
+WHERE crawl_id = $1
+ORDER BY created_at ASC;

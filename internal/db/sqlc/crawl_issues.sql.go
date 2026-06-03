@@ -72,6 +72,16 @@ func (q *Queries) CreateCrawlIssue(ctx context.Context, arg CreateCrawlIssuePara
 	return i, err
 }
 
+const deleteCrawlIssuesForCrawl = `-- name: DeleteCrawlIssuesForCrawl :exec
+DELETE FROM crawl_issues
+WHERE crawl_id = $1
+`
+
+func (q *Queries) DeleteCrawlIssuesForCrawl(ctx context.Context, crawlID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteCrawlIssuesForCrawl, crawlID)
+	return err
+}
+
 const getCrawlIssueByIDForUser = `-- name: GetCrawlIssueByIDForUser :one
 SELECT
     ci.id,
