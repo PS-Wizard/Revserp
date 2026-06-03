@@ -126,6 +126,54 @@ func (q *Queries) GetCrawlIssueByIDForUser(ctx context.Context, arg GetCrawlIssu
 	return i, err
 }
 
+const listCrawlIssuesForCrawl = `-- name: ListCrawlIssuesForCrawl :many
+SELECT
+    id,
+    crawl_id,
+    crawl_page_id,
+    url,
+    severity,
+    category,
+    code,
+    message,
+    details,
+    created_at
+FROM crawl_issues
+WHERE crawl_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListCrawlIssuesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]CrawlIssue, error) {
+	rows, err := q.db.Query(ctx, listCrawlIssuesForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CrawlIssue
+	for rows.Next() {
+		var i CrawlIssue
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.CrawlPageID,
+			&i.Url,
+			&i.Severity,
+			&i.Category,
+			&i.Code,
+			&i.Message,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCrawlIssuesForCrawlByUser = `-- name: ListCrawlIssuesForCrawlByUser :many
 SELECT
     ci.id,

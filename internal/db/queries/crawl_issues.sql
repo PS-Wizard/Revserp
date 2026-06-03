@@ -64,3 +64,20 @@ ORDER BY ci.created_at ASC;
 -- name: DeleteCrawlIssuesForCrawl :exec
 DELETE FROM crawl_issues
 WHERE crawl_id = $1;
+
+
+-- name: ListCrawlIssuesForCrawl :many
+SELECT
+    id,
+    crawl_id,
+    crawl_page_id,
+    url,
+    severity,
+    category,
+    code,
+    message,
+    details,
+    created_at
+FROM crawl_issues
+WHERE crawl_id = $1
+ORDER BY created_at ASC;

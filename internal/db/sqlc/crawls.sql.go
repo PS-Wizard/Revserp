@@ -351,3 +351,31 @@ func (q *Queries) MarkCrawlRunning(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markCrawlRunning, id)
 	return err
 }
+
+const updateCrawlScores = `-- name: UpdateCrawlScores :exec
+UPDATE crawls
+SET seo_score = $2,
+    aeo_score = $3,
+    pagespeed_score = $4,
+    overall_score = $5
+WHERE id = $1
+`
+
+type UpdateCrawlScoresParams struct {
+	ID             pgtype.UUID
+	SeoScore       pgtype.Int4
+	AeoScore       pgtype.Int4
+	PagespeedScore pgtype.Int4
+	OverallScore   pgtype.Int4
+}
+
+func (q *Queries) UpdateCrawlScores(ctx context.Context, arg UpdateCrawlScoresParams) error {
+	_, err := q.db.Exec(ctx, updateCrawlScores,
+		arg.ID,
+		arg.SeoScore,
+		arg.AeoScore,
+		arg.PagespeedScore,
+		arg.OverallScore,
+	)
+	return err
+}

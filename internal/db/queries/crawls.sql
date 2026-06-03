@@ -110,3 +110,12 @@ FROM candidate, projects AS p
 WHERE c.id = candidate.id
   AND p.id = c.project_id
 RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url;
+
+
+-- name: UpdateCrawlScores :exec
+UPDATE crawls
+SET seo_score = $2,
+    aeo_score = $3,
+    pagespeed_score = $4,
+    overall_score = $5
+WHERE id = $1;

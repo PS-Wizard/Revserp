@@ -14,6 +14,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/analyzer"
 	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/scoring"
 )
 
 // Worker claims queued crawls from Postgres and runs them.
@@ -102,7 +103,7 @@ func (worker *Worker) runLoop(ctx context.Context, workerID int) error {
 	}
 }
 
-// runCrawl executes one claimed crawl and derives backend issues from the persisted pages.
+// runCrawl executes one claimed crawl, derives backend issues, and calculates crawl scores.
 func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQueuedCrawlRow) error {
 	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(claimedCrawl.BaseUrl, claimedCrawl.ConfigSnapshot)
 	if err != nil {
@@ -117,6 +118,7 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(worker.pool)
 	issueStore := analyzer.NewStore(worker.pool)
+	scoreStore := scoring.NewStore(worker.pool)
 	runner := crawler.NewRunner(crawlConfig, worker.crawlPageWorkerCount, fetcher, parser).
 		WithRenderer(worker.renderer).
 		WithStore(crawlStore).
@@ -135,7 +137,16 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 		return fmt.Errorf("derive issues: %w", err)
 	}
 
+	crawlScores, err := scoreStore.ScoreCrawl(ctx, claimedCrawl.ID)
+	if err != nil {
+		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)
+		}
+		return fmt.Errorf("score crawl: %w", err)
+	}
+
 	log.Printf("derived crawl issues: crawl_id=%s count=%d", claimedCrawl.ID.String(), derivedIssueCount)
+	log.Printf("calculated crawl scores: crawl_id=%s seo=%d aeo=%d pagespeed=%d overall=%d", claimedCrawl.ID.String(), crawlScores.SEOScore, crawlScores.AEOScore, crawlScores.PageSpeedScore, crawlScores.OverallScore)
 	if err := crawlStore.MarkCrawlCompleted(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
 		return fmt.Errorf("mark crawl completed: %w", err)
 	}
