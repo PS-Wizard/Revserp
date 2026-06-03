@@ -183,6 +183,62 @@ func (a *App) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newProjectResponse(project))
 }
 
+// handleDeleteProject deletes a project only if the current user belongs to its organization.
+func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	queries := a.Queries.WithTx(tx)
+	user, _, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	hasActiveCrawl, err := queries.HasActiveCrawlForProject(r.Context(), sqlc.HasActiveCrawlForProjectParams{
+		ProjectID: projectID,
+		UserID:    user.ID,
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if hasActiveCrawl {
+		writeJSONError(w, http.StatusConflict, "cannot delete project while a crawl is queued or running")
+		return
+	}
+
+	deletedRows, err := queries.DeleteProjectByIDForUser(r.Context(), sqlc.DeleteProjectByIDForUserParams{
+		ID:     projectID,
+		UserID: user.ID,
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if deletedRows == 0 {
+		writeJSONError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // ensureCurrentUser ensures the authenticated identity has a local user and default organization.
 func (a *App) ensureCurrentUser(r *http.Request, queries *sqlc.Queries) (sqlc.User, []sqlc.ListOrganizationsForUserRow, error) {
 	identity, ok := internalauth.IdentityFromContext(r.Context())

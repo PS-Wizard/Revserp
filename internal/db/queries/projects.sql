@@ -33,3 +33,21 @@ SELECT
 FROM projects AS p
 WHERE p.organization_id = $1
 ORDER BY p.created_at ASC;
+
+-- name: DeleteProjectByIDForUser :execrows
+DELETE FROM projects AS p
+USING organization_members AS om
+WHERE p.id = $1
+  AND om.org_id = p.organization_id
+  AND om.user_id = $2;
+
+-- name: HasActiveCrawlForProject :one
+SELECT EXISTS (
+    SELECT 1
+    FROM crawls AS c
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE c.project_id = $1
+      AND om.user_id = $2
+      AND c.status IN ('queued', 'running')
+) AS has_active_crawl;

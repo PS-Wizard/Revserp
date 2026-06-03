@@ -43,6 +43,27 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 	return i, err
 }
 
+const deleteProjectByIDForUser = `-- name: DeleteProjectByIDForUser :execrows
+DELETE FROM projects AS p
+USING organization_members AS om
+WHERE p.id = $1
+  AND om.org_id = p.organization_id
+  AND om.user_id = $2
+`
+
+type DeleteProjectByIDForUserParams struct {
+	ID     pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) DeleteProjectByIDForUser(ctx context.Context, arg DeleteProjectByIDForUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteProjectByIDForUser, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getProjectByIDForUser = `-- name: GetProjectByIDForUser :one
 SELECT
     p.id,
@@ -73,6 +94,30 @@ func (q *Queries) GetProjectByIDForUser(ctx context.Context, arg GetProjectByIDF
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const hasActiveCrawlForProject = `-- name: HasActiveCrawlForProject :one
+SELECT EXISTS (
+    SELECT 1
+    FROM crawls AS c
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE c.project_id = $1
+      AND om.user_id = $2
+      AND c.status IN ('queued', 'running')
+) AS has_active_crawl
+`
+
+type HasActiveCrawlForProjectParams struct {
+	ProjectID pgtype.UUID
+	UserID    pgtype.UUID
+}
+
+func (q *Queries) HasActiveCrawlForProject(ctx context.Context, arg HasActiveCrawlForProjectParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActiveCrawlForProject, arg.ProjectID, arg.UserID)
+	var has_active_crawl bool
+	err := row.Scan(&has_active_crawl)
+	return has_active_crawl, err
 }
 
 const listProjectsForOrganization = `-- name: ListProjectsForOrganization :many

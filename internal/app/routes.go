@@ -41,6 +41,7 @@ func (a *App) Router() http.Handler {
 		protected.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
 		protected.Get("/organizations/{organizationID}/projects", a.handleListProjects)
 		protected.Get("/projects/{projectID}", a.handleGetProject)
+		protected.Delete("/projects/{projectID}", a.handleDeleteProject)
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 		protected.Get("/crawls/{crawlID}", a.handleGetCrawl)
