@@ -96,6 +96,18 @@ type Organization struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type OrganizationInvite struct {
+	ID              pgtype.UUID
+	OrganizationID  pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	TokenHash       string
+	MaxUses         int32
+	UsedCount       int32
+	ExpiresAt       pgtype.Timestamptz
+	RevokedAt       pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+}
+
 type OrganizationMember struct {
 	OrgID     pgtype.UUID
 	UserID    pgtype.UUID

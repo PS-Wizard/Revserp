@@ -35,12 +35,16 @@ func (a *App) Router() http.Handler {
 	r.Post("/auth/login", a.handleLogin)
 	r.Post("/auth/oauth/exchange", a.handleOAuthExchange)
 	r.Post("/auth/logout", a.handleLogout)
+	r.Get("/invites/{token}", a.handleGetInvite)
 
 	r.Group(func(protected chi.Router) {
 		protected.Use(internalauth.RequireSession(a.SessionManager))
 		protected.Get("/me", a.handleMe)
 		protected.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
 		protected.Get("/organizations/{organizationID}/projects", a.handleListProjects)
+		protected.Post("/organizations/{organizationID}/invites", a.handleCreateOrganizationInvite)
+		protected.Get("/organizations/{organizationID}/invites", a.handleListOrganizationInvites)
+		protected.Post("/organizations/{organizationID}/invites/{inviteID}/revoke", a.handleRevokeOrganizationInvite)
 		protected.Get("/projects/{projectID}", a.handleGetProject)
 		protected.Delete("/projects/{projectID}", a.handleDeleteProject)
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
@@ -55,6 +59,7 @@ func (a *App) Router() http.Handler {
 		protected.Post("/crawls/{crawlID}/issues", a.handleCreateCrawlIssue)
 		protected.Get("/crawls/{crawlID}/issues", a.handleListCrawlIssues)
 		protected.Get("/crawl-issues/{issueID}", a.handleGetCrawlIssue)
+		protected.Post("/invites/{token}/accept", a.handleAcceptInvite)
 	})
 
 	return r
