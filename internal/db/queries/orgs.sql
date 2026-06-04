@@ -36,3 +36,8 @@ FROM organizations AS o
 INNER JOIN organization_members AS om ON om.org_id = o.id
 WHERE om.user_id = $1
 ORDER BY o.created_at ASC;
+
+-- name: RemoveOrganizationMember :execrows
+DELETE FROM organization_members
+WHERE org_id = $1
+  AND user_id = $2;

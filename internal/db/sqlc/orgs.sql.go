@@ -127,3 +127,22 @@ func (q *Queries) ListOrganizationsForUser(ctx context.Context, userID pgtype.UU
 	}
 	return items, nil
 }
+
+const removeOrganizationMember = `-- name: RemoveOrganizationMember :execrows
+DELETE FROM organization_members
+WHERE org_id = $1
+  AND user_id = $2
+`
+
+type RemoveOrganizationMemberParams struct {
+	OrgID  pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) RemoveOrganizationMember(ctx context.Context, arg RemoveOrganizationMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeOrganizationMember, arg.OrgID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

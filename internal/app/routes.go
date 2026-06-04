@@ -40,6 +40,8 @@ func (a *App) Router() http.Handler {
 	r.Group(func(protected chi.Router) {
 		protected.Use(internalauth.RequireSession(a.SessionManager))
 		protected.Get("/me", a.handleMe)
+		protected.Post("/me/active-organization", a.handleSetActiveOrganization)
+		protected.Post("/organizations/{organizationID}/leave", a.handleLeaveOrganization)
 		protected.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
 		protected.Get("/organizations/{organizationID}/projects", a.handleListProjects)
 		protected.Post("/organizations/{organizationID}/invites", a.handleCreateOrganizationInvite)

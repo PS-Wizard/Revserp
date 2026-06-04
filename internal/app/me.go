@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 
@@ -202,4 +203,143 @@ func resolveActiveOrganizationID(currentActiveOrgID pgtype.UUID, organizations [
 		return pgtype.UUID{}
 	}
 	return organizations[0].ID
+}
+
+type setActiveOrganizationRequest struct {
+	OrganizationID string `json:"organization_id"`
+}
+
+// handleSetActiveOrganization switches the current backend session into one organization the user belongs to.
+func (a *App) handleSetActiveOrganization(w http.ResponseWriter, r *http.Request) {
+	session, ok := internalauth.SessionFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var requestBody setActiveOrganizationRequest
+	if err := readJSON(r, &requestBody); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	organizationID, err := parseUUIDParam(strings.TrimSpace(requestBody.OrganizationID))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid organization id")
+		return
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	queries := a.Queries.WithTx(tx)
+	user, _, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, organizationID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"active_org_id": organizationID.String(),
+	})
+}
+
+// handleLeaveOrganization removes the current user from one non-owner workspace.
+func (a *App) handleLeaveOrganization(w http.ResponseWriter, r *http.Request) {
+	organizationID, err := parseUUIDParam(strings.TrimSpace(chi.URLParam(r, "organizationID")))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid organization id")
+		return
+	}
+
+	session, ok := internalauth.SessionFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	queries := a.Queries.WithTx(tx)
+	user, organizations, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	membership, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if membership.Role == "owner" {
+		writeJSONError(w, http.StatusConflict, "owners cannot leave their own workspace")
+		return
+	}
+
+	deletedRows, err := queries.RemoveOrganizationMember(r.Context(), sqlc.RemoveOrganizationMemberParams{OrgID: organizationID, UserID: user.ID})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if deletedRows == 0 {
+		writeJSONError(w, http.StatusNotFound, "workspace membership not found")
+		return
+	}
+
+	if session.ActiveOrgID.Valid && session.ActiveOrgID == organizationID {
+		nextActiveOrganizationID := pgtype.UUID{}
+		for _, organization := range organizations {
+			if organization.ID != organizationID {
+				nextActiveOrganizationID = organization.ID
+				break
+			}
+		}
+		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, nextActiveOrganizationID); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
