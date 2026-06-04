@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -109,6 +110,16 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid project id")
 		return
 	}
+	limit, offset, err := parsePaginationParams(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	statusFilter, err := parseCrawlStatusFilter(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	tx, err := a.DB.Begin(r.Context())
 	if err != nil {
@@ -134,7 +145,17 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	crawls, err := queries.ListCrawlsForProject(r.Context(), projectID)
+	total, err := queries.CountCrawlsForProject(r.Context(), sqlc.CountCrawlsForProjectParams{ProjectID: projectID, Column2: statusFilter})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	crawls, err := queries.ListCrawlsForProject(r.Context(), sqlc.ListCrawlsForProjectParams{
+		ProjectID: projectID,
+		Column2:   statusFilter,
+		Limit:     limit,
+		Offset:    offset,
+	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -150,7 +171,15 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newCrawlResponseFromListRow(crawl))
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"crawls": responses})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"crawls": responses,
+		"pagination": paginationResponse{
+			Limit:  limit,
+			Offset: offset,
+			Count:  int32(len(responses)),
+			Total:  total,
+		},
+	})
 }
 
 // handleGetCrawl returns a crawl only if the current user belongs to the owning organization.
@@ -333,4 +362,19 @@ func normalizeCreateCrawlConfigSnapshot(rawConfigSnapshot json.RawMessage) ([]by
 // formatTimestamp formats a database timestamp for API responses.
 func formatTimestamp(value pgtype.Timestamptz) string {
 	return value.Time.UTC().Format(time.RFC3339)
+}
+
+// parseCrawlStatusFilter validates the optional crawl list status filter.
+func parseCrawlStatusFilter(r *http.Request) (string, error) {
+	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+	if statusFilter == "" {
+		return "", nil
+	}
+
+	switch statusFilter {
+	case "queued", "running", "completed", "failed":
+		return statusFilter, nil
+	default:
+		return "", errors.New("invalid status")
+	}
 }

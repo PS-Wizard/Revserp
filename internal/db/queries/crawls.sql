@@ -39,6 +39,12 @@ WHERE c.id = $1
   AND om.user_id = $2
 LIMIT 1;
 
+-- name: CountCrawlsForProject :one
+SELECT COUNT(*)
+FROM crawls
+WHERE project_id = $1
+  AND ($2 = '' OR status = $2);
+
 -- name: ListCrawlsForProject :many
 SELECT
     id,
@@ -59,7 +65,10 @@ SELECT
     created_at
 FROM crawls
 WHERE project_id = $1
-ORDER BY created_at DESC;
+  AND ($2 = '' OR status = $2)
+ORDER BY created_at DESC
+LIMIT $3
+OFFSET $4;
 
 -- name: MarkCrawlRunning :exec
 UPDATE crawls

@@ -58,6 +58,25 @@ func (q *Queries) ClaimNextQueuedCrawl(ctx context.Context) (ClaimNextQueuedCraw
 	return i, err
 }
 
+const countCrawlsForProject = `-- name: CountCrawlsForProject :one
+SELECT COUNT(*)
+FROM crawls
+WHERE project_id = $1
+  AND ($2 = '' OR status = $2)
+`
+
+type CountCrawlsForProjectParams struct {
+	ProjectID pgtype.UUID
+	Column2   interface{}
+}
+
+func (q *Queries) CountCrawlsForProject(ctx context.Context, arg CountCrawlsForProjectParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlsForProject, arg.ProjectID, arg.Column2)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCrawl = `-- name: CreateCrawl :one
 INSERT INTO crawls (
     project_id,
@@ -226,8 +245,18 @@ SELECT
     created_at
 FROM crawls
 WHERE project_id = $1
+  AND ($2 = '' OR status = $2)
 ORDER BY created_at DESC
+LIMIT $3
+OFFSET $4
 `
+
+type ListCrawlsForProjectParams struct {
+	ProjectID pgtype.UUID
+	Column2   interface{}
+	Limit     int32
+	Offset    int32
+}
 
 type ListCrawlsForProjectRow struct {
 	ID               pgtype.UUID
@@ -248,8 +277,13 @@ type ListCrawlsForProjectRow struct {
 	CreatedAt        pgtype.Timestamptz
 }
 
-func (q *Queries) ListCrawlsForProject(ctx context.Context, projectID pgtype.UUID) ([]ListCrawlsForProjectRow, error) {
-	rows, err := q.db.Query(ctx, listCrawlsForProject, projectID)
+func (q *Queries) ListCrawlsForProject(ctx context.Context, arg ListCrawlsForProjectParams) ([]ListCrawlsForProjectRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlsForProject,
+		arg.ProjectID,
+		arg.Column2,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}
