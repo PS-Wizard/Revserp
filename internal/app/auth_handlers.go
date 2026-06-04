@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -19,6 +20,12 @@ type authCredentialsRequest struct {
 type signUpPendingResponse struct {
 	SignupCompletedWithoutSession bool   `json:"signup_completed_without_session"`
 	Email                         string `json:"email"`
+}
+
+type authOAuthExchangeRequest struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresAt    string `json:"expires_at"`
 }
 
 // handleSignUp creates one Supabase account, bootstraps local data, and starts a backend session when possible.
@@ -77,6 +84,37 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.finishBackendSignIn(w, r, supabaseSession); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+// handleOAuthExchange converts a Supabase OAuth session into one backend-owned session.
+func (a *App) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
+	var requestBody authOAuthExchangeRequest
+	if err := readJSON(r, &requestBody); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	accessToken := strings.TrimSpace(requestBody.AccessToken)
+	refreshToken := strings.TrimSpace(requestBody.RefreshToken)
+	expiresAtRaw := strings.TrimSpace(requestBody.ExpiresAt)
+	if accessToken == "" || refreshToken == "" || expiresAtRaw == "" {
+		writeJSONError(w, http.StatusBadRequest, "access_token, refresh_token, and expires_at are required")
+		return
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339, expiresAtRaw)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid expires_at")
+		return
+	}
+
+	if err := a.finishBackendSignIn(w, r, internalauth.SupabaseSession{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    expiresAt.UTC(),
+	}); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 	}
 }

@@ -33,6 +33,7 @@ func (a *App) Router() http.Handler {
 	r.Get("/health", a.handleHealth)
 	r.Post("/auth/signup", a.handleSignUp)
 	r.Post("/auth/login", a.handleLogin)
+	r.Post("/auth/oauth/exchange", a.handleOAuthExchange)
 	r.Post("/auth/logout", a.handleLogout)
 
 	r.Group(func(protected chi.Router) {
