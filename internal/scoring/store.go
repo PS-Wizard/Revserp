@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -49,12 +50,22 @@ func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID) (CrawlS
 	for _, crawlIssue := range crawlIssues {
 		crawlIssueSignals = append(crawlIssueSignals, CrawlIssueSignal{
 			URL:       crawlIssue.Url,
+			Pillar:    crawlIssue.Pillar,
+			Bucket:    crawlIssue.Bucket,
 			Severity:  crawlIssue.Severity,
 			IssueType: crawlIssue.IssueType,
+			Message:   crawlIssue.Message,
+			Details:   crawlIssue.Details,
 		})
 	}
 
-	crawlScores := CalculateScores(crawlPageSignals, crawlIssueSignals)
+	crawlScoreBreakdown := BuildScoreBreakdown(crawlID.String(), crawlPageSignals, crawlIssueSignals)
+	crawlScores := crawlScoreBreakdown.CrawlScores()
+	breakdownJSON, err := json.Marshal(crawlScoreBreakdown)
+	if err != nil {
+		return CrawlScores{}, fmt.Errorf("marshal crawl score breakdown: %w", err)
+	}
+
 	if err := store.queries.UpdateCrawlScores(ctx, sqlc.UpdateCrawlScoresParams{
 		ID:             crawlID,
 		SeoScore:       pgtype.Int4{Int32: crawlScores.SEOScore, Valid: true},
@@ -63,6 +74,13 @@ func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID) (CrawlS
 		OverallScore:   pgtype.Int4{Int32: crawlScores.OverallScore, Valid: true},
 	}); err != nil {
 		return CrawlScores{}, fmt.Errorf("update crawl scores: %w", err)
+	}
+	if err := store.queries.UpsertCrawlScoreBreakdown(ctx, sqlc.UpsertCrawlScoreBreakdownParams{
+		CrawlID:        crawlID,
+		ScoringVersion: scoringVersion,
+		BreakdownJson:  breakdownJSON,
+	}); err != nil {
+		return CrawlScores{}, fmt.Errorf("upsert crawl score breakdown: %w", err)
 	}
 
 	return crawlScores, nil

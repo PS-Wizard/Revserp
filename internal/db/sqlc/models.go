@@ -92,6 +92,14 @@ type CrawlPage struct {
 	ContentSha256           pgtype.Text
 }
 
+type CrawlScoreBreakdown struct {
+	CrawlID        pgtype.UUID
+	ScoringVersion string
+	BreakdownJson  []byte
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type Organization struct {
 	ID        pgtype.UUID
 	Name      string

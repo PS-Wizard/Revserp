@@ -2,57 +2,68 @@ package scoring
 
 import "testing"
 
-func TestCalculateScores(t *testing.T) {
-	scores := CalculateScores([]CrawlPageSignal{
-		{
-			URL:            "https://example.com/healthy",
-			ContentType:    "text/html; charset=utf-8",
-			WordCount:      450,
-			ResponseTimeMs: 200,
-			SizeBytes:      300 * 1024,
-			OGTags:         []byte(`{"og:title":"Healthy"}`),
-			JSONLD:         []byte(`[{"@type":"Article"}]`),
-		},
-		{
-			URL:            "https://example.com/problem",
-			ContentType:    "text/html; charset=utf-8",
-			WordCount:      80,
-			ResponseTimeMs: 1800,
-			SizeBytes:      4 * 1024 * 1024,
-		},
-	}, []CrawlIssueSignal{
-		{URL: "https://example.com/problem", Severity: "high", IssueType: "missing_title"},
-		{URL: "https://example.com/problem", Severity: "medium", IssueType: "thin_content"},
-		{URL: "https://example.com/problem", Severity: "medium", IssueType: "slow_response_time"},
-		{URL: "https://example.com/problem", Severity: "high", IssueType: "large_page_size"},
-		{URL: "https://example.com/problem", Severity: "high", IssueType: "missing_structured_data"},
-	})
+func TestCalculateScoresUsesPillarScopedIssueBuckets(t *testing.T) {
+	crawlPageSignals := []CrawlPageSignal{}
+	for pageIndex := 0; pageIndex < 12; pageIndex++ {
+		crawlPageSignals = append(crawlPageSignals, CrawlPageSignal{
+			URL:         "https://example.com/page-" + string(rune('a'+pageIndex)),
+			ContentType: "text/html; charset=utf-8",
+		})
+	}
 
-	if scores.SEOScore <= 0 || scores.SEOScore >= 100 {
-		t.Fatalf("unexpected seo score %d", scores.SEOScore)
+	crawlIssueSignals := []CrawlIssueSignal{}
+	for pageIndex := 0; pageIndex < 6; pageIndex++ {
+		pageURL := crawlPageSignals[pageIndex].URL
+		crawlIssueSignals = append(crawlIssueSignals,
+			CrawlIssueSignal{URL: pageURL, Pillar: "seo", Bucket: "serp_metadata", Severity: "high", IssueType: "missing_title"},
+			CrawlIssueSignal{URL: pageURL, Pillar: "aeo", Bucket: "answerability", Severity: "high", IssueType: "missing_structured_data"},
+			CrawlIssueSignal{URL: pageURL, Pillar: "pagespeed", Bucket: "server_responsiveness", Severity: "high", IssueType: "slow_response_time"},
+		)
 	}
-	if scores.AEOScore <= 0 || scores.AEOScore >= 100 {
-		t.Fatalf("unexpected aeo score %d", scores.AEOScore)
+
+	scores := CalculateScores(crawlPageSignals, crawlIssueSignals)
+
+	if scores.SEOScore >= 100 || scores.SEOScore <= 0 {
+		t.Fatalf("expected seo score to be reduced into range, got %d", scores.SEOScore)
 	}
-	if scores.PageSpeedScore <= 0 || scores.PageSpeedScore >= 100 {
-		t.Fatalf("unexpected pagespeed score %d", scores.PageSpeedScore)
+	if scores.AEOScore >= 100 || scores.AEOScore <= 0 {
+		t.Fatalf("expected aeo score to be reduced into range, got %d", scores.AEOScore)
 	}
-	if scores.OverallScore <= 0 || scores.OverallScore >= 100 {
-		t.Fatalf("unexpected overall score %d", scores.OverallScore)
+	if scores.PageSpeedScore >= 100 || scores.PageSpeedScore <= 0 {
+		t.Fatalf("expected pagespeed score to be reduced into range, got %d", scores.PageSpeedScore)
+	}
+	if scores.OverallScore >= 100 || scores.OverallScore <= 0 {
+		t.Fatalf("expected overall score to be reduced into range, got %d", scores.OverallScore)
 	}
 }
 
-func TestCalculateScoresIgnoresDuplicateIssueURLsPerCode(t *testing.T) {
-	seoScoreWithDuplicates := calculateSEOScore([]CrawlPageSignal{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}, []CrawlIssueSignal{
-		{URL: "https://example.com/one", Severity: "high", IssueType: "missing_title"},
-		{URL: "https://example.com/one", Severity: "high", IssueType: "missing_title"},
+func TestCalculatePillarScoreIgnoresIssuesFromOtherPillars(t *testing.T) {
+	crawlPageSignals := []CrawlPageSignal{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}
+	seoScoreWithoutAEOIssues := calculatePillarScore("seo", crawlPageSignals, []CrawlIssueSignal{
+		{URL: "https://example.com/one", Pillar: "seo", Bucket: "serp_metadata", Severity: "high", IssueType: "missing_title"},
 	})
-	seoScoreWithoutDuplicates := calculateSEOScore([]CrawlPageSignal{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}, []CrawlIssueSignal{
-		{URL: "https://example.com/one", Severity: "high", IssueType: "missing_title"},
+	seoScoreWithAEOIssues := calculatePillarScore("seo", crawlPageSignals, []CrawlIssueSignal{
+		{URL: "https://example.com/one", Pillar: "seo", Bucket: "serp_metadata", Severity: "high", IssueType: "missing_title"},
+		{URL: "https://example.com/one", Pillar: "aeo", Bucket: "answerability", Severity: "high", IssueType: "missing_structured_data"},
+		{URL: "https://example.com/one", Pillar: "pagespeed", Bucket: "server_responsiveness", Severity: "high", IssueType: "slow_response_time"},
 	})
 
-	if seoScoreWithDuplicates != seoScoreWithoutDuplicates {
-		t.Fatalf("expected duplicate issue rows to have no extra effect: %d vs %d", seoScoreWithDuplicates, seoScoreWithoutDuplicates)
+	if seoScoreWithoutAEOIssues != seoScoreWithAEOIssues {
+		t.Fatalf("expected other pillars to have no seo effect: %d vs %d", seoScoreWithoutAEOIssues, seoScoreWithAEOIssues)
+	}
+}
+
+func TestCalculatePillarScoreIgnoresDuplicateIssueURLsPerType(t *testing.T) {
+	pageSpeedScoreWithDuplicates := calculatePillarScore("pagespeed", []CrawlPageSignal{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}, []CrawlIssueSignal{
+		{URL: "https://example.com/one", Pillar: "pagespeed", Bucket: "server_responsiveness", Severity: "high", IssueType: "slow_response_time"},
+		{URL: "https://example.com/one", Pillar: "pagespeed", Bucket: "server_responsiveness", Severity: "high", IssueType: "slow_response_time"},
+	})
+	pageSpeedScoreWithoutDuplicates := calculatePillarScore("pagespeed", []CrawlPageSignal{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}, []CrawlIssueSignal{
+		{URL: "https://example.com/one", Pillar: "pagespeed", Bucket: "server_responsiveness", Severity: "high", IssueType: "slow_response_time"},
+	})
+
+	if pageSpeedScoreWithDuplicates != pageSpeedScoreWithoutDuplicates {
+		t.Fatalf("expected duplicate issue rows to have no extra effect: %d vs %d", pageSpeedScoreWithDuplicates, pageSpeedScoreWithoutDuplicates)
 	}
 }
 
