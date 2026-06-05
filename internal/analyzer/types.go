@@ -9,6 +9,7 @@ type PageFact struct {
 	Depth                   int32
 	Title                   string
 	MetaDescription         string
+	Author                  string
 	H1                      string
 	H1Count                 int32
 	H2Count                 int32

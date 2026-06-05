@@ -20,6 +20,7 @@ const lowInternalLinksOutThreshold = 2
 const lowInternalLinksInThreshold = 1
 const tooManyImagesMinimumImageCount = 10
 const tooManyImagesWordsPerImageThreshold = 50
+const authorSignalMinimumWordCount = 300
 
 // DeriveIssues builds backend issue rows from persisted crawl facts.
 func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
@@ -101,6 +102,9 @@ func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
 		}
 		if !hasMeaningfulJSONLD(pageFact.JSONLD) {
 			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "answerability", "missing_structured_data", "high", "Page is missing structured data", "Add JSON-LD structured data to the page."))
+		}
+		if isArticleLikePage(pageFact) && !hasAuthorSignal(pageFact) {
+			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "expertise", "missing_author_signal", "low", "Page is missing an author signal", "Article-like page does not expose author attribution via metadata or structured data."))
 		}
 
 		if pageFact.ImageCount > 0 && pageFact.ImagesWithoutAltCount > 0 {
@@ -288,4 +292,104 @@ func isTooManyImagesOnPage(pageFact PageFact) bool {
 	}
 
 	return pageFact.WordCount/pageFact.ImageCount < tooManyImagesWordsPerImageThreshold
+}
+
+// isArticleLikePage reports whether a page looks like editorial content that should expose authorship.
+func isArticleLikePage(pageFact PageFact) bool {
+	if hasArticleLikeJSONLDType(pageFact.JSONLD) {
+		return true
+	}
+	if pageFact.WordCount < authorSignalMinimumWordCount {
+		return false
+	}
+
+	return hasArticleLikeURLPath(pageFact.URL)
+}
+
+// hasAuthorSignal reports whether a page exposes an author signal in persisted facts.
+func hasAuthorSignal(pageFact PageFact) bool {
+	if strings.TrimSpace(pageFact.Author) != "" {
+		return true
+	}
+
+	var ogTags map[string]string
+	if err := json.Unmarshal(pageFact.OGTags, &ogTags); err == nil {
+		if strings.TrimSpace(ogTags["og:author"]) != "" || strings.TrimSpace(ogTags["article:author"]) != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// hasArticleLikeJSONLDType reports whether persisted JSON-LD includes article-like schema types.
+func hasArticleLikeJSONLDType(jsonLD []byte) bool {
+	var parsedJSONLD any
+	if err := json.Unmarshal(jsonLD, &parsedJSONLD); err != nil {
+		return false
+	}
+
+	return hasArticleLikeJSONLDTypeValue(parsedJSONLD)
+}
+
+// hasArticleLikeJSONLDTypeValue walks one JSON-LD value looking for article-like schema types.
+func hasArticleLikeJSONLDTypeValue(value any) bool {
+	switch typedValue := value.(type) {
+	case map[string]any:
+		if rawGraphEntries, ok := typedValue["@graph"].([]any); ok {
+			for _, graphEntry := range rawGraphEntries {
+				if hasArticleLikeJSONLDTypeValue(graphEntry) {
+					return true
+				}
+			}
+		}
+
+		return hasArticleLikeSchemaType(typedValue["@type"])
+	case []any:
+		for _, entry := range typedValue {
+			if hasArticleLikeJSONLDTypeValue(entry) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// hasArticleLikeSchemaType reports whether one JSON-LD @type is article-like.
+func hasArticleLikeSchemaType(value any) bool {
+	switch typedValue := value.(type) {
+	case string:
+		return isArticleLikeSchemaTypeName(typedValue)
+	case []any:
+		for _, entry := range typedValue {
+			typeName, ok := entry.(string)
+			if ok && isArticleLikeSchemaTypeName(typeName) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// isArticleLikeSchemaTypeName reports whether one schema type implies authored editorial content.
+func isArticleLikeSchemaTypeName(typeName string) bool {
+	switch strings.TrimSpace(typeName) {
+	case "Article", "BlogPosting", "NewsArticle", "TechArticle":
+		return true
+	default:
+		return false
+	}
+}
+
+// hasArticleLikeURLPath reports whether one page URL path looks editorial.
+func hasArticleLikeURLPath(pageURL string) bool {
+	for _, editorialPathFragment := range []string{"/blog/", "/article/", "/articles/", "/guides/", "/news/"} {
+		if strings.Contains(pageURL, editorialPathFragment) {
+			return true
+		}
+	}
+
+	return false
 }

@@ -9,13 +9,13 @@ func TestParserParseHTML(t *testing.T) {
 	<head>
 		<title> Test Page </title>
 		<meta name="description" content=" A useful description. ">
+		<meta name="author" content=" Jane Doe ">
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<meta name="robots" content="index,follow">
 		<meta property="og:title" content="OG Test Page">
 		<meta property="og:type" content="website">
 		<link rel="canonical" href="/canonical-page">
 		<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage"}</script>
-	</head>
 	<body>
 		<h1>   Main Heading   </h1>
 		<p>This is a useful paragraph with real body text.</p>
@@ -49,6 +49,10 @@ func TestParserParseHTML(t *testing.T) {
 
 	if parsedPage.MetaDescription != "A useful description." {
 		t.Fatalf("got meta description %q", parsedPage.MetaDescription)
+	}
+
+	if parsedPage.Author != "Jane Doe" {
+		t.Fatalf("got author %q", parsedPage.Author)
 	}
 
 	if parsedPage.CanonicalURL != "https://revketer.ai/canonical-page" {
@@ -228,5 +232,27 @@ func TestParserParseHTMLBuildsHeadingOutlineInDocumentOrder(t *testing.T) {
 	}
 	if parsedPage.HeadingOutline[3].Level != 4 || parsedPage.HeadingOutline[3].Text != "Deep detail" {
 		t.Fatalf("got heading outline entry %#v", parsedPage.HeadingOutline[3])
+	}
+}
+
+func TestParserParseHTMLExtractsAuthorFromJSONLD(t *testing.T) {
+	htmlDocument := []byte(`
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","name":"Revserp"},{"@type":"Article","author":{"@type":"Person","name":"Avery Stone"}}]}</script>
+	</head>
+	<body><h1>Article</h1></body>
+	</html>
+	`)
+
+	parser := NewParser()
+	parsedPage, err := parser.ParseHTML("https://revketer.ai/blog/post", "text/html", htmlDocument)
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+
+	if parsedPage.Author != "Avery Stone" {
+		t.Fatalf("got author %q", parsedPage.Author)
 	}
 }

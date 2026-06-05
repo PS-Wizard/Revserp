@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"slices"
@@ -29,6 +30,7 @@ type ParsedPage struct {
 	URL                     string
 	Title                   string
 	MetaDescription         string
+	Author                  string
 	CanonicalURL            string
 	Lang                    string
 	Viewport                string
@@ -93,6 +95,7 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 	parsedPage.H2Headings = extractHeadingTexts(document, "h2")
 	parsedPage.H3Headings = extractHeadingTexts(document, "h3")
 	parsedPage.HeadingOutline = extractHeadingOutline(document)
+	parsedPage.Author = extractAuthor(document, parsedPage.JSONLDBlocks)
 	parsedPage.Links = extractLinks(document, parsedPageURL)
 
 	if parsedPage.CanonicalURL != "" {
@@ -215,6 +218,133 @@ func extractJSONLDBlocks(document *goquery.Document) []string {
 	})
 
 	return jsonLDBlocks
+}
+
+// extractAuthor returns the strongest author signal available from metadata or JSON-LD.
+func extractAuthor(document *goquery.Document, jsonLDBlocks []string) string {
+	authorSignal := extractMetaAuthor(document)
+	if authorSignal != "" {
+		return authorSignal
+	}
+
+	return extractJSONLDAuthor(jsonLDBlocks)
+}
+
+// extractMetaAuthor returns a normalized author value from common metadata fields.
+func extractMetaAuthor(document *goquery.Document) string {
+	var authorSignal string
+
+	document.Find(`meta[name], meta[property]`).EachWithBreak(func(_ int, selection *goquery.Selection) bool {
+		metaName := strings.ToLower(strings.TrimSpace(selection.AttrOr("name", "")))
+		metaProperty := strings.ToLower(strings.TrimSpace(selection.AttrOr("property", "")))
+		if metaName != "author" && metaProperty != "article:author" {
+			return true
+		}
+
+		authorSignal = normalizeWhitespace(selection.AttrOr("content", ""))
+		return authorSignal == ""
+	})
+
+	return authorSignal
+}
+
+// extractJSONLDAuthor returns the first author name found in relevant JSON-LD blocks.
+func extractJSONLDAuthor(jsonLDBlocks []string) string {
+	for _, jsonLDBlock := range jsonLDBlocks {
+		var parsedJSONLD any
+		if err := json.Unmarshal([]byte(jsonLDBlock), &parsedJSONLD); err != nil {
+			continue
+		}
+
+		if authorSignal := extractJSONLDAuthorFromValue(parsedJSONLD); authorSignal != "" {
+			return authorSignal
+		}
+	}
+
+	return ""
+}
+
+// extractJSONLDAuthorFromValue walks one JSON-LD value and returns the first author name it finds.
+func extractJSONLDAuthorFromValue(value any) string {
+	switch typedValue := value.(type) {
+	case map[string]any:
+		if graphEntries, ok := typedValue["@graph"].([]any); ok {
+			for _, graphEntry := range graphEntries {
+				if authorSignal := extractJSONLDAuthorFromValue(graphEntry); authorSignal != "" {
+					return authorSignal
+				}
+			}
+		}
+
+		if !hasRelevantJSONLDType(typedValue) {
+			return ""
+		}
+
+		return extractJSONLDAuthorName(typedValue["author"])
+	case []any:
+		for _, entry := range typedValue {
+			if authorSignal := extractJSONLDAuthorFromValue(entry); authorSignal != "" {
+				return authorSignal
+			}
+		}
+	}
+
+	return ""
+}
+
+// hasRelevantJSONLDType reports whether one JSON-LD node is article-like enough for author extraction.
+func hasRelevantJSONLDType(jsonLDNode map[string]any) bool {
+	switch nodeType := jsonLDNode["@type"].(type) {
+	case string:
+		return isRelevantJSONLDType(nodeType)
+	case []any:
+		for _, rawType := range nodeType {
+			typeName, ok := rawType.(string)
+			if ok && isRelevantJSONLDType(typeName) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// isRelevantJSONLDType reports whether a JSON-LD type commonly carries authorship signals.
+func isRelevantJSONLDType(typeName string) bool {
+	switch strings.TrimSpace(typeName) {
+	case "Article", "BlogPosting", "NewsArticle", "TechArticle", "WebPage":
+		return true
+	default:
+		return false
+	}
+}
+
+// extractJSONLDAuthorName normalizes one JSON-LD author value into a plain string.
+func extractJSONLDAuthorName(value any) string {
+	switch typedValue := value.(type) {
+	case string:
+		return normalizeWhitespace(typedValue)
+	case map[string]any:
+		return normalizeWhitespace(stringValue(typedValue["name"]))
+	case []any:
+		for _, entry := range typedValue {
+			if authorSignal := extractJSONLDAuthorName(entry); authorSignal != "" {
+				return authorSignal
+			}
+		}
+	}
+
+	return ""
+}
+
+// stringValue returns one string value from a loosely typed JSON field.
+func stringValue(value any) string {
+	stringValue, ok := value.(string)
+	if !ok {
+		return ""
+	}
+
+	return stringValue
 }
 
 // extractImageCounts returns basic image counts from a document.

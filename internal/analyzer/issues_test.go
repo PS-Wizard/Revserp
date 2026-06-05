@@ -155,6 +155,7 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 	assertIssueType(t, derivedIssues, "nofollow_page")
 	assertIssueType(t, derivedIssues, "missing_og_tags")
 	assertIssueType(t, derivedIssues, "missing_structured_data")
+	assertIssueType(t, derivedIssues, "missing_author_signal")
 	assertIssueType(t, derivedIssues, "images_missing_alt")
 	assertIssueType(t, derivedIssues, "images_missing_dimensions")
 	assertIssueType(t, derivedIssues, "too_many_images_on_page")
@@ -347,4 +348,38 @@ func TestDeriveIssuesBuildsSkippedHeadingLevelsIssue(t *testing.T) {
 	assertIssueType(t, derivedIssues, "skipped_heading_levels")
 	assertIssueDetailContains(t, derivedIssues, "skipped_heading_levels", `H1 "Overview" jumps to H3 "Deep dive".`)
 	assertIssueDetailContains(t, derivedIssues, "skipped_heading_levels", `H2 "Details" jumps to H4 "Implementation".`)
+}
+
+func TestDeriveIssuesSkipsMissingAuthorSignalWhenAuthorExists(t *testing.T) {
+	pageFacts := []PageFact{
+		{
+			ID:              pgtype.UUID{Valid: true},
+			URL:             "https://example.com/blog/post",
+			Title:           "Article page title example for author signal testing",
+			MetaDescription: "This meta description is comfortably within the recommended range for author signal testing.",
+			Author:          "Jane Doe",
+			H1:              "Article heading",
+			H1Count:         1,
+			H2Count:         1,
+			WordCount:       450,
+			CanonicalURL:    "https://example.com/blog/post",
+			Viewport:        "width=device-width, initial-scale=1",
+			Lang:            "en",
+			OGTags:          []byte(`{"og:title":"Example"}`),
+			JSONLD:          []byte(`[{"@type":"Article"}]`),
+		},
+	}
+
+	derivedIssues := DeriveIssues(pageFacts, nil)
+	assertNoIssueType(t, derivedIssues, "missing_author_signal")
+}
+
+func assertNoIssueType(t *testing.T, derivedIssues []DerivedIssue, issueType string) {
+	t.Helper()
+
+	for _, derivedIssue := range derivedIssues {
+		if derivedIssue.IssueType == issueType {
+			t.Fatalf("unexpected issue type %q", issueType)
+		}
+	}
 }

@@ -147,7 +147,7 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		WordCount:               nullableInt4(countWords(extractPageVisibleText(parsedPage))),
 		VisibleText:             nullableText(extractPageVisibleText(parsedPage)),
 		ContentSha256:           pgtype.Text{},
-		Author:                  pgtype.Text{},
+		Author:                  nullableText(extractPageAuthor(parsedPage)),
 		Lang:                    nullableText(extractPageLang(parsedPage)),
 		Viewport:                nullableText(extractPageViewport(parsedPage)),
 		Robots:                  nullableText(extractPageRobots(parsedPage)),
@@ -265,6 +265,15 @@ func extractMetaDescription(parsedPage *ParsedPage) string {
 	}
 
 	return parsedPage.MetaDescription
+}
+
+// extractPageAuthor returns the parsed author signal when available.
+func extractPageAuthor(parsedPage *ParsedPage) string {
+	if parsedPage == nil {
+		return ""
+	}
+
+	return parsedPage.Author
 }
 
 // extractCanonicalURL returns the parsed canonical URL when available.
