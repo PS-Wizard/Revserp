@@ -105,7 +105,7 @@ func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
 		}
 
 		if pageFact.ResponseTimeMs > slowResponseTimeMillisecondsThreshold {
-			derivedIssues = append(derivedIssues, newPageSpeedIssue(pageFact, "server_responsiveness", "slow_response_time", "medium", "Page response time is slow", "Reduce server response time for this page."))
+			derivedIssues = append(derivedIssues, newPageSpeedIssue(pageFact, "server_responsiveness", "slow_response_time", "medium", "Page response time is slow", fmt.Sprintf("Page response time is %dms.", pageFact.ResponseTimeMs)))
 		}
 		if pageFact.SizeBytes > largePageSizeBytesThreshold {
 			derivedIssues = append(derivedIssues, newPageSpeedIssue(pageFact, "page_weight", "large_page_size", "high", "Page size is large", fmt.Sprintf("Page size is %.1fMB (recommended: under 3MB).", bytesToMegabytes(pageFact.SizeBytes))))

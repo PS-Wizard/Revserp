@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -140,6 +141,7 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 	assertIssueType(t, derivedIssues, "images_missing_alt")
 	assertIssueType(t, derivedIssues, "images_missing_dimensions")
 	assertIssueType(t, derivedIssues, "slow_response_time")
+	assertIssueDetailContains(t, derivedIssues, "slow_response_time", "1500ms")
 	assertIssueType(t, derivedIssues, "moderate_page_size")
 	assertIssueType(t, derivedIssues, "large_page_size")
 	assertIssueType(t, derivedIssues, "client_error_status")
@@ -202,6 +204,22 @@ func assertIssueType(t *testing.T, derivedIssues []DerivedIssue, issueType strin
 		if derivedIssue.IssueType == issueType {
 			return
 		}
+	}
+
+	t.Fatalf("missing issue type %q", issueType)
+}
+
+func assertIssueDetailContains(t *testing.T, derivedIssues []DerivedIssue, issueType string, expectedDetailFragment string) {
+	t.Helper()
+
+	for _, derivedIssue := range derivedIssues {
+		if derivedIssue.IssueType != issueType {
+			continue
+		}
+		if !strings.Contains(derivedIssue.Details, expectedDetailFragment) {
+			t.Fatalf("issue type %q details %q did not contain %q", issueType, derivedIssue.Details, expectedDetailFragment)
+		}
+		return
 	}
 
 	t.Fatalf("missing issue type %q", issueType)
