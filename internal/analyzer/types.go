@@ -37,9 +37,10 @@ type LinkFact struct {
 type DerivedIssue struct {
 	CrawlPageID pgtype.UUID
 	URL         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
 	Severity    string
-	Category    string
-	Code        string
 	Message     string
 	Details     string
 }

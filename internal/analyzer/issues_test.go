@@ -119,34 +119,34 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 	}
 
 	derivedIssues := DeriveIssues(pageFacts, linkFacts)
-	assertIssueCode(t, derivedIssues, "missing_title")
-	assertIssueCode(t, derivedIssues, "title_too_short")
-	assertIssueCode(t, derivedIssues, "title_too_long")
-	assertIssueCode(t, derivedIssues, "missing_meta_description")
-	assertIssueCode(t, derivedIssues, "meta_description_too_short")
-	assertIssueCode(t, derivedIssues, "meta_description_too_long")
-	assertIssueCode(t, derivedIssues, "missing_h1")
-	assertIssueCode(t, derivedIssues, "multiple_h1")
-	assertIssueCode(t, derivedIssues, "missing_h2_on_long_page")
-	assertIssueCode(t, derivedIssues, "thin_content")
-	assertIssueCode(t, derivedIssues, "missing_canonical")
-	assertIssueCode(t, derivedIssues, "canonical_differs")
-	assertIssueCode(t, derivedIssues, "missing_viewport")
-	assertIssueCode(t, derivedIssues, "missing_lang")
-	assertIssueCode(t, derivedIssues, "noindex_page")
-	assertIssueCode(t, derivedIssues, "nofollow_page")
-	assertIssueCode(t, derivedIssues, "missing_og_tags")
-	assertIssueCode(t, derivedIssues, "missing_structured_data")
-	assertIssueCode(t, derivedIssues, "images_missing_alt")
-	assertIssueCode(t, derivedIssues, "images_missing_dimensions")
-	assertIssueCode(t, derivedIssues, "slow_response_time")
-	assertIssueCode(t, derivedIssues, "moderate_page_size")
-	assertIssueCode(t, derivedIssues, "large_page_size")
-	assertIssueCode(t, derivedIssues, "client_error_status")
-	assertIssueCode(t, derivedIssues, "server_error_status")
-	assertIssueCode(t, derivedIssues, "no_internal_links_out")
-	assertIssueCode(t, derivedIssues, "low_internal_links_out")
-	assertIssueCode(t, derivedIssues, "low_internal_links_in")
+	assertIssueType(t, derivedIssues, "missing_title")
+	assertIssueType(t, derivedIssues, "title_too_short")
+	assertIssueType(t, derivedIssues, "title_too_long")
+	assertIssueType(t, derivedIssues, "missing_meta_description")
+	assertIssueType(t, derivedIssues, "meta_description_too_short")
+	assertIssueType(t, derivedIssues, "meta_description_too_long")
+	assertIssueType(t, derivedIssues, "missing_h1")
+	assertIssueType(t, derivedIssues, "multiple_h1")
+	assertIssueType(t, derivedIssues, "missing_h2_on_long_page")
+	assertIssueType(t, derivedIssues, "thin_content")
+	assertIssueType(t, derivedIssues, "missing_canonical")
+	assertIssueType(t, derivedIssues, "canonical_differs")
+	assertIssueType(t, derivedIssues, "missing_viewport")
+	assertIssueType(t, derivedIssues, "missing_lang")
+	assertIssueType(t, derivedIssues, "noindex_page")
+	assertIssueType(t, derivedIssues, "nofollow_page")
+	assertIssueType(t, derivedIssues, "missing_og_tags")
+	assertIssueType(t, derivedIssues, "missing_structured_data")
+	assertIssueType(t, derivedIssues, "images_missing_alt")
+	assertIssueType(t, derivedIssues, "images_missing_dimensions")
+	assertIssueType(t, derivedIssues, "slow_response_time")
+	assertIssueType(t, derivedIssues, "moderate_page_size")
+	assertIssueType(t, derivedIssues, "large_page_size")
+	assertIssueType(t, derivedIssues, "client_error_status")
+	assertIssueType(t, derivedIssues, "server_error_status")
+	assertIssueType(t, derivedIssues, "no_internal_links_out")
+	assertIssueType(t, derivedIssues, "low_internal_links_out")
+	assertIssueType(t, derivedIssues, "low_internal_links_in")
 }
 
 func TestCountInternalLinksByPage(t *testing.T) {
@@ -195,14 +195,14 @@ func TestHasMeaningfulJSONLD(t *testing.T) {
 	}
 }
 
-func assertIssueCode(t *testing.T, derivedIssues []DerivedIssue, issueCode string) {
+func assertIssueType(t *testing.T, derivedIssues []DerivedIssue, issueType string) {
 	t.Helper()
 
 	for _, derivedIssue := range derivedIssues {
-		if derivedIssue.Code == issueCode {
+		if derivedIssue.IssueType == issueType {
 			return
 		}
 	}
 
-	t.Fatalf("missing issue code %q", issueCode)
+	t.Fatalf("missing issue type %q", issueType)
 }

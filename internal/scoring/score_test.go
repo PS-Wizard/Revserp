@@ -21,11 +21,11 @@ func TestCalculateScores(t *testing.T) {
 			SizeBytes:      4 * 1024 * 1024,
 		},
 	}, []CrawlIssueSignal{
-		{URL: "https://example.com/problem", Severity: "high", Code: "missing_title"},
-		{URL: "https://example.com/problem", Severity: "medium", Code: "thin_content"},
-		{URL: "https://example.com/problem", Severity: "medium", Code: "slow_response_time"},
-		{URL: "https://example.com/problem", Severity: "high", Code: "large_page_size"},
-		{URL: "https://example.com/problem", Severity: "high", Code: "missing_structured_data"},
+		{URL: "https://example.com/problem", Severity: "high", IssueType: "missing_title"},
+		{URL: "https://example.com/problem", Severity: "medium", IssueType: "thin_content"},
+		{URL: "https://example.com/problem", Severity: "medium", IssueType: "slow_response_time"},
+		{URL: "https://example.com/problem", Severity: "high", IssueType: "large_page_size"},
+		{URL: "https://example.com/problem", Severity: "high", IssueType: "missing_structured_data"},
 	})
 
 	if scores.SEOScore <= 0 || scores.SEOScore >= 100 {
@@ -44,11 +44,11 @@ func TestCalculateScores(t *testing.T) {
 
 func TestCalculateScoresIgnoresDuplicateIssueURLsPerCode(t *testing.T) {
 	seoScoreWithDuplicates := calculateSEOScore([]CrawlPageSignal{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}, []CrawlIssueSignal{
-		{URL: "https://example.com/one", Severity: "high", Code: "missing_title"},
-		{URL: "https://example.com/one", Severity: "high", Code: "missing_title"},
+		{URL: "https://example.com/one", Severity: "high", IssueType: "missing_title"},
+		{URL: "https://example.com/one", Severity: "high", IssueType: "missing_title"},
 	})
 	seoScoreWithoutDuplicates := calculateSEOScore([]CrawlPageSignal{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}, []CrawlIssueSignal{
-		{URL: "https://example.com/one", Severity: "high", Code: "missing_title"},
+		{URL: "https://example.com/one", Severity: "high", IssueType: "missing_title"},
 	})
 
 	if seoScoreWithDuplicates != seoScoreWithoutDuplicates {

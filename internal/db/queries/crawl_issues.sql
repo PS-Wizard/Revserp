@@ -3,9 +3,10 @@ INSERT INTO crawl_issues (
     crawl_id,
     crawl_page_id,
     url,
+    pillar,
+    bucket,
+    issue_type,
     severity,
-    category,
-    code,
     message,
     details
 ) VALUES (
@@ -16,9 +17,10 @@ INSERT INTO crawl_issues (
     $5,
     $6,
     $7,
-    $8
+    $8,
+    $9
 )
-RETURNING id, crawl_id, crawl_page_id, url, severity, category, code, message, details, created_at;
+RETURNING id, crawl_id, crawl_page_id, url, pillar, bucket, issue_type, severity, message, details, created_at;
 
 -- name: GetCrawlIssueByIDForUser :one
 SELECT
@@ -26,9 +28,10 @@ SELECT
     ci.crawl_id,
     ci.crawl_page_id,
     ci.url,
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type,
     ci.severity,
-    ci.category,
-    ci.code,
     ci.message,
     ci.details,
     ci.created_at
@@ -55,9 +58,10 @@ SELECT
     ci.crawl_id,
     ci.crawl_page_id,
     ci.url,
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type,
     ci.severity,
-    ci.category,
-    ci.code,
     ci.message,
     ci.details,
     ci.created_at
@@ -71,11 +75,9 @@ ORDER BY ci.created_at ASC
 LIMIT $3
 OFFSET $4;
 
-
 -- name: DeleteCrawlIssuesForCrawl :exec
 DELETE FROM crawl_issues
 WHERE crawl_id = $1;
-
 
 -- name: ListCrawlIssuesForCrawl :many
 SELECT
@@ -83,9 +85,10 @@ SELECT
     crawl_id,
     crawl_page_id,
     url,
+    pillar,
+    bucket,
+    issue_type,
     severity,
-    category,
-    code,
     message,
     details,
     created_at

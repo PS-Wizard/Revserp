@@ -48,9 +48,9 @@ func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID) (CrawlS
 	crawlIssueSignals := make([]CrawlIssueSignal, 0, len(crawlIssues))
 	for _, crawlIssue := range crawlIssues {
 		crawlIssueSignals = append(crawlIssueSignals, CrawlIssueSignal{
-			URL:      crawlIssue.Url,
-			Severity: crawlIssue.Severity,
-			Code:     crawlIssue.Code,
+			URL:       crawlIssue.Url,
+			Severity:  crawlIssue.Severity,
+			IssueType: crawlIssue.IssueType,
 		})
 	}
 

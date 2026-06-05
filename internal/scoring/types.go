@@ -14,9 +14,9 @@ type CrawlPageSignal struct {
 
 // CrawlIssueSignal holds the persisted issue fields used for crawl scoring.
 type CrawlIssueSignal struct {
-	URL      string
-	Severity string
-	Code     string
+	URL       string
+	Severity  string
+	IssueType string
 }
 
 // CrawlScores holds the persisted top-level crawl scores.

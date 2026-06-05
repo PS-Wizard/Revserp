@@ -71,10 +71,10 @@ func calculateSEOScore(crawlPageSignals []CrawlPageSignal, crawlIssueSignals []C
 		if strings.TrimSpace(crawlIssueSignal.URL) == "" {
 			continue
 		}
-		if _, exists := affectedURLsByIssueCode[crawlIssueSignal.Code]; !exists {
-			affectedURLsByIssueCode[crawlIssueSignal.Code] = make(map[string]struct{})
+		if _, exists := affectedURLsByIssueCode[crawlIssueSignal.IssueType]; !exists {
+			affectedURLsByIssueCode[crawlIssueSignal.IssueType] = make(map[string]struct{})
 		}
-		affectedURLsByIssueCode[crawlIssueSignal.Code][crawlIssueSignal.URL] = struct{}{}
+		affectedURLsByIssueCode[crawlIssueSignal.IssueType][crawlIssueSignal.URL] = struct{}{}
 	}
 
 	seoScore := 100.0
@@ -192,10 +192,10 @@ func isScoreablePage(crawlPageSignal CrawlPageSignal) bool {
 	return strings.Contains(contentType, "text/html")
 }
 
-// issueSeverityForCode returns the first severity associated with one issue code.
+// issueSeverityForCode returns the first severity associated with one issue type.
 func issueSeverityForCode(crawlIssueSignals []CrawlIssueSignal, issueCode string) string {
 	for _, crawlIssueSignal := range crawlIssueSignals {
-		if crawlIssueSignal.Code == issueCode {
+		if crawlIssueSignal.IssueType == issueCode {
 			return crawlIssueSignal.Severity
 		}
 	}

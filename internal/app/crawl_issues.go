@@ -17,9 +17,10 @@ import (
 type createCrawlIssueRequest struct {
 	CrawlPageID string `json:"crawl_page_id"`
 	URL         string `json:"url"`
+	Pillar      string `json:"pillar"`
+	Bucket      string `json:"bucket"`
+	IssueType   string `json:"issue_type"`
 	Severity    string `json:"severity"`
-	Category    string `json:"category"`
-	Code        string `json:"code"`
 	Message     string `json:"message"`
 	Details     string `json:"details"`
 }
@@ -29,9 +30,10 @@ type crawlIssueResponse struct {
 	CrawlID     string `json:"crawl_id"`
 	CrawlPageID string `json:"crawl_page_id,omitempty"`
 	URL         string `json:"url"`
+	Pillar      string `json:"pillar"`
+	Bucket      string `json:"bucket"`
+	IssueType   string `json:"issue_type"`
 	Severity    string `json:"severity"`
-	Category    string `json:"category"`
-	Code        string `json:"code"`
 	Message     string `json:"message"`
 	Details     string `json:"details"`
 	CreatedAt   string `json:"created_at"`
@@ -52,13 +54,22 @@ func (a *App) handleCreateCrawlIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	url := strings.TrimSpace(requestBody.URL)
-	severity := strings.TrimSpace(requestBody.Severity)
-	category := strings.TrimSpace(requestBody.Category)
-	code := strings.TrimSpace(requestBody.Code)
+	pillar, ok := normalizeIssuePillar(requestBody.Pillar)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "pillar must be seo, aeo, or pagespeed")
+		return
+	}
+	bucket := strings.TrimSpace(requestBody.Bucket)
+	issueType := strings.TrimSpace(requestBody.IssueType)
+	severity, ok := normalizeIssueSeverity(requestBody.Severity)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "severity must be high, medium, or low")
+		return
+	}
 	message := strings.TrimSpace(requestBody.Message)
 	details := strings.TrimSpace(requestBody.Details)
-	if url == "" || severity == "" || category == "" || code == "" || message == "" || details == "" {
-		writeJSONError(w, http.StatusBadRequest, "url, severity, category, code, message, and details are required")
+	if url == "" || bucket == "" || issueType == "" || message == "" || details == "" {
+		writeJSONError(w, http.StatusBadRequest, "url, pillar, bucket, issue_type, severity, message, and details are required")
 		return
 	}
 
@@ -113,9 +124,10 @@ func (a *App) handleCreateCrawlIssue(w http.ResponseWriter, r *http.Request) {
 		CrawlID:     crawlID,
 		CrawlPageID: crawlPageID,
 		Url:         url,
+		Pillar:      pillar,
+		Bucket:      bucket,
+		IssueType:   issueType,
 		Severity:    severity,
-		Category:    category,
-		Code:        code,
 		Message:     message,
 		Details:     details,
 	})
@@ -135,7 +147,7 @@ func (a *App) handleCreateCrawlIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, newCrawlIssueResponse(issue))
+	writeJSON(w, http.StatusCreated, newCreatedCrawlIssueResponse(issue))
 }
 
 // handleListCrawlIssues lists issue rows for a crawl the user can access.
@@ -198,7 +210,7 @@ func (a *App) handleListCrawlIssues(w http.ResponseWriter, r *http.Request) {
 
 	responses := make([]crawlIssueResponse, 0, len(issues))
 	for _, issue := range issues {
-		responses = append(responses, newCrawlIssueResponse(issue))
+		responses = append(responses, newListedCrawlIssueResponse(issue))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -250,25 +262,94 @@ func (a *App) handleGetCrawlIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newCrawlIssueResponse(issue))
+	writeJSON(w, http.StatusOK, newFetchedCrawlIssueResponse(issue))
 }
 
 // newCrawlIssueResponse converts a crawl issue row into an API response.
 func newCrawlIssueResponse(issue sqlc.CrawlIssue) crawlIssueResponse {
+	return buildCrawlIssueResponse(
+		issue.ID,
+		issue.CrawlID,
+		issue.CrawlPageID,
+		issue.Url,
+		issue.Pillar,
+		issue.Bucket,
+		issue.IssueType,
+		issue.Severity,
+		issue.Message,
+		issue.Details,
+		issue.CreatedAt,
+	)
+}
+
+// newCreatedCrawlIssueResponse converts an inserted crawl issue row into an API response.
+func newCreatedCrawlIssueResponse(issue sqlc.CreateCrawlIssueRow) crawlIssueResponse {
+	return buildCrawlIssueResponse(
+		issue.ID,
+		issue.CrawlID,
+		issue.CrawlPageID,
+		issue.Url,
+		issue.Pillar,
+		issue.Bucket,
+		issue.IssueType,
+		issue.Severity,
+		issue.Message,
+		issue.Details,
+		issue.CreatedAt,
+	)
+}
+
+// newListedCrawlIssueResponse converts a listed crawl issue row into an API response.
+func newListedCrawlIssueResponse(issue sqlc.ListCrawlIssuesForCrawlByUserRow) crawlIssueResponse {
+	return buildCrawlIssueResponse(
+		issue.ID,
+		issue.CrawlID,
+		issue.CrawlPageID,
+		issue.Url,
+		issue.Pillar,
+		issue.Bucket,
+		issue.IssueType,
+		issue.Severity,
+		issue.Message,
+		issue.Details,
+		issue.CreatedAt,
+	)
+}
+
+// newFetchedCrawlIssueResponse converts a fetched crawl issue row into an API response.
+func newFetchedCrawlIssueResponse(issue sqlc.GetCrawlIssueByIDForUserRow) crawlIssueResponse {
+	return buildCrawlIssueResponse(
+		issue.ID,
+		issue.CrawlID,
+		issue.CrawlPageID,
+		issue.Url,
+		issue.Pillar,
+		issue.Bucket,
+		issue.IssueType,
+		issue.Severity,
+		issue.Message,
+		issue.Details,
+		issue.CreatedAt,
+	)
+}
+
+// buildCrawlIssueResponse builds one issue API response from normalized row values.
+func buildCrawlIssueResponse(id pgtype.UUID, crawlID pgtype.UUID, crawlPageID pgtype.UUID, url string, pillar string, bucket string, issueType string, severity string, message string, details string, createdAt pgtype.Timestamptz) crawlIssueResponse {
 	response := crawlIssueResponse{
-		ID:        issue.ID.String(),
-		CrawlID:   issue.CrawlID.String(),
-		URL:       issue.Url,
-		Severity:  issue.Severity,
-		Category:  issue.Category,
-		Code:      issue.Code,
-		Message:   issue.Message,
-		Details:   issue.Details,
-		CreatedAt: formatTimestamp(issue.CreatedAt),
+		ID:        id.String(),
+		CrawlID:   crawlID.String(),
+		URL:       url,
+		Pillar:    pillar,
+		Bucket:    bucket,
+		IssueType: issueType,
+		Severity:  severity,
+		Message:   message,
+		Details:   details,
+		CreatedAt: formatTimestamp(createdAt),
 	}
 
-	if issue.CrawlPageID.Valid {
-		response.CrawlPageID = issue.CrawlPageID.String()
+	if crawlPageID.Valid {
+		response.CrawlPageID = crawlPageID.String()
 	}
 
 	return response
@@ -287,4 +368,30 @@ func parseOptionalUUID(value string) (pgtype.UUID, error) {
 	}
 
 	return id, nil
+}
+
+// normalizeIssuePillar validates and normalizes one issue pillar.
+func normalizeIssuePillar(value string) (string, bool) {
+	normalizedValue := strings.ToLower(strings.TrimSpace(value))
+	switch normalizedValue {
+	case "seo", "aeo", "pagespeed":
+		return normalizedValue, true
+	default:
+		return "", false
+	}
+}
+
+// normalizeIssueSeverity validates and normalizes one issue severity.
+func normalizeIssueSeverity(value string) (string, bool) {
+	normalizedValue := strings.ToLower(strings.TrimSpace(value))
+	switch normalizedValue {
+	case "high", "error":
+		return "high", true
+	case "medium", "warning":
+		return "medium", true
+	case "low", "info":
+		return "low", true
+	default:
+		return "", false
+	}
 }

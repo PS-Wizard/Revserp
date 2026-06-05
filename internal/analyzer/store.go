@@ -63,13 +63,14 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 			CrawlID:     crawlID,
 			CrawlPageID: derivedIssue.CrawlPageID,
 			Url:         derivedIssue.URL,
+			Pillar:      derivedIssue.Pillar,
+			Bucket:      derivedIssue.Bucket,
+			IssueType:   derivedIssue.IssueType,
 			Severity:    derivedIssue.Severity,
-			Category:    derivedIssue.Category,
-			Code:        derivedIssue.Code,
 			Message:     derivedIssue.Message,
 			Details:     derivedIssue.Details,
 		}); err != nil {
-			return 0, fmt.Errorf("create crawl issue %q for %q: %w", derivedIssue.Code, derivedIssue.URL, err)
+			return 0, fmt.Errorf("create crawl issue %q for %q: %w", derivedIssue.IssueType, derivedIssue.URL, err)
 		}
 	}
 

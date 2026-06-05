@@ -34,11 +34,12 @@ type CrawlIssue struct {
 	CrawlPageID pgtype.UUID
 	Url         string
 	Severity    string
-	Category    string
-	Code        string
 	Message     string
 	Details     string
 	CreatedAt   pgtype.Timestamptz
+	Pillar      string
+	Bucket      string
+	IssueType   string
 }
 
 type CrawlLink struct {

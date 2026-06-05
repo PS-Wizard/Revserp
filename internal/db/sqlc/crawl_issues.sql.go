@@ -38,9 +38,10 @@ INSERT INTO crawl_issues (
     crawl_id,
     crawl_page_id,
     url,
+    pillar,
+    bucket,
+    issue_type,
     severity,
-    category,
-    code,
     message,
     details
 ) VALUES (
@@ -51,42 +52,60 @@ INSERT INTO crawl_issues (
     $5,
     $6,
     $7,
-    $8
+    $8,
+    $9
 )
-RETURNING id, crawl_id, crawl_page_id, url, severity, category, code, message, details, created_at
+RETURNING id, crawl_id, crawl_page_id, url, pillar, bucket, issue_type, severity, message, details, created_at
 `
 
 type CreateCrawlIssueParams struct {
 	CrawlID     pgtype.UUID
 	CrawlPageID pgtype.UUID
 	Url         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
 	Severity    string
-	Category    string
-	Code        string
 	Message     string
 	Details     string
 }
 
-func (q *Queries) CreateCrawlIssue(ctx context.Context, arg CreateCrawlIssueParams) (CrawlIssue, error) {
+type CreateCrawlIssueRow struct {
+	ID          pgtype.UUID
+	CrawlID     pgtype.UUID
+	CrawlPageID pgtype.UUID
+	Url         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
+	Severity    string
+	Message     string
+	Details     string
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) CreateCrawlIssue(ctx context.Context, arg CreateCrawlIssueParams) (CreateCrawlIssueRow, error) {
 	row := q.db.QueryRow(ctx, createCrawlIssue,
 		arg.CrawlID,
 		arg.CrawlPageID,
 		arg.Url,
+		arg.Pillar,
+		arg.Bucket,
+		arg.IssueType,
 		arg.Severity,
-		arg.Category,
-		arg.Code,
 		arg.Message,
 		arg.Details,
 	)
-	var i CrawlIssue
+	var i CreateCrawlIssueRow
 	err := row.Scan(
 		&i.ID,
 		&i.CrawlID,
 		&i.CrawlPageID,
 		&i.Url,
+		&i.Pillar,
+		&i.Bucket,
+		&i.IssueType,
 		&i.Severity,
-		&i.Category,
-		&i.Code,
 		&i.Message,
 		&i.Details,
 		&i.CreatedAt,
@@ -110,9 +129,10 @@ SELECT
     ci.crawl_id,
     ci.crawl_page_id,
     ci.url,
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type,
     ci.severity,
-    ci.category,
-    ci.code,
     ci.message,
     ci.details,
     ci.created_at
@@ -130,17 +150,32 @@ type GetCrawlIssueByIDForUserParams struct {
 	UserID pgtype.UUID
 }
 
-func (q *Queries) GetCrawlIssueByIDForUser(ctx context.Context, arg GetCrawlIssueByIDForUserParams) (CrawlIssue, error) {
+type GetCrawlIssueByIDForUserRow struct {
+	ID          pgtype.UUID
+	CrawlID     pgtype.UUID
+	CrawlPageID pgtype.UUID
+	Url         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
+	Severity    string
+	Message     string
+	Details     string
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) GetCrawlIssueByIDForUser(ctx context.Context, arg GetCrawlIssueByIDForUserParams) (GetCrawlIssueByIDForUserRow, error) {
 	row := q.db.QueryRow(ctx, getCrawlIssueByIDForUser, arg.ID, arg.UserID)
-	var i CrawlIssue
+	var i GetCrawlIssueByIDForUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.CrawlID,
 		&i.CrawlPageID,
 		&i.Url,
+		&i.Pillar,
+		&i.Bucket,
+		&i.IssueType,
 		&i.Severity,
-		&i.Category,
-		&i.Code,
 		&i.Message,
 		&i.Details,
 		&i.CreatedAt,
@@ -154,9 +189,10 @@ SELECT
     crawl_id,
     crawl_page_id,
     url,
+    pillar,
+    bucket,
+    issue_type,
     severity,
-    category,
-    code,
     message,
     details,
     created_at
@@ -165,23 +201,38 @@ WHERE crawl_id = $1
 ORDER BY created_at ASC
 `
 
-func (q *Queries) ListCrawlIssuesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]CrawlIssue, error) {
+type ListCrawlIssuesForCrawlRow struct {
+	ID          pgtype.UUID
+	CrawlID     pgtype.UUID
+	CrawlPageID pgtype.UUID
+	Url         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
+	Severity    string
+	Message     string
+	Details     string
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) ListCrawlIssuesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListCrawlIssuesForCrawlRow, error) {
 	rows, err := q.db.Query(ctx, listCrawlIssuesForCrawl, crawlID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CrawlIssue
+	var items []ListCrawlIssuesForCrawlRow
 	for rows.Next() {
-		var i CrawlIssue
+		var i ListCrawlIssuesForCrawlRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CrawlID,
 			&i.CrawlPageID,
 			&i.Url,
+			&i.Pillar,
+			&i.Bucket,
+			&i.IssueType,
 			&i.Severity,
-			&i.Category,
-			&i.Code,
 			&i.Message,
 			&i.Details,
 			&i.CreatedAt,
@@ -202,9 +253,10 @@ SELECT
     ci.crawl_id,
     ci.crawl_page_id,
     ci.url,
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type,
     ci.severity,
-    ci.category,
-    ci.code,
     ci.message,
     ci.details,
     ci.created_at
@@ -226,7 +278,21 @@ type ListCrawlIssuesForCrawlByUserParams struct {
 	Offset  int32
 }
 
-func (q *Queries) ListCrawlIssuesForCrawlByUser(ctx context.Context, arg ListCrawlIssuesForCrawlByUserParams) ([]CrawlIssue, error) {
+type ListCrawlIssuesForCrawlByUserRow struct {
+	ID          pgtype.UUID
+	CrawlID     pgtype.UUID
+	CrawlPageID pgtype.UUID
+	Url         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
+	Severity    string
+	Message     string
+	Details     string
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) ListCrawlIssuesForCrawlByUser(ctx context.Context, arg ListCrawlIssuesForCrawlByUserParams) ([]ListCrawlIssuesForCrawlByUserRow, error) {
 	rows, err := q.db.Query(ctx, listCrawlIssuesForCrawlByUser,
 		arg.CrawlID,
 		arg.UserID,
@@ -237,17 +303,18 @@ func (q *Queries) ListCrawlIssuesForCrawlByUser(ctx context.Context, arg ListCra
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CrawlIssue
+	var items []ListCrawlIssuesForCrawlByUserRow
 	for rows.Next() {
-		var i CrawlIssue
+		var i ListCrawlIssuesForCrawlByUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CrawlID,
 			&i.CrawlPageID,
 			&i.Url,
+			&i.Pillar,
+			&i.Bucket,
+			&i.IssueType,
 			&i.Severity,
-			&i.Category,
-			&i.Code,
 			&i.Message,
 			&i.Details,
 			&i.CreatedAt,
