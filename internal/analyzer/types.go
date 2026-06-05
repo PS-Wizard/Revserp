@@ -24,6 +24,7 @@ type PageFact struct {
 	ImageCount              int32
 	ImagesWithoutAltCount   int32
 	ImagesWithoutDimensions int32
+	ExternalLinks           int32
 	ResponseTimeMs          int32
 	OGTags                  []byte
 	JSONLD                  []byte

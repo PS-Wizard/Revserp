@@ -21,6 +21,7 @@ const lowInternalLinksInThreshold = 1
 const tooManyImagesMinimumImageCount = 10
 const tooManyImagesWordsPerImageThreshold = 50
 const authorSignalMinimumWordCount = 300
+const externalCitationMinimumCount = 1
 
 // DeriveIssues builds backend issue rows from persisted crawl facts.
 func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
@@ -98,13 +99,19 @@ func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
 		}
 
 		if !hasMeaningfulOGTags(pageFact.OGTags) {
-			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "experience", "missing_og_tags", "low", "Page is missing Open Graph tags", "Add core Open Graph tags for richer sharing previews."))
+			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "trust", "missing_og_tags", "low", "Page is missing Open Graph tags", "Add core Open Graph tags for richer sharing previews."))
 		}
 		if !hasMeaningfulJSONLD(pageFact.JSONLD) {
 			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "answerability", "missing_structured_data", "high", "Page is missing structured data", "Add JSON-LD structured data to the page."))
 		}
+		if hasInsecureHTTPURL(pageFact.URL) {
+			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "trust", "missing_https", "medium", "Page is not served over HTTPS", "Serve the page over HTTPS to strengthen user and platform trust signals."))
+		}
 		if isArticleLikePage(pageFact) && !hasAuthorSignal(pageFact) {
 			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "expertise", "missing_author_signal", "low", "Page is missing an author signal", "Article-like page does not expose author attribution via metadata or structured data."))
+		}
+		if isArticleLikePage(pageFact) && pageFact.ExternalLinks < externalCitationMinimumCount {
+			derivedIssues = append(derivedIssues, newAEOIssue(pageFact, "authoritativeness", "missing_external_citations", "low", "Page is missing external citations", "Article-like page does not link to any external sources or references."))
 		}
 
 		if pageFact.ImageCount > 0 && pageFact.ImagesWithoutAltCount > 0 {
@@ -392,4 +399,9 @@ func hasArticleLikeURLPath(pageURL string) bool {
 	}
 
 	return false
+}
+
+// hasInsecureHTTPURL reports whether a page URL is served over plain HTTP.
+func hasInsecureHTTPURL(pageURL string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(pageURL)), "http://")
 }

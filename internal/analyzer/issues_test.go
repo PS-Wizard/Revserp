@@ -61,7 +61,7 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 		},
 		{
 			ID:              pgtype.UUID{Valid: true},
-			URL:             "https://example.com/four",
+			URL:             "http://example.com/four",
 			Depth:           1,
 			Title:           "This title is comfortably sized for search display",
 			MetaDescription: "This meta description is intentionally written to land within the recommended range for search snippets and avoid any length warnings.",
@@ -69,7 +69,7 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 			H1Count:         1,
 			H2Count:         2,
 			WordCount:       420,
-			CanonicalURL:    "https://example.com/four",
+			CanonicalURL:    "http://example.com/four",
 			Viewport:        "width=device-width, initial-scale=1",
 			Lang:            "en",
 			SizeBytes:       4 * 1024 * 1024,
@@ -154,8 +154,11 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 	assertIssueType(t, derivedIssues, "noindex_page")
 	assertIssueType(t, derivedIssues, "nofollow_page")
 	assertIssueType(t, derivedIssues, "missing_og_tags")
+	assertIssueBucket(t, derivedIssues, "missing_og_tags", "trust")
 	assertIssueType(t, derivedIssues, "missing_structured_data")
+	assertIssueType(t, derivedIssues, "missing_https")
 	assertIssueType(t, derivedIssues, "missing_author_signal")
+	assertIssueType(t, derivedIssues, "missing_external_citations")
 	assertIssueType(t, derivedIssues, "images_missing_alt")
 	assertIssueType(t, derivedIssues, "images_missing_dimensions")
 	assertIssueType(t, derivedIssues, "too_many_images_on_page")
@@ -238,6 +241,22 @@ func assertIssueDetailContains(t *testing.T, derivedIssues []DerivedIssue, issue
 		}
 		if !strings.Contains(derivedIssue.Details, expectedDetailFragment) {
 			t.Fatalf("issue type %q details %q did not contain %q", issueType, derivedIssue.Details, expectedDetailFragment)
+		}
+		return
+	}
+
+	t.Fatalf("missing issue type %q", issueType)
+}
+
+func assertIssueBucket(t *testing.T, derivedIssues []DerivedIssue, issueType string, expectedBucket string) {
+	t.Helper()
+
+	for _, derivedIssue := range derivedIssues {
+		if derivedIssue.IssueType != issueType {
+			continue
+		}
+		if derivedIssue.Bucket != expectedBucket {
+			t.Fatalf("issue type %q bucket %q did not match %q", issueType, derivedIssue.Bucket, expectedBucket)
 		}
 		return
 	}

@@ -108,6 +108,7 @@ func newPageFact(crawlPage sqlc.ListCrawlPagesForCrawlRow) PageFact {
 		ImageCount:              int32Value(crawlPage.ImageCount),
 		ImagesWithoutAltCount:   int32Value(crawlPage.ImagesWithoutAltCount),
 		ImagesWithoutDimensions: int32Value(crawlPage.ImagesWithoutDimensions),
+		ExternalLinks:           int32Value(crawlPage.ExternalLinks),
 		ResponseTimeMs:          int32Value(crawlPage.ResponseTimeMs),
 		OGTags:                  crawlPage.OgTags,
 		JSONLD:                  crawlPage.JsonLd,
