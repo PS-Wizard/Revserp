@@ -110,6 +110,23 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 			JSONLD:          []byte(`[{"@type":"WebPage"}]`),
 			OGTags:          []byte(`{"og:title":"Example"}`),
 		},
+		{
+			ID:              pgtype.UUID{Valid: true},
+			URL:             "https://example.com/image-heavy",
+			Depth:           1,
+			Title:           "Image heavy content page example for media optimization checks",
+			MetaDescription: "This description is comfortably within the recommended range for testing image density issue derivation.",
+			H1:              "Image Heavy Content",
+			H1Count:         1,
+			H2Count:         1,
+			WordCount:       400,
+			ImageCount:      10,
+			CanonicalURL:    "https://example.com/image-heavy",
+			Viewport:        "width=device-width, initial-scale=1",
+			Lang:            "en",
+			JSONLD:          []byte(`[{"@type":"WebPage"}]`),
+			OGTags:          []byte(`{"og:title":"Example"}`),
+		},
 	}
 
 	linkFacts := []LinkFact{
@@ -140,6 +157,8 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 	assertIssueType(t, derivedIssues, "missing_structured_data")
 	assertIssueType(t, derivedIssues, "images_missing_alt")
 	assertIssueType(t, derivedIssues, "images_missing_dimensions")
+	assertIssueType(t, derivedIssues, "too_many_images_on_page")
+	assertIssueDetailContains(t, derivedIssues, "too_many_images_on_page", "Page has 10 images and 400 words")
 	assertIssueType(t, derivedIssues, "slow_response_time")
 	assertIssueDetailContains(t, derivedIssues, "slow_response_time", "1500ms")
 	assertIssueType(t, derivedIssues, "moderate_page_size")

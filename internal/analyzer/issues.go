@@ -18,6 +18,8 @@ const moderatePageSizeBytesThreshold = 1 * 1024 * 1024
 const largePageSizeBytesThreshold = 3 * 1024 * 1024
 const lowInternalLinksOutThreshold = 2
 const lowInternalLinksInThreshold = 1
+const tooManyImagesMinimumImageCount = 10
+const tooManyImagesWordsPerImageThreshold = 50
 
 // DeriveIssues builds backend issue rows from persisted crawl facts.
 func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
@@ -106,6 +108,9 @@ func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
 		}
 		if pageFact.ImageCount > 0 && pageFact.ImagesWithoutDimensions > 0 {
 			derivedIssues = append(derivedIssues, newSEOIssue(pageFact, "media_optimization", "images_missing_dimensions", "low", "Page has images missing dimensions", "Set explicit image width and height attributes where possible."))
+		}
+		if isTooManyImagesOnPage(pageFact) {
+			derivedIssues = append(derivedIssues, newSEOIssue(pageFact, "media_optimization", "too_many_images_on_page", "low", "Page may have too many images for its content length", fmt.Sprintf("Page has %d images and %d words, which is fewer than %d words per image.", pageFact.ImageCount, pageFact.WordCount, tooManyImagesWordsPerImageThreshold)))
 		}
 
 		if pageFact.ResponseTimeMs > slowResponseTimeMillisecondsThreshold {
@@ -271,4 +276,16 @@ func buildSkippedHeadingLevelDetails(headingOutline []byte) string {
 	}
 
 	return strings.Join(skippedHeadingLevelTransitions, " ")
+}
+
+// isTooManyImagesOnPage reports whether a page is overly image-dense for its content length.
+func isTooManyImagesOnPage(pageFact PageFact) bool {
+	if pageFact.ImageCount < tooManyImagesMinimumImageCount {
+		return false
+	}
+	if pageFact.WordCount <= 0 {
+		return true
+	}
+
+	return pageFact.WordCount/pageFact.ImageCount < tooManyImagesWordsPerImageThreshold
 }
