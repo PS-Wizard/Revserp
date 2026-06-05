@@ -128,6 +128,7 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 	internalLinkCount, externalLinkCount := countParsedLinks(parsedPage)
 	h2Headings := extractH2Headings(parsedPage)
 	h3Headings := extractH3Headings(parsedPage)
+	headingOutline := extractParsedHeadingOutline(parsedPage)
 
 	return sqlc.CreateCrawlPageParams{
 		CrawlID:                 crawlID,
@@ -159,10 +160,9 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		JavascriptRendered:      nullableBool(result.JavascriptRendered),
 		H2Headings:              mustMarshalJSON(h2Headings),
 		H3Headings:              mustMarshalJSON(h3Headings),
-		// TODO: Extract a real heading outline from the parsed document.
-		HeadingOutline: mustMarshalJSON(nil),
-		OgTags:         mustMarshalJSON(extractPageOGTags(parsedPage)),
-		JsonLd:         mustMarshalJSON(extractPageJSONLDBlocks(parsedPage)),
+		HeadingOutline:          mustMarshalJSON(headingOutline),
+		OgTags:                  mustMarshalJSON(extractPageOGTags(parsedPage)),
+		JsonLd:                  mustMarshalJSON(extractPageJSONLDBlocks(parsedPage)),
 	}
 }
 
@@ -382,6 +382,15 @@ func extractH3Headings(parsedPage *ParsedPage) []string {
 	}
 
 	return parsedPage.H3Headings
+}
+
+// extractParsedHeadingOutline returns parsed heading outline when available.
+func extractParsedHeadingOutline(parsedPage *ParsedPage) []ParsedHeading {
+	if parsedPage == nil {
+		return nil
+	}
+
+	return parsedPage.HeadingOutline
 }
 
 // extractPageVisibleText returns parsed visible body text when available.

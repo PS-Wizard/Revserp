@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -65,6 +66,9 @@ func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
 		}
 		if pageFact.WordCount >= longPageWordCountThreshold && pageFact.H2Count == 0 {
 			derivedIssues = append(derivedIssues, newSEOIssue(pageFact, "content_structure", "missing_h2_on_long_page", "medium", "Long page is missing H2 headings", fmt.Sprintf("Page has %d words but no H2 subheadings.", pageFact.WordCount)))
+		}
+		if skippedHeadingLevelDetails := buildSkippedHeadingLevelDetails(pageFact.HeadingOutline); skippedHeadingLevelDetails != "" {
+			derivedIssues = append(derivedIssues, newSEOIssue(pageFact, "content_structure", "skipped_heading_levels", "medium", "Page skips heading levels", skippedHeadingLevelDetails))
 		}
 		if pageFact.WordCount > 0 && pageFact.WordCount < thinContentWordCountThreshold {
 			derivedIssues = append(derivedIssues, newSEOIssue(pageFact, "content_quality", "thin_content", "medium", "Page content is thin", "Add more useful page content for users and search engines."))
@@ -231,4 +235,40 @@ func hasMeaningfulJSONLD(jsonLD []byte) bool {
 // bytesToMegabytes converts raw bytes into MB for issue details.
 func bytesToMegabytes(sizeBytes int32) float64 {
 	return float64(sizeBytes) / 1024 / 1024
+}
+
+type headingOutlineEntry struct {
+	Level int    `json:"level"`
+	Text  string `json:"text"`
+}
+
+// buildSkippedHeadingLevelDetails returns one detail string when a page's heading outline skips levels.
+func buildSkippedHeadingLevelDetails(headingOutline []byte) string {
+	var parsedHeadingOutline []headingOutlineEntry
+	if err := json.Unmarshal(headingOutline, &parsedHeadingOutline); err != nil {
+		return ""
+	}
+	if len(parsedHeadingOutline) < 2 {
+		return ""
+	}
+
+	var skippedHeadingLevelTransitions []string
+	for headingIndex := 1; headingIndex < len(parsedHeadingOutline); headingIndex++ {
+		previousHeading := parsedHeadingOutline[headingIndex-1]
+		currentHeading := parsedHeadingOutline[headingIndex]
+		if previousHeading.Level <= 0 || currentHeading.Level <= 0 {
+			continue
+		}
+		if currentHeading.Level <= previousHeading.Level+1 {
+			continue
+		}
+
+		skippedHeadingLevelTransitions = append(skippedHeadingLevelTransitions, fmt.Sprintf("H%d \"%s\" jumps to H%d \"%s\".", previousHeading.Level, previousHeading.Text, currentHeading.Level, currentHeading.Text))
+	}
+
+	if len(skippedHeadingLevelTransitions) == 0 {
+		return ""
+	}
+
+	return strings.Join(skippedHeadingLevelTransitions, " ")
 }

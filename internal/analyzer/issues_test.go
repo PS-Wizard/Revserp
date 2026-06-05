@@ -303,3 +303,29 @@ func TestDeriveIssuesSeparatesExactAndNearDuplicateContent(t *testing.T) {
 	assertIssueType(t, derivedIssues, "exact_duplicate_content")
 	assertIssueType(t, derivedIssues, "near_duplicate_content")
 }
+
+func TestDeriveIssuesBuildsSkippedHeadingLevelsIssue(t *testing.T) {
+	pageFacts := []PageFact{
+		{
+			ID:              pgtype.UUID{Valid: true},
+			URL:             "https://example.com/heading-outline",
+			Title:           "Heading outline example page title for structure testing",
+			MetaDescription: "This meta description is comfortably within the recommended range for structure issue testing.",
+			H1:              "Heading outline example",
+			H1Count:         1,
+			H2Count:         2,
+			WordCount:       350,
+			CanonicalURL:    "https://example.com/heading-outline",
+			Viewport:        "width=device-width, initial-scale=1",
+			Lang:            "en",
+			OGTags:          []byte(`{"og:title":"Example"}`),
+			JSONLD:          []byte(`[{"@type":"WebPage"}]`),
+			HeadingOutline:  []byte(`[{"level":1,"text":"Overview"},{"level":3,"text":"Deep dive"},{"level":2,"text":"Details"},{"level":4,"text":"Implementation"}]`),
+		},
+	}
+
+	derivedIssues := DeriveIssues(pageFacts, nil)
+	assertIssueType(t, derivedIssues, "skipped_heading_levels")
+	assertIssueDetailContains(t, derivedIssues, "skipped_heading_levels", `H1 "Overview" jumps to H3 "Deep dive".`)
+	assertIssueDetailContains(t, derivedIssues, "skipped_heading_levels", `H2 "Details" jumps to H4 "Implementation".`)
+}

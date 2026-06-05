@@ -26,6 +26,7 @@ type PageFact struct {
 	ResponseTimeMs          int32
 	OGTags                  []byte
 	JSONLD                  []byte
+	HeadingOutline          []byte
 	ContentSHA256           string
 }
 

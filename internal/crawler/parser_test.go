@@ -127,6 +127,25 @@ func TestParserParseHTML(t *testing.T) {
 		t.Fatalf("got h3 headings %#v", parsedPage.H3Headings)
 	}
 
+	if len(parsedPage.HeadingOutline) != 5 {
+		t.Fatalf("got %d heading outline entries", len(parsedPage.HeadingOutline))
+	}
+	if parsedPage.HeadingOutline[0].Level != 1 || parsedPage.HeadingOutline[0].Text != "Main Heading" {
+		t.Fatalf("got first heading outline entry %#v", parsedPage.HeadingOutline[0])
+	}
+	if parsedPage.HeadingOutline[1].Level != 2 || parsedPage.HeadingOutline[1].Text != "Overview" {
+		t.Fatalf("got second heading outline entry %#v", parsedPage.HeadingOutline[1])
+	}
+	if parsedPage.HeadingOutline[2].Level != 2 || parsedPage.HeadingOutline[2].Text != "Features" {
+		t.Fatalf("got third heading outline entry %#v", parsedPage.HeadingOutline[2])
+	}
+	if parsedPage.HeadingOutline[3].Level != 3 || parsedPage.HeadingOutline[3].Text != "Fast" {
+		t.Fatalf("got fourth heading outline entry %#v", parsedPage.HeadingOutline[3])
+	}
+	if parsedPage.HeadingOutline[4].Level != 3 || parsedPage.HeadingOutline[4].Text != "Reliable" {
+		t.Fatalf("got fifth heading outline entry %#v", parsedPage.HeadingOutline[4])
+	}
+
 	if len(parsedPage.Links) != 2 {
 		t.Fatalf("got %d links", len(parsedPage.Links))
 	}
@@ -172,5 +191,42 @@ func TestParserParseHTMLRejectsNonHTMLContent(t *testing.T) {
 	_, err := parser.ParseHTML("https://revketer.ai/file.pdf", "application/pdf", []byte("not html"))
 	if err == nil {
 		t.Fatalf("expected non-html content type to fail")
+	}
+}
+
+func TestParserParseHTMLBuildsHeadingOutlineInDocumentOrder(t *testing.T) {
+	htmlDocument := []byte(`
+	<!DOCTYPE html>
+	<html>
+	<body>
+		<h1>Intro</h1>
+		<section><h3>Skipped level</h3></section>
+		<h2>Back to section</h2>
+		<h4>Deep detail</h4>
+		<h2>   </h2>
+	</body>
+	</html>
+	`)
+
+	parser := NewParser()
+	parsedPage, err := parser.ParseHTML("https://revketer.ai/outline", "text/html", htmlDocument)
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+
+	if len(parsedPage.HeadingOutline) != 4 {
+		t.Fatalf("got %d heading outline entries", len(parsedPage.HeadingOutline))
+	}
+	if parsedPage.HeadingOutline[0].Level != 1 || parsedPage.HeadingOutline[0].Text != "Intro" {
+		t.Fatalf("got heading outline entry %#v", parsedPage.HeadingOutline[0])
+	}
+	if parsedPage.HeadingOutline[1].Level != 3 || parsedPage.HeadingOutline[1].Text != "Skipped level" {
+		t.Fatalf("got heading outline entry %#v", parsedPage.HeadingOutline[1])
+	}
+	if parsedPage.HeadingOutline[2].Level != 2 || parsedPage.HeadingOutline[2].Text != "Back to section" {
+		t.Fatalf("got heading outline entry %#v", parsedPage.HeadingOutline[2])
+	}
+	if parsedPage.HeadingOutline[3].Level != 4 || parsedPage.HeadingOutline[3].Text != "Deep detail" {
+		t.Fatalf("got heading outline entry %#v", parsedPage.HeadingOutline[3])
 	}
 }

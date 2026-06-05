@@ -111,6 +111,7 @@ func newPageFact(crawlPage sqlc.ListCrawlPagesForCrawlRow) PageFact {
 		ResponseTimeMs:          int32Value(crawlPage.ResponseTimeMs),
 		OGTags:                  crawlPage.OgTags,
 		JSONLD:                  crawlPage.JsonLd,
+		HeadingOutline:          crawlPage.HeadingOutline,
 		ContentSHA256:           textValue(crawlPage.ContentSha256),
 	}
 }

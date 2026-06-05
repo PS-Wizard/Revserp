@@ -12,32 +12,39 @@ import (
 
 // ParsedLink holds one extracted anchor from a page.
 type ParsedLink struct {
-	TargetURL   string
-	AnchorText  string
-	IsInternal  bool
-	NoFollow    bool
+	TargetURL  string
+	AnchorText string
+	IsInternal bool
+	NoFollow   bool
+}
+
+// ParsedHeading holds one extracted heading in document order.
+type ParsedHeading struct {
+	Level int    `json:"level"`
+	Text  string `json:"text"`
 }
 
 // ParsedPage holds the basic extracted facts from one HTML page.
 type ParsedPage struct {
-	URL                      string
-	Title                    string
-	MetaDescription          string
-	CanonicalURL             string
-	Lang                     string
-	Viewport                 string
-	Robots                   string
-	VisibleText              string
-	ImageCount               int
-	ImagesWithoutAltCount    int
-	ImagesWithoutDimensions  int
-	OGTags                   map[string]string
-	JSONLDBlocks             []string
-	H1                       string
-	H1Count                  int
-	H2Headings               []string
-	H3Headings               []string
-	Links                    []ParsedLink
+	URL                     string
+	Title                   string
+	MetaDescription         string
+	CanonicalURL            string
+	Lang                    string
+	Viewport                string
+	Robots                  string
+	VisibleText             string
+	ImageCount              int
+	ImagesWithoutAltCount   int
+	ImagesWithoutDimensions int
+	OGTags                  map[string]string
+	JSONLDBlocks            []string
+	H1                      string
+	H1Count                 int
+	H2Headings              []string
+	H3Headings              []string
+	HeadingOutline          []ParsedHeading
+	Links                   []ParsedLink
 }
 
 // Parser extracts basic SEO facts and links from HTML documents.
@@ -85,6 +92,7 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 	parsedPage.H1 = extractFirstHeadingText(document, "h1")
 	parsedPage.H2Headings = extractHeadingTexts(document, "h2")
 	parsedPage.H3Headings = extractHeadingTexts(document, "h3")
+	parsedPage.HeadingOutline = extractHeadingOutline(document)
 	parsedPage.Links = extractLinks(document, parsedPageURL)
 
 	if parsedPage.CanonicalURL != "" {
@@ -122,6 +130,50 @@ func extractHeadingTexts(document *goquery.Document, selector string) []string {
 	})
 
 	return headingTexts
+}
+
+// extractHeadingOutline returns normalized headings in document order.
+func extractHeadingOutline(document *goquery.Document) []ParsedHeading {
+	var headingOutline []ParsedHeading
+
+	document.Find("h1, h2, h3, h4, h5, h6").Each(func(_ int, selection *goquery.Selection) {
+		headingText := normalizeWhitespace(selection.Text())
+		if headingText == "" {
+			return
+		}
+
+		headingLevel := headingLevelFromSelection(selection)
+		if headingLevel == 0 {
+			return
+		}
+
+		headingOutline = append(headingOutline, ParsedHeading{
+			Level: headingLevel,
+			Text:  headingText,
+		})
+	})
+
+	return headingOutline
+}
+
+// headingLevelFromSelection returns the numeric heading level for one heading element.
+func headingLevelFromSelection(selection *goquery.Selection) int {
+	switch goquery.NodeName(selection) {
+	case "h1":
+		return 1
+	case "h2":
+		return 2
+	case "h3":
+		return 3
+	case "h4":
+		return 4
+	case "h5":
+		return 5
+	case "h6":
+		return 6
+	default:
+		return 0
+	}
 }
 
 // extractOGTags returns Open Graph meta tags keyed by property name.
