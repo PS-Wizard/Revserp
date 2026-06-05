@@ -13,6 +13,7 @@ type PageFact struct {
 	H1Count                 int32
 	H2Count                 int32
 	WordCount               int32
+	VisibleText             string
 	CanonicalURL            string
 	Viewport                string
 	Lang                    string
@@ -25,6 +26,7 @@ type PageFact struct {
 	ResponseTimeMs          int32
 	OGTags                  []byte
 	JSONLD                  []byte
+	ContentSHA256           string
 }
 
 // LinkFact holds the persisted internal link fields used for issue derivation.

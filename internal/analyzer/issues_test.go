@@ -206,3 +206,82 @@ func assertIssueType(t *testing.T, derivedIssues []DerivedIssue, issueType strin
 
 	t.Fatalf("missing issue type %q", issueType)
 }
+
+func TestDeriveIssuesBuildsDuplicateContentIssues(t *testing.T) {
+	pageFacts := []PageFact{
+		{
+			ID:              pgtype.UUID{Valid: true},
+			URL:             "https://example.com/original",
+			Title:           "Technical SEO audit service",
+			MetaDescription: "Enterprise technical SEO audits and monitoring.",
+			H1:              "Technical SEO audit service",
+			VisibleText:     "We provide enterprise technical SEO audits, issue monitoring, crawl analysis, and monthly reporting for growing software companies.",
+		},
+		{
+			ID:              pgtype.UUID{Valid: true},
+			URL:             "https://example.com/original-copy",
+			Title:           "Technical SEO audit service",
+			MetaDescription: "Enterprise technical SEO audits and monitoring.",
+			H1:              "Technical SEO audit service",
+			VisibleText:     "We provide enterprise technical SEO audits, issue monitoring, crawl analysis, and monthly reporting for growing software companies.",
+		},
+		{
+			ID:              pgtype.UUID{Valid: true},
+			URL:             "https://example.com/original-variant",
+			Title:           "Enterprise technical SEO auditing services",
+			MetaDescription: "Technical SEO audits, crawl monitoring, and reporting for software teams.",
+			H1:              "Enterprise technical SEO auditing services",
+			VisibleText:     "We help software companies with crawl analysis, technical SEO monitoring, enterprise audits, and monthly reporting to surface search performance issues.",
+		},
+		{
+			ID:              pgtype.UUID{Valid: true},
+			URL:             "https://example.com/different",
+			Title:           "Brand strategy workshop",
+			MetaDescription: "Messaging workshops for product teams.",
+			H1:              "Brand strategy workshop",
+			VisibleText:     "We run positioning workshops, customer interviews, homepage messaging sessions, and brand narrative reviews for internal product marketing teams.",
+		},
+	}
+
+	enrichPageFactsWithContentFingerprints(pageFacts)
+	derivedIssues := DeriveIssues(pageFacts, nil)
+
+	assertIssueType(t, derivedIssues, "exact_duplicate_content")
+	assertIssueType(t, derivedIssues, "near_duplicate_content")
+}
+
+func TestDeriveIssuesSeparatesExactAndNearDuplicateContent(t *testing.T) {
+	originalPageFact := PageFact{
+		ID:              pgtype.UUID{Valid: true},
+		URL:             "https://example.com/original",
+		Title:           "Technical SEO audit service",
+		MetaDescription: "Enterprise technical SEO audits and monitoring.",
+		H1:              "Technical SEO audit service",
+		VisibleText:     "We provide enterprise technical SEO audits, issue monitoring, crawl analysis, and monthly reporting for growing software companies.",
+	}
+	exactDuplicatePageFact := originalPageFact
+	exactDuplicatePageFact.ID = pgtype.UUID{Valid: true}
+	exactDuplicatePageFact.URL = "https://example.com/original-copy"
+	nearDuplicatePageFact := PageFact{
+		ID:              pgtype.UUID{Valid: true},
+		URL:             "https://example.com/original-variant",
+		Title:           "Enterprise technical SEO auditing services",
+		MetaDescription: "Technical SEO audits, crawl monitoring, and reporting for software teams.",
+		H1:              "Enterprise technical SEO auditing services",
+		VisibleText:     "We help software companies with crawl analysis, technical SEO monitoring, enterprise audits, and monthly reporting to surface search performance issues.",
+	}
+
+	pageFacts := []PageFact{originalPageFact, exactDuplicatePageFact, nearDuplicatePageFact}
+	enrichPageFactsWithContentFingerprints(pageFacts)
+
+	if pageFacts[0].ContentSHA256 != pageFacts[1].ContentSHA256 {
+		t.Fatalf("expected exact duplicates to share the same sha256 hash")
+	}
+	if pageFacts[0].ContentSHA256 == pageFacts[2].ContentSHA256 {
+		t.Fatalf("expected rewritten near duplicate to have a different sha256 hash")
+	}
+
+	derivedIssues := DeriveIssues(pageFacts, nil)
+	assertIssueType(t, derivedIssues, "exact_duplicate_content")
+	assertIssueType(t, derivedIssues, "near_duplicate_content")
+}

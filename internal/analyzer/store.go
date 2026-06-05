@@ -47,10 +47,15 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 	for _, crawlPage := range crawlPages {
 		pageFacts = append(pageFacts, newPageFact(crawlPage))
 	}
+	enrichPageFactsWithContentFingerprints(pageFacts)
 
 	linkFacts := make([]LinkFact, 0, len(internalCrawlLinks))
 	for _, internalCrawlLink := range internalCrawlLinks {
 		linkFacts = append(linkFacts, LinkFact{SourceURL: internalCrawlLink.SourceUrl, TargetURL: internalCrawlLink.TargetUrl})
+	}
+
+	if err := store.persistPageContentFingerprints(ctx, txQueries, pageFacts); err != nil {
+		return 0, err
 	}
 
 	derivedIssues := DeriveIssues(pageFacts, linkFacts)
@@ -93,6 +98,7 @@ func newPageFact(crawlPage sqlc.ListCrawlPagesForCrawlRow) PageFact {
 		H1Count:                 int32Value(crawlPage.H1Count),
 		H2Count:                 int32Value(crawlPage.H2Count),
 		WordCount:               int32Value(crawlPage.WordCount),
+		VisibleText:             textValue(crawlPage.VisibleText),
 		CanonicalURL:            textValue(crawlPage.CanonicalUrl),
 		Viewport:                textValue(crawlPage.Viewport),
 		Lang:                    textValue(crawlPage.Lang),
@@ -105,6 +111,7 @@ func newPageFact(crawlPage sqlc.ListCrawlPagesForCrawlRow) PageFact {
 		ResponseTimeMs:          int32Value(crawlPage.ResponseTimeMs),
 		OGTags:                  crawlPage.OgTags,
 		JSONLD:                  crawlPage.JsonLd,
+		ContentSHA256:           textValue(crawlPage.ContentSha256),
 	}
 }
 
@@ -122,4 +129,27 @@ func int32Value(value pgtype.Int4) int32 {
 		return 0
 	}
 	return value.Int32
+}
+
+// persistPageContentFingerprints stores one crawl page's normalized content hashes for later inspection and reuse.
+func (store *Store) persistPageContentFingerprints(ctx context.Context, txQueries *sqlc.Queries, pageFacts []PageFact) error {
+	for _, pageFact := range pageFacts {
+		if err := txQueries.UpdateCrawlPageContentFingerprints(ctx, sqlc.UpdateCrawlPageContentFingerprintsParams{
+			ID:            pageFact.ID,
+			ContentSha256: nullableText(pageFact.ContentSHA256),
+		}); err != nil {
+			return fmt.Errorf("update crawl page content fingerprints for %q: %w", pageFact.URL, err)
+		}
+	}
+
+	return nil
+}
+
+// nullableText builds a valid pg text value from a non-empty string.
+func nullableText(value string) pgtype.Text {
+	if value == "" {
+		return pgtype.Text{}
+	}
+
+	return pgtype.Text{String: value, Valid: true}
 }

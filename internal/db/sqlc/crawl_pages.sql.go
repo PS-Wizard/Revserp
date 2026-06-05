@@ -50,6 +50,7 @@ INSERT INTO crawl_pages (
     h3_count,
     word_count,
     visible_text,
+    content_sha256,
     author,
     canonical_url,
     lang,
@@ -99,9 +100,10 @@ INSERT INTO crawl_pages (
     $29,
     $30,
     $31,
-    $32
+    $32,
+    $33
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at
 `
 
 type CreateCrawlPageParams struct {
@@ -120,6 +122,7 @@ type CreateCrawlPageParams struct {
 	H3Count                 pgtype.Int4
 	WordCount               pgtype.Int4
 	VisibleText             pgtype.Text
+	ContentSha256           pgtype.Text
 	Author                  pgtype.Text
 	CanonicalUrl            pgtype.Text
 	Lang                    pgtype.Text
@@ -156,6 +159,7 @@ type CreateCrawlPageRow struct {
 	H3Count                 pgtype.Int4
 	WordCount               pgtype.Int4
 	VisibleText             pgtype.Text
+	ContentSha256           pgtype.Text
 	Author                  pgtype.Text
 	CanonicalUrl            pgtype.Text
 	Lang                    pgtype.Text
@@ -193,6 +197,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.H3Count,
 		arg.WordCount,
 		arg.VisibleText,
+		arg.ContentSha256,
 		arg.Author,
 		arg.CanonicalUrl,
 		arg.Lang,
@@ -229,6 +234,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		&i.H3Count,
 		&i.WordCount,
 		&i.VisibleText,
+		&i.ContentSha256,
 		&i.Author,
 		&i.CanonicalUrl,
 		&i.Lang,
@@ -269,6 +275,7 @@ SELECT
     cp.h3_count,
     cp.word_count,
     cp.visible_text,
+    cp.content_sha256,
     cp.author,
     cp.canonical_url,
     cp.lang,
@@ -318,6 +325,7 @@ type GetCrawlPageByIDForUserRow struct {
 	H3Count                 pgtype.Int4
 	WordCount               pgtype.Int4
 	VisibleText             pgtype.Text
+	ContentSha256           pgtype.Text
 	Author                  pgtype.Text
 	CanonicalUrl            pgtype.Text
 	Lang                    pgtype.Text
@@ -358,6 +366,7 @@ func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageB
 		&i.H3Count,
 		&i.WordCount,
 		&i.VisibleText,
+		&i.ContentSha256,
 		&i.Author,
 		&i.CanonicalUrl,
 		&i.Lang,
@@ -398,6 +407,7 @@ SELECT
     h3_count,
     word_count,
     visible_text,
+    content_sha256,
     author,
     canonical_url,
     lang,
@@ -438,6 +448,7 @@ type ListCrawlPagesForCrawlRow struct {
 	H3Count                 pgtype.Int4
 	WordCount               pgtype.Int4
 	VisibleText             pgtype.Text
+	ContentSha256           pgtype.Text
 	Author                  pgtype.Text
 	CanonicalUrl            pgtype.Text
 	Lang                    pgtype.Text
@@ -484,6 +495,7 @@ func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUI
 			&i.H3Count,
 			&i.WordCount,
 			&i.VisibleText,
+			&i.ContentSha256,
 			&i.Author,
 			&i.CanonicalUrl,
 			&i.Lang,
@@ -531,6 +543,7 @@ SELECT
     cp.h3_count,
     cp.word_count,
     cp.visible_text,
+    cp.content_sha256,
     cp.author,
     cp.canonical_url,
     cp.lang,
@@ -584,6 +597,7 @@ type ListCrawlPagesForCrawlByUserRow struct {
 	H3Count                 pgtype.Int4
 	WordCount               pgtype.Int4
 	VisibleText             pgtype.Text
+	ContentSha256           pgtype.Text
 	Author                  pgtype.Text
 	CanonicalUrl            pgtype.Text
 	Lang                    pgtype.Text
@@ -635,6 +649,7 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 			&i.H3Count,
 			&i.WordCount,
 			&i.VisibleText,
+			&i.ContentSha256,
 			&i.Author,
 			&i.CanonicalUrl,
 			&i.Lang,
@@ -662,4 +677,20 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateCrawlPageContentFingerprints = `-- name: UpdateCrawlPageContentFingerprints :exec
+UPDATE crawl_pages
+SET content_sha256 = $2
+WHERE id = $1
+`
+
+type UpdateCrawlPageContentFingerprintsParams struct {
+	ID            pgtype.UUID
+	ContentSha256 pgtype.Text
+}
+
+func (q *Queries) UpdateCrawlPageContentFingerprints(ctx context.Context, arg UpdateCrawlPageContentFingerprintsParams) error {
+	_, err := q.db.Exec(ctx, updateCrawlPageContentFingerprints, arg.ID, arg.ContentSha256)
+	return err
 }

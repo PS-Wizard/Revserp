@@ -123,6 +123,8 @@ func DeriveIssues(pageFacts []PageFact, linkFacts []LinkFact) []DerivedIssue {
 		}
 	}
 
+	derivedIssues = append(derivedIssues, deriveDuplicateContentIssues(pageFacts)...)
+
 	return derivedIssues
 }
 

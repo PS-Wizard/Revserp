@@ -89,6 +89,7 @@ type CrawlPage struct {
 	JsonLd                  []byte
 	CreatedAt               pgtype.Timestamptz
 	VisibleText             pgtype.Text
+	ContentSha256           pgtype.Text
 }
 
 type Organization struct {
