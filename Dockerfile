@@ -22,6 +22,7 @@ RUN apt-get update \
 COPY --from=build /out/api /app/api
 COPY --from=build /out/worker /app/worker
 COPY --from=build /out/migrate /app/migrate
+COPY migrations /app/migrations
 COPY scripts/start-api.sh /app/start-api.sh
 COPY scripts/start-worker.sh /app/start-worker.sh
 
