@@ -11,10 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ps-wizard/revserp/internal/analyzer"
 	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
-	"github.com/ps-wizard/revserp/internal/scoring"
+	"github.com/ps-wizard/revserp/internal/issues"
 )
 
 // Worker claims queued crawls from Postgres and runs them.
@@ -117,8 +116,7 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent)
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(worker.pool)
-	issueStore := analyzer.NewStore(worker.pool)
-	scoreStore := scoring.NewStore(worker.pool)
+	issueStore := issues.NewStore(worker.pool)
 	runner := crawler.NewRunner(crawlConfig, worker.crawlPageWorkerCount, fetcher, parser).
 		WithRenderer(worker.renderer).
 		WithStore(crawlStore).
@@ -137,7 +135,7 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 		return fmt.Errorf("derive issues: %w", err)
 	}
 
-	crawlScores, err := scoreStore.ScoreCrawl(ctx, claimedCrawl.ID)
+	crawlScores, err := issueStore.ScoreCrawl(ctx, claimedCrawl.ID)
 	if err != nil {
 		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)

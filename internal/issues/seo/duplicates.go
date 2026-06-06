@@ -1,4 +1,4 @@
-package analyzer
+package seo
 
 import (
 	"crypto/sha256"
@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
 const minimumSharedShingleCountForNearDuplicateCandidate = 2
@@ -21,37 +23,33 @@ var nearDuplicateStopWords = map[string]struct{}{
 	"with": {}, "you": {}, "your": {},
 }
 
-// enrichPageFactsWithContentFingerprints computes normalized content hashes for duplicate detection.
-func enrichPageFactsWithContentFingerprints(pageFacts []PageFact) {
+// EnrichPageFactsWithContentFingerprints computes normalized content hashes for duplicate detection.
+func EnrichPageFactsWithContentFingerprints(pageFacts []shared.PageFact) {
 	for pageFactIndex := range pageFacts {
 		normalizedContent := normalizeDuplicateContent(pageFacts[pageFactIndex])
 		if normalizedContent == "" {
 			pageFacts[pageFactIndex].ContentSHA256 = ""
 			continue
 		}
-
 		pageFacts[pageFactIndex].ContentSHA256 = hashNormalizedContentSHA256(normalizedContent)
 	}
 }
 
-// deriveDuplicateContentIssues builds exact and near-duplicate SEO issues from persisted content fingerprints.
-func deriveDuplicateContentIssues(pageFacts []PageFact) []DerivedIssue {
-	var derivedIssues []DerivedIssue
+func deriveDuplicateContentIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
+	var derivedIssues []shared.DerivedIssue
 	exactDuplicateGroupsByHash := groupExactDuplicatePagesByHash(pageFacts)
 	derivedIssues = append(derivedIssues, buildExactDuplicateIssues(pageFacts, exactDuplicateGroupsByHash)...)
 	derivedIssues = append(derivedIssues, buildNearDuplicateIssues(pageFacts)...)
 	return derivedIssues
 }
 
-// normalizeDuplicateContent builds one stable normalized content payload for exact duplicate detection.
-func normalizeDuplicateContent(pageFact PageFact) string {
+func normalizeDuplicateContent(pageFact shared.PageFact) string {
 	normalizedFields := []string{
 		normalizeDuplicateContentField(pageFact.Title),
 		normalizeDuplicateContentField(pageFact.MetaDescription),
 		normalizeDuplicateContentField(pageFact.H1),
 		normalizeDuplicateContentField(pageFact.VisibleText),
 	}
-
 	var nonEmptyFields []string
 	for _, normalizedField := range normalizedFields {
 		if normalizedField == "" {
@@ -59,23 +57,19 @@ func normalizeDuplicateContent(pageFact PageFact) string {
 		}
 		nonEmptyFields = append(nonEmptyFields, normalizedField)
 	}
-
 	return strings.Join(nonEmptyFields, "\n")
 }
 
-// normalizeDuplicateContentField lowercases and collapses whitespace for one exact-match content field.
 func normalizeDuplicateContentField(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
-// hashNormalizedContentSHA256 returns one deterministic exact-match hash for normalized page content.
 func hashNormalizedContentSHA256(normalizedContent string) string {
 	contentHash := sha256.Sum256([]byte(normalizedContent))
 	return hex.EncodeToString(contentHash[:])
 }
 
-// groupExactDuplicatePagesByHash groups pages that share the same normalized content hash.
-func groupExactDuplicatePagesByHash(pageFacts []PageFact) map[string][]int {
+func groupExactDuplicatePagesByHash(pageFacts []shared.PageFact) map[string][]int {
 	exactDuplicateGroupsByHash := make(map[string][]int)
 	for pageFactIndex, pageFact := range pageFacts {
 		if pageFact.ContentSHA256 == "" {
@@ -86,16 +80,15 @@ func groupExactDuplicatePagesByHash(pageFacts []PageFact) map[string][]int {
 	return exactDuplicateGroupsByHash
 }
 
-// buildExactDuplicateIssues emits one issue per page that belongs to an exact duplicate group.
-func buildExactDuplicateIssues(pageFacts []PageFact, exactDuplicateGroupsByHash map[string][]int) []DerivedIssue {
-	var derivedIssues []DerivedIssue
+func buildExactDuplicateIssues(pageFacts []shared.PageFact, exactDuplicateGroupsByHash map[string][]int) []shared.DerivedIssue {
+	var derivedIssues []shared.DerivedIssue
 	for _, pageIndexes := range exactDuplicateGroupsByHash {
 		if len(pageIndexes) < 2 {
 			continue
 		}
 		for _, pageIndex := range pageIndexes {
 			matchingURLs := collectOtherDuplicateURLs(pageFacts, pageIndexes, pageIndex)
-			derivedIssues = append(derivedIssues, newSEOIssue(
+			derivedIssues = append(derivedIssues, newIssue(
 				pageFacts[pageIndex],
 				"content_quality",
 				"exact_duplicate_content",
@@ -108,8 +101,7 @@ func buildExactDuplicateIssues(pageFacts []PageFact, exactDuplicateGroupsByHash 
 	return derivedIssues
 }
 
-// buildNearDuplicateIssues emits one issue per page that has direct near-duplicate matches.
-func buildNearDuplicateIssues(pageFacts []PageFact) []DerivedIssue {
+func buildNearDuplicateIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
 	candidatePagePairs := buildNearDuplicateCandidatePairs(pageFacts)
 	nearDuplicateNeighborsByPageIndex := make(map[int]map[int]struct{})
 	for candidatePagePair := range candidatePagePairs {
@@ -125,21 +117,19 @@ func buildNearDuplicateIssues(pageFacts []PageFact) []DerivedIssue {
 		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, candidatePagePair[1], candidatePagePair[0])
 	}
 
-	var derivedIssues []DerivedIssue
+	var derivedIssues []shared.DerivedIssue
 	for pageIndex := range pageFacts {
 		matchingPageIndexesByIndex, hasNearDuplicateMatches := nearDuplicateNeighborsByPageIndex[pageIndex]
 		if !hasNearDuplicateMatches || len(matchingPageIndexesByIndex) == 0 {
 			continue
 		}
-
 		matchingPageIndexes := make([]int, 0, len(matchingPageIndexesByIndex))
 		for matchingPageIndex := range matchingPageIndexesByIndex {
 			matchingPageIndexes = append(matchingPageIndexes, matchingPageIndex)
 		}
 		sort.Ints(matchingPageIndexes)
-
 		matchingURLs := collectOtherDuplicateURLs(pageFacts, matchingPageIndexes, -1)
-		derivedIssues = append(derivedIssues, newSEOIssue(
+		derivedIssues = append(derivedIssues, newIssue(
 			pageFacts[pageIndex],
 			"content_quality",
 			"near_duplicate_content",
@@ -148,12 +138,10 @@ func buildNearDuplicateIssues(pageFacts []PageFact) []DerivedIssue {
 			fmt.Sprintf("Normalized page content closely matches %d other page(s): %s.", len(matchingURLs), strings.Join(matchingURLs, ", ")),
 		))
 	}
-
 	return derivedIssues
 }
 
-// buildNearDuplicateCandidatePairs uses an in-memory shingle index to find plausible near-duplicate page pairs.
-func buildNearDuplicateCandidatePairs(pageFacts []PageFact) map[[2]int]struct{} {
+func buildNearDuplicateCandidatePairs(pageFacts []shared.PageFact) map[[2]int]struct{} {
 	pageIndexesByShingle := make(map[string][]int)
 	shingleDocumentCounts := make(map[string]int)
 	pageShinglesByIndex := make([][]string, len(pageFacts))
@@ -187,11 +175,9 @@ func buildNearDuplicateCandidatePairs(pageFacts []PageFact) map[[2]int]struct{} 
 		}
 		candidatePagePairs[candidatePagePair] = struct{}{}
 	}
-
 	return candidatePagePairs
 }
 
-// calculateMaximumCommonShinglePageCount caps noisy shingles so template-heavy phrases do not explode candidate counts.
 func calculateMaximumCommonShinglePageCount(totalPageCount int) int {
 	if totalPageCount <= 0 {
 		return nearDuplicateCommonShinglePageCountFloor
@@ -203,19 +189,16 @@ func calculateMaximumCommonShinglePageCount(totalPageCount int) int {
 	return maximumCommonShinglePageCount
 }
 
-// buildNearDuplicateCandidateShingles returns unique two-word shingles used for candidate generation.
-func buildNearDuplicateCandidateShingles(pageFact PageFact) []string {
+func buildNearDuplicateCandidateShingles(pageFact shared.PageFact) []string {
 	candidateTokens := collectNearDuplicateCandidateTokens(pageFact)
 	if len(candidateTokens) < 2 {
 		return nil
 	}
-
 	uniqueShingles := make(map[string]struct{})
 	for tokenIndex := 0; tokenIndex < len(candidateTokens)-1; tokenIndex++ {
 		shingle := candidateTokens[tokenIndex] + " " + candidateTokens[tokenIndex+1]
 		uniqueShingles[shingle] = struct{}{}
 	}
-
 	shingles := make([]string, 0, len(uniqueShingles))
 	for shingle := range uniqueShingles {
 		shingles = append(shingles, shingle)
@@ -223,8 +206,7 @@ func buildNearDuplicateCandidateShingles(pageFact PageFact) []string {
 	return shingles
 }
 
-// collectNearDuplicateCandidateTokens builds the token stream used for inverted-index candidate generation.
-func collectNearDuplicateCandidateTokens(pageFact PageFact) []string {
+func collectNearDuplicateCandidateTokens(pageFact shared.PageFact) []string {
 	var candidateTokens []string
 	candidateTokens = append(candidateTokens, normalizeNearDuplicateFieldToTokens(pageFact.Title)...)
 	candidateTokens = append(candidateTokens, normalizeNearDuplicateFieldToTokens(pageFact.MetaDescription)...)
@@ -233,17 +215,14 @@ func collectNearDuplicateCandidateTokens(pageFact PageFact) []string {
 	return candidateTokens
 }
 
-// calculateNearDuplicateContentSimilarity returns one weighted field similarity score for final near-duplicate verdicts.
-func calculateNearDuplicateContentSimilarity(leftPageFact PageFact, rightPageFact PageFact) float64 {
+func calculateNearDuplicateContentSimilarity(leftPageFact shared.PageFact, rightPageFact shared.PageFact) float64 {
 	visibleTextSimilarity := calculateFieldSimilarity(leftPageFact.VisibleText, rightPageFact.VisibleText)
 	titleSimilarity := calculateFieldSimilarity(leftPageFact.Title, rightPageFact.Title)
 	metaDescriptionSimilarity := calculateFieldSimilarity(leftPageFact.MetaDescription, rightPageFact.MetaDescription)
 	h1Similarity := calculateFieldSimilarity(leftPageFact.H1, rightPageFact.H1)
-
 	return visibleTextSimilarity*0.55 + titleSimilarity*0.15 + metaDescriptionSimilarity*0.15 + h1Similarity*0.15
 }
 
-// calculateFieldSimilarity compares two normalized fields using character trigram Dice similarity.
 func calculateFieldSimilarity(leftValue string, rightValue string) float64 {
 	leftNormalizedValue := normalizeNearDuplicateField(leftValue)
 	rightNormalizedValue := normalizeNearDuplicateField(rightValue)
@@ -253,7 +232,6 @@ func calculateFieldSimilarity(leftValue string, rightValue string) float64 {
 	if leftNormalizedValue == rightNormalizedValue {
 		return 1
 	}
-
 	leftTrigrams := buildCharacterTrigrams(leftNormalizedValue)
 	rightTrigrams := buildCharacterTrigrams(rightNormalizedValue)
 	sharedTrigramCount := 0
@@ -265,16 +243,13 @@ func calculateFieldSimilarity(leftValue string, rightValue string) float64 {
 	if sharedTrigramCount == 0 {
 		return 0
 	}
-
 	return float64(2*sharedTrigramCount) / float64(len(leftTrigrams)+len(rightTrigrams))
 }
 
-// normalizeNearDuplicateField removes stop words and punctuation noise before near-duplicate comparison.
 func normalizeNearDuplicateField(value string) string {
 	return strings.Join(normalizeNearDuplicateFieldToTokens(value), " ")
 }
 
-// normalizeNearDuplicateFieldToTokens returns filtered tokens for candidate generation and similarity scoring.
 func normalizeNearDuplicateFieldToTokens(value string) []string {
 	rawTokens := strings.Fields(strings.ToLower(strings.TrimSpace(value)))
 	normalizedTokens := make([]string, 0, len(rawTokens))
@@ -291,7 +266,6 @@ func normalizeNearDuplicateFieldToTokens(value string) []string {
 	return normalizedTokens
 }
 
-// normalizeNearDuplicateToken trims punctuation and lowercases one token used by near-duplicate matching.
 func normalizeNearDuplicateToken(value string) string {
 	trimmedToken := strings.TrimFunc(value, func(character rune) bool {
 		return !unicode.IsLetter(character) && !unicode.IsDigit(character)
@@ -302,7 +276,6 @@ func normalizeNearDuplicateToken(value string) string {
 	return strings.ToLower(trimmedToken)
 }
 
-// buildCharacterTrigrams returns unique character trigrams for one normalized field value.
 func buildCharacterTrigrams(value string) map[string]struct{} {
 	if value == "" {
 		return nil
@@ -310,7 +283,6 @@ func buildCharacterTrigrams(value string) map[string]struct{} {
 	if len(value) < 3 {
 		return map[string]struct{}{value: {}}
 	}
-
 	characterTrigrams := make(map[string]struct{}, len(value)-2)
 	for trigramStartIndex := 0; trigramStartIndex <= len(value)-3; trigramStartIndex++ {
 		characterTrigrams[value[trigramStartIndex:trigramStartIndex+3]] = struct{}{}
@@ -318,7 +290,6 @@ func buildCharacterTrigrams(value string) map[string]struct{} {
 	return characterTrigrams
 }
 
-// addNearDuplicateNeighbor records one edge in the near-duplicate graph.
 func addNearDuplicateNeighbor(neighborsByPageIndex map[int]map[int]struct{}, sourcePageIndex int, targetPageIndex int) {
 	if _, exists := neighborsByPageIndex[sourcePageIndex]; !exists {
 		neighborsByPageIndex[sourcePageIndex] = make(map[int]struct{})
@@ -326,9 +297,7 @@ func addNearDuplicateNeighbor(neighborsByPageIndex map[int]map[int]struct{}, sou
 	neighborsByPageIndex[sourcePageIndex][targetPageIndex] = struct{}{}
 }
 
-
-// collectOtherDuplicateURLs returns sorted matching URLs for one page inside a duplicate cluster.
-func collectOtherDuplicateURLs(pageFacts []PageFact, pageIndexes []int, currentPageIndex int) []string {
+func collectOtherDuplicateURLs(pageFacts []shared.PageFact, pageIndexes []int, currentPageIndex int) []string {
 	matchingURLs := make([]string, 0, len(pageIndexes)-1)
 	for _, pageIndex := range pageIndexes {
 		if pageIndex == currentPageIndex {
