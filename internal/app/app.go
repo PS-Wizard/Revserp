@@ -6,6 +6,7 @@ import (
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/gsc"
 )
 
 // App holds shared application dependencies.
@@ -16,12 +17,14 @@ type App struct {
 	AuthVerifier   *internalauth.Verifier
 	SupabaseClient *internalauth.SupabaseClient
 	SessionManager *internalauth.SessionManager
+	GSCService     *gsc.Service
 }
 
 // New builds an application with shared dependencies.
 func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Verifier) *App {
 	supabaseClient := internalauth.NewSupabaseClient(cfg.SupabaseJWTIssuer, cfg.SupabaseAnonKey)
 	sessionManager := internalauth.NewSessionManager(dbPool, authVerifier, supabaseClient, cfg.SessionCookieName, cfg.SessionTTL, cfg.AppEnv == "production")
+	gscService := gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret)
 
 	return &App{
 		Config:         cfg,
@@ -30,5 +33,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		AuthVerifier:   authVerifier,
 		SupabaseClient: supabaseClient,
 		SessionManager: sessionManager,
+		GSCService:     gscService,
 	}
 }

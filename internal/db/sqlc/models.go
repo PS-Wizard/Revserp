@@ -100,6 +100,33 @@ type CrawlScoreBreakdown struct {
 	UpdatedAt      pgtype.Timestamptz
 }
 
+type GoogleConnection struct {
+	ID                    pgtype.UUID
+	OrganizationID        pgtype.UUID
+	ConnectedByUserID     pgtype.UUID
+	GoogleAccountEmail    pgtype.Text
+	GoogleAccountSubject  pgtype.Text
+	EncryptedRefreshToken string
+	EncryptedAccessToken  pgtype.Text
+	AccessTokenExpiresAt  pgtype.Timestamptz
+	Scope                 string
+	Status                string
+	LastError             pgtype.Text
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+}
+
+type GoogleOauthState struct {
+	ID             pgtype.UUID
+	StateTokenHash string
+	OrganizationID pgtype.UUID
+	UserID         pgtype.UUID
+	ProjectID      pgtype.UUID
+	ReturnPath     string
+	ExpiresAt      pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+}
+
 type Organization struct {
 	ID        pgtype.UUID
 	Name      string
@@ -131,6 +158,16 @@ type Project struct {
 	Name           string
 	BaseUrl        string
 	CreatedAt      pgtype.Timestamptz
+}
+
+type ProjectGscConnection struct {
+	ID                 pgtype.UUID
+	ProjectID          pgtype.UUID
+	GoogleConnectionID pgtype.UUID
+	SiteUrl            string
+	PermissionLevel    pgtype.Text
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
 }
 
 type Session struct {

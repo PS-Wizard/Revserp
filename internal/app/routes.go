@@ -35,6 +35,7 @@ func (a *App) Router() http.Handler {
 	r.Post("/auth/login", a.handleLogin)
 	r.Post("/auth/oauth/exchange", a.handleOAuthExchange)
 	r.Post("/auth/logout", a.handleLogout)
+	r.Get("/auth/google/callback", a.handleGoogleOAuthCallback)
 	r.Get("/invites/{token}", a.handleGetInvite)
 
 	r.Group(func(protected chi.Router) {
@@ -49,6 +50,11 @@ func (a *App) Router() http.Handler {
 		protected.Post("/organizations/{organizationID}/invites/{inviteID}/revoke", a.handleRevokeOrganizationInvite)
 		protected.Get("/projects/{projectID}", a.handleGetProject)
 		protected.Delete("/projects/{projectID}", a.handleDeleteProject)
+		protected.Post("/projects/{projectID}/gsc/connect/start", a.handleStartProjectGSCConnect)
+		protected.Get("/projects/{projectID}/gsc/status", a.handleProjectGSCStatus)
+		protected.Post("/projects/{projectID}/gsc/select-site", a.handleSelectProjectGSCSite)
+		protected.Post("/projects/{projectID}/gsc/disconnect", a.handleDisconnectProjectGSC)
+		protected.Get("/projects/{projectID}/gsc/overview", a.handleProjectGSCOverview)
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 		protected.Get("/crawls/{crawlID}", a.handleGetCrawl)
