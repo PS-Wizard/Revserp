@@ -8,7 +8,7 @@ const (
 	googleWebmastersReadOnlyScope = "https://www.googleapis.com/auth/webmasters.readonly"
 )
 
-var overviewWindowOptions = []int{7, 28, 90, 180}
+var overviewWindowOptions = []int{180}
 
 // Error reports one Google OAuth or Search Console failure.
 type Error struct {

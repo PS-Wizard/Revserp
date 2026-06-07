@@ -12,68 +12,102 @@ import (
 func (service *Service) FetchOverview(ctx context.Context, accessToken, siteURL string) (OverviewPayload, error) {
 	historyDays := 360
 	historyStart, historyEnd := getDateRange(historyDays, 0)
+	requestContext, cancelRequests := context.WithCancel(ctx)
+	defer cancelRequests()
 
-	trendRows, err := service.querySearchAnalytics(ctx, accessToken, siteURL, map[string]any{
-		"startDate":  historyStart,
-		"endDate":    historyEnd,
-		"dimensions": []string{"date"},
-		"dataState":  "final",
-		"rowLimit":   historyDays + 14,
-	})
-	if err != nil {
-		return OverviewPayload{}, err
+	type analyticsResult struct {
+		days int
+		kind string
+		rows []SearchAnalyticsRow
+		err  error
 	}
 
+	requestCount := 1 + len(overviewWindowOptions)*4
+	results := make(chan analyticsResult, requestCount)
+
+	go func() {
+		rows, err := service.querySearchAnalytics(requestContext, accessToken, siteURL, map[string]any{
+			"startDate":  historyStart,
+			"endDate":    historyEnd,
+			"dimensions": []string{"date"},
+			"dataState":  "final",
+			"rowLimit":   historyDays + 14,
+		})
+		results <- analyticsResult{kind: "trend", rows: rows, err: err}
+	}()
+
+	for _, days := range overviewWindowOptions {
+		windowStart, windowEnd := getDateRange(days, 0)
+
+		go func(days int) {
+			rows, err := service.querySearchAnalytics(requestContext, accessToken, siteURL, map[string]any{
+				"startDate":  windowStart,
+				"endDate":    windowEnd,
+				"dimensions": []string{"query"},
+				"dataState":  "final",
+				"rowLimit":   50,
+			})
+			results <- analyticsResult{days: days, kind: "query", rows: rows, err: err}
+		}(days)
+
+		go func(days int) {
+			rows, err := service.querySearchAnalytics(requestContext, accessToken, siteURL, map[string]any{
+				"startDate":  windowStart,
+				"endDate":    windowEnd,
+				"dimensions": []string{"page"},
+				"dataState":  "final",
+				"rowLimit":   25,
+			})
+			results <- analyticsResult{days: days, kind: "page", rows: rows, err: err}
+		}(days)
+
+		go func(days int) {
+			rows, err := service.querySearchAnalytics(requestContext, accessToken, siteURL, map[string]any{
+				"startDate":  windowStart,
+				"endDate":    windowEnd,
+				"dimensions": []string{"country"},
+				"dataState":  "final",
+				"rowLimit":   25,
+			})
+			results <- analyticsResult{days: days, kind: "country", rows: rows, err: err}
+		}(days)
+
+		go func(days int) {
+			rows, err := service.querySearchAnalytics(requestContext, accessToken, siteURL, map[string]any{
+				"startDate":  windowStart,
+				"endDate":    windowEnd,
+				"dimensions": []string{"device"},
+				"dataState":  "final",
+				"rowLimit":   10,
+			})
+			results <- analyticsResult{days: days, kind: "device", rows: rows, err: err}
+		}(days)
+	}
+
+	var trendRows []SearchAnalyticsRow
 	queryRowsByWindow := make(map[int][]SearchAnalyticsRow, len(overviewWindowOptions))
 	pageRowsByWindow := make(map[int][]SearchAnalyticsRow, len(overviewWindowOptions))
 	countryRowsByWindow := make(map[int][]SearchAnalyticsRow, len(overviewWindowOptions))
 	deviceRowsByWindow := make(map[int][]SearchAnalyticsRow, len(overviewWindowOptions))
 
-	for _, days := range overviewWindowOptions {
-		windowStart, windowEnd := getDateRange(days, 0)
-
-		queryRowsByWindow[days], err = service.querySearchAnalytics(ctx, accessToken, siteURL, map[string]any{
-			"startDate":  windowStart,
-			"endDate":    windowEnd,
-			"dimensions": []string{"query"},
-			"dataState":  "final",
-			"rowLimit":   50,
-		})
-		if err != nil {
-			return OverviewPayload{}, err
+	for range requestCount {
+		result := <-results
+		if result.err != nil {
+			cancelRequests()
+			return OverviewPayload{}, result.err
 		}
 
-		pageRowsByWindow[days], err = service.querySearchAnalytics(ctx, accessToken, siteURL, map[string]any{
-			"startDate":  windowStart,
-			"endDate":    windowEnd,
-			"dimensions": []string{"page"},
-			"dataState":  "final",
-			"rowLimit":   25,
-		})
-		if err != nil {
-			return OverviewPayload{}, err
-		}
-
-		countryRowsByWindow[days], err = service.querySearchAnalytics(ctx, accessToken, siteURL, map[string]any{
-			"startDate":  windowStart,
-			"endDate":    windowEnd,
-			"dimensions": []string{"country"},
-			"dataState":  "final",
-			"rowLimit":   25,
-		})
-		if err != nil {
-			return OverviewPayload{}, err
-		}
-
-		deviceRowsByWindow[days], err = service.querySearchAnalytics(ctx, accessToken, siteURL, map[string]any{
-			"startDate":  windowStart,
-			"endDate":    windowEnd,
-			"dimensions": []string{"device"},
-			"dataState":  "final",
-			"rowLimit":   10,
-		})
-		if err != nil {
-			return OverviewPayload{}, err
+		switch result.kind {
+		case "trend":
+			trendRows = result.rows
+		case "query":
+			queryRowsByWindow[result.days] = result.rows
+		case "page":
+			pageRowsByWindow[result.days] = result.rows
+		case "country":
+			countryRowsByWindow[result.days] = result.rows
+		case "device":
+			deviceRowsByWindow[result.days] = result.rows
 		}
 	}
 
