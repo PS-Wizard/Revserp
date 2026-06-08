@@ -27,15 +27,25 @@ type SessionManager struct {
 	verifier       *Verifier
 	supabaseClient *SupabaseClient
 	cookieName     string
+	cookieDomain   string
 	sessionTTL     time.Duration
 	cookieSecure   bool
 }
 
 // NewSessionManager builds a backend session manager.
-func NewSessionManager(pool *pgxpool.Pool, verifier *Verifier, supabaseClient *SupabaseClient, cookieName string, sessionTTL time.Duration, cookieSecure bool) *SessionManager {
+func NewSessionManager(
+	pool *pgxpool.Pool,
+	verifier *Verifier,
+	supabaseClient *SupabaseClient,
+	cookieName string,
+	cookieDomain string,
+	sessionTTL time.Duration,
+	cookieSecure bool,
+) *SessionManager {
 	if strings.TrimSpace(cookieName) == "" {
 		cookieName = "revserp_session"
 	}
+	cookieDomain = strings.TrimSpace(cookieDomain)
 	if sessionTTL <= 0 {
 		sessionTTL = 30 * 24 * time.Hour
 	}
@@ -45,6 +55,7 @@ func NewSessionManager(pool *pgxpool.Pool, verifier *Verifier, supabaseClient *S
 		verifier:       verifier,
 		supabaseClient: supabaseClient,
 		cookieName:     cookieName,
+		cookieDomain:   cookieDomain,
 		sessionTTL:     sessionTTL,
 		cookieSecure:   cookieSecure,
 	}
@@ -163,6 +174,7 @@ func (manager *SessionManager) SetSessionCookie(w http.ResponseWriter, rawSessio
 		Name:     manager.cookieName,
 		Value:    rawSessionToken,
 		Path:     "/",
+		Domain:   manager.cookieDomain,
 		HttpOnly: true,
 		Secure:   manager.cookieSecure,
 		SameSite: http.SameSiteLaxMode,
@@ -176,6 +188,7 @@ func (manager *SessionManager) ClearSessionCookie(w http.ResponseWriter) {
 		Name:     manager.cookieName,
 		Value:    "",
 		Path:     "/",
+		Domain:   manager.cookieDomain,
 		HttpOnly: true,
 		Secure:   manager.cookieSecure,
 		SameSite: http.SameSiteLaxMode,

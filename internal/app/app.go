@@ -23,7 +23,15 @@ type App struct {
 // New builds an application with shared dependencies.
 func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Verifier) *App {
 	supabaseClient := internalauth.NewSupabaseClient(cfg.SupabaseJWTIssuer, cfg.SupabaseAnonKey)
-	sessionManager := internalauth.NewSessionManager(dbPool, authVerifier, supabaseClient, cfg.SessionCookieName, cfg.SessionTTL, cfg.AppEnv == "production")
+	sessionManager := internalauth.NewSessionManager(
+		dbPool,
+		authVerifier,
+		supabaseClient,
+		cfg.SessionCookieName,
+		cfg.SessionCookieDomain,
+		cfg.SessionTTL,
+		cfg.AppEnv == "production",
+	)
 	gscService := gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret)
 
 	return &App{

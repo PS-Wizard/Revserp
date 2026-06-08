@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -19,7 +20,9 @@ type Config struct {
 	SupabaseJWTAudience         string
 	SupabaseAnonKey             string
 	SessionCookieName           string
+	SessionCookieDomain         string
 	SessionTTL                  time.Duration
+	CORSAllowedOrigins          []string
 	WorkerConcurrency           int
 	WorkerPollInterval          time.Duration
 	CrawlPageWorkerCount        int
@@ -48,7 +51,9 @@ func Load() Config {
 		SupabaseJWTAudience:         getEnv("SUPABASE_JWT_AUDIENCE", "authenticated"),
 		SupabaseAnonKey:             getEnv("SUPABASE_ANON_KEY", ""),
 		SessionCookieName:           getEnv("SESSION_COOKIE_NAME", "revserp_session"),
+		SessionCookieDomain:         getEnv("SESSION_COOKIE_DOMAIN", ""),
 		SessionTTL:                  getEnvDuration("SESSION_TTL", 30*24*time.Hour),
+		CORSAllowedOrigins:          getEnvCSV("CORS_ALLOWED_ORIGINS", []string{"http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"}),
 		WorkerConcurrency:           getEnvInt("WORKER_CONCURRENCY", 2),
 		WorkerPollInterval:          getEnvDuration("WORKER_POLL_INTERVAL", 2*time.Second),
 		CrawlPageWorkerCount:        getEnvInt("CRAWL_PAGE_WORKER_COUNT", 4),
@@ -102,4 +107,27 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	}
 
 	return parsedValue
+}
+
+// getEnvCSV returns a comma-separated environment variable or a default value.
+func getEnvCSV(key string, defaultValue []string) []string {
+	value := getEnv(key, "")
+	if value == "" {
+		return defaultValue
+	}
+
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmedValue := strings.TrimSpace(part)
+		if trimmedValue == "" {
+			continue
+		}
+		values = append(values, trimmedValue)
+	}
+	if len(values) == 0 {
+		return defaultValue
+	}
+
+	return values
 }
