@@ -223,7 +223,6 @@ func findBucketBreakdown(t *testing.T, pillarBreakdown shared.PillarScoreBreakdo
 	return shared.BucketScoreBreakdown{}
 }
 
-
 func TestDeriveIssuesBuildsAdditionalAEOIssues(t *testing.T) {
 	pageFacts := []shared.PageFact{
 		{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/", Title: "Home", MetaDescription: "Homepage description long enough for the fixture.", H1: "Home", H1Count: 1, VisibleText: "Homepage content with enough words to count as a real page in the fixture.", WordCount: 180, CanonicalURL: "https://example.com/", Viewport: "width=device-width, initial-scale=1", Lang: "en", OGTags: []byte(`{"og:title":"Home"}`), JSONLD: []byte(`[{"@type":"WebPage"}]`)},
@@ -253,7 +252,6 @@ func TestDeriveIssuesBuildsAdditionalAEOIssues(t *testing.T) {
 	assertIssueType(t, derivedIssues, "faq_like_page_missing_faq_schema")
 }
 
-
 func TestCalculateScoresAppliesAEOIssueCoverageFloor(t *testing.T) {
 	crawlPageSignals := make([]shared.CrawlPageSignal, 0, 20)
 	for pageIndex := 0; pageIndex < 20; pageIndex++ {
@@ -275,7 +273,6 @@ func TestCalculateScoresAppliesAEOIssueCoverageFloor(t *testing.T) {
 		t.Fatalf("expected sparse AEO issues to reduce the AEO score more aggressively, got %d", scores.AEOScore)
 	}
 }
-
 
 func TestDeriveIssuesBuildsAdditionalHighValueSEOIssues(t *testing.T) {
 	pageFacts := []shared.PageFact{
@@ -314,6 +311,47 @@ func TestDeriveIssuesSkipsPurePaginationDuplicateMetadataGroups(t *testing.T) {
 	derivedIssues := DeriveIssues(pageFacts, nil)
 	assertIssueTypeMissing(t, derivedIssues, "duplicate_title")
 	assertIssueTypeMissing(t, derivedIssues, "duplicate_meta_description")
+}
+
+func TestRecommendedFixReturnsCuratedGuidance(t *testing.T) {
+	testCases := []struct {
+		issueType string
+		expected  string
+	}{
+		{issueType: "title_too_long", expected: "Shorten the title to roughly 30-60 characters, keep the main intent first, and remove filler or repeated brand text."},
+		{issueType: "missing_structured_data", expected: "Add page-appropriate JSON-LD structured data using a schema type that matches the page purpose."},
+		{issueType: "exact_duplicate_content", expected: "Consolidate duplicate pages into a canonical source, merge overlapping copy, and redirect or canonicalize true duplicates."},
+	}
+
+	for _, testCase := range testCases {
+		recommendedFix := RecommendedFix("seo", "content_quality", testCase.issueType, "", "")
+		if recommendedFix != testCase.expected {
+			t.Fatalf("issue type %q recommended fix %q did not match %q", testCase.issueType, recommendedFix, testCase.expected)
+		}
+	}
+}
+
+func TestRecommendedFixFallsBackToIssueContext(t *testing.T) {
+	recommendedFix := RecommendedFix(
+		"seo",
+		"content_quality",
+		"custom_issue_type",
+		"Custom issue message",
+		"Custom issue details.",
+	)
+
+	if !strings.Contains(recommendedFix, "Custom Issue Type") {
+		t.Fatalf("expected fallback recommended fix to mention the humanized issue type, got %q", recommendedFix)
+	}
+	if !strings.Contains(recommendedFix, "Content Quality") {
+		t.Fatalf("expected fallback recommended fix to mention the humanized bucket, got %q", recommendedFix)
+	}
+	if !strings.Contains(recommendedFix, "Custom issue message") {
+		t.Fatalf("expected fallback recommended fix to mention the issue message, got %q", recommendedFix)
+	}
+	if !strings.Contains(recommendedFix, "Custom issue details.") {
+		t.Fatalf("expected fallback recommended fix to mention the issue details, got %q", recommendedFix)
+	}
 }
 
 func assertIssueTypeMissing(t *testing.T, derivedIssues []shared.DerivedIssue, issueType string) {

@@ -54,6 +54,7 @@ func (a *App) Router() http.Handler {
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 		protected.Get("/crawls/{crawlID}", a.handleGetCrawl)
 		protected.Get("/crawls/{crawlID}/score-breakdown", a.handleGetCrawlScoreBreakdown)
+		protected.Get("/crawls/{crawlID}/score-breakdown/export.csv", a.handleExportCrawlScoreBreakdownCSV)
 		protected.Get("/crawls/{crawlID}/score-breakdown/{pillar}/{bucket}/{issueType}/urls", a.handleListScoreBreakdownIssueURLs)
 		protected.Post("/crawls/{crawlID}/pages", a.handleCreateCrawlPage)
 		protected.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)
