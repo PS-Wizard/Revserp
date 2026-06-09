@@ -257,6 +257,9 @@ func buildCrawlIssueExportWorkbook(crawlID string, exportRows []crawlIssueExport
 	if err := writeOverviewSheet(workbook, overviewSheetName, styles, crawlID, overviewRows); err != nil {
 		return nil, err
 	}
+	if _, err := workbook.NewSheet("All Issues"); err != nil {
+		return nil, err
+	}
 	if err := writeDetailedIssuesSheet(workbook, "All Issues", styles, crawlID, exportRows); err != nil {
 		return nil, err
 	}
@@ -420,7 +423,7 @@ func newCrawlIssueWorkbookStyles(workbook *excelize.File) (crawlIssueWorkbookSty
 	}
 
 	if styles.issueLabelSEO, err = workbook.NewStyle(&excelize.Style{
-		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Font:      &excelize.Font{Bold: true, Color: "111827"},
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"141414"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
 	}); err != nil {
@@ -428,7 +431,7 @@ func newCrawlIssueWorkbookStyles(workbook *excelize.File) (crawlIssueWorkbookSty
 	}
 
 	if styles.issueLabelAEO, err = workbook.NewStyle(&excelize.Style{
-		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Font:      &excelize.Font{Bold: true, Color: "111827"},
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"2563EB"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
 	}); err != nil {
@@ -436,7 +439,7 @@ func newCrawlIssueWorkbookStyles(workbook *excelize.File) (crawlIssueWorkbookSty
 	}
 
 	if styles.issueLabelPageSpeed, err = workbook.NewStyle(&excelize.Style{
-		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Font:      &excelize.Font{Bold: true, Color: "111827"},
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"0F766E"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
 	}); err != nil {
