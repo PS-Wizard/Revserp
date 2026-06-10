@@ -67,3 +67,19 @@ ORDER BY
     ci.created_at ASC
 LIMIT $6
 OFFSET $7;
+
+-- name: ListCompletedProjectCrawlScoreBreakdownsForUser :many
+SELECT
+    c.id AS crawl_id,
+    c.created_at,
+    c.completed_at,
+    csb.breakdown_json
+FROM crawl_score_breakdowns AS csb
+INNER JOIN crawls AS c ON c.id = csb.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE c.project_id = $1
+  AND om.user_id = $2
+  AND c.status = 'completed'
+ORDER BY c.created_at DESC
+LIMIT $3;

@@ -26,6 +26,9 @@ type Config struct {
 	WorkerConcurrency           int
 	WorkerPollInterval          time.Duration
 	CrawlPageWorkerCount        int
+	AIAuditWorkerConcurrency    int
+	AIAuditWorkerPollInterval   time.Duration
+	OpenRouterAPIKey            string
 	ObscuraPath                 string
 	RendererConcurrency         int
 	ObscuraTimeout              time.Duration
@@ -57,6 +60,9 @@ func Load() Config {
 		WorkerConcurrency:           getEnvInt("WORKER_CONCURRENCY", 2),
 		WorkerPollInterval:          getEnvDuration("WORKER_POLL_INTERVAL", 2*time.Second),
 		CrawlPageWorkerCount:        getEnvInt("CRAWL_PAGE_WORKER_COUNT", 4),
+		AIAuditWorkerConcurrency:    getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
+		AIAuditWorkerPollInterval:   getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
+		OpenRouterAPIKey:            getEnv("OPENROUTER_API_KEY", ""),
 		ObscuraPath:                 getEnv("OBSCURA_PATH", ""),
 		RendererConcurrency:         getEnvInt("RENDERER_CONCURRENCY", 2),
 		ObscuraTimeout:              time.Duration(getEnvInt("OBSCURA_TIMEOUT_SECONDS", 5)) * time.Second,

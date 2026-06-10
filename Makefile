@@ -1,4 +1,4 @@
-.PHONY: up down sqlc migrate api worker migen
+.PHONY: up down sqlc migrate api worker ai-audit-worker migen
 
 up:
 	podman-compose up -d
@@ -19,5 +19,8 @@ api:
 
 worker:
 	go run ./cmd/worker
+
+ai-audit-worker:
+	go run ./cmd/ai-audit-worker
 
 migen: migrate sqlc

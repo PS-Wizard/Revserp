@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -25,6 +27,21 @@ type scoreBreakdownIssueURLResponse struct {
 	Severity    string `json:"severity"`
 	Message     string `json:"message"`
 	Details     string `json:"details"`
+}
+
+type projectBucketTrendsSeriesResponse struct {
+	ID   string  `json:"id"`
+	Name string  `json:"name"`
+	Data []int32 `json:"data"`
+}
+
+type projectBucketTrendsResponse struct {
+	ProjectID  string                              `json:"project_id"`
+	Pillar     string                              `json:"pillar"`
+	Categories []string                            `json:"categories"`
+	CapturedAt []string                            `json:"captured_at"`
+	CrawlIDs   []string                            `json:"crawl_ids"`
+	Series     []projectBucketTrendsSeriesResponse `json:"series"`
 }
 
 type crawlIssueExportRow struct {
@@ -1044,6 +1061,171 @@ func pillarSortValue(pillarLabel string) int {
 	default:
 		return 3
 	}
+}
+
+// handleGetProjectBucketTrends returns one pillar trend series plus bucket trend series across recent completed crawls.
+func (a *App) handleGetProjectBucketTrends(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+
+	pillar, ok := normalizeIssuePillar(r.URL.Query().Get("pillar"))
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "pillar must be seo, aeo, or pagespeed")
+		return
+	}
+
+	limit, err := parsePaginationInt32(r.URL.Query().Get("limit"), 10)
+	if err != nil || limit <= 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	if limit > maxPaginationLimit {
+		limit = maxPaginationLimit
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	queries := a.Queries.WithTx(tx)
+	user, _, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
+		}
+
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	trendRows, err := queries.ListCompletedProjectCrawlScoreBreakdownsForUser(r.Context(), sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserParams{
+		ProjectID: projectID,
+		UserID:    user.ID,
+		Limit:     limit,
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	response, err := buildProjectBucketTrendsResponse(projectID.String(), pillar, trendRows)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "unable to build bucket trends")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+type projectBucketTrendEntry struct {
+	CrawlID    string
+	CapturedAt time.Time
+	Label      string
+	Pillar     issueshared.PillarScoreBreakdown
+}
+
+func buildProjectBucketTrendsResponse(
+	projectID string,
+	pillarID string,
+	trendRows []sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserRow,
+) (projectBucketTrendsResponse, error) {
+	entries := make([]projectBucketTrendEntry, 0, len(trendRows))
+
+	for rowIndex := len(trendRows) - 1; rowIndex >= 0; rowIndex-- {
+		trendRow := trendRows[rowIndex]
+
+		var snapshot issueshared.ScoreBreakdownSnapshot
+		if err := json.Unmarshal(trendRow.BreakdownJson, &snapshot); err != nil {
+			return projectBucketTrendsResponse{}, err
+		}
+
+		selectedPillar, ok := findSnapshotPillar(snapshot, pillarID)
+		if !ok {
+			continue
+		}
+
+		capturedAt := trendRow.CreatedAt.Time
+		if trendRow.CompletedAt.Valid {
+			capturedAt = trendRow.CompletedAt.Time
+		}
+
+		entries = append(entries, projectBucketTrendEntry{
+			CrawlID:    trendRow.CrawlID.String(),
+			CapturedAt: capturedAt.UTC(),
+			Label:      capturedAt.UTC().Format("Jan 2"),
+			Pillar:     selectedPillar,
+		})
+	}
+
+	response := projectBucketTrendsResponse{
+		ProjectID:  projectID,
+		Pillar:     pillarID,
+		Categories: make([]string, 0, len(entries)),
+		CapturedAt: make([]string, 0, len(entries)),
+		CrawlIDs:   make([]string, 0, len(entries)),
+		Series:     []projectBucketTrendsSeriesResponse{},
+	}
+	if len(entries) == 0 {
+		return response, nil
+	}
+
+	response.Series = append(response.Series, projectBucketTrendsSeriesResponse{
+		ID:   entries[0].Pillar.ID,
+		Name: entries[0].Pillar.Label,
+		Data: make([]int32, len(entries)),
+	})
+
+	seriesIndexByID := map[string]int{entries[0].Pillar.ID: 0}
+
+	for entryIndex, entry := range entries {
+		response.Categories = append(response.Categories, entry.Label)
+		response.CapturedAt = append(response.CapturedAt, entry.CapturedAt.Format(time.RFC3339))
+		response.CrawlIDs = append(response.CrawlIDs, entry.CrawlID)
+		response.Series[0].Data[entryIndex] = entry.Pillar.Score
+
+		for _, bucket := range entry.Pillar.Buckets {
+			seriesIndex, exists := seriesIndexByID[bucket.ID]
+			if !exists {
+				response.Series = append(response.Series, projectBucketTrendsSeriesResponse{
+					ID:   bucket.ID,
+					Name: bucket.Label,
+					Data: make([]int32, len(entries)),
+				})
+				seriesIndex = len(response.Series) - 1
+				seriesIndexByID[bucket.ID] = seriesIndex
+			}
+			response.Series[seriesIndex].Data[entryIndex] = bucket.Score
+		}
+	}
+
+	return response, nil
+}
+
+func findSnapshotPillar(snapshot issueshared.ScoreBreakdownSnapshot, pillarID string) (issueshared.PillarScoreBreakdown, bool) {
+	for _, pillar := range snapshot.Pillars {
+		if pillar.ID == pillarID {
+			return pillar, true
+		}
+	}
+
+	return issueshared.PillarScoreBreakdown{}, false
 }
 
 // handleGetCrawlScoreBreakdown returns one persisted crawl score breakdown snapshot.

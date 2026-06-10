@@ -57,6 +57,7 @@ func (a *App) Router() http.Handler {
 		protected.Get("/projects/{projectID}/gsc/overview", a.handleProjectGSCOverview)
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
+		protected.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)
 		protected.Get("/crawls/{crawlID}", a.handleGetCrawl)
 		protected.Get("/crawls/{crawlID}/score-breakdown", a.handleGetCrawlScoreBreakdown)
 		protected.Get("/crawls/{crawlID}/score-breakdown/export.csv", a.handleExportCrawlScoreBreakdownCSV)

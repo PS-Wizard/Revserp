@@ -79,6 +79,61 @@ func (q *Queries) GetCrawlScoreBreakdownByCrawlForUser(ctx context.Context, arg 
 	return i, err
 }
 
+const listCompletedProjectCrawlScoreBreakdownsForUser = `-- name: ListCompletedProjectCrawlScoreBreakdownsForUser :many
+SELECT
+    c.id AS crawl_id,
+    c.created_at,
+    c.completed_at,
+    csb.breakdown_json
+FROM crawl_score_breakdowns AS csb
+INNER JOIN crawls AS c ON c.id = csb.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE c.project_id = $1
+  AND om.user_id = $2
+  AND c.status = 'completed'
+ORDER BY c.created_at DESC
+LIMIT $3
+`
+
+type ListCompletedProjectCrawlScoreBreakdownsForUserParams struct {
+	ProjectID pgtype.UUID
+	UserID    pgtype.UUID
+	Limit     int32
+}
+
+type ListCompletedProjectCrawlScoreBreakdownsForUserRow struct {
+	CrawlID       pgtype.UUID
+	CreatedAt     pgtype.Timestamptz
+	CompletedAt   pgtype.Timestamptz
+	BreakdownJson []byte
+}
+
+func (q *Queries) ListCompletedProjectCrawlScoreBreakdownsForUser(ctx context.Context, arg ListCompletedProjectCrawlScoreBreakdownsForUserParams) ([]ListCompletedProjectCrawlScoreBreakdownsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listCompletedProjectCrawlScoreBreakdownsForUser, arg.ProjectID, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCompletedProjectCrawlScoreBreakdownsForUserRow
+	for rows.Next() {
+		var i ListCompletedProjectCrawlScoreBreakdownsForUserRow
+		if err := rows.Scan(
+			&i.CrawlID,
+			&i.CreatedAt,
+			&i.CompletedAt,
+			&i.BreakdownJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDistinctCrawlIssueURLsByTypeForCrawlByUser = `-- name: ListDistinctCrawlIssueURLsByTypeForCrawlByUser :many
 SELECT DISTINCT ON (ci.url)
     ci.url,

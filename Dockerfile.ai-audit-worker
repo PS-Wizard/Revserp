@@ -1,0 +1,25 @@
+FROM golang:1.26-bookworm AS build
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 go build -o /out/ai-audit-worker ./cmd/ai-audit-worker
+
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/ai-audit-worker /app/ai-audit-worker
+COPY scripts/start-ai-audit-worker.sh /app/start-ai-audit-worker.sh
+
+RUN chmod +x /app/ai-audit-worker /app/start-ai-audit-worker.sh
+
+CMD ["/app/start-ai-audit-worker.sh"]
