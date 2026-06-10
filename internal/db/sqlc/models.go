@@ -160,6 +160,18 @@ type Project struct {
 	CreatedAt      pgtype.Timestamptz
 }
 
+type ProjectBusinessProfile struct {
+	ID                  pgtype.UUID
+	ProjectID           pgtype.UUID
+	BrandName           string
+	WebsiteUrl          string
+	PrimaryCategory     pgtype.Text
+	PrimaryLocation     pgtype.Text
+	BusinessDescription pgtype.Text
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
 type ProjectGscConnection struct {
 	ID                 pgtype.UUID
 	ProjectID          pgtype.UUID

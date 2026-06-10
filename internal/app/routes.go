@@ -45,6 +45,8 @@ func (a *App) Router() http.Handler {
 		protected.Post("/organizations/{organizationID}/invites/{inviteID}/revoke", a.handleRevokeOrganizationInvite)
 		protected.Get("/projects/{projectID}", a.handleGetProject)
 		protected.Delete("/projects/{projectID}", a.handleDeleteProject)
+		protected.Get("/projects/{projectID}/business-profile", a.handleProjectBusinessProfile)
+		protected.Put("/projects/{projectID}/business-profile", a.handleUpsertProjectBusinessProfile)
 		protected.Post("/projects/{projectID}/gsc/connect/start", a.handleStartProjectGSCConnect)
 		protected.Get("/projects/{projectID}/gsc/status", a.handleProjectGSCStatus)
 		protected.Post("/projects/{projectID}/gsc/select-site", a.handleSelectProjectGSCSite)
