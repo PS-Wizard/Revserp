@@ -170,6 +170,7 @@ type ProjectBusinessProfile struct {
 	BusinessDescription pgtype.Text
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
+	SeedPrompts         []byte
 }
 
 type ProjectGscConnection struct {

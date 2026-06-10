@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -14,23 +15,25 @@ import (
 )
 
 type upsertProjectBusinessProfileRequest struct {
-	BrandName           string `json:"brand_name"`
-	WebsiteURL          string `json:"website_url"`
-	PrimaryCategory     string `json:"primary_category"`
-	PrimaryLocation     string `json:"primary_location"`
-	BusinessDescription string `json:"business_description"`
+	BrandName           string   `json:"brand_name"`
+	WebsiteURL          string   `json:"website_url"`
+	PrimaryCategory     string   `json:"primary_category"`
+	PrimaryLocation     string   `json:"primary_location"`
+	BusinessDescription string   `json:"business_description"`
+	SeedPrompts         []string `json:"seed_prompts"`
 }
 
 type projectBusinessProfileResponse struct {
-	ID                  string `json:"id"`
-	ProjectID           string `json:"project_id"`
-	BrandName           string `json:"brand_name"`
-	WebsiteURL          string `json:"website_url"`
-	PrimaryCategory     string `json:"primary_category,omitempty"`
-	PrimaryLocation     string `json:"primary_location,omitempty"`
-	BusinessDescription string `json:"business_description,omitempty"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at"`
+	ID                  string   `json:"id"`
+	ProjectID           string   `json:"project_id"`
+	BrandName           string   `json:"brand_name"`
+	WebsiteURL          string   `json:"website_url"`
+	PrimaryCategory     string   `json:"primary_category,omitempty"`
+	PrimaryLocation     string   `json:"primary_location,omitempty"`
+	BusinessDescription string   `json:"business_description,omitempty"`
+	SeedPrompts         []string `json:"seed_prompts"`
+	CreatedAt           string   `json:"created_at"`
+	UpdatedAt           string   `json:"updated_at"`
 }
 
 type projectBusinessProfileStatusResponse struct {
@@ -98,7 +101,11 @@ func (a *App) handleProjectBusinessProfile(w http.ResponseWriter, r *http.Reques
 		CanManageProfile: membership.Role == "owner",
 	}
 	if hasProfile {
-		profileResponse := newProjectBusinessProfileResponse(profile)
+		profileResponse, err := newProjectBusinessProfileResponseFromGetRow(profile)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
 		response.BusinessProfile = &profileResponse
 	}
 
@@ -129,8 +136,19 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 	primaryCategory := strings.TrimSpace(requestBody.PrimaryCategory)
 	primaryLocation := strings.TrimSpace(requestBody.PrimaryLocation)
 	businessDescription := strings.TrimSpace(requestBody.BusinessDescription)
+	seedPrompts, err := normalizeSeedPrompts(requestBody.SeedPrompts)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if brandName == "" || websiteURL == "" {
 		writeJSONError(w, http.StatusBadRequest, "brand_name and website_url are required")
+		return
+	}
+
+	seedPromptsJSON, err := json.Marshal(seedPrompts)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -173,6 +191,7 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		PrimaryCategory:     pgText(primaryCategory),
 		PrimaryLocation:     pgText(primaryLocation),
 		BusinessDescription: pgText(businessDescription),
+		SeedPrompts:         seedPromptsJSON,
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -184,30 +203,113 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newProjectBusinessProfileResponse(profile))
+	response, err := newProjectBusinessProfileResponseFromUpsertRow(profile)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
-func getProjectBusinessProfileByProjectID(ctx context.Context, queries *sqlc.Queries, projectID pgtype.UUID) (sqlc.ProjectBusinessProfile, bool, error) {
+func getProjectBusinessProfileByProjectID(ctx context.Context, queries *sqlc.Queries, projectID pgtype.UUID) (sqlc.GetProjectBusinessProfileByProjectIDRow, bool, error) {
 	profile, err := queries.GetProjectBusinessProfileByProjectID(ctx, projectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return sqlc.ProjectBusinessProfile{}, false, nil
+			return sqlc.GetProjectBusinessProfileByProjectIDRow{}, false, nil
 		}
-		return sqlc.ProjectBusinessProfile{}, false, err
+		return sqlc.GetProjectBusinessProfileByProjectIDRow{}, false, err
 	}
 	return profile, true, nil
 }
 
-func newProjectBusinessProfileResponse(profile sqlc.ProjectBusinessProfile) projectBusinessProfileResponse {
-	return projectBusinessProfileResponse{
-		ID:                  profile.ID.String(),
-		ProjectID:           profile.ProjectID.String(),
-		BrandName:           profile.BrandName,
-		WebsiteURL:          profile.WebsiteUrl,
-		PrimaryCategory:     textValue(profile.PrimaryCategory),
-		PrimaryLocation:     textValue(profile.PrimaryLocation),
-		BusinessDescription: textValue(profile.BusinessDescription),
-		CreatedAt:           profile.CreatedAt.Time.UTC().Format(time.RFC3339),
-		UpdatedAt:           profile.UpdatedAt.Time.UTC().Format(time.RFC3339),
+func newProjectBusinessProfileResponseFromGetRow(profile sqlc.GetProjectBusinessProfileByProjectIDRow) (projectBusinessProfileResponse, error) {
+	return newProjectBusinessProfileResponse(
+		profile.ID,
+		profile.ProjectID,
+		profile.BrandName,
+		profile.WebsiteUrl,
+		profile.PrimaryCategory,
+		profile.PrimaryLocation,
+		profile.BusinessDescription,
+		profile.SeedPrompts,
+		profile.CreatedAt,
+		profile.UpdatedAt,
+	)
+}
+
+func newProjectBusinessProfileResponseFromUpsertRow(profile sqlc.UpsertProjectBusinessProfileRow) (projectBusinessProfileResponse, error) {
+	return newProjectBusinessProfileResponse(
+		profile.ID,
+		profile.ProjectID,
+		profile.BrandName,
+		profile.WebsiteUrl,
+		profile.PrimaryCategory,
+		profile.PrimaryLocation,
+		profile.BusinessDescription,
+		profile.SeedPrompts,
+		profile.CreatedAt,
+		profile.UpdatedAt,
+	)
+}
+
+func newProjectBusinessProfileResponse(
+	id pgtype.UUID,
+	projectID pgtype.UUID,
+	brandName string,
+	websiteURL string,
+	primaryCategory pgtype.Text,
+	primaryLocation pgtype.Text,
+	businessDescription pgtype.Text,
+	rawSeedPrompts []byte,
+	createdAt pgtype.Timestamptz,
+	updatedAt pgtype.Timestamptz,
+) (projectBusinessProfileResponse, error) {
+	seedPrompts, err := decodeSeedPrompts(rawSeedPrompts)
+	if err != nil {
+		return projectBusinessProfileResponse{}, err
 	}
+
+	return projectBusinessProfileResponse{
+		ID:                  id.String(),
+		ProjectID:           projectID.String(),
+		BrandName:           brandName,
+		WebsiteURL:          websiteURL,
+		PrimaryCategory:     textValue(primaryCategory),
+		PrimaryLocation:     textValue(primaryLocation),
+		BusinessDescription: textValue(businessDescription),
+		SeedPrompts:         seedPrompts,
+		CreatedAt:           createdAt.Time.UTC().Format(time.RFC3339),
+		UpdatedAt:           updatedAt.Time.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func normalizeSeedPrompts(prompts []string) ([]string, error) {
+	if len(prompts) > 5 {
+		return nil, errors.New("seed_prompts cannot contain more than 5 prompts")
+	}
+
+	normalizedPrompts := make([]string, 0, len(prompts))
+	for _, prompt := range prompts {
+		trimmedPrompt := strings.TrimSpace(prompt)
+		if trimmedPrompt == "" {
+			return nil, errors.New("seed_prompts cannot contain empty prompts")
+		}
+		normalizedPrompts = append(normalizedPrompts, trimmedPrompt)
+	}
+
+	return normalizedPrompts, nil
+}
+
+func decodeSeedPrompts(rawSeedPrompts []byte) ([]string, error) {
+	if len(rawSeedPrompts) == 0 {
+		return []string{}, nil
+	}
+
+	var seedPrompts []string
+	if err := json.Unmarshal(rawSeedPrompts, &seedPrompts); err != nil {
+		return nil, err
+	}
+
+	return seedPrompts, nil
 }

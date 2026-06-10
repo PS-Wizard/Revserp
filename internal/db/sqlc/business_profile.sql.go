@@ -12,15 +12,28 @@ import (
 )
 
 const getProjectBusinessProfileByProjectID = `-- name: GetProjectBusinessProfileByProjectID :one
-SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, created_at, updated_at
+SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, created_at, updated_at
 FROM project_business_profile
 WHERE project_id = $1
 LIMIT 1
 `
 
-func (q *Queries) GetProjectBusinessProfileByProjectID(ctx context.Context, projectID pgtype.UUID) (ProjectBusinessProfile, error) {
+type GetProjectBusinessProfileByProjectIDRow struct {
+	ID                  pgtype.UUID
+	ProjectID           pgtype.UUID
+	BrandName           string
+	WebsiteUrl          string
+	PrimaryCategory     pgtype.Text
+	PrimaryLocation     pgtype.Text
+	BusinessDescription pgtype.Text
+	SeedPrompts         []byte
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
+func (q *Queries) GetProjectBusinessProfileByProjectID(ctx context.Context, projectID pgtype.UUID) (GetProjectBusinessProfileByProjectIDRow, error) {
 	row := q.db.QueryRow(ctx, getProjectBusinessProfileByProjectID, projectID)
-	var i ProjectBusinessProfile
+	var i GetProjectBusinessProfileByProjectIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -29,6 +42,7 @@ func (q *Queries) GetProjectBusinessProfileByProjectID(ctx context.Context, proj
 		&i.PrimaryCategory,
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
+		&i.SeedPrompts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -42,14 +56,16 @@ INSERT INTO project_business_profile (
     website_url,
     primary_category,
     primary_location,
-    business_description
+    business_description,
+    seed_prompts
 ) VALUES (
     $1,
     $2,
     $3,
     $4,
     $5,
-    $6
+    $6,
+    $7
 )
 ON CONFLICT (project_id) DO UPDATE SET
     brand_name = excluded.brand_name,
@@ -57,8 +73,9 @@ ON CONFLICT (project_id) DO UPDATE SET
     primary_category = excluded.primary_category,
     primary_location = excluded.primary_location,
     business_description = excluded.business_description,
+    seed_prompts = excluded.seed_prompts,
     updated_at = now()
-RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, created_at, updated_at
+RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, created_at, updated_at
 `
 
 type UpsertProjectBusinessProfileParams struct {
@@ -68,9 +85,23 @@ type UpsertProjectBusinessProfileParams struct {
 	PrimaryCategory     pgtype.Text
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
+	SeedPrompts         []byte
 }
 
-func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertProjectBusinessProfileParams) (ProjectBusinessProfile, error) {
+type UpsertProjectBusinessProfileRow struct {
+	ID                  pgtype.UUID
+	ProjectID           pgtype.UUID
+	BrandName           string
+	WebsiteUrl          string
+	PrimaryCategory     pgtype.Text
+	PrimaryLocation     pgtype.Text
+	BusinessDescription pgtype.Text
+	SeedPrompts         []byte
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertProjectBusinessProfileParams) (UpsertProjectBusinessProfileRow, error) {
 	row := q.db.QueryRow(ctx, upsertProjectBusinessProfile,
 		arg.ProjectID,
 		arg.BrandName,
@@ -78,8 +109,9 @@ func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertPr
 		arg.PrimaryCategory,
 		arg.PrimaryLocation,
 		arg.BusinessDescription,
+		arg.SeedPrompts,
 	)
-	var i ProjectBusinessProfile
+	var i UpsertProjectBusinessProfileRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -88,6 +120,7 @@ func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertPr
 		&i.PrimaryCategory,
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
+		&i.SeedPrompts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
