@@ -8,6 +8,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AiAudit struct {
+	ID           pgtype.UUID
+	ProjectID    pgtype.UUID
+	CrawlID      pgtype.UUID
+	Status       string
+	Score        pgtype.Int4
+	ErrorMessage pgtype.Text
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+type AiAuditPrompt struct {
+	ID           pgtype.UUID
+	AuditID      pgtype.UUID
+	PromptText   string
+	PromptSource string
+	DisplayOrder int32
+	CreatedAt    pgtype.Timestamptz
+}
+
+type AiAuditRun struct {
+	ID                 pgtype.UUID
+	AuditID            pgtype.UUID
+	PromptID           pgtype.UUID
+	ModelName          string
+	Status             string
+	RawResponse        pgtype.Text
+	ParsedResponseJson []byte
+	MentionedTarget    pgtype.Bool
+	TargetRank         pgtype.Int4
+	VisibilityScore    pgtype.Int4
+	ErrorMessage       pgtype.Text
+	StartedAt          pgtype.Timestamptz
+	CompletedAt        pgtype.Timestamptz
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
 type Crawl struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID
