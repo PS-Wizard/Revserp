@@ -29,6 +29,8 @@ type Config struct {
 	AIAuditWorkerConcurrency    int
 	AIAuditWorkerPollInterval   time.Duration
 	OpenRouterAPIKey            string
+	GeminiAPIKey                string
+	GeminiModel                 string
 	ObscuraPath                 string
 	RendererConcurrency         int
 	ObscuraTimeout              time.Duration
@@ -63,6 +65,8 @@ func Load() Config {
 		AIAuditWorkerConcurrency:    getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
 		AIAuditWorkerPollInterval:   getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
 		OpenRouterAPIKey:            getEnv("OPENROUTER_API_KEY", ""),
+		GeminiAPIKey:                getEnv("GEMINI_API_KEY", ""),
+		GeminiModel:                 getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
 		ObscuraPath:                 getEnv("OBSCURA_PATH", ""),
 		RendererConcurrency:         getEnvInt("RENDERER_CONCURRENCY", 2),
 		ObscuraTimeout:              time.Duration(getEnvInt("OBSCURA_TIMEOUT_SECONDS", 5)) * time.Second,

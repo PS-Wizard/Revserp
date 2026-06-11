@@ -1,0 +1,417 @@
+package app
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/ps-wizard/revserp/internal/ai"
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	issueengine "github.com/ps-wizard/revserp/internal/issues"
+	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
+)
+
+const maxAIFixMessages = 10
+const maxAIFixMessageLength = 4000
+const maxAIFixContextIssueRows = 40
+
+type aiFixMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type aiFixRequest struct {
+	PillarID     string         `json:"pillar_id"`
+	BucketID     string         `json:"bucket_id"`
+	IssueTypeIDs []string       `json:"issue_type_ids"`
+	Messages     []aiFixMessage `json:"messages"`
+}
+
+type aiFixResponse struct {
+	Message aiFixMessage   `json:"message"`
+	Scope   aiFixScopeInfo `json:"scope"`
+}
+
+type aiFixScopeInfo struct {
+	PillarLabel string `json:"pillar_label"`
+	BucketLabel string `json:"bucket_label"`
+	IssueCount  int    `json:"issue_count"`
+	URLCount    int32  `json:"url_count"`
+}
+
+type aiFixIssueRow struct {
+	URL                string
+	IssueType          string
+	Severity           string
+	Message            string
+	Details            string
+	CurrentTitle       string
+	CurrentDescription string
+	CurrentH1          string
+}
+
+// handleAIFix answers a scoped crawl issue question with Gemini.
+func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
+	crawlID, err := parseUUIDParam(chi.URLParam(r, "crawlID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
+		return
+	}
+
+	var requestBody aiFixRequest
+	if err := readJSON(r, &requestBody); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	requestBody.PillarID = strings.TrimSpace(requestBody.PillarID)
+	requestBody.BucketID = strings.TrimSpace(requestBody.BucketID)
+	requestBody.IssueTypeIDs = normalizeStringIDs(requestBody.IssueTypeIDs)
+	requestBody.Messages = normalizeAIFixMessages(requestBody.Messages)
+	if requestBody.PillarID == "" || requestBody.BucketID == "" {
+		writeJSONError(w, http.StatusBadRequest, "pillar_id and bucket_id are required")
+		return
+	}
+	if len(requestBody.Messages) == 0 || requestBody.Messages[len(requestBody.Messages)-1].Role != "user" {
+		writeJSONError(w, http.StatusBadRequest, "messages must end with a user message")
+		return
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	queries := a.Queries.WithTx(tx)
+	user, _, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	crawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	breakdownRow, err := queries.GetCrawlScoreBreakdownByCrawlForUser(r.Context(), sqlc.GetCrawlScoreBreakdownByCrawlForUserParams{CrawlID: crawlID, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl score breakdown not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	var snapshot issueshared.ScoreBreakdownSnapshot
+	if err := json.Unmarshal(breakdownRow.BreakdownJson, &snapshot); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	pillar, bucket, selectedIssues, err := resolveAIFixScope(snapshot, requestBody)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	issueRows, err := loadAIFixIssueRows(r, tx, crawlID, user.ID, requestBody.PillarID, requestBody.BucketID, requestBody.IssueTypeIDs)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	businessProfile, hasBusinessProfile, err := getProjectBusinessProfileByProjectID(r.Context(), queries, crawl.ProjectID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	prompt := buildAIFixPrompt(pillar, bucket, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
+	geminiClient := ai.GeminiClient{APIKey: a.Config.GeminiAPIKey, Model: a.Config.GeminiModel}
+	content, err := geminiClient.GenerateText(r.Context(), prompt)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, aiFixResponse{
+		Message: aiFixMessage{Role: "assistant", Content: content},
+		Scope: aiFixScopeInfo{
+			PillarLabel: pillar.Label,
+			BucketLabel: bucket.Label,
+			IssueCount:  len(selectedIssues),
+			URLCount:    bucket.AffectedURLCount,
+		},
+	})
+}
+
+// resolveAIFixScope validates the selected Miller-column scope against the persisted breakdown.
+func resolveAIFixScope(snapshot issueshared.ScoreBreakdownSnapshot, requestBody aiFixRequest) (issueshared.PillarScoreBreakdown, issueshared.BucketScoreBreakdown, []issueshared.IssueTypeScoreBreakdown, error) {
+	for _, pillar := range snapshot.Pillars {
+		if pillar.ID != requestBody.PillarID {
+			continue
+		}
+		for _, bucket := range pillar.Buckets {
+			if bucket.ID != requestBody.BucketID {
+				continue
+			}
+
+			if len(requestBody.IssueTypeIDs) == 0 {
+				return pillar, bucket, bucket.Issues, nil
+			}
+
+			issueByID := make(map[string]issueshared.IssueTypeScoreBreakdown, len(bucket.Issues))
+			for _, issue := range bucket.Issues {
+				issueByID[issue.ID] = issue
+			}
+
+			selectedIssues := make([]issueshared.IssueTypeScoreBreakdown, 0, len(requestBody.IssueTypeIDs))
+			for _, issueTypeID := range requestBody.IssueTypeIDs {
+				issue, ok := issueByID[issueTypeID]
+				if !ok {
+					return issueshared.PillarScoreBreakdown{}, issueshared.BucketScoreBreakdown{}, nil, fmt.Errorf("invalid issue_type_id: %s", issueTypeID)
+				}
+				selectedIssues = append(selectedIssues, issue)
+			}
+
+			return pillar, bucket, selectedIssues, nil
+		}
+		return issueshared.PillarScoreBreakdown{}, issueshared.BucketScoreBreakdown{}, nil, fmt.Errorf("invalid bucket_id")
+	}
+
+	return issueshared.PillarScoreBreakdown{}, issueshared.BucketScoreBreakdown{}, nil, fmt.Errorf("invalid pillar_id")
+}
+
+// loadAIFixIssueRows loads a capped set of affected URL rows for the selected issue scope.
+func loadAIFixIssueRows(r *http.Request, tx pgx.Tx, crawlID pgtype.UUID, userID pgtype.UUID, pillarID string, bucketID string, issueTypeIDs []string) ([]aiFixIssueRow, error) {
+	query := `
+SELECT ci.url, ci.issue_type, ci.severity, ci.message, ci.details, cp.title, cp.meta_description, cp.h1
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+LEFT JOIN crawl_pages AS cp ON cp.id = ci.crawl_page_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+  AND ci.pillar = $3
+  AND ci.bucket = $4`
+	args := []any{crawlID, userID, pillarID, bucketID}
+	if len(issueTypeIDs) > 0 {
+		query += "\n  AND ci.issue_type = ANY($5)"
+		args = append(args, issueTypeIDs)
+	}
+	query += "\nORDER BY ci.created_at ASC\nLIMIT 40"
+
+	rows, err := tx.Query(r.Context(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	issueRows := make([]aiFixIssueRow, 0, maxAIFixContextIssueRows)
+	for rows.Next() {
+		var issueRow aiFixIssueRow
+		var currentTitle pgtype.Text
+		var currentDescription pgtype.Text
+		var currentH1 pgtype.Text
+		if err := rows.Scan(&issueRow.URL, &issueRow.IssueType, &issueRow.Severity, &issueRow.Message, &issueRow.Details, &currentTitle, &currentDescription, &currentH1); err != nil {
+			return nil, err
+		}
+		issueRow.CurrentTitle = aiFixTextValue(currentTitle)
+		issueRow.CurrentDescription = aiFixTextValue(currentDescription)
+		issueRow.CurrentH1 = aiFixTextValue(currentH1)
+		issueRows = append(issueRows, issueRow)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return issueRows, nil
+}
+
+// buildAIFixPrompt creates the complete model prompt from scoped crawl context and chat history.
+func buildAIFixPrompt(
+	pillar issueshared.PillarScoreBreakdown,
+	bucket issueshared.BucketScoreBreakdown,
+	selectedIssues []issueshared.IssueTypeScoreBreakdown,
+	issueRows []aiFixIssueRow,
+	businessProfile sqlc.GetProjectBusinessProfileByProjectIDRow,
+	hasBusinessProfile bool,
+	messages []aiFixMessage,
+) string {
+	var builder strings.Builder
+	builder.WriteString("You are Revserp's in-product SEO, AEO, and PageSpeed crawl issue assistant.\n")
+	builder.WriteString("Use only the provided crawl context. If context is insufficient, say exactly what is missing.\n")
+	builder.WriteString("Avoid generic advice when the affected rows include the exact current field values. Produce concrete fixes.\n")
+	builder.WriteString("Return clean markdown. Be concise. Do not include a long restatement of the selected scope unless it changes the answer.\n\n")
+
+	if hasBusinessProfile {
+		builder.WriteString("Business context:\n")
+		builder.WriteString(fmt.Sprintf("- Brand: %s\n", businessProfile.BrandName))
+		builder.WriteString(fmt.Sprintf("- Website: %s\n", businessProfile.WebsiteUrl))
+		primaryCategory := aiFixTextValue(businessProfile.PrimaryCategory)
+		primaryLocation := aiFixTextValue(businessProfile.PrimaryLocation)
+		businessDescription := aiFixTextValue(businessProfile.BusinessDescription)
+		if primaryCategory != "" {
+			builder.WriteString(fmt.Sprintf("- Category: %s\n", primaryCategory))
+		}
+		if primaryLocation != "" {
+			builder.WriteString(fmt.Sprintf("- Location: %s\n", primaryLocation))
+		}
+		if businessDescription != "" {
+			builder.WriteString(fmt.Sprintf("- Description: %s\n", truncateAIFixText(businessDescription, 500)))
+		}
+		builder.WriteString("\n")
+	}
+
+	builder.WriteString("Scoped crawl context:\n")
+	builder.WriteString(fmt.Sprintf("- Pillar: %s (%s)\n", pillar.Label, pillar.ID))
+	builder.WriteString(fmt.Sprintf("- Bucket: %s (%s)\n", bucket.Label, bucket.ID))
+	builder.WriteString(fmt.Sprintf("- Bucket affected URLs: %d\n", bucket.AffectedURLCount))
+	builder.WriteString("- Selected issues:\n")
+	for _, issue := range selectedIssues {
+		recommendedFix := issueengine.RecommendedFix(pillar.ID, bucket.ID, issue.ID, issue.Message, issue.DetailsPreview)
+		builder.WriteString(fmt.Sprintf("  - %s (%s), severity %s, affected URLs %d\n", issue.Label, issue.ID, issue.Severity, issue.AffectedURLCount))
+		builder.WriteString(fmt.Sprintf("    Message: %s\n", issue.Message))
+		builder.WriteString(fmt.Sprintf("    Deterministic recommended fix: %s\n", recommendedFix))
+	}
+
+	if shouldRequestSpecificMetadataFixes(selectedIssues) {
+		builder.WriteString("\nOutput rule for this issue type:\n")
+		builder.WriteString("- Provide exact replacement copy for each affected URL that has enough current metadata context.\n")
+		builder.WriteString("- Prefer a markdown table with columns: URL | Current | Recommended | Why.\n")
+		builder.WriteString("- For title issues, recommend titles around 30-60 characters. Do not force a brand suffix unless business context makes it necessary.\n")
+		builder.WriteString("- For meta description issues, recommend descriptions around 140-160 characters.\n")
+		builder.WriteString("- If a row lacks enough context, say 'Needs page intent review' instead of inventing facts.\n")
+	} else {
+		builder.WriteString("\nOutput rule for this issue type:\n")
+		builder.WriteString("- Give practical implementation guidance and prioritize the highest-impact next steps.\n")
+		builder.WriteString("- Only provide exact copy/code when the provided context supports it.\n")
+	}
+
+	builder.WriteString("\nAffected URL rows:\n")
+	if len(issueRows) == 0 {
+		builder.WriteString("- No affected URL rows were available for this selected scope.\n")
+	} else {
+		for _, row := range issueRows {
+			builder.WriteString(fmt.Sprintf("- URL: %s\n", row.URL))
+			builder.WriteString(fmt.Sprintf("  Issue: %s, severity %s\n", row.IssueType, row.Severity))
+			builder.WriteString(fmt.Sprintf("  Current title: %s\n", emptyFallback(row.CurrentTitle)))
+			builder.WriteString(fmt.Sprintf("  Current meta description: %s\n", emptyFallback(row.CurrentDescription)))
+			builder.WriteString(fmt.Sprintf("  Current H1: %s\n", emptyFallback(row.CurrentH1)))
+			builder.WriteString(fmt.Sprintf("  Issue message: %s\n", truncateAIFixText(row.Message, 300)))
+			if strings.TrimSpace(row.Details) != "" {
+				builder.WriteString(fmt.Sprintf("  Details: %s\n", truncateAIFixText(row.Details, 500)))
+			}
+		}
+	}
+
+	builder.WriteString("\nConversation:\n")
+	for _, message := range messages {
+		builder.WriteString(fmt.Sprintf("%s: %s\n", message.Role, message.Content))
+	}
+
+	return builder.String()
+}
+
+// normalizeAIFixMessages trims and caps client-owned in-memory chat history.
+func normalizeAIFixMessages(messages []aiFixMessage) []aiFixMessage {
+	if len(messages) > maxAIFixMessages {
+		messages = messages[len(messages)-maxAIFixMessages:]
+	}
+
+	normalizedMessages := make([]aiFixMessage, 0, len(messages))
+	for _, message := range messages {
+		role := strings.TrimSpace(message.Role)
+		content := truncateAIFixText(strings.TrimSpace(message.Content), maxAIFixMessageLength)
+		if content == "" || (role != "user" && role != "assistant") {
+			continue
+		}
+		normalizedMessages = append(normalizedMessages, aiFixMessage{Role: role, Content: content})
+	}
+
+	return normalizedMessages
+}
+
+// normalizeStringIDs trims repeated empty IDs from a string slice.
+func normalizeStringIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	normalizedValues := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedValue == "" {
+			continue
+		}
+		if _, exists := seen[trimmedValue]; exists {
+			continue
+		}
+		seen[trimmedValue] = struct{}{}
+		normalizedValues = append(normalizedValues, trimmedValue)
+	}
+	return normalizedValues
+}
+
+// truncateAIFixText caps long prompt fields without splitting short values.
+func truncateAIFixText(value string, maxLength int) string {
+	if len(value) <= maxLength {
+		return value
+	}
+	if maxLength <= 1 {
+		return value[:maxLength]
+	}
+	return strings.TrimSpace(value[:maxLength-1]) + "…"
+}
+
+// shouldRequestSpecificMetadataFixes returns true when exact copy suggestions are better than generic guidance.
+func shouldRequestSpecificMetadataFixes(issues []issueshared.IssueTypeScoreBreakdown) bool {
+	metadataIssueTypes := map[string]struct{}{
+		"missing_title":              {},
+		"title_too_long":             {},
+		"title_too_short":            {},
+		"duplicate_title":            {},
+		"missing_meta_description":   {},
+		"meta_description_too_long":  {},
+		"meta_description_too_short": {},
+		"duplicate_meta_description": {},
+	}
+	for _, issue := range issues {
+		if _, ok := metadataIssueTypes[issue.ID]; !ok {
+			return false
+		}
+	}
+	return len(issues) > 0
+}
+
+// textValue extracts a nullable Postgres text field.
+func aiFixTextValue(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return strings.TrimSpace(value.String)
+}
+
+// emptyFallback makes missing fields explicit in model context.
+func emptyFallback(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "Missing"
+	}
+	return value
+}
