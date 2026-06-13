@@ -223,6 +223,13 @@ type ProjectGscConnection struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
+type ScoringConfig struct {
+	ID              int64
+	ConfigJson      []byte
+	UpdatedByUserID pgtype.UUID
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type Session struct {
 	ID                           pgtype.UUID
 	UserID                       pgtype.UUID

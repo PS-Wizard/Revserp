@@ -106,7 +106,12 @@ func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID) (shared
 		})
 	}
 
-	crawlScoreBreakdown := BuildScoreBreakdown(crawlID.String(), crawlPageSignals, crawlIssueSignals)
+	scoringConfig, err := LoadActiveScoringConfig(ctx, store.queries)
+	if err != nil {
+		return shared.CrawlScores{}, err
+	}
+
+	crawlScoreBreakdown := BuildScoreBreakdownWithConfig(crawlID.String(), crawlPageSignals, crawlIssueSignals, scoringConfig)
 	crawlScores := crawlScoreBreakdown.CrawlScores()
 	breakdownJSON, err := json.Marshal(crawlScoreBreakdown)
 	if err != nil {
