@@ -686,9 +686,19 @@ func (a *App) writeGoogleOAuthRedirect(w http.ResponseWriter, r *http.Request, o
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	frontendURL.Path = joinURLPath(frontendURL.Path, oauthState.ReturnPath)
+	returnURL, err := url.Parse(normalizeGoogleOAuthReturnPath(oauthState.ReturnPath))
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	frontendURL.Path = joinURLPath(frontendURL.Path, returnURL.Path)
 
 	query := frontendURL.Query()
+	for key, values := range returnURL.Query() {
+		for _, value := range values {
+			query.Add(key, value)
+		}
+	}
 	query.Set("gsc_project_id", oauthState.ProjectID.String())
 	if callbackErrorCode == "" {
 		query.Set("gsc_status", "connected")

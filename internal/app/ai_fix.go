@@ -28,6 +28,7 @@ type aiFixMessage struct {
 type aiFixRequest struct {
 	PillarID     string         `json:"pillar_id"`
 	BucketID     string         `json:"bucket_id"`
+	BucketIDs    []string       `json:"bucket_ids"`
 	IssueTypeIDs []string       `json:"issue_type_ids"`
 	Messages     []aiFixMessage `json:"messages"`
 }
@@ -70,10 +71,14 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 	}
 	requestBody.PillarID = strings.TrimSpace(requestBody.PillarID)
 	requestBody.BucketID = strings.TrimSpace(requestBody.BucketID)
+	requestBody.BucketIDs = normalizeStringIDs(requestBody.BucketIDs)
+	if len(requestBody.BucketIDs) == 0 && requestBody.BucketID != "" {
+		requestBody.BucketIDs = []string{requestBody.BucketID}
+	}
 	requestBody.IssueTypeIDs = normalizeStringIDs(requestBody.IssueTypeIDs)
 	requestBody.Messages = normalizeAIFixMessages(requestBody.Messages)
-	if requestBody.PillarID == "" || requestBody.BucketID == "" {
-		writeJSONError(w, http.StatusBadRequest, "pillar_id and bucket_id are required")
+	if requestBody.PillarID == "" || len(requestBody.BucketIDs) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "pillar_id and bucket_ids are required")
 		return
 	}
 	if len(requestBody.Messages) == 0 || requestBody.Messages[len(requestBody.Messages)-1].Role != "user" {
@@ -121,13 +126,13 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pillar, bucket, selectedIssues, err := resolveAIFixScope(snapshot, requestBody)
+	pillar, buckets, selectedIssues, err := resolveAIFixScope(snapshot, requestBody)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	issueRows, err := loadAIFixIssueRows(r, tx, crawlID, user.ID, requestBody.PillarID, requestBody.BucketID, requestBody.IssueTypeIDs)
+	issueRows, err := loadAIFixIssueRows(r, tx, crawlID, user.ID, requestBody.PillarID, requestBody.BucketIDs, requestBody.IssueTypeIDs)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -144,7 +149,7 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt := buildAIFixPrompt(pillar, bucket, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
+	prompt := buildAIFixPrompt(pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
 	geminiClient := ai.GeminiClient{APIKey: a.Config.GeminiAPIKey, Model: a.Config.GeminiModel}
 	content, err := geminiClient.GenerateText(r.Context(), prompt)
 	if err != nil {
@@ -156,52 +161,65 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		Message: aiFixMessage{Role: "assistant", Content: content},
 		Scope: aiFixScopeInfo{
 			PillarLabel: pillar.Label,
-			BucketLabel: bucket.Label,
+			BucketLabel: aiFixBucketLabel(buckets),
 			IssueCount:  len(selectedIssues),
-			URLCount:    bucket.AffectedURLCount,
+			URLCount:    aiFixBucketURLCount(buckets),
 		},
 	})
 }
 
 // resolveAIFixScope validates the selected Miller-column scope against the persisted breakdown.
-func resolveAIFixScope(snapshot issueshared.ScoreBreakdownSnapshot, requestBody aiFixRequest) (issueshared.PillarScoreBreakdown, issueshared.BucketScoreBreakdown, []issueshared.IssueTypeScoreBreakdown, error) {
+func resolveAIFixScope(snapshot issueshared.ScoreBreakdownSnapshot, requestBody aiFixRequest) (issueshared.PillarScoreBreakdown, []issueshared.BucketScoreBreakdown, []issueshared.IssueTypeScoreBreakdown, error) {
 	for _, pillar := range snapshot.Pillars {
 		if pillar.ID != requestBody.PillarID {
 			continue
 		}
+
+		bucketByID := make(map[string]issueshared.BucketScoreBreakdown, len(pillar.Buckets))
 		for _, bucket := range pillar.Buckets {
-			if bucket.ID != requestBody.BucketID {
-				continue
-			}
-
-			if len(requestBody.IssueTypeIDs) == 0 {
-				return pillar, bucket, bucket.Issues, nil
-			}
-
-			issueByID := make(map[string]issueshared.IssueTypeScoreBreakdown, len(bucket.Issues))
-			for _, issue := range bucket.Issues {
-				issueByID[issue.ID] = issue
-			}
-
-			selectedIssues := make([]issueshared.IssueTypeScoreBreakdown, 0, len(requestBody.IssueTypeIDs))
-			for _, issueTypeID := range requestBody.IssueTypeIDs {
-				issue, ok := issueByID[issueTypeID]
-				if !ok {
-					return issueshared.PillarScoreBreakdown{}, issueshared.BucketScoreBreakdown{}, nil, fmt.Errorf("invalid issue_type_id: %s", issueTypeID)
-				}
-				selectedIssues = append(selectedIssues, issue)
-			}
-
-			return pillar, bucket, selectedIssues, nil
+			bucketByID[bucket.ID] = bucket
 		}
-		return issueshared.PillarScoreBreakdown{}, issueshared.BucketScoreBreakdown{}, nil, fmt.Errorf("invalid bucket_id")
+
+		buckets := make([]issueshared.BucketScoreBreakdown, 0, len(requestBody.BucketIDs))
+		for _, bucketID := range requestBody.BucketIDs {
+			bucket, ok := bucketByID[bucketID]
+			if !ok {
+				return issueshared.PillarScoreBreakdown{}, nil, nil, fmt.Errorf("invalid bucket_id: %s", bucketID)
+			}
+			buckets = append(buckets, bucket)
+		}
+
+		selectedIssues := make([]issueshared.IssueTypeScoreBreakdown, 0)
+		if len(requestBody.IssueTypeIDs) == 0 {
+			for _, bucket := range buckets {
+				selectedIssues = append(selectedIssues, bucket.Issues...)
+			}
+			return pillar, buckets, selectedIssues, nil
+		}
+
+		issueTypeIDSet := make(map[string]struct{}, len(requestBody.IssueTypeIDs))
+		for _, issueTypeID := range requestBody.IssueTypeIDs {
+			issueTypeIDSet[issueTypeID] = struct{}{}
+		}
+		for _, bucket := range buckets {
+			for _, issue := range bucket.Issues {
+				if _, ok := issueTypeIDSet[issue.ID]; ok {
+					selectedIssues = append(selectedIssues, issue)
+				}
+			}
+		}
+		if len(selectedIssues) == 0 {
+			return issueshared.PillarScoreBreakdown{}, nil, nil, fmt.Errorf("invalid issue_type_ids for selected buckets")
+		}
+
+		return pillar, buckets, selectedIssues, nil
 	}
 
-	return issueshared.PillarScoreBreakdown{}, issueshared.BucketScoreBreakdown{}, nil, fmt.Errorf("invalid pillar_id")
+	return issueshared.PillarScoreBreakdown{}, nil, nil, fmt.Errorf("invalid pillar_id")
 }
 
 // loadAIFixIssueRows loads a capped set of affected URL rows for the selected issue scope.
-func loadAIFixIssueRows(r *http.Request, tx pgx.Tx, crawlID pgtype.UUID, userID pgtype.UUID, pillarID string, bucketID string, issueTypeIDs []string) ([]aiFixIssueRow, error) {
+func loadAIFixIssueRows(r *http.Request, tx pgx.Tx, crawlID pgtype.UUID, userID pgtype.UUID, pillarID string, bucketIDs []string, issueTypeIDs []string) ([]aiFixIssueRow, error) {
 	query := `
 SELECT ci.url, ci.issue_type, ci.severity, ci.message, ci.details, cp.title, cp.meta_description, cp.h1
 FROM crawl_issues AS ci
@@ -212,8 +230,8 @@ LEFT JOIN crawl_pages AS cp ON cp.id = ci.crawl_page_id
 WHERE ci.crawl_id = $1
   AND om.user_id = $2
   AND ci.pillar = $3
-  AND ci.bucket = $4`
-	args := []any{crawlID, userID, pillarID, bucketID}
+  AND ci.bucket = ANY($4)`
+	args := []any{crawlID, userID, pillarID, bucketIDs}
 	if len(issueTypeIDs) > 0 {
 		query += "\n  AND ci.issue_type = ANY($5)"
 		args = append(args, issueTypeIDs)
@@ -250,7 +268,7 @@ WHERE ci.crawl_id = $1
 // buildAIFixPrompt creates the complete model prompt from scoped crawl context and chat history.
 func buildAIFixPrompt(
 	pillar issueshared.PillarScoreBreakdown,
-	bucket issueshared.BucketScoreBreakdown,
+	buckets []issueshared.BucketScoreBreakdown,
 	selectedIssues []issueshared.IssueTypeScoreBreakdown,
 	issueRows []aiFixIssueRow,
 	businessProfile sqlc.GetProjectBusinessProfileByProjectIDRow,
@@ -284,11 +302,13 @@ func buildAIFixPrompt(
 
 	builder.WriteString("Scoped crawl context:\n")
 	builder.WriteString(fmt.Sprintf("- Pillar: %s (%s)\n", pillar.Label, pillar.ID))
-	builder.WriteString(fmt.Sprintf("- Bucket: %s (%s)\n", bucket.Label, bucket.ID))
-	builder.WriteString(fmt.Sprintf("- Bucket affected URLs: %d\n", bucket.AffectedURLCount))
+	builder.WriteString("- Buckets:\n")
+	for _, bucket := range buckets {
+		builder.WriteString(fmt.Sprintf("  - %s (%s), affected URLs %d\n", bucket.Label, bucket.ID, bucket.AffectedURLCount))
+	}
 	builder.WriteString("- Selected issues:\n")
 	for _, issue := range selectedIssues {
-		recommendedFix := issueengine.RecommendedFix(pillar.ID, bucket.ID, issue.ID, issue.Message, issue.DetailsPreview)
+		recommendedFix := issueengine.RecommendedFix(pillar.ID, aiFixIssueBucketID(buckets, issue.ID), issue.ID, issue.Message, issue.DetailsPreview)
 		builder.WriteString(fmt.Sprintf("  - %s (%s), severity %s, affected URLs %d\n", issue.Label, issue.ID, issue.Severity, issue.AffectedURLCount))
 		builder.WriteString(fmt.Sprintf("    Message: %s\n", issue.Message))
 		builder.WriteString(fmt.Sprintf("    Deterministic recommended fix: %s\n", recommendedFix))
@@ -297,7 +317,10 @@ func buildAIFixPrompt(
 	if shouldRequestSpecificMetadataFixes(selectedIssues) {
 		builder.WriteString("\nOutput rule for this issue type:\n")
 		builder.WriteString("- Provide exact replacement copy for each affected URL that has enough current metadata context.\n")
-		builder.WriteString("- Prefer a markdown table with columns: URL | Current | Recommended | Why.\n")
+		builder.WriteString("- Return exactly one markdown table with columns: URL | Current | Recommended | Why.\n")
+		builder.WriteString("- The separator row must be exactly: |---|---|---|---|\n")
+		builder.WriteString("- Every body row must have exactly 4 cells. If a value contains a pipe character, replace it with a slash. Do not emit extra columns.\n")
+		builder.WriteString("- Keep markdown inside cells minimal. Avoid line breaks inside cells.\n")
 		builder.WriteString("- For title issues, recommend titles around 30-60 characters. Do not force a brand suffix unless business context makes it necessary.\n")
 		builder.WriteString("- For meta description issues, recommend descriptions around 140-160 characters.\n")
 		builder.WriteString("- If a row lacks enough context, say 'Needs page intent review' instead of inventing facts.\n")
@@ -378,6 +401,32 @@ func truncateAIFixText(value string, maxLength int) string {
 		return value[:maxLength]
 	}
 	return strings.TrimSpace(value[:maxLength-1]) + "…"
+}
+
+func aiFixBucketLabel(buckets []issueshared.BucketScoreBreakdown) string {
+	if len(buckets) == 1 {
+		return buckets[0].Label
+	}
+	return fmt.Sprintf("%d buckets", len(buckets))
+}
+
+func aiFixBucketURLCount(buckets []issueshared.BucketScoreBreakdown) int32 {
+	var total int32
+	for _, bucket := range buckets {
+		total += bucket.AffectedURLCount
+	}
+	return total
+}
+
+func aiFixIssueBucketID(buckets []issueshared.BucketScoreBreakdown, issueID string) string {
+	for _, bucket := range buckets {
+		for _, issue := range bucket.Issues {
+			if issue.ID == issueID {
+				return bucket.ID
+			}
+		}
+	}
+	return ""
 }
 
 // shouldRequestSpecificMetadataFixes returns true when exact copy suggestions are better than generic guidance.
