@@ -20,6 +20,10 @@ var IssuePenaltyByType = map[string]float64{
 	"moderate_page_size":            5,
 	"large_page_size":               10,
 	"google_psi_mobile_performance": 18,
+	"google_psi_fcp":                12,
 	"google_psi_lcp":                14,
 	"google_psi_cls":                12,
+	"google_psi_fid":                10,
+	"google_psi_speed_index":        10,
+	"google_psi_tti":                10,
 }

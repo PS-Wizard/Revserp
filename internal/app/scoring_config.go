@@ -142,7 +142,7 @@ func (a *App) handlePreviewScoringConfig(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	breakdown := issueengine.BuildScoreBreakdownWithConfig(crawlID.String(), crawlPageSignals, crawlIssueSignals, requestBody.Config)
+	breakdown := issueengine.BuildScoreBreakdownWithConfig(crawlID.String(), crawlPageSignals, crawlIssueSignals, requestBody.Config, nil)
 	scores := breakdown.CrawlScores()
 	writeJSON(w, http.StatusOK, scoringPreviewResponse{
 		Breakdown: breakdown,

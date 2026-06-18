@@ -191,8 +191,8 @@ func TestCalculateScoresAddsPillarPressureForIssueVolume(t *testing.T) {
 		heavyIssues = append(heavyIssues, shared.CrawlIssueSignal{URL: crawlPages[0].URL, Pillar: "seo", Bucket: "serp_metadata", Severity: "high", IssueType: "missing_title"})
 	}
 
-	lightBreakdown := BuildScoreBreakdown("", crawlPages, lightIssues)
-	heavyBreakdown := BuildScoreBreakdown("", crawlPages, heavyIssues)
+	lightBreakdown := BuildScoreBreakdown("", crawlPages, lightIssues, nil)
+	heavyBreakdown := BuildScoreBreakdown("", crawlPages, heavyIssues, nil)
 	lightPenalty := findBucketBreakdown(t, findPillarBreakdown(t, lightBreakdown, "seo"), "serp_metadata").TotalPenalty
 	heavyPenalty := findBucketBreakdown(t, findPillarBreakdown(t, heavyBreakdown, "seo"), "serp_metadata").TotalPenalty
 

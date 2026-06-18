@@ -152,3 +152,8 @@ type IssueTypeScoreBreakdown struct {
 	Message            string  `json:"message"`
 	DetailsPreview     string  `json:"details_preview"`
 }
+
+// GooglePSIScoreInput carries PSI-derived scores that override issue-based bucket scoring.
+type GooglePSIScoreInput struct {
+	MobilePerformanceScore *int
+}

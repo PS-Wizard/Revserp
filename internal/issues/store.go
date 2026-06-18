@@ -69,7 +69,7 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 }
 
 // ScoreCrawl reloads one crawl's persisted signals, calculates scores, and stores them on the crawl row.
-func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID) (shared.CrawlScores, error) {
+func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID, psiInput *shared.GooglePSIScoreInput) (shared.CrawlScores, error) {
 	crawlPages, err := store.queries.ListCrawlPagesForCrawl(ctx, crawlID)
 	if err != nil {
 		return shared.CrawlScores{}, fmt.Errorf("list crawl pages: %w", err)
@@ -111,7 +111,7 @@ func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID) (shared
 		return shared.CrawlScores{}, err
 	}
 
-	crawlScoreBreakdown := BuildScoreBreakdownWithConfig(crawlID.String(), crawlPageSignals, crawlIssueSignals, scoringConfig)
+	crawlScoreBreakdown := BuildScoreBreakdownWithConfig(crawlID.String(), crawlPageSignals, crawlIssueSignals, scoringConfig, psiInput)
 	crawlScores := crawlScoreBreakdown.CrawlScores()
 	breakdownJSON, err := json.Marshal(crawlScoreBreakdown)
 	if err != nil {

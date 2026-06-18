@@ -14,6 +14,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/issues"
+	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
 // Worker claims queued crawls from Postgres and runs them.
@@ -149,7 +150,8 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 	if err != nil {
 		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimedCrawl.ID.String(), err)
 	}
-	crawlScores, err := issueStore.ScoreCrawl(ctx, claimedCrawl.ID)
+	psiInput := toSharedPSIScoreInput(googlePSIResult)
+	crawlScores, err := issueStore.ScoreCrawl(ctx, claimedCrawl.ID, psiInput)
 	if err != nil {
 		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)
@@ -174,6 +176,14 @@ func sleepOrCancel(ctx context.Context, duration time.Duration) error {
 	case <-time.After(duration):
 		return nil
 	}
+}
+
+func toSharedPSIScoreInput(result *googlePSIStoredResult) *shared.GooglePSIScoreInput {
+	if result == nil || !result.Mobile.Success || result.Mobile.PerformanceScore == nil {
+		return nil
+	}
+	return &shared.GooglePSIScoreInput{MobilePerformanceScore: result.Mobile.PerformanceScore}
+
 }
 
 // isRunningCrawlConflict reports whether the one-running-crawl-per-user index rejected a claim.

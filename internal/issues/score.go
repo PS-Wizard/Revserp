@@ -13,21 +13,21 @@ const scoringVersion = "v8-configurable"
 
 // CalculateScores builds the persisted crawl scores from issue-derived pillar scoring.
 func CalculateScores(crawlPageSignals []shared.CrawlPageSignal, crawlIssueSignals []shared.CrawlIssueSignal) shared.CrawlScores {
-	return BuildScoreBreakdown("", crawlPageSignals, crawlIssueSignals).CrawlScores()
+	return BuildScoreBreakdown("", crawlPageSignals, crawlIssueSignals, nil).CrawlScores()
 }
 
 // BuildScoreBreakdown builds one persisted crawl score snapshot from current issue signals.
-func BuildScoreBreakdown(crawlID string, crawlPageSignals []shared.CrawlPageSignal, crawlIssueSignals []shared.CrawlIssueSignal) shared.ScoreBreakdownSnapshot {
-	return BuildScoreBreakdownWithConfig(crawlID, crawlPageSignals, crawlIssueSignals, DefaultScoringConfig())
+func BuildScoreBreakdown(crawlID string, crawlPageSignals []shared.CrawlPageSignal, crawlIssueSignals []shared.CrawlIssueSignal, psiInput *shared.GooglePSIScoreInput) shared.ScoreBreakdownSnapshot {
+	return BuildScoreBreakdownWithConfig(crawlID, crawlPageSignals, crawlIssueSignals, DefaultScoringConfig(), psiInput)
 }
 
 // BuildScoreBreakdownWithConfig builds one score snapshot from an editable scoring config.
-func BuildScoreBreakdownWithConfig(crawlID string, crawlPageSignals []shared.CrawlPageSignal, crawlIssueSignals []shared.CrawlIssueSignal, scoringConfig shared.ScoringConfig) shared.ScoreBreakdownSnapshot {
+func BuildScoreBreakdownWithConfig(crawlID string, crawlPageSignals []shared.CrawlPageSignal, crawlIssueSignals []shared.CrawlIssueSignal, scoringConfig shared.ScoringConfig, psiInput *shared.GooglePSIScoreInput) shared.ScoreBreakdownSnapshot {
 	totalScoredPages := shared.CountScoreablePages(crawlPageSignals)
 	pillars := []shared.PillarScoreBreakdown{
-		buildConfiguredPillarBreakdown(aeo.PillarID, scoringConfig, totalScoredPages, crawlIssueSignals),
-		buildConfiguredPillarBreakdown(seo.PillarID, scoringConfig, totalScoredPages, crawlIssueSignals),
-		buildConfiguredPillarBreakdown(pagespeed.PillarID, scoringConfig, totalScoredPages, crawlIssueSignals),
+		buildConfiguredPillarBreakdown(aeo.PillarID, scoringConfig, totalScoredPages, crawlIssueSignals, nil),
+		buildConfiguredPillarBreakdown(seo.PillarID, scoringConfig, totalScoredPages, crawlIssueSignals, nil),
+		buildConfiguredPillarBreakdown(pagespeed.PillarID, scoringConfig, totalScoredPages, crawlIssueSignals, psiInput),
 	}
 	if totalScoredPages == 0 {
 		for pillarIndex := range pillars {
@@ -62,7 +62,7 @@ func BuildScoreBreakdownWithConfig(crawlID string, crawlPageSignals []shared.Cra
 	return snapshot
 }
 
-func buildConfiguredPillarBreakdown(pillarID string, scoringConfig shared.ScoringConfig, totalScoredPages int, crawlIssueSignals []shared.CrawlIssueSignal) shared.PillarScoreBreakdown {
+func buildConfiguredPillarBreakdown(pillarID string, scoringConfig shared.ScoringConfig, totalScoredPages int, crawlIssueSignals []shared.CrawlIssueSignal, psiInput *shared.GooglePSIScoreInput) shared.PillarScoreBreakdown {
 	pillarConfig := scoringConfig.Pillars[pillarID]
 	issueCoverage := func(affectedPages int, totalScoredPages int) float64 {
 		coverage := shared.IssueCoverageWithConfig(affectedPages, totalScoredPages, scoringConfig)
@@ -71,7 +71,8 @@ func buildConfiguredPillarBreakdown(pillarID string, scoringConfig shared.Scorin
 		}
 		return coverage
 	}
-	return shared.BuildPillarBreakdownWithOptions(pillarID, pillarConfig, scoringConfig, totalScoredPages, crawlIssueSignals, issueCoverage)
+	return shared.BuildPillarBreakdownWithOptions(pillarID, pillarConfig, scoringConfig, totalScoredPages, crawlIssueSignals, issueCoverage, psiInput)
+
 }
 
 func calculateOverallScore(seoScore int32, aeoScore int32, pageSpeedScore int32, scoringConfig shared.ScoringConfig) int32 {

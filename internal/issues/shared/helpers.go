@@ -87,11 +87,11 @@ func BuildPillarBreakdown(pillarID string, pillarLabel string, pillarWeight floa
 
 // BuildPillarBreakdownWithIssueCoverage builds one pillar breakdown using a pillar-specific issue coverage function.
 func BuildPillarBreakdownWithIssueCoverage(pillarID string, pillarLabel string, pillarWeight float64, bucketWeights map[string]float64, issuePenaltyByType map[string]float64, totalScoredPages int, crawlIssueSignals []CrawlIssueSignal, issueCoverage func(affectedPages int, totalScoredPages int) float64) PillarScoreBreakdown {
-	return BuildPillarBreakdownWithOptions(pillarID, PillarScoringConfig{Label: pillarLabel, Weight: pillarWeight, BucketWeights: bucketWeights, IssuePenaltyByType: issuePenaltyByType}, DefaultScoringMathConfig(), totalScoredPages, crawlIssueSignals, issueCoverage)
+	return BuildPillarBreakdownWithOptions(pillarID, PillarScoringConfig{Label: pillarLabel, Weight: pillarWeight, BucketWeights: bucketWeights, IssuePenaltyByType: issuePenaltyByType}, DefaultScoringMathConfig(), totalScoredPages, crawlIssueSignals, issueCoverage, nil)
 }
 
 // BuildPillarBreakdownWithOptions builds one pillar breakdown from editable scoring config.
-func BuildPillarBreakdownWithOptions(pillarID string, pillarConfig PillarScoringConfig, scoringConfig ScoringConfig, totalScoredPages int, crawlIssueSignals []CrawlIssueSignal, issueCoverage func(affectedPages int, totalScoredPages int) float64) PillarScoreBreakdown {
+func BuildPillarBreakdownWithOptions(pillarID string, pillarConfig PillarScoringConfig, scoringConfig ScoringConfig, totalScoredPages int, crawlIssueSignals []CrawlIssueSignal, issueCoverage func(affectedPages int, totalScoredPages int) float64, psiInput *GooglePSIScoreInput) PillarScoreBreakdown {
 	issueGroupsByBucket := BuildIssueGroupsByBucket(pillarID, crawlIssueSignals)
 	buckets := make([]BucketScoreBreakdown, 0, len(pillarConfig.BucketWeights))
 	pillarAffectedURLs := make(map[string]struct{})
@@ -113,8 +113,13 @@ func BuildPillarBreakdownWithOptions(pillarID string, pillarConfig PillarScoring
 	volumeMultiplier := IssueVolumeMultiplierWithConfig(issueRowCount, totalScoredPages, scoringConfig)
 	weightedBucketScoreSum := 0.0
 	for bucketIndex := range buckets {
+		psiScore := resolvePSIBucketScore(buckets[bucketIndex].ID, psiInput)
 		adjustedBucketPenalty := buckets[bucketIndex].TotalPenalty * volumeMultiplier
 		adjustedBucketScore := ClampScore(100-adjustedBucketPenalty, 0)
+		if psiScore != nil {
+			adjustedBucketScore = ClampScore(*psiScore, 0)
+			adjustedBucketPenalty = float64(100 - adjustedBucketScore)
+		}
 		buckets[bucketIndex].Score = adjustedBucketScore
 		buckets[bucketIndex].WeightedContribution = RoundFloat64(float64(adjustedBucketScore)*buckets[bucketIndex].Weight, 2)
 		buckets[bucketIndex].TotalPenalty = RoundFloat64(adjustedBucketPenalty, 2)
@@ -135,6 +140,18 @@ func BuildPillarBreakdownWithOptions(pillarID string, pillarConfig PillarScoring
 		AffectedURLCount:     int32(len(pillarAffectedURLs)),
 		Buckets:              buckets,
 	}
+
+}
+
+func resolvePSIBucketScore(bucketID string, psiInput *GooglePSIScoreInput) *float64 {
+	if bucketID != "psi_cwv" || psiInput == nil {
+		return nil
+	}
+	if psiInput.MobilePerformanceScore == nil {
+		return nil
+	}
+	score := float64(*psiInput.MobilePerformanceScore)
+	return &score
 }
 
 // BuildBucketBreakdown builds one bucket breakdown from its configured issue groups.

@@ -180,7 +180,7 @@ func extractGooglePSIMetrics(response googlePSIAPIResponse) googlePSIMetrics {
 		FirstContentfulPaint:   extractAuditMillisecondsAsSeconds(response, "first-contentful-paint"),
 		LargestContentfulPaint: extractAuditMillisecondsAsSeconds(response, "largest-contentful-paint"),
 		CumulativeLayoutShift:  extractAuditValue(response, "cumulative-layout-shift", 3),
-		FirstInputDelay:        extractAuditValue(response, "max-potential-fid", 2),
+		FirstInputDelay:        extractAuditMillisecondsAsSeconds(response, "max-potential-fid"),
 		SpeedIndex:             extractAuditMillisecondsAsSeconds(response, "speed-index"),
 		TimeToInteractive:      extractAuditMillisecondsAsSeconds(response, "interactive"),
 	}
@@ -221,10 +221,15 @@ func (worker *Worker) persistGooglePSIIssues(ctx context.Context, crawlID pgtype
 }
 
 func buildGooglePSIIssues(crawlID pgtype.UUID, result googlePSIStoredResult) []sqlc.CreateCrawlIssueParams {
-	issues := make([]sqlc.CreateCrawlIssueParams, 0, 3)
+	issues := make([]sqlc.CreateCrawlIssueParams, 0, 7)
 	if result.Mobile.PerformanceScore != nil {
 		if severity := googlePSIPerformanceSeverity(*result.Mobile.PerformanceScore); severity != "" {
 			issues = append(issues, newGooglePSIIssue(crawlID, result.URL, "google_psi_mobile_performance", severity, "Mobile PageSpeed score needs attention", fmt.Sprintf("Google PageSpeed mobile performance score is %d.", *result.Mobile.PerformanceScore)))
+		}
+	}
+	if result.Mobile.Metrics.FirstContentfulPaint != nil {
+		if severity := googlePSIFCPSeverity(*result.Mobile.Metrics.FirstContentfulPaint); severity != "" {
+			issues = append(issues, newGooglePSIIssue(crawlID, result.URL, "google_psi_fcp", severity, "First Contentful Paint needs attention", fmt.Sprintf("Google PageSpeed mobile FCP is %.2fs.", *result.Mobile.Metrics.FirstContentfulPaint)))
 		}
 	}
 	if result.Mobile.Metrics.LargestContentfulPaint != nil {
@@ -235,6 +240,21 @@ func buildGooglePSIIssues(crawlID pgtype.UUID, result googlePSIStoredResult) []s
 	if result.Mobile.Metrics.CumulativeLayoutShift != nil {
 		if severity := googlePSICLSSeverity(*result.Mobile.Metrics.CumulativeLayoutShift); severity != "" {
 			issues = append(issues, newGooglePSIIssue(crawlID, result.URL, "google_psi_cls", severity, "Cumulative Layout Shift needs attention", fmt.Sprintf("Google PageSpeed mobile CLS is %.3f.", *result.Mobile.Metrics.CumulativeLayoutShift)))
+		}
+	}
+	if result.Mobile.Metrics.FirstInputDelay != nil {
+		if severity := googlePSIFIDSeverity(*result.Mobile.Metrics.FirstInputDelay); severity != "" {
+			issues = append(issues, newGooglePSIIssue(crawlID, result.URL, "google_psi_fid", severity, "First Input Delay needs attention", fmt.Sprintf("Google PageSpeed mobile FID is %.0fms.", *result.Mobile.Metrics.FirstInputDelay*1000)))
+		}
+	}
+	if result.Mobile.Metrics.SpeedIndex != nil {
+		if severity := googlePSISpeedIndexSeverity(*result.Mobile.Metrics.SpeedIndex); severity != "" {
+			issues = append(issues, newGooglePSIIssue(crawlID, result.URL, "google_psi_speed_index", severity, "Speed Index needs attention", fmt.Sprintf("Google PageSpeed mobile Speed Index is %.2fs.", *result.Mobile.Metrics.SpeedIndex)))
+		}
+	}
+	if result.Mobile.Metrics.TimeToInteractive != nil {
+		if severity := googlePSITTISeverity(*result.Mobile.Metrics.TimeToInteractive); severity != "" {
+			issues = append(issues, newGooglePSIIssue(crawlID, result.URL, "google_psi_tti", severity, "Time to Interactive needs attention", fmt.Sprintf("Google PageSpeed mobile TTI is %.2fs.", *result.Mobile.Metrics.TimeToInteractive)))
 		}
 	}
 
@@ -276,6 +296,17 @@ func googlePSILCPSeverity(valueSeconds float64) string {
 	}
 }
 
+func googlePSIFCPSeverity(valueSeconds float64) string {
+	switch {
+	case valueSeconds > 3.0:
+		return "high"
+	case valueSeconds > 1.8:
+		return "medium"
+	default:
+		return ""
+	}
+}
+
 func googlePSICLSSeverity(value float64) string {
 	switch {
 	case value > 0.25:
@@ -287,6 +318,39 @@ func googlePSICLSSeverity(value float64) string {
 	}
 }
 
+func googlePSIFIDSeverity(valueSeconds float64) string {
+	valueMs := valueSeconds * 1000
+	switch {
+	case valueMs > 300:
+		return "high"
+	case valueMs > 100:
+		return "medium"
+	default:
+		return ""
+	}
+}
+
+func googlePSISpeedIndexSeverity(valueSeconds float64) string {
+	switch {
+	case valueSeconds > 5.8:
+		return "high"
+	case valueSeconds > 3.4:
+		return "medium"
+	default:
+		return ""
+	}
+}
+
+func googlePSITTISeverity(valueSeconds float64) string {
+	switch {
+	case valueSeconds > 7.3:
+		return "high"
+	case valueSeconds > 3.8:
+		return "medium"
+	default:
+		return ""
+	}
+}
 func roundFloat(value float64, decimalPlaces int) float64 {
 	multiplier := 1.0
 	for range decimalPlaces {
