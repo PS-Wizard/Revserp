@@ -24,10 +24,11 @@ type Worker struct {
 	pollInterval         time.Duration
 	crawlPageWorkerCount int
 	renderer             *crawler.Renderer
+	pageSpeedAPIKey      string
 }
 
 // New builds a crawl worker.
-func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlPageWorkerCount int, renderer *crawler.Renderer) *Worker {
+func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlPageWorkerCount int, renderer *crawler.Renderer, pageSpeedAPIKey string) *Worker {
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -45,6 +46,7 @@ func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlP
 		pollInterval:         pollInterval,
 		crawlPageWorkerCount: crawlPageWorkerCount,
 		renderer:             renderer,
+		pageSpeedAPIKey:      pageSpeedAPIKey,
 	}
 }
 
@@ -127,6 +129,14 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 		return fmt.Errorf("run crawl: %w", err)
 	}
 
+	if worker.pageSpeedAPIKey != "" {
+		log.Printf("starting google psi: crawl_id=%s url=%s strategy=mobile", claimedCrawl.ID.String(), claimedCrawl.BaseUrl)
+	}
+	googlePSIResult, err := worker.enrichCrawlWithGooglePSI(ctx, claimedCrawl.ID, claimedCrawl.BaseUrl)
+	if err != nil {
+		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimedCrawl.ID.String(), err)
+	}
+
 	derivedIssueCount, err := issueStore.DeriveIssues(ctx, claimedCrawl.ID)
 	if err != nil {
 		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
@@ -135,6 +145,10 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 		return fmt.Errorf("derive issues: %w", err)
 	}
 
+	googlePSIIssueCount, err := worker.persistGooglePSIIssues(ctx, claimedCrawl.ID, googlePSIResult)
+	if err != nil {
+		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimedCrawl.ID.String(), err)
+	}
 	crawlScores, err := issueStore.ScoreCrawl(ctx, claimedCrawl.ID)
 	if err != nil {
 		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
@@ -143,7 +157,7 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 		return fmt.Errorf("score crawl: %w", err)
 	}
 
-	log.Printf("derived crawl issues: crawl_id=%s count=%d", claimedCrawl.ID.String(), derivedIssueCount)
+	log.Printf("derived crawl issues: crawl_id=%s count=%d google_psi_count=%d", claimedCrawl.ID.String(), derivedIssueCount, googlePSIIssueCount)
 	log.Printf("calculated crawl scores: crawl_id=%s seo=%d aeo=%d pagespeed=%d overall=%d", claimedCrawl.ID.String(), crawlScores.SEOScore, crawlScores.AEOScore, crawlScores.PageSpeedScore, crawlScores.OverallScore)
 	if err := crawlStore.MarkCrawlCompleted(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
 		return fmt.Errorf("mark crawl completed: %w", err)

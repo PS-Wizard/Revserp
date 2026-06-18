@@ -10,13 +10,16 @@ const (
 )
 
 var BucketWeights = map[string]float64{
-	"server_responsiveness": 0.55,
-	"page_weight":           0.45,
-	"psi_cwv":               0.00,
+	"server_responsiveness": 0.40,
+	"page_weight":           0.30,
+	"psi_cwv":               0.30,
 }
 
 var IssuePenaltyByType = map[string]float64{
-	"slow_response_time": 12,
-	"moderate_page_size": 5,
-	"large_page_size":    10,
+	"slow_response_time":            12,
+	"moderate_page_size":            5,
+	"large_page_size":               10,
+	"google_psi_mobile_performance": 18,
+	"google_psi_lcp":                14,
+	"google_psi_cls":                12,
 }

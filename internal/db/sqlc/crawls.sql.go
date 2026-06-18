@@ -409,6 +409,22 @@ func (q *Queries) MarkCrawlRunning(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const updateCrawlGooglePSIResults = `-- name: UpdateCrawlGooglePSIResults :exec
+UPDATE crawls
+SET google_psi_results = $2
+WHERE id = $1
+`
+
+type UpdateCrawlGooglePSIResultsParams struct {
+	ID               pgtype.UUID
+	GooglePsiResults []byte
+}
+
+func (q *Queries) UpdateCrawlGooglePSIResults(ctx context.Context, arg UpdateCrawlGooglePSIResultsParams) error {
+	_, err := q.db.Exec(ctx, updateCrawlGooglePSIResults, arg.ID, arg.GooglePsiResults)
+	return err
+}
+
 const updateCrawlScores = `-- name: UpdateCrawlScores :exec
 UPDATE crawls
 SET seo_score = $2,

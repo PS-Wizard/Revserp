@@ -40,6 +40,7 @@ type Config struct {
 	GoogleClientSecret          string
 	GoogleRedirectURL           string
 	GoogleTokenEncryptionSecret string
+	PageSpeedAPIKey             string
 }
 
 // Load reads configuration from the environment.
@@ -76,6 +77,7 @@ func Load() Config {
 		GoogleClientSecret:          getEnv("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURL:           getEnv("GOOGLE_REDIRECT_URL", ""),
 		GoogleTokenEncryptionSecret: getEnv("GOOGLE_TOKEN_ENCRYPTION_SECRET", ""),
+		PageSpeedAPIKey:             getEnv("PAGESPEED_API_KEY", ""),
 	}
 }
 

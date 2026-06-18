@@ -138,3 +138,8 @@ SET seo_score = $2,
     pagespeed_score = $4,
     overall_score = $5
 WHERE id = $1;
+
+-- name: UpdateCrawlGooglePSIResults :exec
+UPDATE crawls
+SET google_psi_results = $2
+WHERE id = $1;
