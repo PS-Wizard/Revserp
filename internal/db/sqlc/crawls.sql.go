@@ -151,6 +151,29 @@ func (q *Queries) CreateCrawl(ctx context.Context, arg CreateCrawlParams) (Creat
 	return i, err
 }
 
+const deleteCrawlByIDForUser = `-- name: DeleteCrawlByIDForUser :one
+DELETE FROM crawls AS c
+USING projects AS p, organization_members AS om
+WHERE c.id = $1
+  AND c.project_id = p.id
+  AND p.organization_id = om.org_id
+  AND om.user_id = $2
+  AND c.status NOT IN ('queued', 'running')
+RETURNING c.id
+`
+
+type DeleteCrawlByIDForUserParams struct {
+	ID     pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) DeleteCrawlByIDForUser(ctx context.Context, arg DeleteCrawlByIDForUserParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, deleteCrawlByIDForUser, arg.ID, arg.UserID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getCrawlByIDForUser = `-- name: GetCrawlByIDForUser :one
 SELECT
     c.id,
