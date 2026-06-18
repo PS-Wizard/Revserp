@@ -27,4 +27,5 @@ func main() {
 	if err := crawlWorker.Run(ctx); err != nil {
 		log.Fatalf("run worker: %v", err)
 	}
+
 }
