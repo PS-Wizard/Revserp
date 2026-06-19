@@ -48,6 +48,27 @@ type AiAuditRun struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
+type AiConversation struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	CrawlID         pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           pgtype.Text
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type AiMessage struct {
+	ID             pgtype.UUID
+	ConversationID pgtype.UUID
+	Role           string
+	Content        string
+	CrawlID        pgtype.UUID
+	Scope          []byte
+	Model          pgtype.Text
+	CreatedAt      pgtype.Timestamptz
+}
+
 type Crawl struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID
