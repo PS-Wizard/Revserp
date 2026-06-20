@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/ps-wizard/revserp/internal/ai"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
 )
@@ -401,8 +400,7 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 
 	promptMessages := append(aiFixMessagesFromRows(previousMessages), aiFixMessage{Role: "user", Content: requestBody.Content})
 	prompt := buildAIFixPrompt(pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, normalizeAIFixMessages(promptMessages))
-	geminiClient := ai.GeminiClient{APIKey: a.Config.GeminiAPIKey, Model: a.Config.GeminiModel}
-	content, err := geminiClient.GenerateText(r.Context(), prompt)
+	content, model, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, err.Error())
 		return
@@ -439,7 +437,7 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		Content:        content,
 		CrawlID:        crawlID,
 		Scope:          scopePayload,
-		Model:          aiNullableText(a.Config.GeminiModel),
+		Model:          aiNullableText(model),
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")

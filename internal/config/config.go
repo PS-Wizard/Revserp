@@ -29,8 +29,11 @@ type Config struct {
 	AIAuditWorkerConcurrency    int
 	AIAuditWorkerPollInterval   time.Duration
 	OpenRouterAPIKey            string
+	AIProvider                  string
 	GeminiAPIKey                string
 	GeminiModel                 string
+	DeepSeekAPIKey              string
+	DeepSeekModel               string
 	ObscuraPath                 string
 	RendererConcurrency         int
 	ObscuraTimeout              time.Duration
@@ -66,8 +69,11 @@ func Load() Config {
 		AIAuditWorkerConcurrency:    getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
 		AIAuditWorkerPollInterval:   getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
 		OpenRouterAPIKey:            getEnv("OPENROUTER_API_KEY", ""),
+		AIProvider:                  strings.ToLower(getEnv("AI_PROVIDER", "deepseek")),
 		GeminiAPIKey:                getEnv("GEMINI_API_KEY", ""),
 		GeminiModel:                 getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
+		DeepSeekAPIKey:              getEnv("DEEPSEEK_API_KEY", ""),
+		DeepSeekModel:               getEnv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
 		ObscuraPath:                 getEnv("OBSCURA_PATH", ""),
 		RendererConcurrency:         getEnvInt("RENDERER_CONCURRENCY", 2),
 		ObscuraTimeout:              time.Duration(getEnvInt("OBSCURA_TIMEOUT_SECONDS", 5)) * time.Second,

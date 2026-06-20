@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/ps-wizard/revserp/internal/ai"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	issueengine "github.com/ps-wizard/revserp/internal/issues"
 	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
@@ -150,8 +149,7 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prompt := buildAIFixPrompt(pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
-	geminiClient := ai.GeminiClient{APIKey: a.Config.GeminiAPIKey, Model: a.Config.GeminiModel}
-	content, err := geminiClient.GenerateText(r.Context(), prompt)
+	content, _, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, err.Error())
 		return
@@ -318,16 +316,23 @@ func buildAIFixPrompt(
 
 	if shouldRequestSpecificMetadataFixes(selectedIssues) {
 		builder.WriteString("\nOutput rule for metadata issue types:\n")
-		builder.WriteString("- If the latest user message does not ask for fixes, do not emit the table; answer the message normally.\n")
-		builder.WriteString("- When recommending metadata copy, return exactly one markdown table and no second table.\n")
-		builder.WriteString("- Use this exact header: | URL | Current title | Current meta description | Recommended title | Recommended meta description | Why |\n")
-		builder.WriteString("- Use this exact separator: |---|---|---|---|---|---|\n")
-		builder.WriteString("- Every body row must have exactly 6 cells. Replace any pipe characters inside values with slashes. Do not use line breaks, bullets, or markdown lists inside cells.\n")
-		builder.WriteString("- For title-only issues, still include the meta description columns; write 'No change' when the meta description should stay as-is.\n")
-		builder.WriteString("- For meta-description-only issues, still include the title columns; write 'No change' when the title should stay as-is.\n")
-		builder.WriteString("- Recommend titles around 30-60 characters. Do not force a brand suffix unless business context makes it necessary.\n")
-		builder.WriteString("- Recommend meta descriptions around 140-160 characters.\n")
-		builder.WriteString("- If a row lacks enough context, write 'Needs page intent review' in the recommended cell instead of inventing facts.\n")
+		builder.WriteString("- If the latest user message does not ask for fixes, do not emit tables; answer the message normally.\n")
+		builder.WriteString("- Never combine title fixes and meta description fixes in the same table.\n")
+		builder.WriteString("- Never put the vertical bar character `|` inside a table cell. This includes brand suffixes: write ` - Brand` instead of ` | Brand`.\n")
+		builder.WriteString("- Replace any `|` found in current values with ` / ` before writing them into a table cell.\n")
+		builder.WriteString("- Do not use line breaks, bullets, code spans, links, or markdown lists inside table cells.\n")
+		if hasTitleMetadataIssue(selectedIssues) {
+			builder.WriteString("- For title fixes, output a `### Title fixes` heading followed by exactly this table header: | URL | Current title | Recommended title | Why |\n")
+			builder.WriteString("- The title table separator must be exactly: |---|---|---|---|\n")
+			builder.WriteString("- Every title table body row must have exactly 4 cells. Recommend titles around 30-60 characters.\n")
+		}
+		if hasMetaDescriptionMetadataIssue(selectedIssues) {
+			builder.WriteString("- For meta description fixes, output a `### Meta description fixes` heading followed by exactly this table header: | URL | Current meta description | Recommended meta description | Why |\n")
+			builder.WriteString("- The meta description table separator must be exactly: |---|---|---|---|\n")
+			builder.WriteString("- Every meta description table body row must have exactly 4 cells. Recommend descriptions around 140-160 characters.\n")
+		}
+		builder.WriteString("- If both title and meta description issues are selected, output two separate tables: title fixes first, meta description fixes second.\n")
+		builder.WriteString("- If a row lacks enough context, write `Needs page intent review` in the recommended cell instead of inventing facts.\n")
 	} else {
 		builder.WriteString("\nOutput rule for non-metadata issue types:\n")
 		builder.WriteString("- If the latest user message does not ask for fixes, do not provide implementation guidance; answer the message normally.\n")
@@ -454,6 +459,36 @@ func shouldRequestSpecificMetadataFixes(issues []issueshared.IssueTypeScoreBreak
 		}
 	}
 	return len(issues) > 0
+}
+
+func hasTitleMetadataIssue(issues []issueshared.IssueTypeScoreBreakdown) bool {
+	titleIssueTypes := map[string]struct{}{
+		"missing_title":   {},
+		"title_too_long":  {},
+		"title_too_short": {},
+		"duplicate_title": {},
+	}
+	for _, issue := range issues {
+		if _, ok := titleIssueTypes[issue.ID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMetaDescriptionMetadataIssue(issues []issueshared.IssueTypeScoreBreakdown) bool {
+	metaDescriptionIssueTypes := map[string]struct{}{
+		"missing_meta_description":   {},
+		"meta_description_too_long":  {},
+		"meta_description_too_short": {},
+		"duplicate_meta_description": {},
+	}
+	for _, issue := range issues {
+		if _, ok := metaDescriptionIssueTypes[issue.ID]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // textValue extracts a nullable Postgres text field.
