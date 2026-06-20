@@ -26,6 +26,7 @@ type createAIConversationMessageRequest struct {
 	BucketID     string   `json:"bucket_id"`
 	BucketIDs    []string `json:"bucket_ids"`
 	IssueTypeIDs []string `json:"issue_type_ids"`
+	IssueURLs    []string `json:"issue_urls"`
 	Content      string   `json:"content"`
 }
 
@@ -70,6 +71,7 @@ type aiMessageScope struct {
 	BucketLabels    []string `json:"bucket_labels"`
 	IssueTypeIDs    []string `json:"issue_type_ids"`
 	IssueTypeLabels []string `json:"issue_type_labels"`
+	IssueURLs       []string `json:"issue_urls,omitempty"`
 }
 
 // handleListAIConversations lists project chat history for the current user.
@@ -342,6 +344,10 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		requestBody.BucketIDs = []string{requestBody.BucketID}
 	}
 	requestBody.IssueTypeIDs = normalizeStringIDs(requestBody.IssueTypeIDs)
+	requestBody.IssueURLs = normalizeStringIDs(requestBody.IssueURLs)
+	if len(requestBody.IssueURLs) > maxAIFixScopedURLs {
+		requestBody.IssueURLs = requestBody.IssueURLs[:maxAIFixScopedURLs]
+	}
 	requestBody.Content = strings.TrimSpace(requestBody.Content)
 	if requestBody.PillarID == "" || len(requestBody.BucketIDs) == 0 || requestBody.Content == "" {
 		writeJSONError(w, http.StatusBadRequest, "pillar_id, bucket_ids, and content are required")
@@ -415,9 +421,13 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	issueRows, err := loadAIFixIssueRows(r, tx, crawlID, user.ID, requestBody.PillarID, requestBody.BucketIDs, requestBody.IssueTypeIDs)
+	issueRows, err := loadAIFixIssueRows(r, tx, crawlID, user.ID, requestBody.PillarID, requestBody.BucketIDs, requestBody.IssueTypeIDs, requestBody.IssueURLs)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if len(requestBody.IssueURLs) > 0 && len(issueRows) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "issue_urls did not match the selected issue scope")
 		return
 	}
 	businessProfile, hasBusinessProfile, err := getProjectBusinessProfileByProjectID(r.Context(), queries, crawl.ProjectID)
@@ -443,7 +453,7 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	scopePayload, err := json.Marshal(newAIMessageScope(pillar, buckets, selectedIssues))
+	scopePayload, err := json.Marshal(newAIMessageScope(pillar, buckets, selectedIssues, requestBody.IssueURLs))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -590,7 +600,7 @@ func aiFixMessagesFromRows(messages []sqlc.AiMessage) []aiFixMessage {
 	return responses
 }
 
-func newAIMessageScope(pillar issueshared.PillarScoreBreakdown, buckets []issueshared.BucketScoreBreakdown, selectedIssues []issueshared.IssueTypeScoreBreakdown) aiMessageScope {
+func newAIMessageScope(pillar issueshared.PillarScoreBreakdown, buckets []issueshared.BucketScoreBreakdown, selectedIssues []issueshared.IssueTypeScoreBreakdown, issueURLs []string) aiMessageScope {
 	scope := aiMessageScope{
 		PillarID:        pillar.ID,
 		PillarLabel:     pillar.Label,
@@ -598,6 +608,7 @@ func newAIMessageScope(pillar issueshared.PillarScoreBreakdown, buckets []issues
 		BucketLabels:    make([]string, 0, len(buckets)),
 		IssueTypeIDs:    make([]string, 0, len(selectedIssues)),
 		IssueTypeLabels: make([]string, 0, len(selectedIssues)),
+		IssueURLs:       issueURLs,
 	}
 	for _, bucket := range buckets {
 		scope.BucketIDs = append(scope.BucketIDs, bucket.ID)

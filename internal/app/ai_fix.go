@@ -18,6 +18,7 @@ import (
 const maxAIFixMessages = 10
 const maxAIFixMessageLength = 4000
 const maxAIFixContextIssueRows = 40
+const maxAIFixScopedURLs = 20
 
 type aiFixMessage struct {
 	Role    string `json:"role"`
@@ -29,6 +30,7 @@ type aiFixRequest struct {
 	BucketID     string         `json:"bucket_id"`
 	BucketIDs    []string       `json:"bucket_ids"`
 	IssueTypeIDs []string       `json:"issue_type_ids"`
+	IssueURLs    []string       `json:"issue_urls"`
 	Messages     []aiFixMessage `json:"messages"`
 }
 
@@ -75,6 +77,10 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		requestBody.BucketIDs = []string{requestBody.BucketID}
 	}
 	requestBody.IssueTypeIDs = normalizeStringIDs(requestBody.IssueTypeIDs)
+	requestBody.IssueURLs = normalizeStringIDs(requestBody.IssueURLs)
+	if len(requestBody.IssueURLs) > maxAIFixScopedURLs {
+		requestBody.IssueURLs = requestBody.IssueURLs[:maxAIFixScopedURLs]
+	}
 	requestBody.Messages = normalizeAIFixMessages(requestBody.Messages)
 	if requestBody.PillarID == "" || len(requestBody.BucketIDs) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "pillar_id and bucket_ids are required")
@@ -131,9 +137,13 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issueRows, err := loadAIFixIssueRows(r, tx, crawlID, user.ID, requestBody.PillarID, requestBody.BucketIDs, requestBody.IssueTypeIDs)
+	issueRows, err := loadAIFixIssueRows(r, tx, crawlID, user.ID, requestBody.PillarID, requestBody.BucketIDs, requestBody.IssueTypeIDs, requestBody.IssueURLs)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if len(requestBody.IssueURLs) > 0 && len(issueRows) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "issue_urls did not match the selected issue scope")
 		return
 	}
 
@@ -217,7 +227,7 @@ func resolveAIFixScope(snapshot issueshared.ScoreBreakdownSnapshot, requestBody 
 }
 
 // loadAIFixIssueRows loads a capped set of affected URL rows for the selected issue scope.
-func loadAIFixIssueRows(r *http.Request, tx pgx.Tx, crawlID pgtype.UUID, userID pgtype.UUID, pillarID string, bucketIDs []string, issueTypeIDs []string) ([]aiFixIssueRow, error) {
+func loadAIFixIssueRows(r *http.Request, tx pgx.Tx, crawlID pgtype.UUID, userID pgtype.UUID, pillarID string, bucketIDs []string, issueTypeIDs []string, issueURLs []string) ([]aiFixIssueRow, error) {
 	query := `
 SELECT ci.url, ci.issue_type, ci.severity, ci.message, ci.details, cp.title, cp.meta_description, cp.h1
 FROM crawl_issues AS ci
@@ -231,11 +241,14 @@ WHERE ci.crawl_id = $1
   AND ci.bucket = ANY($4)`
 	args := []any{crawlID, userID, pillarID, bucketIDs}
 	if len(issueTypeIDs) > 0 {
-		query += "\n  AND ci.issue_type = ANY($5)"
 		args = append(args, issueTypeIDs)
+		query += fmt.Sprintf("\n  AND ci.issue_type = ANY($%d)", len(args))
+	}
+	if len(issueURLs) > 0 {
+		args = append(args, issueURLs)
+		query += fmt.Sprintf("\n  AND ci.url = ANY($%d)", len(args))
 	}
 	query += "\nORDER BY ci.created_at ASC\nLIMIT 40"
-
 	rows, err := tx.Query(r.Context(), query, args...)
 	if err != nil {
 		return nil, err
