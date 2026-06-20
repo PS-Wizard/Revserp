@@ -57,6 +57,7 @@ func (a *App) Router() http.Handler {
 		protected.Post("/projects/{projectID}/ai/conversations", a.handleCreateAIConversation)
 		protected.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
 		protected.Post("/ai/conversations/{conversationID}/messages", a.handleCreateAIConversationMessage)
+		protected.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
 		protected.Post("/projects/{projectID}/gsc/connect/start", a.handleStartProjectGSCConnect)
 		protected.Get("/projects/{projectID}/gsc/status", a.handleProjectGSCStatus)
 		protected.Post("/projects/{projectID}/gsc/select-site", a.handleSelectProjectGSCSite)

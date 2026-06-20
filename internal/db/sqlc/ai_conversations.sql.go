@@ -104,6 +104,28 @@ func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams
 	return i, err
 }
 
+const deleteAIConversationForUser = `-- name: DeleteAIConversationForUser :one
+DELETE FROM ai_conversations AS ac
+USING projects AS p, organization_members AS om
+WHERE ac.id = $1
+  AND p.id = ac.project_id
+  AND om.org_id = p.organization_id
+  AND om.user_id = $2
+RETURNING ac.id
+`
+
+type DeleteAIConversationForUserParams struct {
+	ID     pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) DeleteAIConversationForUser(ctx context.Context, arg DeleteAIConversationForUserParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, deleteAIConversationForUser, arg.ID, arg.UserID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getAIConversationForUser = `-- name: GetAIConversationForUser :one
 SELECT
     ac.id,

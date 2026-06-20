@@ -286,6 +286,43 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleDeleteAIConversation deletes one chat thread and its messages.
+func (a *App) handleDeleteAIConversation(w http.ResponseWriter, r *http.Request) {
+	conversationID, err := parseUUIDParam(chi.URLParam(r, "conversationID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid conversation id")
+		return
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	queries := a.Queries.WithTx(tx)
+	user, _, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if _, err := queries.DeleteAIConversationForUser(r.Context(), sqlc.DeleteAIConversationForUserParams{ID: conversationID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleCreateAIConversationMessage answers and persists one scoped chat turn.
 func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.Request) {
 	conversationID, err := parseUUIDParam(chi.URLParam(r, "conversationID"))

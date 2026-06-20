@@ -112,3 +112,12 @@ UPDATE ai_conversations
 SET updated_at = now()
 WHERE id = $1
 RETURNING id, project_id, crawl_id, created_by_user_id, title, created_at, updated_at;
+
+-- name: DeleteAIConversationForUser :one
+DELETE FROM ai_conversations AS ac
+USING projects AS p, organization_members AS om
+WHERE ac.id = $1
+  AND p.id = ac.project_id
+  AND om.org_id = p.organization_id
+  AND om.user_id = $2
+RETURNING ac.id;
