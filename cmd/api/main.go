@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
-	"log"
-	"net/http"
+"log"
+"net/http"
+"os/signal"
+"syscall"
+	"time"
 
 	"github.com/ps-wizard/revserp/internal/app"
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
@@ -13,9 +16,13 @@ import (
 
 // main starts the API server.
 func main() {
-	ctx := context.Background()
-	cfg := config.Load()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
+	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	dbPool, err := internaldb.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("connect database: %v", err)
@@ -33,6 +40,16 @@ func main() {
 		Addr:    cfg.HTTPAddr,
 		Handler: application.Router(),
 	}
+
+	go func() {
+		<-ctx.Done()
+		log.Printf("api server shutting down...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("api server shutdown error: %v", err)
+		}
+	}()
 
 	log.Printf("api listening on %s", cfg.HTTPAddr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

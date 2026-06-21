@@ -163,6 +163,45 @@ func (q *Queries) GetAIConversationForUser(ctx context.Context, arg GetAIConvers
 	return i, err
 }
 
+const getAIConversationForUserForUpdate = `-- name: GetAIConversationForUserForUpdate :one
+SELECT
+    ac.id,
+    ac.project_id,
+    ac.crawl_id,
+    ac.created_by_user_id,
+    ac.title,
+    ac.created_at,
+    ac.updated_at
+FROM ai_conversations AS ac
+INNER JOIN projects AS p ON p.id = ac.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ac.id = $1
+  AND om.user_id = $2
+LIMIT 1
+FOR UPDATE
+`
+
+type GetAIConversationForUserForUpdateParams struct {
+	ID     pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) GetAIConversationForUserForUpdate(ctx context.Context, arg GetAIConversationForUserForUpdateParams) (AiConversation, error) {
+	row := q.db.QueryRow(ctx, getAIConversationForUserForUpdate, arg.ID, arg.UserID)
+	var i AiConversation
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.CrawlID,
+		&i.CreatedByUserID,
+		&i.Title,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+
 const listAIConversationsForCrawlForUser = `-- name: ListAIConversationsForCrawlForUser :many
 SELECT
     ac.id,

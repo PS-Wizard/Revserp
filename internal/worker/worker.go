@@ -92,8 +92,11 @@ func (worker *Worker) runLoop(ctx context.Context, workerID int) error {
 				}
 				continue
 			}
-
-			return fmt.Errorf("claim queued crawl: %w", err)
+			log.Printf("worker %d transient error claiming crawl: %v", workerID, err)
+			if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
+				return nil
+			}
+			continue
 		}
 
 		log.Printf("worker %d claimed crawl: crawl_id=%s project_id=%s", workerID, claimedCrawl.ID.String(), claimedCrawl.ProjectID.String())
@@ -170,10 +173,12 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 
 // sleepOrCancel sleeps for a poll interval or returns when context is canceled.
 func sleepOrCancel(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(duration):
+	case <-timer.C:
 		return nil
 	}
 }

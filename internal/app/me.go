@@ -46,34 +46,32 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	queries := a.Queries.WithTx(tx)
-	user, organizations, err := a.ensureUserAndOrganizations(r, queries, identity)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	activeOrganizationID := resolveActiveOrganizationID(session.ActiveOrgID, organizations)
-	if activeOrganizationID.Valid && activeOrganizationID != session.ActiveOrgID {
-		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrganizationID); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "internal server error")
-			return
+	var (
+		user          sqlc.User
+		organizations []sqlc.ListOrganizationsForUserRow
+		activeOrgID   pgtype.UUID
+	)
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		var err error
+		user, organizations, err = a.ensureUserAndOrganizations(r, queries, identity)
+		if err != nil {
+			serverError(w, r, err)
+			return err
 		}
-	}
 
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		activeOrgID = resolveActiveOrganizationID(session.ActiveOrgID, organizations)
+		if activeOrgID.Valid && activeOrgID != session.ActiveOrgID {
+			if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrgID); err != nil {
+				serverError(w, r, err)
+				return err
+			}
+		}
+		return nil
+	}) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newMeResponse(user, organizations, activeOrganizationID))
+	writeJSON(w, http.StatusOK, newMeResponse(user, organizations, activeOrgID))
 }
 
 // ensureUserAndOrganizations maps the auth identity to a local user and default organization.
@@ -229,37 +227,28 @@ func (a *App) handleSetActiveOrganization(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
-			return
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		user, _, err := a.ensureCurrentUser(r, queries)
+		if err != nil {
+			serverError(w, r, err)
+			return err
 		}
 
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusForbidden, "forbidden")
+				return err
+			}
+			serverError(w, r, err)
+			return err
+		}
 
-	if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, organizationID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, organizationID); err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		return nil
+	}) {
 		return
 	}
 
@@ -283,61 +272,52 @@ func (a *App) handleLeaveOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	queries := a.Queries.WithTx(tx)
-	user, organizations, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	membership, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
-			return
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		user, organizations, err := a.ensureCurrentUser(r, queries)
+		if err != nil {
+			serverError(w, r, err)
+			return err
 		}
 
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if membership.Role == "owner" {
-		writeJSONError(w, http.StatusConflict, "owners cannot leave their own workspace")
-		return
-	}
+		membership, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusForbidden, "forbidden")
+				return err
+			}
+			serverError(w, r, err)
+			return err
+		}
+		if membership.Role == "owner" {
+			writeJSONError(w, http.StatusConflict, "owners cannot leave their own workspace")
+			return errors.New("owner cannot leave")
+		}
 
-	deletedRows, err := queries.RemoveOrganizationMember(r.Context(), sqlc.RemoveOrganizationMemberParams{OrgID: organizationID, UserID: user.ID})
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if deletedRows == 0 {
-		writeJSONError(w, http.StatusNotFound, "workspace membership not found")
-		return
-	}
+		deletedRows, err := queries.RemoveOrganizationMember(r.Context(), sqlc.RemoveOrganizationMemberParams{OrgID: organizationID, UserID: user.ID})
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		if deletedRows == 0 {
+			writeJSONError(w, http.StatusNotFound, "workspace membership not found")
+			return errors.New("workspace membership not found")
+		}
 
-	if session.ActiveOrgID.Valid && session.ActiveOrgID == organizationID {
-		nextActiveOrganizationID := pgtype.UUID{}
-		for _, organization := range organizations {
-			if organization.ID != organizationID {
-				nextActiveOrganizationID = organization.ID
-				break
+		if session.ActiveOrgID.Valid && session.ActiveOrgID == organizationID {
+			nextActiveOrganizationID := pgtype.UUID{}
+			for _, organization := range organizations {
+				if organization.ID != organizationID {
+					nextActiveOrganizationID = organization.ID
+					break
+				}
+			}
+			if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, nextActiveOrganizationID); err != nil {
+				serverError(w, r, err)
+				return err
 			}
 		}
-		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, nextActiveOrganizationID); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return nil
+	}) {
 		return
 	}
 

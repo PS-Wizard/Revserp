@@ -86,6 +86,44 @@ type crawlPageResponse struct {
 	CreatedAt               string          `json:"created_at"`
 }
 
+// crawlPageRowData collects crawl page row fields for response building.
+type crawlPageRowData struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	VisibleText             pgtype.Text
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	H2Headings              []byte
+	H3Headings              []byte
+	HeadingOutline          []byte
+	OgTags                  []byte
+	JsonLd                  []byte
+	CreatedAt               pgtype.Timestamptz
+}
+
 // handleCreateCrawlPage creates a page row for a crawl the user can access.
 func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 	crawlID, err := parseUUIDParam(chi.URLParam(r, "crawlID"))
@@ -300,82 +338,131 @@ func (a *App) handleGetCrawlPage(w http.ResponseWriter, r *http.Request) {
 
 // newCrawlPageResponseFromCreateRow converts a created crawl page row into an API response.
 func newCrawlPageResponseFromCreateRow(page sqlc.CreateCrawlPageRow) crawlPageResponse {
-	return buildCrawlPageResponse(
-		page.ID, page.CrawlID, page.Url, page.StatusCode, page.ContentType, page.SizeBytes, page.IsInternal,
-		page.Depth, page.Title, page.MetaDescription, page.H1, page.H1Count, page.H2Count, page.H3Count,
-		page.WordCount, page.VisibleText, page.Author, page.CanonicalUrl, page.Lang, page.Viewport, page.Robots, page.ImageCount,
-		page.ImagesWithoutAltCount, page.ImagesWithoutDimensions, page.ExternalLinks, page.InternalLinks,
-		page.ResponseTimeMs, page.JavascriptRendered, page.H2Headings, page.H3Headings, page.HeadingOutline,
-		page.OgTags, page.JsonLd, page.CreatedAt,
-	)
+	return buildCrawlPageResponse(crawlPageRowData{
+		ID:                      page.ID,
+		CrawlID:                 page.CrawlID,
+		Url:                     page.Url,
+		StatusCode:              page.StatusCode,
+		ContentType:             page.ContentType,
+		SizeBytes:               page.SizeBytes,
+		IsInternal:              page.IsInternal,
+		Depth:                   page.Depth,
+		Title:                   page.Title,
+		MetaDescription:         page.MetaDescription,
+		H1:                      page.H1,
+		H1Count:                 page.H1Count,
+		H2Count:                 page.H2Count,
+		H3Count:                 page.H3Count,
+		WordCount:               page.WordCount,
+		VisibleText:             page.VisibleText,
+		Author:                  page.Author,
+		CanonicalUrl:            page.CanonicalUrl,
+		Lang:                    page.Lang,
+		Viewport:                page.Viewport,
+		Robots:                  page.Robots,
+		ImageCount:              page.ImageCount,
+		ImagesWithoutAltCount:   page.ImagesWithoutAltCount,
+		ImagesWithoutDimensions: page.ImagesWithoutDimensions,
+		ExternalLinks:           page.ExternalLinks,
+		InternalLinks:           page.InternalLinks,
+		ResponseTimeMs:          page.ResponseTimeMs,
+		JavascriptRendered:      page.JavascriptRendered,
+		H2Headings:              page.H2Headings,
+		H3Headings:              page.H3Headings,
+		HeadingOutline:          page.HeadingOutline,
+		OgTags:                  page.OgTags,
+		JsonLd:                  page.JsonLd,
+		CreatedAt:               page.CreatedAt,
+	})
 }
 
 // newCrawlPageResponseFromListRow converts a listed crawl page row into an API response.
 func newCrawlPageResponseFromListRow(page sqlc.ListCrawlPagesForCrawlByUserRow) crawlPageResponse {
-	return buildCrawlPageResponse(
-		page.ID, page.CrawlID, page.Url, page.StatusCode, page.ContentType, page.SizeBytes, page.IsInternal,
-		page.Depth, page.Title, page.MetaDescription, page.H1, page.H1Count, page.H2Count, page.H3Count,
-		page.WordCount, page.VisibleText, page.Author, page.CanonicalUrl, page.Lang, page.Viewport, page.Robots, page.ImageCount,
-		page.ImagesWithoutAltCount, page.ImagesWithoutDimensions, page.ExternalLinks, page.InternalLinks,
-		page.ResponseTimeMs, page.JavascriptRendered, page.H2Headings, page.H3Headings, page.HeadingOutline,
-		page.OgTags, page.JsonLd, page.CreatedAt,
-	)
+	return buildCrawlPageResponse(crawlPageRowData{
+		ID:                      page.ID,
+		CrawlID:                 page.CrawlID,
+		Url:                     page.Url,
+		StatusCode:              page.StatusCode,
+		ContentType:             page.ContentType,
+		SizeBytes:               page.SizeBytes,
+		IsInternal:              page.IsInternal,
+		Depth:                   page.Depth,
+		Title:                   page.Title,
+		MetaDescription:         page.MetaDescription,
+		H1:                      page.H1,
+		H1Count:                 page.H1Count,
+		H2Count:                 page.H2Count,
+		H3Count:                 page.H3Count,
+		WordCount:               page.WordCount,
+		VisibleText:             page.VisibleText,
+		Author:                  page.Author,
+		CanonicalUrl:            page.CanonicalUrl,
+		Lang:                    page.Lang,
+		Viewport:                page.Viewport,
+		Robots:                  page.Robots,
+		ImageCount:              page.ImageCount,
+		ImagesWithoutAltCount:   page.ImagesWithoutAltCount,
+		ImagesWithoutDimensions: page.ImagesWithoutDimensions,
+		ExternalLinks:           page.ExternalLinks,
+		InternalLinks:           page.InternalLinks,
+		ResponseTimeMs:          page.ResponseTimeMs,
+		JavascriptRendered:      page.JavascriptRendered,
+		H2Headings:              page.H2Headings,
+		H3Headings:              page.H3Headings,
+		HeadingOutline:          page.HeadingOutline,
+		OgTags:                  page.OgTags,
+		JsonLd:                  page.JsonLd,
+		CreatedAt:               page.CreatedAt,
+	})
 }
 
 // newCrawlPageResponseFromGetRow converts a fetched crawl page row into an API response.
 func newCrawlPageResponseFromGetRow(page sqlc.GetCrawlPageByIDForUserRow) crawlPageResponse {
-	return buildCrawlPageResponse(
-		page.ID, page.CrawlID, page.Url, page.StatusCode, page.ContentType, page.SizeBytes, page.IsInternal,
-		page.Depth, page.Title, page.MetaDescription, page.H1, page.H1Count, page.H2Count, page.H3Count,
-		page.WordCount, page.VisibleText, page.Author, page.CanonicalUrl, page.Lang, page.Viewport, page.Robots, page.ImageCount,
-		page.ImagesWithoutAltCount, page.ImagesWithoutDimensions, page.ExternalLinks, page.InternalLinks,
-		page.ResponseTimeMs, page.JavascriptRendered, page.H2Headings, page.H3Headings, page.HeadingOutline,
-		page.OgTags, page.JsonLd, page.CreatedAt,
-	)
+	return buildCrawlPageResponse(crawlPageRowData{
+		ID:                      page.ID,
+		CrawlID:                 page.CrawlID,
+		Url:                     page.Url,
+		StatusCode:              page.StatusCode,
+		ContentType:             page.ContentType,
+		SizeBytes:               page.SizeBytes,
+		IsInternal:              page.IsInternal,
+		Depth:                   page.Depth,
+		Title:                   page.Title,
+		MetaDescription:         page.MetaDescription,
+		H1:                      page.H1,
+		H1Count:                 page.H1Count,
+		H2Count:                 page.H2Count,
+		H3Count:                 page.H3Count,
+		WordCount:               page.WordCount,
+		VisibleText:             page.VisibleText,
+		Author:                  page.Author,
+		CanonicalUrl:            page.CanonicalUrl,
+		Lang:                    page.Lang,
+		Viewport:                page.Viewport,
+		Robots:                  page.Robots,
+		ImageCount:              page.ImageCount,
+		ImagesWithoutAltCount:   page.ImagesWithoutAltCount,
+		ImagesWithoutDimensions: page.ImagesWithoutDimensions,
+		ExternalLinks:           page.ExternalLinks,
+		InternalLinks:           page.InternalLinks,
+		ResponseTimeMs:          page.ResponseTimeMs,
+		JavascriptRendered:      page.JavascriptRendered,
+		H2Headings:              page.H2Headings,
+		H3Headings:              page.H3Headings,
+		HeadingOutline:          page.HeadingOutline,
+		OgTags:                  page.OgTags,
+		JsonLd:                  page.JsonLd,
+		CreatedAt:               page.CreatedAt,
+	})
 }
 
 // buildCrawlPageResponse converts crawl page fields into an API response.
-func buildCrawlPageResponse(
-	id pgtype.UUID,
-	crawlID pgtype.UUID,
-	url string,
-	statusCode pgtype.Int4,
-	contentType pgtype.Text,
-	sizeBytes pgtype.Int4,
-	isInternal pgtype.Bool,
-	depth pgtype.Int4,
-	title pgtype.Text,
-	metaDescription pgtype.Text,
-	h1 pgtype.Text,
-	h1Count pgtype.Int4,
-	h2Count pgtype.Int4,
-	h3Count pgtype.Int4,
-	wordCount pgtype.Int4,
-	visibleText pgtype.Text,
-	author pgtype.Text,
-	canonicalURL pgtype.Text,
-	lang pgtype.Text,
-	viewport pgtype.Text,
-	robots pgtype.Text,
-	imageCount pgtype.Int4,
-	imagesWithoutAltCount pgtype.Int4,
-	imagesWithoutDimensions pgtype.Int4,
-	externalLinks pgtype.Int4,
-	internalLinks pgtype.Int4,
-	responseTimeMs pgtype.Int4,
-	javascriptRendered pgtype.Bool,
-	h2Headings []byte,
-	h3Headings []byte,
-	headingOutline []byte,
-	ogTags []byte,
-	jsonLD []byte,
-	createdAt pgtype.Timestamptz,
-) crawlPageResponse {
+func buildCrawlPageResponse(row crawlPageRowData) crawlPageResponse {
 	response := crawlPageResponse{
-		ID:        id.String(),
-		CrawlID:   crawlID.String(),
-		URL:       url,
-		CreatedAt: formatTimestamp(createdAt),
+		ID:        row.ID.String(),
+		CrawlID:   row.CrawlID.String(),
+		URL:       row.Url,
+		CreatedAt: formatTimestamp(row.CreatedAt),
 	}
 
 	setInt4Pointer := func(value pgtype.Int4) *int32 {
@@ -397,45 +484,45 @@ func buildCrawlPageResponse(
 		return value.String
 	}
 
-	response.StatusCode = setInt4Pointer(statusCode)
-	response.ContentType = setText(contentType)
-	response.SizeBytes = setInt4Pointer(sizeBytes)
-	response.IsInternal = setBoolPointer(isInternal)
-	response.Depth = setInt4Pointer(depth)
-	response.Title = setText(title)
-	response.MetaDescription = setText(metaDescription)
-	response.H1 = setText(h1)
-	response.H1Count = setInt4Pointer(h1Count)
-	response.H2Count = setInt4Pointer(h2Count)
-	response.H3Count = setInt4Pointer(h3Count)
-	response.WordCount = setInt4Pointer(wordCount)
-	response.VisibleText = setText(visibleText)
-	response.Author = setText(author)
-	response.CanonicalURL = setText(canonicalURL)
-	response.Lang = setText(lang)
-	response.Viewport = setText(viewport)
-	response.Robots = setText(robots)
-	response.ImageCount = setInt4Pointer(imageCount)
-	response.ImagesWithoutAltCount = setInt4Pointer(imagesWithoutAltCount)
-	response.ImagesWithoutDimensions = setInt4Pointer(imagesWithoutDimensions)
-	response.ExternalLinks = setInt4Pointer(externalLinks)
-	response.InternalLinks = setInt4Pointer(internalLinks)
-	response.ResponseTimeMs = setInt4Pointer(responseTimeMs)
-	response.JavaScriptRendered = setBoolPointer(javascriptRendered)
-	if len(h2Headings) > 0 {
-		response.H2Headings = json.RawMessage(h2Headings)
+	response.StatusCode = setInt4Pointer(row.StatusCode)
+	response.ContentType = setText(row.ContentType)
+	response.SizeBytes = setInt4Pointer(row.SizeBytes)
+	response.IsInternal = setBoolPointer(row.IsInternal)
+	response.Depth = setInt4Pointer(row.Depth)
+	response.Title = setText(row.Title)
+	response.MetaDescription = setText(row.MetaDescription)
+	response.H1 = setText(row.H1)
+	response.H1Count = setInt4Pointer(row.H1Count)
+	response.H2Count = setInt4Pointer(row.H2Count)
+	response.H3Count = setInt4Pointer(row.H3Count)
+	response.WordCount = setInt4Pointer(row.WordCount)
+	response.VisibleText = setText(row.VisibleText)
+	response.Author = setText(row.Author)
+	response.CanonicalURL = setText(row.CanonicalUrl)
+	response.Lang = setText(row.Lang)
+	response.Viewport = setText(row.Viewport)
+	response.Robots = setText(row.Robots)
+	response.ImageCount = setInt4Pointer(row.ImageCount)
+	response.ImagesWithoutAltCount = setInt4Pointer(row.ImagesWithoutAltCount)
+	response.ImagesWithoutDimensions = setInt4Pointer(row.ImagesWithoutDimensions)
+	response.ExternalLinks = setInt4Pointer(row.ExternalLinks)
+	response.InternalLinks = setInt4Pointer(row.InternalLinks)
+	response.ResponseTimeMs = setInt4Pointer(row.ResponseTimeMs)
+	response.JavaScriptRendered = setBoolPointer(row.JavascriptRendered)
+	if len(row.H2Headings) > 0 {
+		response.H2Headings = json.RawMessage(row.H2Headings)
 	}
-	if len(h3Headings) > 0 {
-		response.H3Headings = json.RawMessage(h3Headings)
+	if len(row.H3Headings) > 0 {
+		response.H3Headings = json.RawMessage(row.H3Headings)
 	}
-	if len(headingOutline) > 0 {
-		response.HeadingOutline = json.RawMessage(headingOutline)
+	if len(row.HeadingOutline) > 0 {
+		response.HeadingOutline = json.RawMessage(row.HeadingOutline)
 	}
-	if len(ogTags) > 0 {
-		response.OGTags = json.RawMessage(ogTags)
+	if len(row.OgTags) > 0 {
+		response.OGTags = json.RawMessage(row.OgTags)
 	}
-	if len(jsonLD) > 0 {
-		response.JSONLD = json.RawMessage(jsonLD)
+	if len(row.JsonLd) > 0 {
+		response.JSONLD = json.RawMessage(row.JsonLd)
 	}
 
 	return response

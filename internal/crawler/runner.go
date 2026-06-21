@@ -159,7 +159,6 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			if !isDuplicateProcessedPage && shouldPersist {
 				if err := runner.store.PersistResult(runContext, crawlID, normalizedRootURL.String(), result); err != nil {
 					cancelRun()
-					close(jobs)
 					summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
 					if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
 						return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
@@ -194,7 +193,6 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				}
 			}
 		case <-runContext.Done():
-			close(jobs)
 			summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
 			if shouldPersist {
 				if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {

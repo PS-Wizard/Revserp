@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -46,42 +47,34 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
-			return
+	var project sqlc.Project
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		user, _, err := a.ensureCurrentUser(r, queries)
+		if err != nil {
+			serverError(w, r, err)
+			return err
 		}
 
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusForbidden, "forbidden")
+				return err
+			}
+			serverError(w, r, err)
+			return err
+		}
 
-	project, err := queries.CreateProject(r.Context(), sqlc.CreateProjectParams{
-		OrganizationID: organizationID,
-		Name:           name,
-		BaseUrl:        baseURL,
-	})
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		project, err = queries.CreateProject(r.Context(), sqlc.CreateProjectParams{
+			OrganizationID: organizationID,
+			Name:           name,
+			BaseUrl:        baseURL,
+		})
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		return nil
+	}) {
 		return
 	}
 
@@ -96,38 +89,30 @@ func (a *App) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
-			return
+	var projects []sqlc.Project
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		user, _, err := a.ensureCurrentUser(r, queries)
+		if err != nil {
+			serverError(w, r, err)
+			return err
 		}
 
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusForbidden, "forbidden")
+				return err
+			}
+			serverError(w, r, err)
+			return err
+		}
 
-	projects, err := queries.ListProjectsForOrganization(r.Context(), organizationID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		projects, err = queries.ListProjectsForOrganization(r.Context(), organizationID)
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		return nil
+	}) {
 		return
 	}
 
@@ -147,36 +132,28 @@ func (a *App) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
-		ID:     projectID,
-		UserID: user.ID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "project not found")
-			return
+	var project sqlc.Project
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		user, _, err := a.ensureCurrentUser(r, queries)
+		if err != nil {
+			serverError(w, r, err)
+			return err
 		}
 
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		project, err = queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
+			ID:     projectID,
+			UserID: user.ID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "project not found")
+				return err
+			}
+			serverError(w, r, err)
+			return err
+		}
+		return nil
+	}) {
 		return
 	}
 
@@ -191,62 +168,78 @@ func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer tx.Rollback(r.Context())
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		user, _, err := a.ensureCurrentUser(r, queries)
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
 
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+		hasActiveCrawl, err := queries.HasActiveCrawlForProject(r.Context(), sqlc.HasActiveCrawlForProjectParams{
+			ProjectID: projectID,
+			UserID:    user.ID,
+		})
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		if hasActiveCrawl {
+			writeJSONError(w, http.StatusConflict, "cannot delete project while a crawl is queued or running")
+			return errors.New("active crawl exists")
+		}
 
-	hasActiveCrawl, err := queries.HasActiveCrawlForProject(r.Context(), sqlc.HasActiveCrawlForProjectParams{
-		ProjectID: projectID,
-		UserID:    user.ID,
-	})
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if hasActiveCrawl {
-		writeJSONError(w, http.StatusConflict, "cannot delete project while a crawl is queued or running")
-		return
-	}
-
-	deletedRows, err := queries.DeleteProjectByIDForUser(r.Context(), sqlc.DeleteProjectByIDForUserParams{
-		ID:     projectID,
-		UserID: user.ID,
-	})
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if deletedRows == 0 {
-		writeJSONError(w, http.StatusNotFound, "project not found")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		deletedRows, err := queries.DeleteProjectByIDForUser(r.Context(), sqlc.DeleteProjectByIDForUserParams{
+			ID:     projectID,
+			UserID: user.ID,
+		})
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		if deletedRows == 0 {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return errors.New("project not found")
+		}
+		return nil
+	}) {
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// resolvedUserContextKey is a private context key for per-request caching of the resolved user.
+type resolvedUserContextKey struct{}
+
+// resolvedUserEntry holds the bootstrapped user and organizations for one request.
+type resolvedUserEntry struct {
+	user          sqlc.User
+	organizations []sqlc.ListOrganizationsForUserRow
+}
+
 // ensureCurrentUser ensures the authenticated identity has a local user and default organization.
+// Results are cached on the request context so the bootstrap cost is paid at most once per request.
 func (a *App) ensureCurrentUser(r *http.Request, queries *sqlc.Queries) (sqlc.User, []sqlc.ListOrganizationsForUserRow, error) {
+	// Check per-request cache first.
+	if entry, ok := r.Context().Value(resolvedUserContextKey{}).(resolvedUserEntry); ok {
+		return entry.user, entry.organizations, nil
+	}
+
 	identity, ok := internalauth.IdentityFromContext(r.Context())
 	if !ok {
 		return sqlc.User{}, nil, errors.New("missing identity")
 	}
 
-	return a.ensureUserAndOrganizations(r, queries, identity)
+	user, orgs, err := a.ensureUserAndOrganizations(r, queries, identity)
+	if err != nil {
+		return sqlc.User{}, nil, err
+	}
+
+	// Cache the resolved user on the request context for the remainder of this request.
+	// Update the request in-place so callers who hold the same *http.Request benefit.
+	*r = *r.WithContext(context.WithValue(r.Context(), resolvedUserContextKey{}, resolvedUserEntry{user: user, organizations: orgs}))
+
+	return user, orgs, nil
 }
 
 // newProjectResponse converts a DB project into an API response.

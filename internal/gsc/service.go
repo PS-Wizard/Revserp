@@ -111,10 +111,13 @@ func (service *Service) FetchSites(ctx context.Context, accessToken string) ([]S
 		return nil, fmt.Errorf("send Google sites request: %w", err)
 	}
 	defer response.Body.Close()
-
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read Google sites response: %w", err)
+	}
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, decodeGoogleAPIError(responseBody, "Failed to fetch Search Console sites")
 	}
 
 	var payload struct {
@@ -126,10 +129,6 @@ func (service *Service) FetchSites(ctx context.Context, accessToken string) ([]S
 	if err := json.Unmarshal(responseBody, &payload); err != nil {
 		return nil, &Error{Message: "Google returned an invalid Search Console response"}
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, decodeGoogleAPIError(responseBody, "Failed to fetch Search Console sites")
-	}
-
 	sites := make([]SiteEntry, 0, len(payload.SiteEntry))
 	for _, entry := range payload.SiteEntry {
 		sites = append(sites, SiteEntry{
@@ -224,10 +223,13 @@ func (service *Service) querySearchAnalytics(ctx context.Context, accessToken, s
 		return nil, fmt.Errorf("send Search Analytics request: %w", err)
 	}
 	defer response.Body.Close()
-
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read Search Analytics response: %w", err)
+	}
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, decodeGoogleAPIError(responseBody, "Failed to fetch Search Analytics")
 	}
 
 	var responsePayload struct {
@@ -242,10 +244,6 @@ func (service *Service) querySearchAnalytics(ctx context.Context, accessToken, s
 	if err := json.Unmarshal(responseBody, &responsePayload); err != nil {
 		return nil, &Error{Message: "Google returned an invalid Search Analytics response"}
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, decodeGoogleAPIError(responseBody, "Failed to fetch Search Analytics")
-	}
-
 	dimensions := extractDimensions(payload)
 	rows := make([]SearchAnalyticsRow, 0, len(responsePayload.Rows))
 	for _, row := range responsePayload.Rows {

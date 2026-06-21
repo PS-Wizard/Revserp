@@ -1,8 +1,9 @@
 package auth
 
 import (
-	"errors"
-	"net/http"
+"errors"
+"log"
+"net/http"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -19,6 +20,7 @@ func RequireSession(sessionManager *SessionManager) func(http.Handler) http.Hand
 
 			identity, session, err := sessionManager.AuthenticateRequest(r.Context(), rawSessionToken)
 			if err != nil {
+				log.Printf("auth: request authentication failed: %v", err)
 				if errors.Is(err, pgx.ErrNoRows) {
 					http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 					return

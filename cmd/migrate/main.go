@@ -1,25 +1,29 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
-	"os"
+	"os/signal"
+	"syscall"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/joho/godotenv"
 	"github.com/pressly/goose/v3"
+
+	"github.com/ps-wizard/revserp/internal/config"
 )
 
 // main runs database migrations.
 func main() {
-	_ = godotenv.Load()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is required")
+	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("config: %v", err)
 	}
 
-	db, err := sql.Open("pgx", databaseURL)
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
@@ -29,7 +33,7 @@ func main() {
 		log.Fatalf("set goose dialect: %v", err)
 	}
 
-	if err := goose.Up(db, "migrations"); err != nil {
+	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
 		log.Fatalf("run migrations: %v", err)
 	}
 

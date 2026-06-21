@@ -28,6 +28,23 @@ WHERE ac.id = $1
   AND om.user_id = $2
 LIMIT 1;
 
+-- name: GetAIConversationForUserForUpdate :one
+SELECT
+    ac.id,
+    ac.project_id,
+    ac.crawl_id,
+    ac.created_by_user_id,
+    ac.title,
+    ac.created_at,
+    ac.updated_at
+FROM ai_conversations AS ac
+INNER JOIN projects AS p ON p.id = ac.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ac.id = $1
+  AND om.user_id = $2
+LIMIT 1
+FOR UPDATE;
+
 -- name: ListAIConversationsForProjectForUser :many
 SELECT
     ac.id,

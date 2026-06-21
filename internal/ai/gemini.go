@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 const defaultGeminiEndpointBase = "https://generativelanguage.googleapis.com/v1beta"
@@ -78,9 +77,6 @@ func (client GeminiClient) GenerateText(ctx context.Context, prompt string) (str
 	request.Header.Set("Content-Type", "application/json")
 
 	httpClient := client.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 60 * time.Second}
-	}
 
 	response, err := httpClient.Do(request)
 	if err != nil {

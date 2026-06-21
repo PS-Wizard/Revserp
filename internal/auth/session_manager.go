@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -106,7 +107,12 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 	if accessTokenExpiresAt.Before(time.Now().UTC().Add(sessionRefreshSkew)) {
 		refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, refreshToken)
 		if refreshErr != nil {
-			_ = manager.queries.RevokeSession(ctx, sessionRow.ID)
+			var authErr *SupabaseAuthError
+			if errors.As(refreshErr, &authErr) && authErr.StatusCode >= 400 && authErr.StatusCode < 500 {
+				_ = manager.queries.RevokeSession(ctx, sessionRow.ID)
+			} else {
+				log.Printf("infra: refresh supabase session (transient, session kept): session=%s error=%v", sessionRow.ID.String(), refreshErr)
+			}
 			return Identity{}, SessionContext{}, fmt.Errorf("refresh supabase session: %w", refreshErr)
 		}
 		accessToken = refreshedSession.AccessToken
@@ -119,6 +125,10 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 			SupabaseAccessTokenExpiresAt: timestamptzValue(accessTokenExpiresAt),
 		}); err != nil {
 			return Identity{}, SessionContext{}, fmt.Errorf("update refreshed backend session: %w", err)
+		}
+	} else {
+		if err := manager.queries.UpdateSessionLastUsedAt(ctx, sessionRow.ID); err != nil {
+			log.Printf("infra: update session last_used_at (non-fatal): session=%s error=%v", sessionRow.ID.String(), err)
 		}
 	}
 

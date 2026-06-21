@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 const defaultDeepSeekEndpoint = "https://api.deepseek.com/chat/completions"
@@ -73,9 +72,6 @@ func (client DeepSeekClient) GenerateText(ctx context.Context, prompt string) (s
 	request.Header.Set("Content-Type", "application/json")
 
 	httpClient := client.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 60 * time.Second}
-	}
 
 	response, err := httpClient.Do(request)
 	if err != nil {

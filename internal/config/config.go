@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -85,6 +86,14 @@ func Load() Config {
 		GoogleTokenEncryptionSecret: getEnv("GOOGLE_TOKEN_ENCRYPTION_SECRET", ""),
 		PageSpeedAPIKey:             getEnv("PAGESPEED_API_KEY", ""),
 	}
+}
+
+// Validate checks that all required configuration values are set.
+func (cfg *Config) Validate() error {
+	if cfg.DatabaseURL == "" {
+		return errors.New("DATABASE_URL is required")
+	}
+	return nil
 }
 
 // getEnv returns an environment variable or a default value.

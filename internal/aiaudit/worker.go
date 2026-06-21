@@ -8,10 +8,11 @@ import (
 )
 
 // Worker polls for queued AI audits and executes them.
+// Queue processing is not yet implemented; Run returns immediately.
 type Worker struct {
 	pool         *pgxpool.Pool
 	concurrency  int
-	pollInterval time.Duration
+	pollInterval time.Duration // kept for future use, currently unused
 }
 
 // New builds an AI audit worker.
@@ -30,40 +31,9 @@ func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration) *Worke
 	}
 }
 
-// Run starts worker loops until the context is canceled.
+// Run returns immediately. AI audit queue processing is not yet implemented.
+// The worker exists to keep the deployment topology consistent until real
+// queue polling and processing is added.
 func (worker *Worker) Run(ctx context.Context) error {
-	errorsChannel := make(chan error, worker.concurrency)
-	for workerIndex := range worker.concurrency {
-		go func() {
-			errorsChannel <- worker.runLoop(ctx, workerIndex+1)
-		}()
-	}
-
-	for range worker.concurrency {
-		if err := <-errorsChannel; err != nil {
-			return err
-		}
-	}
-
 	return nil
-}
-
-// runLoop keeps the process alive until AI audit job polling is implemented.
-func (worker *Worker) runLoop(ctx context.Context, workerID int) error {
-	_ = workerID
-	for {
-		if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
-			return nil
-		}
-	}
-}
-
-// sleepOrCancel sleeps for a poll interval or returns when context is canceled.
-func sleepOrCancel(ctx context.Context, duration time.Duration) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(duration):
-		return nil
-	}
 }
