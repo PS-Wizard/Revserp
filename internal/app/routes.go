@@ -35,11 +35,12 @@ func (a *App) Router() http.Handler {
 
 	r.Group(func(protected chi.Router) {
 		protected.Use(internalauth.RequireSession(a.SessionManager))
+		protected.Use(a.requireActiveUser)
 		protected.Get("/me", a.handleMe)
 		protected.Post("/me/active-organization", a.handleSetActiveOrganization)
-		protected.Get("/internal/scoring-config", a.handleGetScoringConfig)
-		protected.Put("/internal/scoring-config", a.handlePutScoringConfig)
-		protected.Post("/internal/scoring-config/preview", a.handlePreviewScoringConfig)
+		protected.Get("/internal/scoring-config", a.platformAdminOnly(a.handleGetScoringConfig))
+		protected.Put("/internal/scoring-config", a.platformAdminOnly(a.handlePutScoringConfig))
+		protected.Post("/internal/scoring-config/preview", a.platformAdminOnly(a.handlePreviewScoringConfig))
 		protected.Post("/organizations/{organizationID}/leave", a.handleLeaveOrganization)
 		protected.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
 		protected.Get("/organizations/{organizationID}/projects", a.handleListProjects)
@@ -85,6 +86,28 @@ func (a *App) Router() http.Handler {
 		protected.Get("/crawls/{crawlID}/issues", a.handleListCrawlIssues)
 		protected.Get("/crawl-issues/{issueID}", a.handleGetCrawlIssue)
 		protected.Post("/invites/{token}/accept", a.handleAcceptInvite)
+
+		// Admin routes — platform admin only
+		protected.Group(func(admin chi.Router) {
+			admin.Use(a.requirePlatformAdmin)
+			admin.Get("/admin/users", a.handleAdminListUsers)
+			admin.Post("/admin/users/{userID}/make-admin", a.handleAdminMakeAdmin)
+			admin.Post("/admin/users/{userID}/remove-admin", a.handleAdminRemoveAdmin)
+			admin.Post("/admin/users/{userID}/suspend", a.handleAdminSuspendUser)
+			admin.Post("/admin/users/{userID}/unsuspend", a.handleAdminUnsuspendUser)
+			admin.Delete("/admin/users/{userID}", a.handleAdminDeleteUser)
+			admin.Get("/admin/organizations", a.handleAdminListOrganizations)
+			admin.Get("/admin/organizations/{orgID}/scoring-config", a.handleAdminGetOrgScoringConfig)
+			admin.Put("/admin/organizations/{orgID}/scoring-config", a.handleAdminPutOrgScoringConfig)
+			admin.Delete("/admin/organizations/{orgID}/scoring-config", a.handleAdminDeleteOrgScoringConfig)
+			admin.Get("/admin/ai-config", a.handleAdminGetAIConfig)
+			admin.Put("/admin/ai-config", a.handleAdminPutAIConfig)
+			admin.Post("/admin/ai-config/reset", a.handleAdminResetAIConfig)
+			admin.Post("/admin/scoring-config/preview", a.handleAdminPreviewScoringConfig)
+			admin.Get("/admin/organizations/{orgID}/projects", a.handleAdminListOrgProjects)
+			admin.Get("/admin/projects/{projectID}/crawls", a.handleAdminListProjectCrawls)
+			admin.Get("/admin/crawls/{crawlID}/score-breakdown", a.handleAdminGetCrawlScoreBreakdown)
+		})
 	})
 
 	return r

@@ -28,6 +28,17 @@ WHERE csb.crawl_id = $1
   AND om.user_id = $2
 LIMIT 1;
 
+-- name: GetCrawlScoreBreakdownByCrawl :one
+SELECT
+    csb.crawl_id,
+    csb.scoring_version,
+    csb.breakdown_json,
+    csb.created_at,
+    csb.updated_at
+FROM crawl_score_breakdowns AS csb
+WHERE csb.crawl_id = $1
+LIMIT 1;
+
 -- name: CountDistinctCrawlIssueURLsByTypeForCrawlByUser :one
 SELECT COUNT(DISTINCT ci.url)
 FROM crawl_issues AS ci

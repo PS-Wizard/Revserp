@@ -113,7 +113,15 @@ func (a *App) handlePreviewScoringConfig(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	a.previewScoringConfig(w, r, user.ID)
+}
 
+// handleAdminPreviewScoringConfig builds a preview for platform admins across all crawls.
+func (a *App) handleAdminPreviewScoringConfig(w http.ResponseWriter, r *http.Request) {
+	a.previewScoringConfig(w, r, pgtype.UUID{})
+}
+
+func (a *App) previewScoringConfig(w http.ResponseWriter, r *http.Request, userID pgtype.UUID) {
 	var requestBody scoringPreviewRequest
 	if err := readJSON(r, &requestBody); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
@@ -128,13 +136,15 @@ func (a *App) handlePreviewScoringConfig(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "crawl not found")
+	if userID.Valid {
+		if _, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: userID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "crawl not found")
+				return
+			}
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
 	}
 
 	crawlPageSignals, crawlIssueSignals, err := a.loadScoringPreviewSignals(r, crawlID)

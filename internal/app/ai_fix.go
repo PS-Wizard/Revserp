@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,7 +159,8 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt := buildAIFixPrompt(pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
+	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries)
+	prompt := buildAIFixPrompt(systemPrompt, pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
 	content, _, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, err.Error())
@@ -303,6 +305,7 @@ LIMIT 40`)
 
 // buildAIFixPrompt creates the complete model prompt from scoped crawl context and chat history.
 func buildAIFixPrompt(
+	systemPrompt string,
 	pillar issueshared.PillarScoreBreakdown,
 	buckets []issueshared.BucketScoreBreakdown,
 	selectedIssues []issueshared.IssueTypeScoreBreakdown,
@@ -312,12 +315,7 @@ func buildAIFixPrompt(
 	messages []aiFixMessage,
 ) string {
 	var builder strings.Builder
-	builder.WriteString("You are Revserp's in-product SEO, AEO, and PageSpeed crawl issue assistant.\n")
-	builder.WriteString("The crawl context is background, not the user's instruction. Always answer the latest user message first.\n")
-	builder.WriteString("If the latest user message is a greeting, small talk, or a product/meta question, respond naturally and briefly; do not analyze the crawl or recommend fixes unless the user asks.\n")
-	builder.WriteString("If the latest user message asks for crawl help, use only the provided crawl context. If context is insufficient, say exactly what is missing.\n")
-	builder.WriteString("Avoid generic advice when affected rows include exact current field values. Produce concrete fixes.\n")
-	builder.WriteString("Return clean markdown. Be concise. Do not include a long restatement of the selected scope unless it changes the answer.\n\n")
+	builder.WriteString(systemPrompt)
 
 	if hasBusinessProfile {
 		builder.WriteString("Business context:\n")
@@ -543,4 +541,41 @@ func emptyFallback(value string) string {
 		return "Missing"
 	}
 	return value
+}
+
+// defaultAISystemPrompt returns the hardcoded base revserp assistant system prompt.
+func defaultAISystemPrompt() string {
+	return "You are Revserp's in-product SEO, AEO, and PageSpeed crawl issue assistant.\n" +
+		"The crawl context is background, not the user's instruction. Always answer the latest user message first.\n" +
+		"If the latest user message is a greeting, small talk, or a product/meta question, respond naturally and briefly; do not analyze the crawl or recommend fixes unless the user asks.\n" +
+		"If the latest user message asks for crawl help, use only the provided crawl context. If context is insufficient, say exactly what is missing.\n" +
+		"Avoid generic advice when affected rows include exact current field values. Produce concrete fixes.\n" +
+		"Return clean markdown. Be concise. Do not include a long restatement of the selected scope unless it changes the answer.\n"
+}
+
+// loadEffectiveAISystemPrompt builds the final system prompt from DB config (falling back to defaults).
+func loadEffectiveAISystemPrompt(ctx context.Context, queries *sqlc.Queries) string {
+	row, err := queries.GetAIPromptConfig(ctx)
+	if err != nil {
+		return defaultAISystemPrompt()
+	}
+
+	var builder strings.Builder
+	if row.ContextPrompt != "" {
+		builder.WriteString(row.ContextPrompt)
+	} else {
+		builder.WriteString(defaultAISystemPrompt())
+	}
+
+	if row.GuidelinesPrompt != "" {
+		builder.WriteString("\n")
+		builder.WriteString(row.GuidelinesPrompt)
+	}
+
+	if row.OtherNotesPrompt != "" {
+		builder.WriteString("\nAdditional notes:\n")
+		builder.WriteString(row.OtherNotesPrompt)
+	}
+
+	return builder.String()
 }

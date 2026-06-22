@@ -201,7 +201,6 @@ func (q *Queries) GetAIConversationForUserForUpdate(ctx context.Context, arg Get
 	return i, err
 }
 
-
 const listAIConversationsForCrawlForUser = `-- name: ListAIConversationsForCrawlForUser :many
 SELECT
     ac.id,

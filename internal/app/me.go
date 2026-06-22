@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +17,11 @@ import (
 )
 
 type meResponse struct {
-	User          userResponse           `json:"user"`
-	Organizations []organizationResponse `json:"organizations"`
-	ActiveOrgID   string                 `json:"active_org_id"`
+	User            userResponse           `json:"user"`
+	Organizations   []organizationResponse `json:"organizations"`
+	ActiveOrgID     string                 `json:"active_org_id"`
+	IsPlatformAdmin bool                   `json:"is_platform_admin"`
+	Status          string                 `json:"status,omitempty"`
 }
 
 type userResponse struct {
@@ -76,59 +79,70 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 
 // ensureUserAndOrganizations maps the auth identity to a local user and default organization.
 func (a *App) ensureUserAndOrganizations(r *http.Request, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, []sqlc.ListOrganizationsForUserRow, error) {
-	user, err := queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
-		AuthProvider: identity.Provider,
-		AuthSubject:  identity.Subject,
-	})
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return sqlc.User{}, nil, err
-		}
-
-		user, err = queries.CreateUser(r.Context(), sqlc.CreateUserParams{
-			AuthProvider: identity.Provider,
-			AuthSubject:  identity.Subject,
-			Email:        identity.Email,
-			Name:         pgText(identity.Name),
-		})
-		if err != nil {
-			return sqlc.User{}, nil, err
-		}
+	user, needsOrg := resolveUser(r.Context(), queries, identity)
+	if !user.ID.Valid {
+		return sqlc.User{}, nil, fmt.Errorf("failed to resolve user")
 	}
 
 	organizations, err := queries.ListOrganizationsForUser(r.Context(), user.ID)
 	if err != nil {
 		return sqlc.User{}, nil, err
 	}
-	if len(organizations) > 0 {
-		return user, organizations, nil
-	}
 
-	workspaceOwnerName := strings.TrimSpace(identity.Name)
-	if workspaceOwnerName == "" {
-		workspaceOwnerName = strings.TrimSpace(identity.Email)
-	}
+	if needsOrg && len(organizations) == 0 {
+		workspaceOwnerName := strings.TrimSpace(identity.Name)
+		if workspaceOwnerName == "" {
+			workspaceOwnerName = strings.TrimSpace(identity.Email)
+		}
 
-	organization, err := queries.CreateOrganization(r.Context(), fmt.Sprintf("%s's Workspace", workspaceOwnerName))
-	if err != nil {
-		return sqlc.User{}, nil, err
-	}
+		organization, err := queries.CreateOrganization(r.Context(), fmt.Sprintf("%s's Workspace", workspaceOwnerName))
+		if err != nil {
+			return sqlc.User{}, nil, err
+		}
 
-	_, err = queries.AddOrganizationMember(r.Context(), sqlc.AddOrganizationMemberParams{
-		OrgID:  organization.ID,
-		UserID: user.ID,
-		Role:   "owner",
-	})
-	if err != nil {
-		return sqlc.User{}, nil, err
-	}
+		if _, err = queries.AddOrganizationMember(r.Context(), sqlc.AddOrganizationMemberParams{
+			OrgID:  organization.ID,
+			UserID: user.ID,
+			Role:   "owner",
+		}); err != nil {
+			return sqlc.User{}, nil, err
+		}
 
-	organizations, err = queries.ListOrganizationsForUser(r.Context(), user.ID)
-	if err != nil {
-		return sqlc.User{}, nil, err
+		organizations, err = queries.ListOrganizationsForUser(r.Context(), user.ID)
+		if err != nil {
+			return sqlc.User{}, nil, err
+		}
 	}
 
 	return user, organizations, nil
+}
+
+// resolveUser loads or creates the local user for an auth identity.
+// Returns the user and whether a default org should be created.
+func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, bool) {
+	userRow, err := queries.GetUserByAuthSubject(ctx, sqlc.GetUserByAuthSubjectParams{
+		AuthProvider: identity.Provider,
+		AuthSubject:  identity.Subject,
+	})
+	if err == nil {
+		return userRowToUser(userRow), false
+	}
+
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return sqlc.User{}, false
+	}
+
+	newUserRow, err := queries.CreateUser(ctx, sqlc.CreateUserParams{
+		AuthProvider: identity.Provider,
+		AuthSubject:  identity.Subject,
+		Email:        identity.Email,
+		Name:         pgText(identity.Name),
+	})
+	if err != nil {
+		return sqlc.User{}, false
+	}
+
+	return userRowToUser(newUserRow), true
 }
 
 // writeJSON writes a JSON response.
@@ -155,8 +169,10 @@ func pgText(value string) pgtype.Text {
 // newMeResponse converts user, organizations, and active org state into the /me API response.
 func newMeResponse(user sqlc.User, organizations []sqlc.ListOrganizationsForUserRow, activeOrgID pgtype.UUID) meResponse {
 	response := meResponse{
-		User:          newUserResponse(user),
-		Organizations: newOrganizationResponses(organizations),
+		User:            newUserResponse(user),
+		Organizations:   newOrganizationResponses(organizations),
+		IsPlatformAdmin: isPlatformAdmin(user.Email, user.IsPlatformAdmin),
+		Status:          user.Status,
 	}
 	if activeOrgID.Valid {
 		response.ActiveOrgID = activeOrgID.String()
@@ -322,4 +338,38 @@ func (a *App) handleLeaveOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// userRowToUser converts a user query row to the canonical User model.
+func userRowToUser(row interface{}) sqlc.User {
+	switch r := row.(type) {
+	case sqlc.GetUserByAuthSubjectRow:
+		return sqlc.User{
+			ID:               r.ID,
+			AuthProvider:     r.AuthProvider,
+			AuthSubject:      r.AuthSubject,
+			Email:            r.Email,
+			Name:             r.Name,
+			IsPlatformAdmin:  r.IsPlatformAdmin,
+			Status:           r.Status,
+			SuspendedAt:      r.SuspendedAt,
+			SuspensionReason: r.SuspensionReason,
+			CreatedAt:        r.CreatedAt,
+		}
+	case sqlc.CreateUserRow:
+		return sqlc.User{
+			ID:               r.ID,
+			AuthProvider:     r.AuthProvider,
+			AuthSubject:      r.AuthSubject,
+			Email:            r.Email,
+			Name:             r.Name,
+			IsPlatformAdmin:  r.IsPlatformAdmin,
+			Status:           r.Status,
+			SuspendedAt:      r.SuspendedAt,
+			SuspensionReason: r.SuspensionReason,
+			CreatedAt:        r.CreatedAt,
+		}
+	default:
+		return sqlc.User{}
+	}
 }

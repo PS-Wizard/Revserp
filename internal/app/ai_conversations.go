@@ -367,7 +367,8 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	prompt := buildTurnPrompt(turnCtx, req.Content)
+	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries)
+	prompt := buildTurnPrompt(systemPrompt, turnCtx, req.Content)
 	content, model, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, err.Error())
@@ -647,9 +648,9 @@ func (a *App) loadConversationTurnContext(r *http.Request, queries *sqlc.Queries
 }
 
 // buildTurnPrompt assembles the complete AI prompt from conversation history and the new user message.
-func buildTurnPrompt(ctx *aiConversationTurnContext, content string) string {
+func buildTurnPrompt(systemPrompt string, ctx *aiConversationTurnContext, content string) string {
 	promptMessages := append(aiFixMessagesFromRows(ctx.previousMessages), aiFixMessage{Role: "user", Content: content})
-	return buildAIFixPrompt(ctx.pillar, ctx.buckets, ctx.selectedIssues, ctx.issueRows, ctx.businessProfile, ctx.hasBusinessProfile, normalizeAIFixMessages(promptMessages))
+	return buildAIFixPrompt(systemPrompt, ctx.pillar, ctx.buckets, ctx.selectedIssues, ctx.issueRows, ctx.businessProfile, ctx.hasBusinessProfile, normalizeAIFixMessages(promptMessages))
 }
 
 // marshalScopePayload encodes the conversation scope to JSON for persistence.

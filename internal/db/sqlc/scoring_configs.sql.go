@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteOrgScoringConfig = `-- name: DeleteOrgScoringConfig :exec
+DELETE FROM organization_scoring_configs WHERE org_id = $1
+`
+
+func (q *Queries) DeleteOrgScoringConfig(ctx context.Context, orgID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteOrgScoringConfig, orgID)
+	return err
+}
+
 const getActiveScoringConfig = `-- name: GetActiveScoringConfig :one
 SELECT id, config_json, updated_by_user_id, updated_at
 FROM scoring_configs
@@ -22,6 +31,25 @@ func (q *Queries) GetActiveScoringConfig(ctx context.Context) (ScoringConfig, er
 	var i ScoringConfig
 	err := row.Scan(
 		&i.ID,
+		&i.ConfigJson,
+		&i.UpdatedByUserID,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrgScoringConfig = `-- name: GetOrgScoringConfig :one
+SELECT org_id, config_json, updated_by_user_id, updated_at
+FROM organization_scoring_configs
+WHERE org_id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetOrgScoringConfig(ctx context.Context, orgID pgtype.UUID) (OrganizationScoringConfig, error) {
+	row := q.db.QueryRow(ctx, getOrgScoringConfig, orgID)
+	var i OrganizationScoringConfig
+	err := row.Scan(
+		&i.OrgID,
 		&i.ConfigJson,
 		&i.UpdatedByUserID,
 		&i.UpdatedAt,
@@ -56,6 +84,41 @@ func (q *Queries) UpsertActiveScoringConfig(ctx context.Context, arg UpsertActiv
 	var i ScoringConfig
 	err := row.Scan(
 		&i.ID,
+		&i.ConfigJson,
+		&i.UpdatedByUserID,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertOrgScoringConfig = `-- name: UpsertOrgScoringConfig :one
+INSERT INTO organization_scoring_configs (
+    org_id,
+    config_json,
+    updated_by_user_id
+) VALUES (
+    $1,
+    $2,
+    $3
+)
+ON CONFLICT (org_id) DO UPDATE SET
+    config_json = EXCLUDED.config_json,
+    updated_by_user_id = EXCLUDED.updated_by_user_id,
+    updated_at = NOW()
+RETURNING org_id, config_json, updated_by_user_id, updated_at
+`
+
+type UpsertOrgScoringConfigParams struct {
+	OrgID           pgtype.UUID
+	ConfigJson      []byte
+	UpdatedByUserID pgtype.UUID
+}
+
+func (q *Queries) UpsertOrgScoringConfig(ctx context.Context, arg UpsertOrgScoringConfigParams) (OrganizationScoringConfig, error) {
+	row := q.db.QueryRow(ctx, upsertOrgScoringConfig, arg.OrgID, arg.ConfigJson, arg.UpdatedByUserID)
+	var i OrganizationScoringConfig
+	err := row.Scan(
+		&i.OrgID,
 		&i.ConfigJson,
 		&i.UpdatedByUserID,
 		&i.UpdatedAt,

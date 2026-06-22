@@ -41,3 +41,8 @@ ORDER BY o.created_at ASC;
 DELETE FROM organization_members
 WHERE org_id = $1
   AND user_id = $2;
+
+-- name: ListAllOrganizations :many
+SELECT id, name, created_at
+FROM organizations
+ORDER BY name ASC;

@@ -84,6 +84,32 @@ func (q *Queries) GetOrganizationMember(ctx context.Context, arg GetOrganization
 	return i, err
 }
 
+const listAllOrganizations = `-- name: ListAllOrganizations :many
+SELECT id, name, created_at
+FROM organizations
+ORDER BY name ASC
+`
+
+func (q *Queries) ListAllOrganizations(ctx context.Context) ([]Organization, error) {
+	rows, err := q.db.Query(ctx, listAllOrganizations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Organization
+	for rows.Next() {
+		var i Organization
+		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOrganizationsForUser = `-- name: ListOrganizationsForUser :many
 SELECT
     o.id,

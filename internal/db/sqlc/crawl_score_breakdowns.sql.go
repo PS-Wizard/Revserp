@@ -148,6 +148,31 @@ func (q *Queries) CountDistinctCrawlIssueURLsByTypeForCrawlByUser(ctx context.Co
 	return count, err
 }
 
+const getCrawlScoreBreakdownByCrawl = `-- name: GetCrawlScoreBreakdownByCrawl :one
+SELECT
+    csb.crawl_id,
+    csb.scoring_version,
+    csb.breakdown_json,
+    csb.created_at,
+    csb.updated_at
+FROM crawl_score_breakdowns AS csb
+WHERE csb.crawl_id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetCrawlScoreBreakdownByCrawl(ctx context.Context, crawlID pgtype.UUID) (CrawlScoreBreakdown, error) {
+	row := q.db.QueryRow(ctx, getCrawlScoreBreakdownByCrawl, crawlID)
+	var i CrawlScoreBreakdown
+	err := row.Scan(
+		&i.CrawlID,
+		&i.ScoringVersion,
+		&i.BreakdownJson,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getCrawlScoreBreakdownByCrawlForUser = `-- name: GetCrawlScoreBreakdownByCrawlForUser :one
 SELECT
     csb.crawl_id,

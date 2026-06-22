@@ -20,6 +20,21 @@ Verification: `go test ./... && go build ./... && go vet ./...` ✅
 
 ## Completed
 
+### Platform Admin System (NEW)
+- [x] Migration 000024: users.is_platform_admin, users.status, users.suspended_at, users.suspension_reason, organization_scoring_configs table, ai_prompt_configs table
+- [x] SQLC queries: ListAllUsers, GetUserByID, UpdateUserPlatformAdmin, UpdateUserStatus, GetOrgScoringConfig, UpsertOrgScoringConfig, DeleteOrgScoringConfig, GetAIPromptConfig, UpsertAIPromptConfig, ResetAIPromptConfig, ListAllOrganizations, GetCrawlOrgID
+- [x] Admin auth helpers: `isPlatformAdmin`, `requirePlatformAdmin` middleware, `requireActiveUser` middleware
+- [x] `/me` response extended with `is_platform_admin` and `status`
+- [x] Non-active user enforcement in middleware; delete action soft-disables users with status `deleted`
+- [x] Scoring config endpoints gated behind platform admin
+- [x] Admin CRUD APIs: users (list/make-admin/remove-admin/suspend/unsuspend/delete), organizations (list, org scoring config CRUD), AI config (get/put/reset)
+- [x] Runtime scoring org override: `LoadEffectiveScoringConfig` checks org override first, falls back to global
+- [x] Runtime AI prompt: `loadEffectiveAISystemPrompt` uses DB config with defaults fallback in `buildAIFixPrompt`
+- [x] Frontend: `app/routes/app/admin.tsx` with Scoring / AI Config / Accounts tabs
+- [x] Frontend: profile menu shows "Admin Settings" only for platform admins
+- [x] `grill.md` written with agreed scope/decisions
+- [x] Validation: `go test ./... && go build ./... && go vet ./...` passes; `pnpm typecheck && pnpm build` passes
+
 ### Foundation / startup / workers
 - [x] GSC response handling now checks HTTP status before success-payload JSON unmarshal in `internal/gsc/service.go`
 - [x] Worker transient claim errors no longer tear down the crawl worker pool in `internal/worker/worker.go`

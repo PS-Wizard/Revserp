@@ -23,7 +23,7 @@ INSERT INTO users (
     $3,
     $4
 )
-RETURNING id, auth_provider, auth_subject, email, name, created_at
+RETURNING id, auth_provider, auth_subject, email, name, is_platform_admin, status, suspended_at, suspension_reason, created_at
 `
 
 type CreateUserParams struct {
@@ -33,27 +33,44 @@ type CreateUserParams struct {
 	Name         pgtype.Text
 }
 
-func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
+type CreateUserRow struct {
+	ID               pgtype.UUID
+	AuthProvider     string
+	AuthSubject      string
+	Email            string
+	Name             pgtype.Text
+	IsPlatformAdmin  bool
+	Status           string
+	SuspendedAt      pgtype.Timestamptz
+	SuspensionReason pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error) {
 	row := q.db.QueryRow(ctx, createUser,
 		arg.AuthProvider,
 		arg.AuthSubject,
 		arg.Email,
 		arg.Name,
 	)
-	var i User
+	var i CreateUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.AuthProvider,
 		&i.AuthSubject,
 		&i.Email,
 		&i.Name,
+		&i.IsPlatformAdmin,
+		&i.Status,
+		&i.SuspendedAt,
+		&i.SuspensionReason,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getUserByAuthSubject = `-- name: GetUserByAuthSubject :one
-SELECT id, auth_provider, auth_subject, email, name, created_at
+SELECT id, auth_provider, auth_subject, email, name, is_platform_admin, status, suspended_at, suspension_reason, created_at
 FROM users
 WHERE auth_provider = $1 AND auth_subject = $2
 LIMIT 1
@@ -64,16 +81,147 @@ type GetUserByAuthSubjectParams struct {
 	AuthSubject  string
 }
 
-func (q *Queries) GetUserByAuthSubject(ctx context.Context, arg GetUserByAuthSubjectParams) (User, error) {
+type GetUserByAuthSubjectRow struct {
+	ID               pgtype.UUID
+	AuthProvider     string
+	AuthSubject      string
+	Email            string
+	Name             pgtype.Text
+	IsPlatformAdmin  bool
+	Status           string
+	SuspendedAt      pgtype.Timestamptz
+	SuspensionReason pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) GetUserByAuthSubject(ctx context.Context, arg GetUserByAuthSubjectParams) (GetUserByAuthSubjectRow, error) {
 	row := q.db.QueryRow(ctx, getUserByAuthSubject, arg.AuthProvider, arg.AuthSubject)
-	var i User
+	var i GetUserByAuthSubjectRow
 	err := row.Scan(
 		&i.ID,
 		&i.AuthProvider,
 		&i.AuthSubject,
 		&i.Email,
 		&i.Name,
+		&i.IsPlatformAdmin,
+		&i.Status,
+		&i.SuspendedAt,
+		&i.SuspensionReason,
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, auth_provider, auth_subject, email, name, is_platform_admin, status, suspended_at, suspension_reason, created_at
+FROM users
+WHERE id = $1
+LIMIT 1
+`
+
+type GetUserByIDRow struct {
+	ID               pgtype.UUID
+	AuthProvider     string
+	AuthSubject      string
+	Email            string
+	Name             pgtype.Text
+	IsPlatformAdmin  bool
+	Status           string
+	SuspendedAt      pgtype.Timestamptz
+	SuspensionReason pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error) {
+	row := q.db.QueryRow(ctx, getUserByID, id)
+	var i GetUserByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.AuthProvider,
+		&i.AuthSubject,
+		&i.Email,
+		&i.Name,
+		&i.IsPlatformAdmin,
+		&i.Status,
+		&i.SuspendedAt,
+		&i.SuspensionReason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const listAllUsers = `-- name: ListAllUsers :many
+SELECT id, email, name, is_platform_admin, status, created_at
+FROM users
+WHERE status != 'deleted'
+ORDER BY created_at DESC
+`
+
+type ListAllUsersRow struct {
+	ID              pgtype.UUID
+	Email           string
+	Name            pgtype.Text
+	IsPlatformAdmin bool
+	Status          string
+	CreatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) ListAllUsers(ctx context.Context) ([]ListAllUsersRow, error) {
+	rows, err := q.db.Query(ctx, listAllUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllUsersRow
+	for rows.Next() {
+		var i ListAllUsersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Name,
+			&i.IsPlatformAdmin,
+			&i.Status,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateUserPlatformAdmin = `-- name: UpdateUserPlatformAdmin :exec
+UPDATE users SET is_platform_admin = $2 WHERE id = $1
+`
+
+type UpdateUserPlatformAdminParams struct {
+	ID              pgtype.UUID
+	IsPlatformAdmin bool
+}
+
+func (q *Queries) UpdateUserPlatformAdmin(ctx context.Context, arg UpdateUserPlatformAdminParams) error {
+	_, err := q.db.Exec(ctx, updateUserPlatformAdmin, arg.ID, arg.IsPlatformAdmin)
+	return err
+}
+
+const updateUserStatus = `-- name: UpdateUserStatus :exec
+UPDATE users SET
+    status = $2,
+    suspended_at = CASE WHEN $2 = 'suspended' THEN NOW() ELSE NULL END,
+    suspension_reason = CASE WHEN $2 = 'suspended' THEN $3 ELSE NULL END
+WHERE id = $1
+`
+
+type UpdateUserStatusParams struct {
+	ID               pgtype.UUID
+	Status           string
+	SuspensionReason pgtype.Text
+}
+
+func (q *Queries) UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) error {
+	_, err := q.db.Exec(ctx, updateUserStatus, arg.ID, arg.Status, arg.SuspensionReason)
+	return err
 }

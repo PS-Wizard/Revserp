@@ -3,6 +3,7 @@ package issues
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -106,7 +107,12 @@ func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID, psiInpu
 		})
 	}
 
-	scoringConfig, err := LoadActiveScoringConfig(ctx, store.queries)
+	orgID, err := store.queries.GetCrawlOrgID(ctx, crawlID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return shared.CrawlScores{}, fmt.Errorf("get crawl org id: %w", err)
+	}
+
+	scoringConfig, err := LoadEffectiveScoringConfig(ctx, store.queries, orgID)
 	if err != nil {
 		return shared.CrawlScores{}, err
 	}

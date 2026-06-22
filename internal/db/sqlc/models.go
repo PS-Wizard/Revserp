@@ -69,6 +69,15 @@ type AiMessage struct {
 	CreatedAt      pgtype.Timestamptz
 }
 
+type AiPromptConfig struct {
+	ID               int64
+	ContextPrompt    string
+	GuidelinesPrompt string
+	OtherNotesPrompt string
+	UpdatedByUserID  pgtype.UUID
+	UpdatedAt        pgtype.Timestamptz
+}
+
 type Crawl struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID
@@ -213,6 +222,13 @@ type OrganizationMember struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type OrganizationScoringConfig struct {
+	OrgID           pgtype.UUID
+	ConfigJson      []byte
+	UpdatedByUserID pgtype.UUID
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type Project struct {
 	ID             pgtype.UUID
 	OrganizationID pgtype.UUID
@@ -267,10 +283,14 @@ type Session struct {
 }
 
 type User struct {
-	ID           pgtype.UUID
-	AuthProvider string
-	AuthSubject  string
-	Email        string
-	Name         pgtype.Text
-	CreatedAt    pgtype.Timestamptz
+	ID               pgtype.UUID
+	AuthProvider     string
+	AuthSubject      string
+	Email            string
+	Name             pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+	IsPlatformAdmin  bool
+	Status           string
+	SuspendedAt      pgtype.Timestamptz
+	SuspensionReason pgtype.Text
 }
