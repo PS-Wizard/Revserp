@@ -16,9 +16,9 @@ const maxRequestBodySize = 1 << 20 // 1 MB
 // before readJSON returns.
 type noopWriter struct{}
 
-func (noopWriter) Header() http.Header       { return http.Header{} }
+func (noopWriter) Header() http.Header         { return http.Header{} }
 func (noopWriter) Write(p []byte) (int, error) { return len(p), nil }
-func (noopWriter) WriteHeader(int)           {}
+func (noopWriter) WriteHeader(int)             {}
 
 // readJSON decodes a JSON request body with a 1 MB size limit.
 func readJSON(r *http.Request, target any) error {

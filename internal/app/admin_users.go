@@ -12,12 +12,12 @@ import (
 )
 
 type adminUserResponse struct {
-	ID               string `json:"id"`
-	Email            string `json:"email"`
-	Name             string `json:"name,omitempty"`
-	IsPlatformAdmin  bool   `json:"is_platform_admin"`
-	Status           string `json:"status"`
-	CreatedAt        string `json:"created_at"`
+	ID              string `json:"id"`
+	Email           string `json:"email"`
+	Name            string `json:"name,omitempty"`
+	IsPlatformAdmin bool   `json:"is_platform_admin"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"created_at"`
 }
 
 type adminUsersListResponse struct {
@@ -74,7 +74,7 @@ func (a *App) handleAdminMakeAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.Queries.UpdateUserPlatformAdmin(r.Context(), sqlc.UpdateUserPlatformAdminParams{
-		ID:               userID,
+		ID:              userID,
 		IsPlatformAdmin: true,
 	}); err != nil {
 		serverError(w, r, err)
@@ -108,7 +108,7 @@ func (a *App) handleAdminRemoveAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.Queries.UpdateUserPlatformAdmin(r.Context(), sqlc.UpdateUserPlatformAdminParams{
-		ID:               userID,
+		ID:              userID,
 		IsPlatformAdmin: false,
 	}); err != nil {
 		serverError(w, r, err)
@@ -147,8 +147,8 @@ func (a *App) handleAdminSuspendUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.Queries.UpdateUserStatus(r.Context(), sqlc.UpdateUserStatusParams{
-		ID:     userID,
-		Status: "suspended",
+		ID:               userID,
+		Status:           "suspended",
 		SuspensionReason: pgtype.Text{String: "", Valid: true},
 	}); err != nil {
 		serverError(w, r, err)

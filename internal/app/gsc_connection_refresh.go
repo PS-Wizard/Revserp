@@ -73,10 +73,7 @@ func computeGoogleTokenExpiry(expiresInSeconds int) time.Time {
 	if expiresIn <= 0 {
 		expiresIn = 3600
 	}
-	refreshSkewSeconds := expiresIn - 60
-	if refreshSkewSeconds < 0 {
-		refreshSkewSeconds = 0
-	}
+	refreshSkewSeconds := max(expiresIn-60, 0)
 	return time.Now().UTC().Add(time.Duration(refreshSkewSeconds) * time.Second)
 }
 

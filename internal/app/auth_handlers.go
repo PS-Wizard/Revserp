@@ -140,7 +140,7 @@ func (a *App) finishBackendSignIn(w http.ResponseWriter, r *http.Request, supaba
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, organizations, err := a.ensureUserAndOrganizations(r, queries, identity)

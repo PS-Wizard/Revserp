@@ -49,15 +49,6 @@ func extractPageAuthor(parsedPage *ParsedPage) string {
 	return parsedPage.Author
 }
 
-// extractCanonicalURL returns the parsed canonical URL when available.
-func extractCanonicalURL(parsedPage *ParsedPage) string {
-	if parsedPage == nil {
-		return ""
-	}
-
-	return parsedPage.CanonicalURL
-}
-
 // extractPageLang returns the parsed language when available.
 func extractPageLang(parsedPage *ParsedPage) string {
 	if parsedPage == nil {

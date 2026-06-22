@@ -32,7 +32,7 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 	if err != nil {
 		return 0, fmt.Errorf("begin derive issues transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	txQueries := store.queries.WithTx(tx)
 	pageFacts, linkFacts, err := loadFacts(ctx, txQueries, crawlID)

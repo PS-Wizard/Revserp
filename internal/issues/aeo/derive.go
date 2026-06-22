@@ -71,13 +71,14 @@ func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact) []shared.Der
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "expertise", "author_signal_not_supported_by_schema", "high", "Visible author signal is not supported by schema", "Author attribution exists in page metadata, but structured data does not support it with matching author or publisher identity."))
 		}
 
-		if isArticleLike && pageFact.WordCount >= longArticleNoCitationWordCountThreshold && pageFact.ExternalLinks == 0 {
+		switch {
+		case isArticleLike && pageFact.WordCount >= longArticleNoCitationWordCountThreshold && pageFact.ExternalLinks == 0:
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "authoritativeness", "long_article_has_no_citations", "high", "Long article has no citations", fmt.Sprintf("Article-like page has %d words and no external citation links.", pageFact.WordCount)))
-		} else if isArticleLike && pageFact.WordCount >= longArticleWeakCitationWordCountThreshold && pageFact.ExternalLinks <= weakExternalCitationMaximumCount {
+		case isArticleLike && pageFact.WordCount >= longArticleWeakCitationWordCountThreshold && pageFact.ExternalLinks <= weakExternalCitationMaximumCount:
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "authoritativeness", "long_article_has_weak_citations", "high", "Long article has weak citation support", fmt.Sprintf("Article-like page has %d words and only %d external citation link(s).", pageFact.WordCount, pageFact.ExternalLinks)))
-		} else if isArticleLike && pageFact.ExternalLinks < externalCitationMinimumCount {
+		case isArticleLike && pageFact.ExternalLinks < externalCitationMinimumCount:
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "authoritativeness", "missing_external_citations", "medium", "Page is missing external citations", "Article-like page does not link to any external sources or references."))
-		} else if isArticleLike && pageFact.WordCount >= strongCitationWordCountThreshold && pageFact.ExternalLinks <= weakExternalCitationMaximumCount {
+		case isArticleLike && pageFact.WordCount >= strongCitationWordCountThreshold && pageFact.ExternalLinks <= weakExternalCitationMaximumCount:
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "authoritativeness", "weak_external_citations", "low", "Page has weak external citation support", fmt.Sprintf("Article-like page has %d external citation link(s) across %d words.", pageFact.ExternalLinks, pageFact.WordCount)))
 		}
 

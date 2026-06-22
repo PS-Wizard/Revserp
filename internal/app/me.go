@@ -341,7 +341,7 @@ func (a *App) handleLeaveOrganization(w http.ResponseWriter, r *http.Request) {
 }
 
 // userRowToUser converts a user query row to the canonical User model.
-func userRowToUser(row interface{}) sqlc.User {
+func userRowToUser(row any) sqlc.User {
 	switch r := row.(type) {
 	case sqlc.GetUserByAuthSubjectRow:
 		return sqlc.User{

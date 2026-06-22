@@ -82,7 +82,7 @@ func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, root
 	if err != nil {
 		return fmt.Errorf("begin crawl result transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	txQueries := store.queries.WithTx(tx)
 	if _, err := txQueries.CreateCrawlPage(ctx, buildCreateCrawlPageParams(crawlID, rootURL, result)); err != nil {

@@ -39,7 +39,7 @@ func (a *App) handleStartProjectGSCConnect(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -118,7 +118,7 @@ func (a *App) handleGoogleOAuthCallback(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer a.Queries.DeleteGoogleOAuthStateByID(r.Context(), oauthState.ID)
+	defer func() { _, _ = a.Queries.DeleteGoogleOAuthStateByID(r.Context(), oauthState.ID) }()
 
 	if oauthState.ExpiresAt.Valid && time.Now().UTC().After(oauthState.ExpiresAt.Time) {
 		a.writeGoogleOAuthRedirect(w, r, oauthState, "oauth_state_expired")
@@ -144,7 +144,7 @@ func (a *App) handleGoogleOAuthCallback(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	existingConnection, existingConnectionFound, err := getGoogleConnectionByOrganizationID(r.Context(), queries, oauthState.OrganizationID)

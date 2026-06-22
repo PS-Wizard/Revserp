@@ -23,7 +23,7 @@ func (a *App) handleProjectGSCOverview(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)

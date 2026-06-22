@@ -56,25 +56,24 @@ func (worker *Worker) Run(ctx context.Context) error {
 	errorsChannel := make(chan error, worker.concurrency)
 	for workerIndex := range worker.concurrency {
 		go func() {
-			errorsChannel <- worker.runLoop(ctx, workerIndex+1)
+			worker.runLoop(ctx, workerIndex+1)
+			errorsChannel <- nil
 		}()
 	}
 
 	for range worker.concurrency {
-		if err := <-errorsChannel; err != nil {
-			return err
-		}
+		<-errorsChannel
 	}
 
 	return nil
 }
 
 // runLoop repeatedly claims and processes queued crawls.
-func (worker *Worker) runLoop(ctx context.Context, workerID int) error {
+func (worker *Worker) runLoop(ctx context.Context, workerID int) {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		default:
 		}
 
@@ -82,19 +81,19 @@ func (worker *Worker) runLoop(ctx context.Context, workerID int) error {
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
-					return nil
+					return
 				}
 				continue
 			}
 			if isRunningCrawlConflict(err) {
 				if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
-					return nil
+					return
 				}
 				continue
 			}
 			log.Printf("worker %d transient error claiming crawl: %v", workerID, err)
 			if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
-				return nil
+				return
 			}
 			continue
 		}

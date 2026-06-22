@@ -116,7 +116,7 @@ func (service *Service) FetchOverview(ctx context.Context, accessToken, siteURL 
 		Windows:     make(map[string]OverviewWindow, len(overviewWindowOptions)),
 	}
 	for _, days := range overviewWindowOptions {
-		payload.Windows[formatWindowKey(days)] = buildOverviewWindow(days, trendRows, queryRowsByWindow[days], pageRowsByWindow[days], countryRowsByWindow[days], deviceRowsByWindow[days])
+		payload.Windows[strconv.Itoa(days)] = buildOverviewWindow(days, trendRows, queryRowsByWindow[days], pageRowsByWindow[days], countryRowsByWindow[days], deviceRowsByWindow[days])
 	}
 	return payload, nil
 }
@@ -217,7 +217,7 @@ func trimRows(rows []SearchAnalyticsRow, limit int) []SearchAnalyticsRow {
 func buildLowCTROpportunities(rows []SearchAnalyticsRow, siteCTR float64) []SearchAnalyticsRow {
 	filteredRows := make([]SearchAnalyticsRow, 0, len(rows))
 	for _, row := range rows {
-		if row.Impressions >= 100 && row.Position <= 12 && row.CTR < maxFloat(siteCTR*0.8, 0.02) {
+		if row.Impressions >= 100 && row.Position <= 12 && row.CTR < max(siteCTR*0.8, 0.02) {
 			filteredRows = append(filteredRows, row)
 		}
 	}
@@ -288,35 +288,14 @@ func sumMetric(rows []SearchAnalyticsRow, getter func(SearchAnalyticsRow) float6
 	return total
 }
 
-func maxFloat(leftValue, rightValue float64) float64 {
-	if leftValue > rightValue {
-		return leftValue
-	}
-	return rightValue
-}
-
 func getDateRange(days, offsetDays int) (string, string) {
 	endDate := time.Now().UTC().AddDate(0, 0, -(offsetDays + 3)).Format(time.DateOnly)
-	startDate := time.Now().UTC().AddDate(0, 0, -(offsetDays + 3 + maxInt(days-1, 0))).Format(time.DateOnly)
+	startDate := time.Now().UTC().AddDate(0, 0, -(offsetDays + 3 + max(days-1, 0))).Format(time.DateOnly)
 	return startDate, endDate
 }
 
-func maxInt(leftValue, rightValue int) int {
-	if leftValue > rightValue {
-		return leftValue
-	}
-	return rightValue
-}
-
-func formatWindowKey(days int) string {
-	return strconv.Itoa(days)
-}
-
 func normalizeDomain(value string) string {
-	candidate := strings.TrimSpace(value)
-	if strings.HasPrefix(candidate, "sc-domain:") {
-		candidate = strings.TrimPrefix(candidate, "sc-domain:")
-	}
+	candidate := strings.TrimPrefix(strings.TrimSpace(value), "sc-domain:")
 	if !strings.Contains(candidate, "://") {
 		candidate = "https://" + candidate
 	}

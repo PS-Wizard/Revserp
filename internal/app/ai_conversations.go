@@ -96,7 +96,7 @@ func (a *App) handleListAIConversations(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -187,7 +187,7 @@ func (a *App) handleCreateAIConversation(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -257,7 +257,7 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -302,7 +302,7 @@ func (a *App) handleDeleteAIConversation(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -348,7 +348,7 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -446,7 +446,7 @@ func newAIConversationResponse(conversation sqlc.AiConversation, messageCount in
 		ProjectID:       conversation.ProjectID.String(),
 		CrawlID:         optionalUUIDString(conversation.CrawlID),
 		CreatedByUserID: conversation.CreatedByUserID.String(),
-		Title:           nullableTextString(conversation.Title),
+		Title:           textValue(conversation.Title),
 		MessageCount:    messageCount,
 		CreatedAt:       formatTimestamp(conversation.CreatedAt),
 		UpdatedAt:       formatTimestamp(conversation.UpdatedAt),
@@ -469,7 +469,7 @@ func newAIMessageResponse(message sqlc.AiMessage) aiMessageResponse {
 		Content:        message.Content,
 		CrawlID:        optionalUUIDString(message.CrawlID),
 		Scope:          json.RawMessage(message.Scope),
-		Model:          nullableTextString(message.Model),
+		Model:          textValue(message.Model),
 		CreatedAt:      formatTimestamp(message.CreatedAt),
 	}
 }

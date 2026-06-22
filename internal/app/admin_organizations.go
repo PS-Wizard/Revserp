@@ -8,9 +8,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	issueengine "github.com/ps-wizard/revserp/internal/issues"
 	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
-	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
 type adminOrganizationResponse struct {
@@ -20,10 +20,10 @@ type adminOrganizationResponse struct {
 }
 
 type adminOrgScoringConfigResponse struct {
-	Config          issueshared.ScoringConfig `json:"config"`
-	Default         issueshared.ScoringConfig `json:"default"`
-	IsOverride      bool                      `json:"is_override"`
-	UpdatedAt       string                    `json:"updated_at,omitempty"`
+	Config     issueshared.ScoringConfig `json:"config"`
+	Default    issueshared.ScoringConfig `json:"default"`
+	IsOverride bool                      `json:"is_override"`
+	UpdatedAt  string                    `json:"updated_at,omitempty"`
 }
 
 // handleAdminListOrganizations returns all organizations.
@@ -43,7 +43,7 @@ func (a *App) handleAdminListOrganizations(w http.ResponseWriter, r *http.Reques
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"organizations": items})
+	writeJSON(w, http.StatusOK, map[string]any{"organizations": items})
 }
 
 // handleAdminGetOrgScoringConfig returns the effective scoring config for an organization.
@@ -122,9 +122,9 @@ func (a *App) handleAdminPutOrgScoringConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	row, err := a.Queries.UpsertOrgScoringConfig(r.Context(), sqlc.UpsertOrgScoringConfigParams{
-		OrgID:            orgID,
-		ConfigJson:       configJSON,
-		UpdatedByUserID:  userID,
+		OrgID:           orgID,
+		ConfigJson:      configJSON,
+		UpdatedByUserID: userID,
 	})
 	if err != nil {
 		serverError(w, r, err)

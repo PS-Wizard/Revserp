@@ -78,7 +78,7 @@ func (a *App) handleCreateCrawlIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -168,7 +168,7 @@ func (a *App) handleListCrawlIssues(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -237,7 +237,7 @@ func (a *App) handleGetCrawlIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -263,23 +263,6 @@ func (a *App) handleGetCrawlIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, newFetchedCrawlIssueResponse(issue))
-}
-
-// newCrawlIssueResponse converts a crawl issue row into an API response.
-func newCrawlIssueResponse(issue sqlc.CrawlIssue) crawlIssueResponse {
-	return buildCrawlIssueResponse(
-		issue.ID,
-		issue.CrawlID,
-		issue.CrawlPageID,
-		issue.Url,
-		issue.Pillar,
-		issue.Bucket,
-		issue.IssueType,
-		issue.Severity,
-		issue.Message,
-		issue.Details,
-		issue.CreatedAt,
-	)
 }
 
 // newCreatedCrawlIssueResponse converts an inserted crawl issue row into an API response.

@@ -100,7 +100,7 @@ func (a *App) handleGetCrawlScoreBreakdownCompare(w http.ResponseWriter, r *http
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -197,7 +197,7 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
 	user, _, err := a.ensureCurrentUser(r, queries)
@@ -402,10 +402,11 @@ func buildIssueCompareGroups(bucketID string, bucketLabel string, baselineIssues
 			groups.Resolved = append(groups.Resolved, buildIssueCompareResponse(bucketID, bucketLabel, &baselineIssue, nil, "resolved"))
 		case hasBaseline && hasCurrent:
 			changeType := classifyIssueChange(baselineIssue, currentIssue)
-			if changeType == "improved" {
-				groups.Improved = append(groups.Improved, buildIssueCompareResponse(bucketID, bucketLabel, &baselineIssue, &currentIssue, changeType))
-			} else if changeType == "regressed" {
-				groups.Regressed = append(groups.Regressed, buildIssueCompareResponse(bucketID, bucketLabel, &baselineIssue, &currentIssue, changeType))
+			switch changeType {
+			case "improved":
+				groups.Improved = append(groups.Improved, buildIssueCompareResponse(bucketID, bucketLabel, &baselineIssue, &currentIssue, "improved"))
+			case "regressed":
+				groups.Regressed = append(groups.Regressed, buildIssueCompareResponse(bucketID, bucketLabel, &baselineIssue, &currentIssue, "regressed"))
 			}
 		}
 	}
@@ -432,15 +433,21 @@ func buildIssueCompareResponse(bucketID string, bucketLabel string, baseline *is
 		DetailsPreview: issue.DetailsPreview,
 	}
 	if baseline != nil {
-		response.BeforeFinalPenalty = float64Ptr(baseline.FinalPenalty)
-		response.BeforeIssueRowCount = int32Ptr(baseline.IssueRowCount)
-		response.BeforeAffectedURLCount = int32Ptr(baseline.AffectedURLCount)
+		beforePenalty := baseline.FinalPenalty
+		response.BeforeFinalPenalty = &beforePenalty
+		beforeCount := baseline.IssueRowCount
+		response.BeforeIssueRowCount = &beforeCount
+		beforeURLCount := baseline.AffectedURLCount
+		response.BeforeAffectedURLCount = &beforeURLCount
 		response.DeltaFinalPenalty -= baseline.FinalPenalty
 	}
 	if current != nil {
-		response.AfterFinalPenalty = float64Ptr(current.FinalPenalty)
-		response.AfterIssueRowCount = int32Ptr(current.IssueRowCount)
-		response.AfterAffectedURLCount = int32Ptr(current.AffectedURLCount)
+		afterPenalty := current.FinalPenalty
+		response.AfterFinalPenalty = &afterPenalty
+		afterCount := current.IssueRowCount
+		response.AfterIssueRowCount = &afterCount
+		afterURLCount := current.AffectedURLCount
+		response.AfterAffectedURLCount = &afterURLCount
 		response.DeltaFinalPenalty += current.FinalPenalty
 	}
 	return response
@@ -525,9 +532,6 @@ func buildCompareIssueURLState(crawlPageID pgtype.UUID, severity string, valid b
 	}
 	return response
 }
-
-func float64Ptr(value float64) *float64 { return &value }
-func int32Ptr(value int32) *int32       { return &value }
 
 func int32Value(value *int32) int32 {
 	if value == nil {

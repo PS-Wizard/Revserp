@@ -41,15 +41,16 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 			log.Printf("js fallback failed: url=%q error=%v", job.URL, renderErr)
 		} else {
 			renderedParsedPage, parseRenderedErr := parser.ParseHTML(renderedFetchResult.FinalURL, renderedFetchResult.ContentType, renderedFetchResult.Body)
-			if parseRenderedErr != nil {
+			switch {
+			case parseRenderedErr != nil:
 				log.Printf("js fallback parse failed: url=%q error=%v", job.URL, parseRenderedErr)
-			} else if shouldPreferRenderedPage(parsedPage, renderedParsedPage) {
+			case shouldPreferRenderedPage(parsedPage, renderedParsedPage):
 				log.Printf("js fallback applied: url=%q", job.URL)
 				crawlResult.Fetch = renderedFetchResult
 				crawlResult.ParsedPage = &renderedParsedPage
 				crawlResult.JavascriptRendered = true
 				return crawlResult
-			} else {
+			default:
 				log.Printf("js fallback discarded: url=%q", job.URL)
 			}
 		}

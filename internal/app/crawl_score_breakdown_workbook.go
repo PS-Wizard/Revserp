@@ -187,7 +187,7 @@ func setDuplicatesSheetColumnWidths(f *excelize.File, sheet string) {
 }
 
 // buildCrawlIssueExportWorkbook builds a multi-sheet XLSX workbook for one crawl's issue export.
-func buildCrawlIssueExportWorkbook(crawlID string, exportRows []crawlIssueExportRow) ([]byte, error) {
+func buildCrawlIssueExportWorkbook(exportRows []crawlIssueExportRow) ([]byte, error) {
 	f := excelize.NewFile()
 
 	styles, err := registerWorkbookStyles(f)

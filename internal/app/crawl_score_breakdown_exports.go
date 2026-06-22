@@ -135,7 +135,7 @@ func (a *App) handleExportCrawlScoreBreakdownXLSX(w http.ResponseWriter, r *http
 		return
 	}
 
-	workbookBytes, err := buildCrawlIssueExportWorkbook(crawlID.String(), exportRows)
+	workbookBytes, err := buildCrawlIssueExportWorkbook(exportRows)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "unable to build workbook")
 		return
@@ -390,21 +390,21 @@ type exportFilters struct {
 func parseExportFilterParams(r *http.Request) exportFilters {
 	var f exportFilters
 	if s := r.URL.Query().Get("pillar_ids"); s != "" {
-		for _, id := range strings.Split(s, ",") {
+		for id := range strings.SplitSeq(s, ",") {
 			if id = strings.TrimSpace(id); id != "" {
 				f.pillarIDs = append(f.pillarIDs, id)
 			}
 		}
 	}
 	if s := r.URL.Query().Get("bucket_keys"); s != "" {
-		for _, key := range strings.Split(s, ",") {
+		for key := range strings.SplitSeq(s, ",") {
 			if key = strings.TrimSpace(key); key != "" {
 				f.bucketKeys = append(f.bucketKeys, key)
 			}
 		}
 	}
 	if s := r.URL.Query().Get("issue_type_keys"); s != "" {
-		for _, key := range strings.Split(s, ",") {
+		for key := range strings.SplitSeq(s, ",") {
 			if key = strings.TrimSpace(key); key != "" {
 				f.issueTypeKeys = append(f.issueTypeKeys, key)
 			}

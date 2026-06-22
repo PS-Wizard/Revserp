@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -11,19 +13,25 @@ import (
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 )
 
-// main starts the AI audit worker process.
 func main() {
+	if err := run(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config: %w", err)
 	}
 
 	dbPool, err := internaldb.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("connect database: %v", err)
+		return fmt.Errorf("connect database: %w", err)
 	}
 	defer dbPool.Close()
 
@@ -33,4 +41,5 @@ func main() {
 		log.Printf("ai audit worker error: %v", err)
 	}
 	log.Printf("ai audit worker shutting down")
+	return nil
 }

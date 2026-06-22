@@ -191,7 +191,7 @@ func (a *App) loadScoringPreviewSignals(r *http.Request, crawlID pgtype.UUID) ([
 		crawlPageSignals = append(crawlPageSignals, issueshared.CrawlPageSignal{
 			URL:            crawlPage.Url,
 			StatusCode:     scoringInt32Value(crawlPage.StatusCode),
-			ContentType:    scoringTextValue(crawlPage.ContentType),
+			ContentType:    textValue(crawlPage.ContentType),
 			WordCount:      scoringInt32Value(crawlPage.WordCount),
 			ResponseTimeMs: scoringInt32Value(crawlPage.ResponseTimeMs),
 			SizeBytes:      scoringInt32Value(crawlPage.SizeBytes),
@@ -213,13 +213,6 @@ func (a *App) loadScoringPreviewSignals(r *http.Request, crawlID pgtype.UUID) ([
 		})
 	}
 	return crawlPageSignals, crawlIssueSignals, nil
-}
-
-func scoringTextValue(value pgtype.Text) string {
-	if !value.Valid {
-		return ""
-	}
-	return value.String
 }
 
 func scoringInt32Value(value pgtype.Int4) int32 {
