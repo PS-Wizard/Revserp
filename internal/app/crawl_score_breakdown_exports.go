@@ -73,8 +73,8 @@ func (a *App) handleExportCrawlScoreBreakdownCSV(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
 		return
 	}
-
-	exportRows, ok := a.loadCrawlIssueExportRows(w, r, crawlID)
+	filters := parseExportFilterParams(r)
+	exportRows, ok := a.loadCrawlIssueExportRows(w, r, crawlID, filters)
 	if !ok {
 		return
 	}
@@ -129,8 +129,8 @@ func (a *App) handleExportCrawlScoreBreakdownXLSX(w http.ResponseWriter, r *http
 		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
 		return
 	}
-
-	exportRows, ok := a.loadCrawlIssueExportRows(w, r, crawlID)
+	filters := parseExportFilterParams(r)
+	exportRows, ok := a.loadCrawlIssueExportRows(w, r, crawlID, filters)
 	if !ok {
 		return
 	}
@@ -148,7 +148,7 @@ func (a *App) handleExportCrawlScoreBreakdownXLSX(w http.ResponseWriter, r *http
 	_, _ = w.Write(workbookBytes)
 }
 
-func (a *App) loadCrawlIssueExportRows(w http.ResponseWriter, r *http.Request, crawlID pgtype.UUID) ([]crawlIssueExportRow, bool) {
+func (a *App) loadCrawlIssueExportRows(w http.ResponseWriter, r *http.Request, crawlID pgtype.UUID, filters exportFilters) ([]crawlIssueExportRow, bool) {
 	var exportRows []crawlIssueExportRow
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
 		user, _, err := a.ensureCurrentUser(r, queries)
@@ -171,6 +171,7 @@ func (a *App) loadCrawlIssueExportRows(w http.ResponseWriter, r *http.Request, c
 			serverError(w, r, err)
 			return err
 		}
+		crawlIssues = filterCrawlIssues(crawlIssues, filters)
 
 		exportRows = buildCrawlIssueExportRows(crawlIssues)
 		return nil
@@ -376,4 +377,87 @@ func pillarSortValue(pillarLabel string) int {
 	default:
 		return 3
 	}
+}
+
+// exportFilters holds optional query filters for exporting only selected issue scopes.
+type exportFilters struct {
+	pillarIDs     []string // raw pillar identifiers, e.g. seo, aeo, pagespeed
+	bucketKeys    []string // composite "pillarId::bucketId", e.g. seo::meta_tags
+	issueTypeKeys []string // composite "pillarId::bucketId::issueTypeId"
+}
+
+// parseExportFilterParams reads optional filter query parameters from the export request.
+func parseExportFilterParams(r *http.Request) exportFilters {
+	var f exportFilters
+	if s := r.URL.Query().Get("pillar_ids"); s != "" {
+		for _, id := range strings.Split(s, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				f.pillarIDs = append(f.pillarIDs, id)
+			}
+		}
+	}
+	if s := r.URL.Query().Get("bucket_keys"); s != "" {
+		for _, key := range strings.Split(s, ",") {
+			if key = strings.TrimSpace(key); key != "" {
+				f.bucketKeys = append(f.bucketKeys, key)
+			}
+		}
+	}
+	if s := r.URL.Query().Get("issue_type_keys"); s != "" {
+		for _, key := range strings.Split(s, ",") {
+			if key = strings.TrimSpace(key); key != "" {
+				f.issueTypeKeys = append(f.issueTypeKeys, key)
+			}
+		}
+	}
+	return f
+}
+
+// hasAny returns true when at least one filter category is populated.
+func (f exportFilters) hasAny() bool {
+	return len(f.pillarIDs) > 0 || len(f.bucketKeys) > 0 || len(f.issueTypeKeys) > 0
+}
+
+// filterCrawlIssues applies export filters to raw crawl issue rows.
+// Filter hierarchy: issue_type_keys > bucket_keys > pillar_ids.
+// When multiple categories are provided, the most specific takes precedence.
+func filterCrawlIssues(rows []sqlc.ListCrawlIssuesForCrawlRow, filters exportFilters) []sqlc.ListCrawlIssuesForCrawlRow {
+	if !filters.hasAny() {
+		return rows
+	}
+
+	issueTypeSet := make(map[string]struct{}, len(filters.issueTypeKeys))
+	for _, k := range filters.issueTypeKeys {
+		issueTypeSet[k] = struct{}{}
+	}
+	bucketSet := make(map[string]struct{}, len(filters.bucketKeys))
+	for _, k := range filters.bucketKeys {
+		bucketSet[k] = struct{}{}
+	}
+	pillarSet := make(map[string]struct{}, len(filters.pillarIDs))
+	for _, id := range filters.pillarIDs {
+		pillarSet[id] = struct{}{}
+	}
+
+	filtered := make([]sqlc.ListCrawlIssuesForCrawlRow, 0, len(rows))
+	for _, row := range rows {
+		compositeKey := row.Pillar + "::" + row.Bucket + "::" + row.IssueType
+		bucketKey := row.Pillar + "::" + row.Bucket
+
+		switch {
+		case len(issueTypeSet) > 0:
+			if _, ok := issueTypeSet[compositeKey]; ok {
+				filtered = append(filtered, row)
+			}
+		case len(bucketSet) > 0:
+			if _, ok := bucketSet[bucketKey]; ok {
+				filtered = append(filtered, row)
+			}
+		default:
+			if _, ok := pillarSet[row.Pillar]; ok {
+				filtered = append(filtered, row)
+			}
+		}
+	}
+	return filtered
 }
