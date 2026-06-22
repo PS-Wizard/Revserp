@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -143,27 +142,6 @@ func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalau
 	}
 
 	return userRowToUser(newUserRow), true
-}
-
-// writeJSON writes a JSON response.
-func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-// writeJSONError writes a simple JSON error response.
-func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
-	writeJSON(w, statusCode, map[string]string{"error": message})
-}
-
-// pgText converts a string into pgtype.Text.
-func pgText(value string) pgtype.Text {
-	if strings.TrimSpace(value) == "" {
-		return pgtype.Text{}
-	}
-
-	return pgtype.Text{String: value, Valid: true}
 }
 
 // newMeResponse converts user, organizations, and active org state into the /me API response.

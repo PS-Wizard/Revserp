@@ -2,12 +2,7 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -414,19 +409,6 @@ func remainingInviteUses(maxUses, usedCount int32) int32 {
 		return 0
 	}
 	return remainingUses
-}
-
-func generateOrganizationInviteToken() (string, error) {
-	rawTokenBytes := make([]byte, 32)
-	if _, err := rand.Read(rawTokenBytes); err != nil {
-		return "", fmt.Errorf("generate organization invite token: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(rawTokenBytes), nil
-}
-
-func hashOrganizationInviteToken(rawToken string) string {
-	tokenHash := sha256.Sum256([]byte(rawToken))
-	return hex.EncodeToString(tokenHash[:])
 }
 
 var errInviteForbidden = errors.New("invite forbidden")

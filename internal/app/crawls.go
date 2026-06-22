@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -397,16 +396,6 @@ func buildCrawlResponse(
 	}
 
 	return response
-}
-
-// normalizeCreateCrawlConfigSnapshot validates and resolves crawl config defaults before storing them.
-func normalizeCreateCrawlConfigSnapshot(rawConfigSnapshot json.RawMessage) ([]byte, error) {
-	_, normalizedConfigSnapshot, err := crawler.NormalizeConfigSnapshot(rawConfigSnapshot)
-	if err != nil {
-		return nil, err
-	}
-
-	return normalizedConfigSnapshot, nil
 }
 
 // formatTimestamp formats a database timestamp for API responses.
