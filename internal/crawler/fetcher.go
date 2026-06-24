@@ -15,9 +15,25 @@ type Fetcher struct {
 }
 
 // NewFetcher builds a fetcher with the provided settings.
+// The fetcher uses a transport that blocks connections to private/reserved IPs
+// (SSRF guard) and a CheckRedirect hook that re-validates each redirect target.
 func NewFetcher(fetchTimeout time.Duration, userAgent string) *Fetcher {
 	return &Fetcher{
-		httpClient: &http.Client{Timeout: fetchTimeout},
+		httpClient: &http.Client{
+			Timeout:       fetchTimeout,
+			Transport:     newSafeTransport(),
+			CheckRedirect: safeCheckRedirect,
+		},
+		userAgent: userAgent,
+	}
+}
+
+// newFetcherWithClient builds a fetcher that uses the supplied http.Client as-is.
+// This is intended for tests that need to talk to loopback servers (httptest)
+// and must not be used in production paths.
+func newFetcherWithClient(client *http.Client, userAgent string) *Fetcher {
+	return &Fetcher{
+		httpClient: client,
 		userAgent:  userAgent,
 	}
 }
@@ -40,9 +56,14 @@ func (fetcher *Fetcher) Fetch(ctx context.Context, targetURL string) FetchResult
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
+	// C-4: cap the response body to avoid unbounded memory use.
+	limitedReader := io.LimitReader(response.Body, maxBodyBytes+1)
+	responseBody, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return FetchResult{FetchError: fmt.Errorf("read response body: %w", err)}
+	}
+	if int64(len(responseBody)) > maxBodyBytes {
+		return FetchResult{FetchError: fmt.Errorf("response body exceeds %d-byte limit", maxBodyBytes)}
 	}
 
 	return FetchResult{

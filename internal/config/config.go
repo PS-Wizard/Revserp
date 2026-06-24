@@ -44,6 +44,7 @@ type Config struct {
 	GoogleClientSecret          string
 	GoogleRedirectURL           string
 	GoogleTokenEncryptionSecret string
+	SessionEncryptionSecret     string
 	PageSpeedAPIKey             string
 }
 
@@ -84,6 +85,7 @@ func Load() Config {
 		GoogleClientSecret:          getEnv("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURL:           getEnv("GOOGLE_REDIRECT_URL", ""),
 		GoogleTokenEncryptionSecret: getEnv("GOOGLE_TOKEN_ENCRYPTION_SECRET", ""),
+		SessionEncryptionSecret:     getEnv("SESSION_ENCRYPTION_SECRET", ""),
 		PageSpeedAPIKey:             getEnv("PAGESPEED_API_KEY", ""),
 	}
 }
@@ -92,6 +94,21 @@ func Load() Config {
 func (cfg *Config) Validate() error {
 	if cfg.DatabaseURL == "" {
 		return errors.New("DATABASE_URL is required")
+	}
+	if cfg.SupabaseJWTIssuer == "" {
+		return errors.New("SUPABASE_JWT_ISSUER is required")
+	}
+	if cfg.SupabaseJWKSURL == "" {
+		return errors.New("SUPABASE_JWKS_URL is required")
+	}
+	if cfg.SupabaseAnonKey == "" {
+		return errors.New("SUPABASE_ANON_KEY is required")
+	}
+	if len(cfg.GoogleTokenEncryptionSecret) < 32 {
+		return errors.New("GOOGLE_TOKEN_ENCRYPTION_SECRET must be at least 32 characters")
+	}
+	if len(cfg.SessionEncryptionSecret) < 32 {
+		return errors.New("SESSION_ENCRYPTION_SECRET must be at least 32 characters")
 	}
 	return nil
 }

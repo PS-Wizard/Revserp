@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -80,7 +79,11 @@ func (a *App) handleAdminGetAIConfig(w http.ResponseWriter, r *http.Request) {
 // handleAdminPutAIConfig saves the AI prompt config.
 func (a *App) handleAdminPutAIConfig(w http.ResponseWriter, r *http.Request) {
 	var req putAIConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(r, &req); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

@@ -54,6 +54,18 @@ func (a *App) handleGetProjectBucketTrends(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	limit, offset, err := parsePaginationParams(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	const maxTrendLimit = 100
+	if limit > maxTrendLimit {
+		limit = maxTrendLimit
+	}
+
+	fullBreakdown := r.URL.Query().Get("full_breakdown") == "true"
+
 	var rows []sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserRow
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
 		user, _, err := a.ensureCurrentUser(r, queries)
@@ -74,7 +86,8 @@ func (a *App) handleGetProjectBucketTrends(w http.ResponseWriter, r *http.Reques
 		rows, err = queries.ListCompletedProjectCrawlScoreBreakdownsForUser(r.Context(), sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserParams{
 			ProjectID: projectID,
 			UserID:    user.ID,
-			Limit:     defaultTrendLimit,
+			Limit:     limit,
+			Offset:    offset,
 		})
 		if err != nil {
 			serverError(w, r, err)
@@ -107,7 +120,9 @@ func (a *App) handleGetProjectBucketTrends(w http.ResponseWriter, r *http.Reques
 			SEOScore:     scores.SEOScore,
 			AEOScore:     scores.AEOScore,
 			PageSpeed:    scores.PageSpeedScore,
-			Pillars:      buildPillarTrendBreakdowns(snapshot.Pillars),
+		}
+		if fullBreakdown {
+			crawl.Pillars = buildPillarTrendBreakdowns(snapshot.Pillars)
 		}
 		crawls = append(crawls, crawl)
 	}

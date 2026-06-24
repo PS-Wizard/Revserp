@@ -91,9 +91,13 @@ func (a *App) loadConversationTurnContext(r *http.Request, queries *sqlc.Queries
 		return nil, 0, err
 	}
 
-	previousMessages, err := queries.ListAIMessagesForConversationForUser(r.Context(), sqlc.ListAIMessagesForConversationForUserParams{ConversationID: conversationID, UserID: userID})
+	previousMessages, err := queries.ListRecentAIMessagesForConversationForUser(r.Context(), sqlc.ListRecentAIMessagesForConversationForUserParams{ConversationID: conversationID, UserID: userID, Limit: 50})
 	if err != nil {
 		return nil, 0, err
+	}
+	// reverse to chronological order (query returns newest-first)
+	for i, j := 0, len(previousMessages)-1; i < j; i, j = i+1, j-1 {
+		previousMessages[i], previousMessages[j] = previousMessages[j], previousMessages[i]
 	}
 
 	return &aiConversationTurnContext{

@@ -138,7 +138,6 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 		}
 	}
 
-	EnrichPageFactsWithContentFingerprints(pageFacts)
 	derivedIssues = append(derivedIssues, deriveDuplicateTitleIssues(pageFacts)...)
 	derivedIssues = append(derivedIssues, deriveDuplicateMetaDescriptionIssues(pageFacts)...)
 	derivedIssues = append(derivedIssues, deriveDuplicateContentIssues(pageFacts)...)

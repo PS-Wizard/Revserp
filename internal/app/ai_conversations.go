@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -365,11 +366,15 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Truncate the user message to the configured maximum before building the prompt.
+	userContent := truncateAIFixText(req.Content, maxAIFixMessageLength)
+
 	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries)
-	prompt := buildTurnPrompt(systemPrompt, turnCtx, req.Content)
+	prompt := buildTurnPrompt(systemPrompt, turnCtx, userContent)
 	content, model, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, err.Error())
+		log.Printf("AI provider error (handleCreateAIConversationMessage): %v", err)
+		writeJSONError(w, http.StatusBadGateway, "AI provider unavailable")
 		return
 	}
 
@@ -379,7 +384,7 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	userMessage, assistantMessage, updatedConversation, err := persistTurnMessages(r.Context(), queries, conversationID, turnCtx.crawlID, req.Content, scopePayload, content, model)
+	userMessage, assistantMessage, updatedConversation, err := persistTurnMessages(r.Context(), queries, conversationID, turnCtx.crawlID, userContent, scopePayload, content, model)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return

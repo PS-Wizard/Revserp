@@ -33,6 +33,9 @@ func (a *App) Router() http.Handler {
 	r.Get("/auth/google/callback", a.handleGoogleOAuthCallback)
 	r.Get("/invites/{token}", a.handleGetInvite)
 
+	// aiRateLimiter throttles the paid LLM endpoints per authenticated user.
+	aiRateLimiter := NewAIRateLimiter(20, 5)
+
 	r.Group(func(protected chi.Router) {
 		protected.Use(internalauth.RequireSession(a.SessionManager))
 		protected.Use(a.requireActiveUser)
@@ -51,13 +54,13 @@ func (a *App) Router() http.Handler {
 		protected.Delete("/projects/{projectID}", a.handleDeleteProject)
 		protected.Get("/projects/{projectID}/business-profile", a.handleProjectBusinessProfile)
 		protected.Put("/projects/{projectID}/business-profile", a.handleUpsertProjectBusinessProfile)
-		protected.Post("/projects/{projectID}/ai-audits", a.handleCreateAIAudit)
+		protected.With(aiRateLimiter).Post("/projects/{projectID}/ai-audits", a.handleCreateAIAudit)
 		protected.Get("/projects/{projectID}/ai-audits", a.handleListAIAudits)
 		protected.Get("/ai-audits/{auditID}", a.handleGetAIAudit)
 		protected.Get("/projects/{projectID}/ai/conversations", a.handleListAIConversations)
 		protected.Post("/projects/{projectID}/ai/conversations", a.handleCreateAIConversation)
 		protected.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
-		protected.Post("/ai/conversations/{conversationID}/messages", a.handleCreateAIConversationMessage)
+		protected.With(aiRateLimiter).Post("/ai/conversations/{conversationID}/messages", a.handleCreateAIConversationMessage)
 		protected.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
 		protected.Post("/projects/{projectID}/gsc/connect/start", a.handleStartProjectGSCConnect)
 		protected.Get("/projects/{projectID}/gsc/status", a.handleProjectGSCStatus)
@@ -75,7 +78,7 @@ func (a *App) Router() http.Handler {
 		protected.Get("/crawls/{crawlID}/score-breakdown/{pillar}/{bucket}/{issueType}/urls", a.handleListScoreBreakdownIssueURLs)
 		protected.Get("/crawls/{baselineCrawlID}/compare/{currentCrawlID}/score-breakdown", a.handleGetCrawlScoreBreakdownCompare)
 		protected.Get("/crawls/{baselineCrawlID}/compare/{currentCrawlID}/score-breakdown/{pillar}/{bucket}/{issueType}/urls", a.handleListScoreBreakdownCompareIssueURLs)
-		protected.Post("/crawls/{crawlID}/ai/fix", a.handleAIFix)
+		protected.With(aiRateLimiter).Post("/crawls/{crawlID}/ai/fix", a.handleAIFix)
 		protected.Post("/crawls/{crawlID}/pages", a.handleCreateCrawlPage)
 		protected.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)
 		protected.Get("/crawl-pages/{pageID}", a.handleGetCrawlPage)

@@ -37,6 +37,12 @@ func run() error {
 	}
 	defer db.Close()
 
+	// L-10: fail fast on bad credentials or unreachable host rather than
+	// discovering the problem only when the first migration query runs.
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping database: %w", err)
+	}
+
 	if err := goose.SetDialect("postgres"); err != nil {
 		return fmt.Errorf("set goose dialect: %w", err)
 	}

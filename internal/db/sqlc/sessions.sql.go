@@ -109,6 +109,19 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, sessionTokenHash st
 	return i, err
 }
 
+const revokeAllSessionsForUser = `-- name: RevokeAllSessionsForUser :exec
+UPDATE sessions
+SET revoked_at = now(),
+    updated_at = now(),
+    last_used_at = now()
+WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeAllSessionsForUser(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, revokeAllSessionsForUser, userID)
+	return err
+}
+
 const revokeSession = `-- name: RevokeSession :exec
 UPDATE sessions
 SET revoked_at = now(),
@@ -127,16 +140,17 @@ UPDATE sessions
 SET active_org_id = $2,
     updated_at = now(),
     last_used_at = now()
-WHERE id = $1
+WHERE id = $1 AND user_id = $3
 `
 
 type UpdateSessionActiveOrganizationParams struct {
 	ID          pgtype.UUID
 	ActiveOrgID pgtype.UUID
+	UserID      pgtype.UUID
 }
 
 func (q *Queries) UpdateSessionActiveOrganization(ctx context.Context, arg UpdateSessionActiveOrganizationParams) error {
-	_, err := q.db.Exec(ctx, updateSessionActiveOrganization, arg.ID, arg.ActiveOrgID)
+	_, err := q.db.Exec(ctx, updateSessionActiveOrganization, arg.ID, arg.ActiveOrgID, arg.UserID)
 	return err
 }
 

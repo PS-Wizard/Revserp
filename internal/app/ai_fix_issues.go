@@ -21,6 +21,12 @@ func (b *sqlBuilder) param(arg any) string {
 }
 
 // loadAIFixIssueRows loads a capped set of affected URL rows for the selected issue scope.
+//
+// WHY this bypasses sqlc: the WHERE clause includes optional AND predicates (issue_type_ids,
+// issue_urls) that are only appended when the caller supplies them. sqlc cannot generate
+// this kind of dynamic filtering from a static SQL file. The query is kept safe by using
+// only positional parameters ($1, $2, …) via sqlBuilder — never string interpolation of
+// user-controlled values. Any future changes to this query MUST maintain that invariant.
 func loadAIFixIssueRows(r *http.Request, tx pgx.Tx, crawlID pgtype.UUID, userID pgtype.UUID, pillarID string, bucketIDs []string, issueTypeIDs []string, issueURLs []string) ([]aiFixIssueRow, error) {
 	var b sqlBuilder
 	b.buf.WriteString(`SELECT ci.url, ci.issue_type, ci.severity, ci.message, ci.details, cp.title, cp.meta_description, cp.h1

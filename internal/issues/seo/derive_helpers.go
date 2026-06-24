@@ -11,16 +11,7 @@ import (
 )
 
 func newIssue(pageFact shared.PageFact, bucket string, issueType string, severity string, message string, details string) shared.DerivedIssue {
-	return shared.DerivedIssue{
-		CrawlPageID: pageFact.ID,
-		URL:         pageFact.URL,
-		Pillar:      PillarID,
-		Bucket:      bucket,
-		IssueType:   issueType,
-		Severity:    severity,
-		Message:     message,
-		Details:     details,
-	}
+	return shared.NewIssue(pageFact, PillarID, bucket, issueType, severity, message, details)
 }
 
 func countInternalLinksByPage(linkFacts []shared.LinkFact) (map[string]int, map[string]int) {
@@ -97,7 +88,7 @@ func isTooManyImagesOnPage(pageFact shared.PageFact) bool {
 	if pageFact.WordCount <= 0 {
 		return true
 	}
-	return pageFact.WordCount/pageFact.ImageCount < tooManyImagesWordsPerImageThreshold
+	return float64(pageFact.WordCount)/float64(pageFact.ImageCount) < float64(tooManyImagesWordsPerImageThreshold)
 }
 
 func titleAndH1Mismatch(title string, h1 string) bool {
@@ -181,7 +172,9 @@ func limitURLsForIssueDetails(urls []string) []string {
 	if len(urls) <= 3 {
 		return urls
 	}
-	return append(urls[:3], fmt.Sprintf("and %d more", len(urls)-3))
+	result := make([]string, 3, 4)
+	copy(result, urls[:3])
+	return append(result, fmt.Sprintf("and %d more", len(urls)-3))
 }
 
 func deriveDuplicateTitleIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
@@ -206,8 +199,15 @@ func deriveDuplicateFieldIssues(pageFacts []shared.PageFact, fieldValue func(sha
 		pageIndexesByNormalizedField[normalizedFieldValue] = append(pageIndexesByNormalizedField[normalizedFieldValue], pageIndex)
 	}
 
+	normalizedFields := make([]string, 0, len(pageIndexesByNormalizedField))
+	for nf := range pageIndexesByNormalizedField {
+		normalizedFields = append(normalizedFields, nf)
+	}
+	sort.Strings(normalizedFields)
+
 	var derivedIssues []shared.DerivedIssue
-	for _, pageIndexes := range pageIndexesByNormalizedField {
+	for _, normalizedField := range normalizedFields {
+		pageIndexes := pageIndexesByNormalizedField[normalizedField]
 		if len(pageIndexes) < 2 || duplicateGroupLooksLikePurePagination(pageFacts, pageIndexes) {
 			continue
 		}

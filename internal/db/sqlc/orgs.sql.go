@@ -87,11 +87,16 @@ func (q *Queries) GetOrganizationMember(ctx context.Context, arg GetOrganization
 const listAllOrganizations = `-- name: ListAllOrganizations :many
 SELECT id, name, created_at
 FROM organizations
-ORDER BY name ASC
+ORDER BY name ASC LIMIT $1 OFFSET $2
 `
 
-func (q *Queries) ListAllOrganizations(ctx context.Context) ([]Organization, error) {
-	rows, err := q.db.Query(ctx, listAllOrganizations)
+type ListAllOrganizationsParams struct {
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListAllOrganizations(ctx context.Context, arg ListAllOrganizationsParams) ([]Organization, error) {
+	rows, err := q.db.Query(ctx, listAllOrganizations, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

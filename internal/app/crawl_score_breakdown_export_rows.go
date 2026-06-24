@@ -9,6 +9,21 @@ import (
 	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
+// sanitizeSpreadsheetCell prevents CSV/XLSX formula injection by prefixing cells
+// whose first character would be interpreted as a formula trigger (=, +, -, @,
+// tab, carriage-return) with a single quote, which spreadsheet apps display as
+// a plain-text prefix rather than executing the formula.
+func sanitizeSpreadsheetCell(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
 type crawlIssueExportRow struct {
 	Pillar         string
 	Bucket         string

@@ -103,7 +103,13 @@ func BuildBucketBreakdownWithOptions(bucketID string, bucketWeight float64, issu
 	bucketAffectedURLs := make(map[string]struct{})
 	issueRowCount := int32(0)
 
-	for issueType, issueGroup := range issueGroups {
+	issueTypes := make([]string, 0, len(issueGroups))
+	for issueType := range issueGroups {
+		issueTypes = append(issueTypes, issueType)
+	}
+	sort.Strings(issueTypes)
+	for _, issueType := range issueTypes {
+		issueGroup := issueGroups[issueType]
 		coverage := issueCoverage(len(issueGroup.AffectedURLs), totalScoredPages)
 		basePenalty := IssueBasePenalty(issueType, issuePenaltyByType)
 		severityWeight := SeverityMultiplierWithConfig(issueGroup.Severity, scoringConfig)
@@ -147,9 +153,9 @@ func BuildBucketBreakdownWithOptions(bucketID string, bucketWeight float64, issu
 		IssueRowCount:        issueRowCount,
 		AffectedURLCount:     int32(len(bucketAffectedURLs)),
 		Issues:               issues,
-		}
-
 	}
+
+}
 
 // IssueCoverage converts the affected page count into a shared saturating proportional coverage score.
 func IssueCoverage(affectedPages int, totalScoredPages int) float64 {
@@ -192,11 +198,13 @@ func IssueVolumeMultiplierWithConfig(issueRowCount int32, totalScoredPages int, 
 		return 1
 	}
 	volumePressureScale := scoringConfig.VolumePressureScale
-	if volumePressureScale <= 0 {
+	if volumePressureScale < 0 {
+		// Only apply the default when unset (negative is invalid); 0 is a valid configured value meaning no volume pressure.
 		volumePressureScale = VolumePressureScale
 	}
 	maximumVolumePressure := scoringConfig.MaximumVolumePressure
-	if maximumVolumePressure <= 0 {
+	if maximumVolumePressure < 0 {
+		// Only apply the default when unset (negative is invalid); 0 is a valid configured value meaning no pressure cap.
 		maximumVolumePressure = MaximumVolumePressure
 	}
 	issueRowsPerPage := float64(issueRowCount) / float64(totalScoredPages)

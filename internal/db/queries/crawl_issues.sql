@@ -94,4 +94,5 @@ SELECT
     created_at
 FROM crawl_issues
 WHERE crawl_id = $1
-ORDER BY created_at ASC;
+ORDER BY created_at ASC
+LIMIT $2;

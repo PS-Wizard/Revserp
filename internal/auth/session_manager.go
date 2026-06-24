@@ -16,7 +16,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/singleflight"
 
+	"github.com/ps-wizard/revserp/internal/crypto"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -31,6 +33,8 @@ type SessionManager struct {
 	cookieDomain   string
 	sessionTTL     time.Duration
 	cookieSecure   bool
+	crypter        *crypto.Crypter
+	refreshGroup   singleflight.Group
 }
 
 // NewSessionManager builds a backend session manager.
@@ -42,6 +46,7 @@ func NewSessionManager(
 	cookieDomain string,
 	sessionTTL time.Duration,
 	cookieSecure bool,
+	crypter *crypto.Crypter,
 ) *SessionManager {
 	if strings.TrimSpace(cookieName) == "" {
 		cookieName = "revserp_session"
@@ -59,7 +64,30 @@ func NewSessionManager(
 		cookieDomain:   cookieDomain,
 		sessionTTL:     sessionTTL,
 		cookieSecure:   cookieSecure,
+		crypter:        crypter,
 	}
+}
+
+// encryptToken encrypts a token for storage. Returns the plaintext unchanged on crypter absence.
+func (manager *SessionManager) encryptToken(token string) (string, error) {
+	if manager.crypter == nil || token == "" {
+		return token, nil
+	}
+	return manager.crypter.Encrypt(token)
+}
+
+// decryptToken decrypts a stored token. Falls back to plaintext if decryption fails (legacy compat).
+func (manager *SessionManager) decryptToken(stored string) string {
+	if manager.crypter == nil || stored == "" {
+		return stored
+	}
+	plaintext, err := manager.crypter.Decrypt(stored)
+	if err != nil {
+		// Legacy plaintext fallback: existing sessions stored before encryption was introduced.
+		log.Printf("auth: token decryption failed, treating as legacy plaintext (session will re-encrypt on next refresh): %v", err)
+		return stored
+	}
+	return plaintext
 }
 
 // CreateSession stores one backend session and returns the raw cookie token.
@@ -69,11 +97,20 @@ func (manager *SessionManager) CreateSession(ctx context.Context, userID pgtype.
 		return "", err
 	}
 
+	encAccessToken, err := manager.encryptToken(supabaseSession.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("encrypt supabase access token: %w", err)
+	}
+	encRefreshToken, err := manager.encryptToken(supabaseSession.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("encrypt supabase refresh token: %w", err)
+	}
+
 	if _, err := manager.queries.CreateSession(ctx, sqlc.CreateSessionParams{
 		UserID:                       userID,
 		SessionTokenHash:             hashSessionToken(rawSessionToken),
-		SupabaseAccessToken:          supabaseSession.AccessToken,
-		SupabaseRefreshToken:         supabaseSession.RefreshToken,
+		SupabaseAccessToken:          encAccessToken,
+		SupabaseRefreshToken:         encRefreshToken,
 		SupabaseAccessTokenExpiresAt: timestamptzValue(supabaseSession.ExpiresAt),
 		ActiveOrgID:                  activeOrgID,
 		ExpiresAt:                    timestamptzValue(time.Now().UTC().Add(manager.sessionTTL)),
@@ -82,6 +119,13 @@ func (manager *SessionManager) CreateSession(ctx context.Context, userID pgtype.
 	}
 
 	return rawSessionToken, nil
+}
+
+// refreshResult is the shared result type for singleflight token refreshes.
+type refreshResult struct {
+	accessToken          string
+	refreshToken         string
+	accessTokenExpiresAt time.Time
 }
 
 // AuthenticateRequest resolves one backend session cookie into auth identity and session context.
@@ -101,31 +145,61 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 		return Identity{}, SessionContext{}, errors.New("session expired")
 	}
 
-	accessToken := sessionRow.SupabaseAccessToken
-	refreshToken := sessionRow.SupabaseRefreshToken
+	// Decrypt tokens from storage (with legacy plaintext fallback).
+	accessToken := manager.decryptToken(sessionRow.SupabaseAccessToken)
+	refreshToken := manager.decryptToken(sessionRow.SupabaseRefreshToken)
 	accessTokenExpiresAt := sessionRow.SupabaseAccessTokenExpiresAt.Time.UTC()
+
 	if accessTokenExpiresAt.Before(time.Now().UTC().Add(sessionRefreshSkew)) {
-		refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, refreshToken)
-		if refreshErr != nil {
-			var authErr *SupabaseAuthError
-			if errors.As(refreshErr, &authErr) && authErr.StatusCode >= 400 && authErr.StatusCode < 500 {
-				_ = manager.queries.RevokeSession(ctx, sessionRow.ID)
-			} else {
-				log.Printf("infra: refresh supabase session (transient, session kept): session=%s error=%v", sessionRow.ID.String(), refreshErr)
+		// Serialize concurrent refreshes for the same session via singleflight.
+		sfKey := sessionRow.ID.String()
+		v, err, _ := manager.refreshGroup.Do(sfKey, func() (any, error) {
+			refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, refreshToken)
+			if refreshErr != nil {
+				var authErr *SupabaseAuthError
+				if errors.As(refreshErr, &authErr) && authErr.StatusCode >= 400 && authErr.StatusCode < 500 {
+					_ = manager.queries.RevokeSession(ctx, sessionRow.ID)
+				} else {
+					log.Printf("infra: refresh supabase session (transient, session kept): session=%s error=%v", sessionRow.ID.String(), refreshErr)
+				}
+				return nil, fmt.Errorf("refresh supabase session: %w", refreshErr)
 			}
-			return Identity{}, SessionContext{}, fmt.Errorf("refresh supabase session: %w", refreshErr)
+
+			newAccessToken := refreshedSession.AccessToken
+			newRefreshToken := refreshedSession.RefreshToken
+			newExpiresAt := refreshedSession.ExpiresAt.UTC()
+
+			encAccessToken, encErr := manager.encryptToken(newAccessToken)
+			if encErr != nil {
+				return nil, fmt.Errorf("encrypt refreshed access token: %w", encErr)
+			}
+			encRefreshToken, encErr := manager.encryptToken(newRefreshToken)
+			if encErr != nil {
+				return nil, fmt.Errorf("encrypt refreshed refresh token: %w", encErr)
+			}
+
+			if dbErr := manager.queries.UpdateSessionTokens(ctx, sqlc.UpdateSessionTokensParams{
+				ID:                           sessionRow.ID,
+				SupabaseAccessToken:          encAccessToken,
+				SupabaseRefreshToken:         encRefreshToken,
+				SupabaseAccessTokenExpiresAt: timestamptzValue(newExpiresAt),
+			}); dbErr != nil {
+				return nil, fmt.Errorf("update refreshed backend session: %w", dbErr)
+			}
+
+			return &refreshResult{
+				accessToken:          newAccessToken,
+				refreshToken:         newRefreshToken,
+				accessTokenExpiresAt: newExpiresAt,
+			}, nil
+		})
+		if err != nil {
+			return Identity{}, SessionContext{}, err
 		}
-		accessToken = refreshedSession.AccessToken
-		refreshToken = refreshedSession.RefreshToken
-		accessTokenExpiresAt = refreshedSession.ExpiresAt.UTC()
-		if err := manager.queries.UpdateSessionTokens(ctx, sqlc.UpdateSessionTokensParams{
-			ID:                           sessionRow.ID,
-			SupabaseAccessToken:          accessToken,
-			SupabaseRefreshToken:         refreshToken,
-			SupabaseAccessTokenExpiresAt: timestamptzValue(accessTokenExpiresAt),
-		}); err != nil {
-			return Identity{}, SessionContext{}, fmt.Errorf("update refreshed backend session: %w", err)
-		}
+		result := v.(*refreshResult)
+		accessToken = result.accessToken
+		accessTokenExpiresAt = result.accessTokenExpiresAt
+		_ = accessTokenExpiresAt
 	} else {
 		if err := manager.queries.UpdateSessionLastUsedAt(ctx, sessionRow.ID); err != nil {
 			log.Printf("infra: update session last_used_at (non-fatal): session=%s error=%v", sessionRow.ID.String(), err)
@@ -165,13 +239,14 @@ func (manager *SessionManager) RevokeSession(ctx context.Context, rawSessionToke
 }
 
 // UpdateActiveOrganization persists the current organization context for one backend session.
-func (manager *SessionManager) UpdateActiveOrganization(ctx context.Context, sessionID pgtype.UUID, activeOrgID pgtype.UUID) error {
+func (manager *SessionManager) UpdateActiveOrganization(ctx context.Context, sessionID pgtype.UUID, userID pgtype.UUID, activeOrgID pgtype.UUID) error {
 	if !sessionID.Valid {
 		return errors.New("missing session id")
 	}
 	if err := manager.queries.UpdateSessionActiveOrganization(ctx, sqlc.UpdateSessionActiveOrganizationParams{
 		ID:          sessionID,
 		ActiveOrgID: activeOrgID,
+		UserID:      userID,
 	}); err != nil {
 		return fmt.Errorf("update session active organization: %w", err)
 	}

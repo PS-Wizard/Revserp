@@ -376,8 +376,65 @@ type ListAIMessagesForConversationForUserParams struct {
 	UserID         pgtype.UUID
 }
 
+// Display path: returns the full conversation in chronological order.
 func (q *Queries) ListAIMessagesForConversationForUser(ctx context.Context, arg ListAIMessagesForConversationForUserParams) ([]AiMessage, error) {
 	rows, err := q.db.Query(ctx, listAIMessagesForConversationForUser, arg.ConversationID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AiMessage
+	for rows.Next() {
+		var i AiMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConversationID,
+			&i.Role,
+			&i.Content,
+			&i.CrawlID,
+			&i.Scope,
+			&i.Model,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentAIMessagesForConversationForUser = `-- name: ListRecentAIMessagesForConversationForUser :many
+SELECT
+    am.id,
+    am.conversation_id,
+    am.role,
+    am.content,
+    am.crawl_id,
+    am.scope,
+    am.model,
+    am.created_at
+FROM ai_messages AS am
+INNER JOIN ai_conversations AS ac ON ac.id = am.conversation_id
+INNER JOIN projects AS p ON p.id = ac.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE am.conversation_id = $1
+  AND om.user_id = $2
+ORDER BY am.created_at DESC LIMIT $3
+`
+
+type ListRecentAIMessagesForConversationForUserParams struct {
+	ConversationID pgtype.UUID
+	UserID         pgtype.UUID
+	Limit          int32
+}
+
+// Prompt-context path: returns the most recent N messages (newest first);
+// callers reverse the slice to restore chronological order.
+func (q *Queries) ListRecentAIMessagesForConversationForUser(ctx context.Context, arg ListRecentAIMessagesForConversationForUserParams) ([]AiMessage, error) {
+	rows, err := q.db.Query(ctx, listRecentAIMessagesForConversationForUser, arg.ConversationID, arg.UserID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

@@ -36,6 +36,10 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 
 	var requestBody createProjectRequest
 	if err := readJSON(r, &requestBody); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -172,6 +176,26 @@ func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		user, _, err := a.ensureCurrentUser(r, queries)
 		if err != nil {
 			serverError(w, r, err)
+			return err
+		}
+
+		// Fetch the project to obtain its organization ID for the owner role check.
+		project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
+			ID:     projectID,
+			UserID: user.ID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "project not found")
+				return err
+			}
+			serverError(w, r, err)
+			return err
+		}
+
+		// Only organization owners may delete projects (mirrors handleUpsertProjectBusinessProfile).
+		if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
+			writeInvitePermissionError(w, err)
 			return err
 		}
 

@@ -110,6 +110,20 @@ func SeverityRank(severity string) int {
 	}
 }
 
+// NewIssue constructs one derived issue with all standard fields populated.
+func NewIssue(pageFact PageFact, pillarID string, bucket string, issueType string, severity string, message string, details string) DerivedIssue {
+	return DerivedIssue{
+		CrawlPageID: pageFact.ID,
+		URL:         pageFact.URL,
+		Pillar:      pillarID,
+		Bucket:      bucket,
+		IssueType:   issueType,
+		Severity:    severity,
+		Message:     message,
+		Details:     details,
+	}
+}
+
 // HumanizeIdentifier formats one internal identifier for display.
 func HumanizeIdentifier(value string) string {
 	parts := strings.Split(strings.TrimSpace(value), "_")

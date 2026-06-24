@@ -50,7 +50,7 @@ UPDATE sessions
 SET active_org_id = $2,
     updated_at = now(),
     last_used_at = now()
-WHERE id = $1;
+WHERE id = $1 AND user_id = $3;
 
 -- name: RevokeSession :exec
 UPDATE sessions
@@ -58,3 +58,10 @@ SET revoked_at = now(),
     updated_at = now(),
     last_used_at = now()
 WHERE id = $1;
+
+-- name: RevokeAllSessionsForUser :exec
+UPDATE sessions
+SET revoked_at = now(),
+    updated_at = now(),
+    last_used_at = now()
+WHERE user_id = $1 AND revoked_at IS NULL;

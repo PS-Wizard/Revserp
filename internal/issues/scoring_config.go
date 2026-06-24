@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -29,7 +31,7 @@ func DefaultScoringConfig() shared.ScoringConfig {
 		aeo.PillarID: {
 			Label:                aeo.PillarLabel,
 			Weight:               aeo.PillarWeight,
-			MinimumIssueCoverage: 0.75,
+			MinimumIssueCoverage: aeo.MinimumIssueCoverage,
 			BucketWeights:        cloneFloatMap(aeo.BucketWeights),
 			IssuePenaltyByType:   cloneFloatMap(aeo.IssuePenaltyByType),
 		},
@@ -52,10 +54,33 @@ func ParseScoringConfig(rawConfig []byte) (shared.ScoringConfig, error) {
 	if err := json.Unmarshal(rawConfig, &config); err != nil {
 		return shared.ScoringConfig{}, err
 	}
+	// Overall weights are inherently relative. Normalize them to sum to 1.0 at
+	// load time so a stored config whose weights drifted (e.g. an admin saved
+	// 1.17) still produces in-range scores instead of failing the whole crawl.
+	// Strict rejection of bad weights happens at write time via the explicit
+	// ValidateScoringConfig calls in the admin handlers, not here on the read path.
+	normalizeOverallWeights(&config)
 	if err := ValidateScoringConfig(config); err != nil {
 		return shared.ScoringConfig{}, err
 	}
 	return config, nil
+}
+
+// normalizeOverallWeights scales OverallWeights so they sum to 1.0, preserving
+// their relative proportions. A degenerate (<=0) sum is left untouched for
+// ValidateScoringConfig to reject.
+func normalizeOverallWeights(config *shared.ScoringConfig) {
+	sum := 0.0
+	for _, weight := range config.OverallWeights {
+		sum += weight
+	}
+	if sum <= 0 || math.Abs(sum-1.0) < 1e-3 {
+		return
+	}
+	log.Printf("scoring: normalizing overall_weights (sum was %.4f, scaling to 1.0)", sum)
+	for pillarID, weight := range config.OverallWeights {
+		config.OverallWeights[pillarID] = weight / sum
+	}
 }
 
 // MustMarshalScoringConfig marshals a validated scoring config for persistence.
@@ -104,6 +129,16 @@ func ValidateScoringConfig(config shared.ScoringConfig) error {
 		if strings.TrimSpace(pillarID) == "" || weight < 0 {
 			return fmt.Errorf("invalid overall weight for %q", pillarID)
 		}
+	}
+	// Weights only need to be positive in aggregate; they are normalized to
+	// sum to 1.0 at load time (see normalizeOverallWeights), so any positive
+	// sum is acceptable. A zero/negative sum is degenerate and cannot be normalized.
+	overallWeightSum := 0.0
+	for _, weight := range config.OverallWeights {
+		overallWeightSum += weight
+	}
+	if overallWeightSum <= 0 {
+		return fmt.Errorf("overall_weights must sum to a positive value (got %.4f)", overallWeightSum)
 	}
 	for _, pillarID := range []string{seo.PillarID, aeo.PillarID, pagespeed.PillarID} {
 		pillarConfig, exists := config.Pillars[pillarID]

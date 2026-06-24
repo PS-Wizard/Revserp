@@ -111,7 +111,8 @@ func (service *Service) FetchSites(ctx context.Context, accessToken string) ([]S
 		return nil, fmt.Errorf("send Google sites request: %w", err)
 	}
 	defer response.Body.Close()
-	responseBody, err := io.ReadAll(response.Body)
+	// H-12: cap body size to prevent unbounded memory use on malformed responses.
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read Google sites response: %w", err)
 	}
@@ -185,7 +186,18 @@ func (service *Service) postTokenRequest(ctx context.Context, payload url.Values
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
+	// H-13: check HTTP status before unmarshaling; this avoids wasting work on
+	// error bodies and ensures we never accidentally return a partial token on
+	// non-2xx responses.
+	// H-12: cap body size to prevent unbounded memory use.
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		// Cap error body to 512 bytes — enough for a useful message without
+		// risking leaking large token-bearing payloads.
+		errBody, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+		return TokenResponse{}, decodeGoogleAPIError(errBody, "Google token exchange failed")
+	}
+
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
 	if err != nil {
 		return TokenResponse{}, fmt.Errorf("read Google token response: %w", err)
 	}
@@ -193,9 +205,6 @@ func (service *Service) postTokenRequest(ctx context.Context, payload url.Values
 	var tokenResponse TokenResponse
 	if err := json.Unmarshal(responseBody, &tokenResponse); err != nil {
 		return TokenResponse{}, &Error{Message: "Google returned an invalid token response"}
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return TokenResponse{}, decodeGoogleAPIError(responseBody, "Google token exchange failed")
 	}
 	return tokenResponse, nil
 }
@@ -223,7 +232,8 @@ func (service *Service) querySearchAnalytics(ctx context.Context, accessToken, s
 		return nil, fmt.Errorf("send Search Analytics request: %w", err)
 	}
 	defer response.Body.Close()
-	responseBody, err := io.ReadAll(response.Body)
+	// H-12: cap body size to prevent unbounded memory use.
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read Search Analytics response: %w", err)
 	}

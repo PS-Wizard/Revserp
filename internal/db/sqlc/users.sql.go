@@ -154,8 +154,13 @@ const listAllUsers = `-- name: ListAllUsers :many
 SELECT id, email, name, is_platform_admin, status, created_at
 FROM users
 WHERE status != 'deleted'
-ORDER BY created_at DESC
+ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
+
+type ListAllUsersParams struct {
+	Limit  int32
+	Offset int32
+}
 
 type ListAllUsersRow struct {
 	ID              pgtype.UUID
@@ -166,8 +171,8 @@ type ListAllUsersRow struct {
 	CreatedAt       pgtype.Timestamptz
 }
 
-func (q *Queries) ListAllUsers(ctx context.Context) ([]ListAllUsersRow, error) {
-	rows, err := q.db.Query(ctx, listAllUsers)
+func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]ListAllUsersRow, error) {
+	rows, err := q.db.Query(ctx, listAllUsers, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

@@ -60,6 +60,12 @@ func (renderer *Renderer) RenderHTML(ctx context.Context, targetURL string) (Fet
 		return FetchResult{}, fmt.Errorf("renderer is not configured")
 	}
 
+	// C-3: validate scheme and block private/reserved IPs before handing the
+	// URL to the subprocess — the subprocess cannot apply our SSRF dialer.
+	if err := validateURLForFetch(targetURL); err != nil {
+		return FetchResult{}, fmt.Errorf("render url: %w", err)
+	}
+
 	select {
 	case <-ctx.Done():
 		return FetchResult{}, ctx.Err()

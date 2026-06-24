@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -71,11 +72,11 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 
 // ScoreCrawl reloads one crawl's persisted signals, calculates scores, and stores them on the crawl row.
 func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID, psiInput *shared.GooglePSIScoreInput) (shared.CrawlScores, error) {
-	crawlPages, err := store.queries.ListCrawlPagesForCrawl(ctx, crawlID)
+	crawlPages, err := store.queries.ListCrawlPagesForCrawl(ctx, sqlc.ListCrawlPagesForCrawlParams{CrawlID: crawlID, Limit: math.MaxInt32})
 	if err != nil {
 		return shared.CrawlScores{}, fmt.Errorf("list crawl pages: %w", err)
 	}
-	crawlIssues, err := store.queries.ListCrawlIssuesForCrawl(ctx, crawlID)
+	crawlIssues, err := store.queries.ListCrawlIssuesForCrawl(ctx, sqlc.ListCrawlIssuesForCrawlParams{CrawlID: crawlID, Limit: math.MaxInt32})
 	if err != nil {
 		return shared.CrawlScores{}, fmt.Errorf("list crawl issues: %w", err)
 	}

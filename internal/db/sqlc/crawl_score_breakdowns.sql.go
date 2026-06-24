@@ -390,12 +390,14 @@ WHERE c.project_id = $1
   AND c.status = 'completed'
 ORDER BY c.created_at DESC
 LIMIT $3
+OFFSET $4
 `
 
 type ListCompletedProjectCrawlScoreBreakdownsForUserParams struct {
 	ProjectID pgtype.UUID
 	UserID    pgtype.UUID
 	Limit     int32
+	Offset    int32
 }
 
 type ListCompletedProjectCrawlScoreBreakdownsForUserRow struct {
@@ -406,7 +408,12 @@ type ListCompletedProjectCrawlScoreBreakdownsForUserRow struct {
 }
 
 func (q *Queries) ListCompletedProjectCrawlScoreBreakdownsForUser(ctx context.Context, arg ListCompletedProjectCrawlScoreBreakdownsForUserParams) ([]ListCompletedProjectCrawlScoreBreakdownsForUserRow, error) {
-	rows, err := q.db.Query(ctx, listCompletedProjectCrawlScoreBreakdownsForUser, arg.ProjectID, arg.UserID, arg.Limit)
+	rows, err := q.db.Query(ctx, listCompletedProjectCrawlScoreBreakdownsForUser,
+		arg.ProjectID,
+		arg.UserID,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -44,12 +44,12 @@ func (a *App) generateAIText(ctx context.Context, prompt string) (string, string
 	case "deepseek":
 		model = a.Config.DeepSeekModel
 		if model == "" {
-			model = "deepseek-v4-flash"
+			model = ai.DefaultDeepSeekModel
 		}
 	case "gemini":
 		model = a.Config.GeminiModel
 		if model == "" {
-			model = "gemini-2.5-flash"
+			model = ai.DefaultGeminiModel
 		}
 	}
 
