@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cancelCrawlByIDForUser = `-- name: CancelCrawlByIDForUser :one
+UPDATE crawls AS c
+SET status = 'cancelled',
+    completed_at = now()
+FROM projects AS p, organization_members AS om
+WHERE c.id = $1
+  AND c.project_id = p.id
+  AND p.organization_id = om.org_id
+  AND om.user_id = $2
+  AND c.status IN ('queued', 'running')
+RETURNING c.id
+`
+
+type CancelCrawlByIDForUserParams struct {
+	ID     pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) CancelCrawlByIDForUser(ctx context.Context, arg CancelCrawlByIDForUserParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, cancelCrawlByIDForUser, arg.ID, arg.UserID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const claimNextQueuedCrawl = `-- name: ClaimNextQueuedCrawl :one
 WITH candidate AS (
     SELECT c.id

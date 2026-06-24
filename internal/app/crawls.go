@@ -272,6 +272,57 @@ func (a *App) handleDeleteCrawl(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleCancelCrawl cancels a queued or running crawl the user can access,
+// marking it 'cancelled' so it stops blocking new crawls and becomes deletable.
+func (a *App) handleCancelCrawl(w http.ResponseWriter, r *http.Request) {
+	crawlID, err := parseUUIDParam(chi.URLParam(r, "crawlID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
+		return
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	queries := a.Queries.WithTx(tx)
+	user, _, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
+			return
+		}
+
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if _, err := queries.CancelCrawlByIDForUser(r.Context(), sqlc.CancelCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusConflict, "crawl is not queued or running")
+			return
+		}
+
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // newCrawlResponseFromCreateRow converts a created crawl row into an API response.
 func newCrawlResponseFromCreateRow(crawl sqlc.CreateCrawlRow) crawlResponse {
 	return buildCrawlResponse(

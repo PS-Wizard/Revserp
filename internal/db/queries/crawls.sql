@@ -49,6 +49,18 @@ WHERE c.id = $1
   AND c.status NOT IN ('queued', 'running')
 RETURNING c.id;
 
+-- name: CancelCrawlByIDForUser :one
+UPDATE crawls AS c
+SET status = 'cancelled',
+    completed_at = now()
+FROM projects AS p, organization_members AS om
+WHERE c.id = $1
+  AND c.project_id = p.id
+  AND p.organization_id = om.org_id
+  AND om.user_id = $2
+  AND c.status IN ('queued', 'running')
+RETURNING c.id;
+
 -- name: CountCrawlsForProject :one
 SELECT COUNT(*)
 FROM crawls
