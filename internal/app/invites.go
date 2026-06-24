@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -238,6 +239,7 @@ func (a *App) handleRevokeOrganizationInvite(w http.ResponseWriter, r *http.Requ
 }
 
 // handleGetInvite resolves one invite link for the public invite landing page.
+// Non-active invites return 404 to prevent organization-name harvesting.
 func (a *App) handleGetInvite(w http.ResponseWriter, r *http.Request) {
 	tokenHash := hashOrganizationInviteToken(strings.TrimSpace(chi.URLParam(r, "token")))
 	invite, err := a.Queries.GetOrganizationInviteByTokenHash(r.Context(), tokenHash)
@@ -250,6 +252,13 @@ func (a *App) handleGetInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	status := resolveInviteStatus(invite.RevokedAt, invite.ExpiresAt.Time, invite.MaxUses, invite.UsedCount)
+	if status != "active" {
+		// Return 404 for non-active invites to avoid leaking organization metadata.
+		writeJSONError(w, http.StatusNotFound, "invite not found")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, inviteLookupResponse{
 		ID:               invite.ID.String(),
 		OrganizationID:   invite.OrganizationID.String(),
@@ -259,7 +268,7 @@ func (a *App) handleGetInvite(w http.ResponseWriter, r *http.Request) {
 		RemainingUses:    remainingInviteUses(invite.MaxUses, invite.UsedCount),
 		ExpiresAt:        invite.ExpiresAt.Time.UTC().Format(time.RFC3339),
 		CreatedAt:        invite.CreatedAt.Time.UTC().Format(time.RFC3339),
-		Status:           resolveInviteStatus(invite.RevokedAt, invite.ExpiresAt.Time, invite.MaxUses, invite.UsedCount),
+		Status:           status,
 	})
 }
 
@@ -333,18 +342,22 @@ func (a *App) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, invite.OrganizationID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	// Capture org ID before commit so we can use it in the post-commit best-effort call.
+	joinedOrgID := invite.OrganizationID
 	if err := tx.Commit(r.Context()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
+	// Update the active organization AFTER the transaction commits. This call writes to a
+	// separate store and must not be part of the membership transaction (M-11).
+	if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, session.UserID, joinedOrgID); err != nil {
+		log.Printf("app: update active organization after invite accept (non-fatal): session=%s error=%v", session.SessionID.String(), err)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
-		"organization_id": invite.OrganizationID.String(),
+		"organization_id": joinedOrgID.String(),
 	})
 }
 

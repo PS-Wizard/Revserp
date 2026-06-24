@@ -1,10 +1,13 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/config"
+	"github.com/ps-wizard/revserp/internal/crypto"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/gsc"
 )
@@ -21,7 +24,12 @@ type App struct {
 }
 
 // New builds an application with shared dependencies.
-func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Verifier) *App {
+func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Verifier) (*App, error) {
+	sessionCrypter, err := crypto.New(cfg.SessionEncryptionSecret)
+	if err != nil {
+		return nil, fmt.Errorf("init session token crypter: %w", err)
+	}
+
 	supabaseClient := internalauth.NewSupabaseClient(cfg.SupabaseJWTIssuer, cfg.SupabaseAnonKey)
 	sessionManager := internalauth.NewSessionManager(
 		dbPool,
@@ -31,6 +39,7 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		cfg.SessionCookieDomain,
 		cfg.SessionTTL,
 		cfg.AppEnv == "production",
+		sessionCrypter,
 	)
 	gscService := gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret)
 
@@ -42,5 +51,5 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		SupabaseClient: supabaseClient,
 		SessionManager: sessionManager,
 		GSCService:     gscService,
-	}
+	}, nil
 }

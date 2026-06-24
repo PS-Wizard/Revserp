@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/xuri/excelize/v2"
@@ -187,7 +188,9 @@ func setDuplicatesSheetColumnWidths(f *excelize.File, sheet string) {
 }
 
 // buildCrawlIssueExportWorkbook builds a multi-sheet XLSX workbook for one crawl's issue export.
-func buildCrawlIssueExportWorkbook(exportRows []crawlIssueExportRow) ([]byte, error) {
+// It returns the buffer directly so the caller can stream it to the ResponseWriter without an
+// extra copy (M-6: avoid holding rows + serialized bytes simultaneously longer than necessary).
+func buildCrawlIssueExportWorkbook(exportRows []crawlIssueExportRow) (*bytes.Buffer, error) {
 	f := excelize.NewFile()
 
 	styles, err := registerWorkbookStyles(f)
@@ -217,6 +220,7 @@ func buildCrawlIssueExportWorkbook(exportRows []crawlIssueExportRow) ([]byte, er
 			return nil, fmt.Errorf("write overview row %d: %w", i, err)
 		}
 	}
+	overviewRows = nil // free before further allocations
 
 	const severityColOverview = 4
 	applyHeaderRowStyling(f, overviewSheet, 5, styles)
@@ -255,11 +259,12 @@ func buildCrawlIssueExportWorkbook(exportRows []crawlIssueExportRow) ([]byte, er
 		}
 		for i, row := range duplicatePeerRows {
 			cell := fmt.Sprintf("A%d", i+2)
-			rowData := []any{row.Pillar, row.Bucket, row.IssueType, row.SourceURL, row.RelatedURL, row.Message, row.Details, row.Severity}
+			rowData := []any{row.Pillar, row.Bucket, row.IssueType, sanitizeSpreadsheetCell(row.SourceURL), sanitizeSpreadsheetCell(row.RelatedURL), sanitizeSpreadsheetCell(row.Message), sanitizeSpreadsheetCell(row.Details), row.Severity}
 			if err := f.SetSheetRow(duplicatesSheet, cell, &rowData); err != nil {
 				return nil, fmt.Errorf("write duplicate row %d: %w", i, err)
 			}
 		}
+		duplicatePeerRows = nil // free before serialization
 
 		const severityColDup = 8
 		applyHeaderRowStyling(f, duplicatesSheet, 8, styles)
@@ -279,7 +284,7 @@ func buildCrawlIssueExportWorkbook(exportRows []crawlIssueExportRow) ([]byte, er
 		return nil, fmt.Errorf("write workbook buffer: %w", err)
 	}
 
-	return buf.Bytes(), nil
+	return buf, nil
 }
 
 func writeIssuesSheet(f *excelize.File, sheetName string, rows []crawlIssueExportRow, styles workbookStyles) error {
@@ -294,7 +299,7 @@ func writeIssuesSheet(f *excelize.File, sheetName string, rows []crawlIssueExpor
 	for i, row := range rows {
 		cell := fmt.Sprintf("A%d", i+2)
 		details := formatDetailTextForWorkbook(row.Details)
-		rowData := []any{row.Pillar, row.Bucket, row.IssueType, row.Severity, row.TotalAffected, row.URL, row.Message, details}
+		rowData := []any{row.Pillar, row.Bucket, row.IssueType, row.Severity, row.TotalAffected, sanitizeSpreadsheetCell(row.URL), sanitizeSpreadsheetCell(row.Message), sanitizeSpreadsheetCell(details)}
 		if err := f.SetSheetRow(sheetName, cell, &rowData); err != nil {
 			return fmt.Errorf("write %q row %d: %w", sheetName, i, err)
 		}

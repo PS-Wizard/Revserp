@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -49,9 +50,10 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		user          sqlc.User
-		organizations []sqlc.ListOrganizationsForUserRow
-		activeOrgID   pgtype.UUID
+		user           sqlc.User
+		organizations  []sqlc.ListOrganizationsForUserRow
+		activeOrgID    pgtype.UUID
+		needsOrgUpdate bool
 	)
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
 		var err error
@@ -61,16 +63,21 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		activeOrgID = resolveActiveOrganizationID(session.ActiveOrgID, organizations)
-		if activeOrgID.Valid && activeOrgID != session.ActiveOrgID {
-			if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrgID); err != nil {
-				serverError(w, r, err)
-				return err
-			}
+		resolved := resolveActiveOrganizationID(session.ActiveOrgID, organizations)
+		activeOrgID = resolved
+		if resolved.Valid && resolved != session.ActiveOrgID {
+			needsOrgUpdate = true
 		}
 		return nil
 	}) {
 		return
+	}
+
+	// Update active org AFTER the transaction commits (M-11).
+	if needsOrgUpdate {
+		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, session.UserID, activeOrgID); err != nil {
+			log.Printf("app: update active organization after me (non-fatal): session=%s error=%v", session.SessionID.String(), err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, newMeResponse(user, organizations, activeOrgID))
@@ -118,6 +125,7 @@ func (a *App) ensureUserAndOrganizations(r *http.Request, queries *sqlc.Queries,
 
 // resolveUser loads or creates the local user for an auth identity.
 // Returns the user and whether a default org should be created.
+// On CreateUser failure, the error is logged; the function returns an invalid user.
 func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, bool) {
 	userRow, err := queries.GetUserByAuthSubject(ctx, sqlc.GetUserByAuthSubjectParams{
 		AuthProvider: identity.Provider,
@@ -138,6 +146,8 @@ func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalau
 		Name:         pgText(identity.Name),
 	})
 	if err != nil {
+		// M-14: log the real error rather than silently swallowing it.
+		log.Printf("app: create user failed: provider=%s subject=%s email=%s error=%v", identity.Provider, identity.Subject, identity.Email, err)
 		return sqlc.User{}, false
 	}
 
@@ -237,13 +247,14 @@ func (a *App) handleSetActiveOrganization(w http.ResponseWriter, r *http.Request
 			return err
 		}
 
-		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, organizationID); err != nil {
-			serverError(w, r, err)
-			return err
-		}
 		return nil
 	}) {
 		return
+	}
+
+	// Update active org AFTER the transaction commits (M-11).
+	if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, session.UserID, organizationID); err != nil {
+		log.Printf("app: update active organization after set-active-org (non-fatal): session=%s error=%v", session.SessionID.String(), err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -265,6 +276,9 @@ func (a *App) handleLeaveOrganization(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+
+	var needsActiveOrgUpdate bool
+	var nextActiveOrgID pgtype.UUID
 
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
 		user, organizations, err := a.ensureCurrentUser(r, queries)
@@ -298,21 +312,24 @@ func (a *App) handleLeaveOrganization(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if session.ActiveOrgID.Valid && session.ActiveOrgID == organizationID {
-			nextActiveOrganizationID := pgtype.UUID{}
 			for _, organization := range organizations {
 				if organization.ID != organizationID {
-					nextActiveOrganizationID = organization.ID
+					nextActiveOrgID = organization.ID
 					break
 				}
 			}
-			if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, nextActiveOrganizationID); err != nil {
-				serverError(w, r, err)
-				return err
-			}
+			needsActiveOrgUpdate = true
 		}
 		return nil
 	}) {
 		return
+	}
+
+	// Update active org AFTER the transaction commits (M-11).
+	if needsActiveOrgUpdate {
+		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, session.UserID, nextActiveOrgID); err != nil {
+			log.Printf("app: update active organization after leave-org (non-fatal): session=%s error=%v", session.SessionID.String(), err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

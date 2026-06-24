@@ -211,7 +211,8 @@ SELECT
     created_at
 FROM crawl_pages
 WHERE crawl_id = $1
-ORDER BY created_at ASC;
+ORDER BY created_at ASC
+LIMIT $2;
 
 -- name: UpdateCrawlPageContentFingerprints :exec
 UPDATE crawl_pages

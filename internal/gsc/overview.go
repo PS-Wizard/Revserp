@@ -3,6 +3,7 @@ package gsc
 import (
 	"context"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -270,14 +271,14 @@ func buildQuestionQueryOpportunities(rows []SearchAnalyticsRow) []SearchAnalytic
 	return trimRows(filteredRows, 8)
 }
 
+// sortRows sorts rows in-place using sort.Slice with the provided less function.
+// The comparator must yield a strict total order (irreflexive, transitive) to
+// produce deterministic results; all callers supply a tie-break on a secondary
+// field that guarantees this.
 func sortRows(rows []SearchAnalyticsRow, less func(leftRow, rightRow SearchAnalyticsRow) bool) {
-	for leftIndex := 0; leftIndex < len(rows); leftIndex++ {
-		for rightIndex := leftIndex + 1; rightIndex < len(rows); rightIndex++ {
-			if less(rows[rightIndex], rows[leftIndex]) {
-				rows[leftIndex], rows[rightIndex] = rows[rightIndex], rows[leftIndex]
-			}
-		}
-	}
+	sort.Slice(rows, func(i, j int) bool {
+		return less(rows[i], rows[j])
+	})
 }
 
 func sumMetric(rows []SearchAnalyticsRow, getter func(SearchAnalyticsRow) float64) float64 {

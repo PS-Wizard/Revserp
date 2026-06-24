@@ -8,7 +8,7 @@ import (
 )
 
 // DeriveIssues builds AEO issues from persisted crawl facts.
-func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact) []shared.DerivedIssue {
+func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact, totalScoredPages int) []shared.DerivedIssue {
 	var derivedIssues []shared.DerivedIssue
 	siteIssuePageFact, hasSiteIssuePageFact := selectSiteIssuePageFact(pageFacts)
 	homepagePageFact, hasHomepagePageFact := selectHomepagePageFact(pageFacts)
@@ -99,8 +99,8 @@ func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact) []shared.Der
 	}
 
 	if hasSiteIssuePageFact {
-		if len(pageFacts) > 0 && float64(ogCoveredPageCount)/float64(len(pageFacts)) < weakOpenGraphCoverageThreshold {
-			derivedIssues = append(derivedIssues, newIssue(siteIssuePageFact, "trust", "weak_open_graph_coverage", "high", "Open Graph coverage is weak across the crawl", fmt.Sprintf("Only %d of %d crawled pages expose Open Graph tags.", ogCoveredPageCount, len(pageFacts))))
+		if totalScoredPages > 0 && float64(ogCoveredPageCount)/float64(totalScoredPages) < weakOpenGraphCoverageThreshold {
+			derivedIssues = append(derivedIssues, newIssue(siteIssuePageFact, "trust", "weak_open_graph_coverage", "high", "Open Graph coverage is weak across the crawl", fmt.Sprintf("Only %d of %d scored pages expose Open Graph tags.", ogCoveredPageCount, totalScoredPages)))
 		}
 		if !hasWebsiteSchema {
 			derivedIssues = append(derivedIssues, newIssue(siteIssuePageFact, "trust", "missing_website_schema", "high", "Site is missing WebSite schema", "Add WebSite structured data to the site."))
@@ -127,14 +127,5 @@ func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact) []shared.Der
 }
 
 func newIssue(pageFact shared.PageFact, bucket string, issueType string, severity string, message string, details string) shared.DerivedIssue {
-	return shared.DerivedIssue{
-		CrawlPageID: pageFact.ID,
-		URL:         pageFact.URL,
-		Pillar:      PillarID,
-		Bucket:      bucket,
-		IssueType:   issueType,
-		Severity:    severity,
-		Message:     message,
-		Details:     details,
-	}
+	return shared.NewIssue(pageFact, PillarID, bucket, issueType, severity, message, details)
 }

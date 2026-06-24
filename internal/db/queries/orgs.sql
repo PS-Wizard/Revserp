@@ -45,4 +45,4 @@ WHERE org_id = $1
 -- name: ListAllOrganizations :many
 SELECT id, name, created_at
 FROM organizations
-ORDER BY name ASC;
+ORDER BY name ASC LIMIT $1 OFFSET $2;

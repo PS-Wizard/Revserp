@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
+
+const maxExportRows = 50000
 
 // handleExportCrawlScoreBreakdownCSV exports one crawl's detailed issue rows as CSV.
 func (a *App) handleExportCrawlScoreBreakdownCSV(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +31,7 @@ func (a *App) handleExportCrawlScoreBreakdownCSV(w http.ResponseWriter, r *http.
 
 	filename := "crawl-issues-" + crawlID.String() + ".csv"
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"; filename*=UTF-8''"+url.PathEscape(filename))
 	w.WriteHeader(http.StatusOK)
 
 	csvWriter := csv.NewWriter(w)
@@ -58,11 +61,11 @@ func (a *App) handleExportCrawlScoreBreakdownCSV(w http.ResponseWriter, r *http.
 			exportRow.IssueLabel,
 			exportRow.Severity,
 			strconv.Itoa(exportRow.TotalAffected),
-			exportRow.URL,
-			exportRow.Message,
-			exportRow.Details,
-			exportRow.RecommendedFix,
-			exportRow.Suggestion,
+			sanitizeSpreadsheetCell(exportRow.URL),
+			sanitizeSpreadsheetCell(exportRow.Message),
+			sanitizeSpreadsheetCell(exportRow.Details),
+			sanitizeSpreadsheetCell(exportRow.RecommendedFix),
+			sanitizeSpreadsheetCell(exportRow.Suggestion),
 		}); err != nil {
 			return
 		}
@@ -82,7 +85,7 @@ func (a *App) handleExportCrawlScoreBreakdownXLSX(w http.ResponseWriter, r *http
 		return
 	}
 
-	workbookBytes, err := buildCrawlIssueExportWorkbook(exportRows)
+	workbookBuf, err := buildCrawlIssueExportWorkbook(exportRows)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "unable to build workbook")
 		return
@@ -90,9 +93,9 @@ func (a *App) handleExportCrawlScoreBreakdownXLSX(w http.ResponseWriter, r *http
 
 	filename := "crawl-issues-" + crawlID.String() + ".xlsx"
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"; filename*=UTF-8''"+url.PathEscape(filename))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(workbookBytes)
+	_, _ = workbookBuf.WriteTo(w)
 }
 
 func (a *App) loadCrawlIssueExportRows(w http.ResponseWriter, r *http.Request, crawlID pgtype.UUID, filters exportFilters) ([]crawlIssueExportRow, bool) {
@@ -113,7 +116,7 @@ func (a *App) loadCrawlIssueExportRows(w http.ResponseWriter, r *http.Request, c
 			return err
 		}
 
-		crawlIssues, err := queries.ListCrawlIssuesForCrawl(r.Context(), crawlID)
+		crawlIssues, err := queries.ListCrawlIssuesForCrawl(r.Context(), sqlc.ListCrawlIssuesForCrawlParams{CrawlID: crawlID, Limit: maxExportRows})
 		if err != nil {
 			serverError(w, r, err)
 			return err

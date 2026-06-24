@@ -81,8 +81,15 @@ func groupExactDuplicatePagesByHash(pageFacts []shared.PageFact) map[string][]in
 }
 
 func buildExactDuplicateIssues(pageFacts []shared.PageFact, exactDuplicateGroupsByHash map[string][]int) []shared.DerivedIssue {
+	hashes := make([]string, 0, len(exactDuplicateGroupsByHash))
+	for h := range exactDuplicateGroupsByHash {
+		hashes = append(hashes, h)
+	}
+	sort.Strings(hashes)
+
 	var derivedIssues []shared.DerivedIssue
-	for _, pageIndexes := range exactDuplicateGroupsByHash {
+	for _, h := range hashes {
+		pageIndexes := exactDuplicateGroupsByHash[h]
 		if len(pageIndexes) < 2 {
 			continue
 		}
@@ -280,12 +287,13 @@ func buildCharacterTrigrams(value string) map[string]struct{} {
 	if value == "" {
 		return nil
 	}
-	if len(value) < 3 {
+	runes := []rune(value)
+	if len(runes) < 3 {
 		return map[string]struct{}{value: {}}
 	}
-	characterTrigrams := make(map[string]struct{}, len(value)-2)
-	for trigramStartIndex := 0; trigramStartIndex <= len(value)-3; trigramStartIndex++ {
-		characterTrigrams[value[trigramStartIndex:trigramStartIndex+3]] = struct{}{}
+	characterTrigrams := make(map[string]struct{}, len(runes)-2)
+	for trigramStartIndex := 0; trigramStartIndex <= len(runes)-3; trigramStartIndex++ {
+		characterTrigrams[string(runes[trigramStartIndex:trigramStartIndex+3])] = struct{}{}
 	}
 	return characterTrigrams
 }

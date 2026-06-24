@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -20,10 +21,23 @@ func (noopWriter) Header() http.Header         { return http.Header{} }
 func (noopWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (noopWriter) WriteHeader(int)             {}
 
+// errRequestBodyTooLarge is returned by readJSON when the request body exceeds maxRequestBodySize.
+// Callers should respond with HTTP 413.
+var errRequestBodyTooLarge = errors.New("request body too large")
+
 // readJSON decodes a JSON request body with a 1 MB size limit.
+// It returns errRequestBodyTooLarge when the body exceeds the limit so callers
+// can distinguish a 413 condition from a generic 400 JSON parse error.
 func readJSON(r *http.Request, target any) error {
 	r.Body = http.MaxBytesReader(noopWriter{}, r.Body, maxRequestBodySize)
-	return json.NewDecoder(r.Body).Decode(target)
+	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return errRequestBodyTooLarge
+		}
+		return err
+	}
+	return nil
 }
 
 // serverError logs the error with a chi request ID when available and

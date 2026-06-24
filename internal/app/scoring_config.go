@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -56,9 +58,16 @@ func (a *App) handleGetScoringConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	// L-11b: guard against a corrupt blob stored in the DB before serving it.
+	if !json.Valid(row.ConfigJson) {
+		log.Printf("stored scoring config is not valid JSON (len=%d)", len(row.ConfigJson))
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	config, err := issueengine.ParseScoringConfig(row.ConfigJson)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "stored scoring config is invalid")
+		log.Printf("stored scoring config failed to parse: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, scoringConfigResponse{
@@ -78,6 +87,10 @@ func (a *App) handlePutScoringConfig(w http.ResponseWriter, r *http.Request) {
 
 	var requestBody scoringConfigRequest
 	if err := readJSON(r, &requestBody); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -113,17 +126,24 @@ func (a *App) handlePreviewScoringConfig(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	a.previewScoringConfig(w, r, user.ID)
+	a.previewScoringConfig(w, r, user.ID, false)
 }
 
 // handleAdminPreviewScoringConfig builds a preview for platform admins across all crawls.
+// The route is already guarded by requirePlatformAdmin middleware; the isAdmin flag tells
+// previewScoringConfig to skip the per-user crawl-ownership check (defense-in-depth: we
+// express the intent explicitly rather than relying on a zero-UUID sentinel).
 func (a *App) handleAdminPreviewScoringConfig(w http.ResponseWriter, r *http.Request) {
-	a.previewScoringConfig(w, r, pgtype.UUID{})
+	a.previewScoringConfig(w, r, pgtype.UUID{}, true)
 }
 
-func (a *App) previewScoringConfig(w http.ResponseWriter, r *http.Request, userID pgtype.UUID) {
+func (a *App) previewScoringConfig(w http.ResponseWriter, r *http.Request, userID pgtype.UUID, isAdmin bool) {
 	var requestBody scoringPreviewRequest
 	if err := readJSON(r, &requestBody); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -136,7 +156,13 @@ func (a *App) previewScoringConfig(w http.ResponseWriter, r *http.Request, userI
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if userID.Valid {
+	if !isAdmin {
+		// Non-admin callers must own the crawl. Defensively also reject an invalid userID
+		// even if this path is reached via a bug — never silently bypass the ownership check.
+		if !userID.Valid {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		if _, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: userID}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				writeJSONError(w, http.StatusNotFound, "crawl not found")
@@ -177,11 +203,11 @@ func (a *App) ensureInternalScoringUser(w http.ResponseWriter, r *http.Request) 
 
 // loadScoringPreviewSignals loads persisted page and issue signals for preview scoring.
 func (a *App) loadScoringPreviewSignals(r *http.Request, crawlID pgtype.UUID) ([]issueshared.CrawlPageSignal, []issueshared.CrawlIssueSignal, error) {
-	crawlPages, err := a.Queries.ListCrawlPagesForCrawl(r.Context(), crawlID)
+	crawlPages, err := a.Queries.ListCrawlPagesForCrawl(r.Context(), sqlc.ListCrawlPagesForCrawlParams{CrawlID: crawlID, Limit: maxExportRows})
 	if err != nil {
 		return nil, nil, err
 	}
-	crawlIssues, err := a.Queries.ListCrawlIssuesForCrawl(r.Context(), crawlID)
+	crawlIssues, err := a.Queries.ListCrawlIssuesForCrawl(r.Context(), sqlc.ListCrawlIssuesForCrawlParams{CrawlID: crawlID, Limit: maxExportRows})
 	if err != nil {
 		return nil, nil, err
 	}

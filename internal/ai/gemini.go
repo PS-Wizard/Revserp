@@ -55,7 +55,7 @@ func (client GeminiClient) GenerateText(ctx context.Context, prompt string) (str
 
 	model := strings.TrimSpace(client.Model)
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = DefaultGeminiModel
 	}
 
 	payload := geminiGenerateRequest{
@@ -70,10 +70,12 @@ func (client GeminiClient) GenerateText(ctx context.Context, prompt string) (str
 		return "", fmt.Errorf("marshal gemini request: %w", err)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint(model, apiKey), bytes.NewReader(payloadBytes))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint(model), bytes.NewReader(payloadBytes))
 	if err != nil {
 		return "", fmt.Errorf("build gemini request: %w", err)
 	}
+	// Send the API key via request header to avoid leaking it into logs or error strings.
+	request.Header.Set("x-goog-api-key", apiKey)
 	request.Header.Set("Content-Type", "application/json")
 
 	httpClient := client.HTTPClient
@@ -89,7 +91,12 @@ func (client GeminiClient) GenerateText(ctx context.Context, prompt string) (str
 		return "", fmt.Errorf("read gemini response: %w", err)
 	}
 	if response.StatusCode >= 400 {
-		return "", fmt.Errorf("gemini error %d: %s", response.StatusCode, strings.TrimSpace(string(responseBytes)))
+		// Cap embedded upstream body to 512 bytes to avoid leaking large error payloads.
+		body := responseBytes
+		if len(body) > 512 {
+			body = body[:512]
+		}
+		return "", fmt.Errorf("gemini error %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var decoded geminiGenerateResponse
@@ -111,7 +118,7 @@ func (client GeminiClient) GenerateText(ctx context.Context, prompt string) (str
 	return text, nil
 }
 
-// endpoint builds the direct Gemini generateContent URL.
-func (client GeminiClient) endpoint(model string, apiKey string) string {
-	return fmt.Sprintf("%s/models/%s:generateContent?key=%s", defaultGeminiEndpointBase, model, apiKey)
+// endpoint builds the Gemini generateContent URL without the API key (key is sent via header).
+func (client GeminiClient) endpoint(model string) string {
+	return fmt.Sprintf("%s/models/%s:generateContent", defaultGeminiEndpointBase, model)
 }

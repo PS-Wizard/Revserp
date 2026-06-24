@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// DefaultDeepSeekModel is the model name used when no model is explicitly configured.
+const DefaultDeepSeekModel = "deepseek-v4-flash"
+
+// DefaultGeminiModel is the model name used when no model is explicitly configured.
+const DefaultGeminiModel = "gemini-2.5-flash"
+
 // defaultClient is a shared HTTP client used when none is provided.
 var defaultClient = &http.Client{Timeout: 60 * time.Second}
 
@@ -35,7 +41,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	case "deepseek":
 		model := cfg.Model
 		if model == "" {
-			model = "deepseek-v4-flash"
+			model = DefaultDeepSeekModel
 		}
 		return &DeepSeekClient{
 			APIKey:     cfg.APIKey,
@@ -45,7 +51,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	case "gemini":
 		model := cfg.Model
 		if model == "" {
-			model = "gemini-2.5-flash"
+			model = DefaultGeminiModel
 		}
 		return &GeminiClient{
 			APIKey:     cfg.APIKey,

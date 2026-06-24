@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -155,11 +156,18 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Truncate the final user message to the configured maximum before building the prompt.
+	if len(requestBody.Messages) > 0 {
+		last := &requestBody.Messages[len(requestBody.Messages)-1]
+		last.Content = truncateAIFixText(last.Content, maxAIFixMessageLength)
+	}
+
 	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries)
 	prompt := buildAIFixPrompt(systemPrompt, pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
 	content, _, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, err.Error())
+		log.Printf("AI provider error (handleAIFix): %v", err)
+		writeJSONError(w, http.StatusBadGateway, "AI provider unavailable")
 		return
 	}
 

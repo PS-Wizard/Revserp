@@ -23,16 +23,7 @@ func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact) []shared.Der
 }
 
 func newIssue(pageFact shared.PageFact, bucket string, issueType string, severity string, message string, details string) shared.DerivedIssue {
-	return shared.DerivedIssue{
-		CrawlPageID: pageFact.ID,
-		URL:         pageFact.URL,
-		Pillar:      PillarID,
-		Bucket:      bucket,
-		IssueType:   issueType,
-		Severity:    severity,
-		Message:     message,
-		Details:     details,
-	}
+	return shared.NewIssue(pageFact, PillarID, bucket, issueType, severity, message, details)
 }
 
 func bytesToMegabytes(sizeBytes int32) float64 {

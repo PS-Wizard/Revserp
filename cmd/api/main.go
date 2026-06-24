@@ -42,7 +42,10 @@ func run() error {
 		return fmt.Errorf("initialize auth verifier: %w", err)
 	}
 
-	application := app.New(cfg, dbPool, authVerifier)
+	application, err := app.New(cfg, dbPool, authVerifier)
+	if err != nil {
+		return fmt.Errorf("initialize application: %w", err)
+	}
 
 	server := &http.Server{
 		Addr:    cfg.HTTPAddr,

@@ -3,6 +3,7 @@ package issues
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -11,7 +12,7 @@ import (
 )
 
 func loadFacts(ctx context.Context, queries *sqlc.Queries, crawlID pgtype.UUID) ([]shared.PageFact, []shared.LinkFact, error) {
-	crawlPages, err := queries.ListCrawlPagesForCrawl(ctx, crawlID)
+	crawlPages, err := queries.ListCrawlPagesForCrawl(ctx, sqlc.ListCrawlPagesForCrawlParams{CrawlID: crawlID, Limit: math.MaxInt32})
 	if err != nil {
 		return nil, nil, fmt.Errorf("list crawl pages: %w", err)
 	}

@@ -15,9 +15,7 @@ func selectSiteIssuePageFact(pageFacts []shared.PageFact) (shared.PageFact, bool
 	for _, pageFact := range pageFacts[1:] {
 		if pageLooksLikeHomepage(pageFact.URL) && !pageLooksLikeHomepage(selectedPageFact.URL) {
 			selectedPageFact = pageFact
-			continue
-		}
-		if pageFact.Depth < selectedPageFact.Depth {
+		} else if pageFact.Depth < selectedPageFact.Depth {
 			selectedPageFact = pageFact
 		}
 	}

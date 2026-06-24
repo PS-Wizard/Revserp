@@ -199,7 +199,13 @@ SELECT
 FROM crawl_issues
 WHERE crawl_id = $1
 ORDER BY created_at ASC
+LIMIT $2
 `
+
+type ListCrawlIssuesForCrawlParams struct {
+	CrawlID pgtype.UUID
+	Limit   int32
+}
 
 type ListCrawlIssuesForCrawlRow struct {
 	ID          pgtype.UUID
@@ -215,8 +221,8 @@ type ListCrawlIssuesForCrawlRow struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
-func (q *Queries) ListCrawlIssuesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListCrawlIssuesForCrawlRow, error) {
-	rows, err := q.db.Query(ctx, listCrawlIssuesForCrawl, crawlID)
+func (q *Queries) ListCrawlIssuesForCrawl(ctx context.Context, arg ListCrawlIssuesForCrawlParams) ([]ListCrawlIssuesForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlIssuesForCrawl, arg.CrawlID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

@@ -429,7 +429,13 @@ SELECT
 FROM crawl_pages
 WHERE crawl_id = $1
 ORDER BY created_at ASC
+LIMIT $2
 `
+
+type ListCrawlPagesForCrawlParams struct {
+	CrawlID pgtype.UUID
+	Limit   int32
+}
 
 type ListCrawlPagesForCrawlRow struct {
 	ID                      pgtype.UUID
@@ -469,8 +475,8 @@ type ListCrawlPagesForCrawlRow struct {
 	CreatedAt               pgtype.Timestamptz
 }
 
-func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListCrawlPagesForCrawlRow, error) {
-	rows, err := q.db.Query(ctx, listCrawlPagesForCrawl, crawlID)
+func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, arg ListCrawlPagesForCrawlParams) ([]ListCrawlPagesForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlPagesForCrawl, arg.CrawlID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

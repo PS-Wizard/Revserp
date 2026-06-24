@@ -28,7 +28,7 @@ RETURNING id, auth_provider, auth_subject, email, name, is_platform_admin, statu
 SELECT id, email, name, is_platform_admin, status, created_at
 FROM users
 WHERE status != 'deleted'
-ORDER BY created_at DESC;
+ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: UpdateUserPlatformAdmin :exec
 UPDATE users SET is_platform_admin = $2 WHERE id = $1;

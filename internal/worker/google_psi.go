@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,10 @@ import (
 )
 
 const googlePSIEndpoint = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+
+// googlePSIMaxBodyBytes caps the response body read from the PSI API to prevent
+// runaway memory consumption from unexpectedly large or malformed responses.
+const googlePSIMaxBodyBytes = 10 << 20 // 10 MiB
 
 var googlePSIHTTPClient = &http.Client{Timeout: 90 * time.Second}
 
@@ -96,25 +101,55 @@ func runGooglePSIMobile(ctx context.Context, apiKey string, pageURL string) (goo
 	}, nil
 }
 
+// redactGooglePSIURL returns a copy of the PSI request URL with the API key
+// query parameter replaced by "REDACTED". This is used to ensure the raw key
+// never appears in log lines or error strings.
+//
+// The PSI API requires the key as a query param (no header alternative exists),
+// so we redact rather than remove it. Net/http transport errors embed the
+// full URL; to prevent leakage we build all error messages from the redacted
+// form and never expose the original requestURL outside callGooglePSI.
+func redactGooglePSIURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		// If we can't parse, return a safe placeholder rather than the raw URL.
+		return "<unparseable PSI URL>"
+	}
+	q := parsed.Query()
+	if q.Get("key") != "" {
+		q.Set("key", "REDACTED")
+		parsed.RawQuery = q.Encode()
+	}
+	return parsed.String()
+}
+
 func callGooglePSI(ctx context.Context, apiKey string, pageURL string, strategy string) (googlePSIDeviceResult, error) {
 	requestURL, err := buildGooglePSIURL(apiKey, pageURL, strategy)
 	if err != nil {
 		return googlePSIDeviceResult{}, err
 	}
 
+	// Build a redacted URL once; use it in all log/error messages so the API
+	// key is never written to logs or surfaced in error strings.
+	redactedURL := redactGooglePSIURL(requestURL)
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return googlePSIDeviceResult{}, fmt.Errorf("build google psi request: %w", err)
+		// Use the redacted URL in the error so the key does not leak.
+		return googlePSIDeviceResult{}, fmt.Errorf("build google psi request for %s: %w", redactedURL, err)
 	}
 
 	response, err := googlePSIHTTPClient.Do(request)
 	if err != nil {
-		return googlePSIDeviceResult{}, fmt.Errorf("call google psi: %w", err)
+		// net/http transport errors embed the full URL; replace the error with
+		// one that references only the redacted form.
+		return googlePSIDeviceResult{}, fmt.Errorf("call google psi %s: request failed", redactedURL)
 	}
 	defer response.Body.Close()
 
+	// H-12: cap body size before reading to prevent unbounded memory use.
 	var apiResponse googlePSIAPIResponse
-	if err := json.NewDecoder(response.Body).Decode(&apiResponse); err != nil {
+	if err := json.NewDecoder(io.LimitReader(response.Body, googlePSIMaxBodyBytes)).Decode(&apiResponse); err != nil {
 		return googlePSIDeviceResult{}, fmt.Errorf("decode google psi response: %w", err)
 	}
 

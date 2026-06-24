@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -26,7 +27,12 @@ type adminUsersListResponse struct {
 
 // handleAdminListUsers returns all users in the system.
 func (a *App) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := a.Queries.ListAllUsers(r.Context())
+	limit, offset, err := parsePaginationParams(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	users, err := a.Queries.ListAllUsers(r.Context(), sqlc.ListAllUsersParams{Limit: limit, Offset: offset})
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -155,6 +161,10 @@ func (a *App) handleAdminSuspendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := a.Queries.RevokeAllSessionsForUser(r.Context(), userID); err != nil {
+		log.Printf("app: revoke sessions for suspended user (non-fatal): user=%s error=%v", userID.String(), err)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -221,6 +231,10 @@ func (a *App) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		serverError(w, r, err)
 		return
+	}
+
+	if err := a.Queries.RevokeAllSessionsForUser(r.Context(), userID); err != nil {
+		log.Printf("app: revoke sessions for deleted user (non-fatal): user=%s error=%v", userID.String(), err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

@@ -107,6 +107,7 @@ INSERT INTO ai_messages (
 RETURNING id, conversation_id, role, content, crawl_id, scope, model, created_at;
 
 -- name: ListAIMessagesForConversationForUser :many
+-- Display path: returns the full conversation in chronological order.
 SELECT
     am.id,
     am.conversation_id,
@@ -123,6 +124,26 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE am.conversation_id = $1
   AND om.user_id = $2
 ORDER BY am.created_at ASC;
+
+-- name: ListRecentAIMessagesForConversationForUser :many
+-- Prompt-context path: returns the most recent N messages (newest first);
+-- callers reverse the slice to restore chronological order.
+SELECT
+    am.id,
+    am.conversation_id,
+    am.role,
+    am.content,
+    am.crawl_id,
+    am.scope,
+    am.model,
+    am.created_at
+FROM ai_messages AS am
+INNER JOIN ai_conversations AS ac ON ac.id = am.conversation_id
+INNER JOIN projects AS p ON p.id = ac.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE am.conversation_id = $1
+  AND om.user_id = $2
+ORDER BY am.created_at DESC LIMIT $3;
 
 -- name: UpdateAIConversationTouched :one
 UPDATE ai_conversations

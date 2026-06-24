@@ -271,4 +271,5 @@ WHERE c.project_id = $1
   AND om.user_id = $2
   AND c.status = 'completed'
 ORDER BY c.created_at DESC
-LIMIT $3;
+LIMIT $3
+OFFSET $4;

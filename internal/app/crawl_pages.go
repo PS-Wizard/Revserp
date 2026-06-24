@@ -134,6 +134,10 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 
 	var requestBody createCrawlPageRequest
 	if err := readJSON(r, &requestBody); err != nil && !errors.Is(err, io.EOF) {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -248,19 +252,14 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
-			return
-		}
-
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
 	total, err := queries.CountCrawlPagesForCrawlByUser(r.Context(), sqlc.CountCrawlPagesForCrawlByUserParams{CrawlID: crawlID, UserID: user.ID})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if total == 0 {
+		// Either the crawl doesn't exist or the user doesn't own it — both map to 404.
+		writeJSONError(w, http.StatusNotFound, "crawl not found")
 		return
 	}
 	pages, err := queries.ListCrawlPagesForCrawlByUser(r.Context(), sqlc.ListCrawlPagesForCrawlByUserParams{

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -28,7 +27,12 @@ type adminOrgScoringConfigResponse struct {
 
 // handleAdminListOrganizations returns all organizations.
 func (a *App) handleAdminListOrganizations(w http.ResponseWriter, r *http.Request) {
-	orgs, err := a.Queries.ListAllOrganizations(r.Context())
+	limit, offset, err := parsePaginationParams(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	orgs, err := a.Queries.ListAllOrganizations(r.Context(), sqlc.ListAllOrganizationsParams{Limit: limit, Offset: offset})
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -99,7 +103,11 @@ func (a *App) handleAdminPutOrgScoringConfig(w http.ResponseWriter, r *http.Requ
 	var req struct {
 		Config issueshared.ScoringConfig `json:"config"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(r, &req); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

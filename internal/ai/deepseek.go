@@ -48,7 +48,7 @@ func (client DeepSeekClient) GenerateText(ctx context.Context, prompt string) (s
 
 	model := strings.TrimSpace(client.Model)
 	if model == "" {
-		model = "deepseek-v4-flash"
+		model = DefaultDeepSeekModel
 	}
 
 	payload := deepSeekChatRequest{
@@ -84,7 +84,12 @@ func (client DeepSeekClient) GenerateText(ctx context.Context, prompt string) (s
 		return "", fmt.Errorf("read deepseek response: %w", err)
 	}
 	if response.StatusCode >= 400 {
-		return "", fmt.Errorf("deepseek error %d: %s", response.StatusCode, strings.TrimSpace(string(responseBytes)))
+		// Cap embedded upstream body to 512 bytes to avoid leaking large error payloads.
+		body := responseBytes
+		if len(body) > 512 {
+			body = body[:512]
+		}
+		return "", fmt.Errorf("deepseek error %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var decoded deepSeekChatResponse

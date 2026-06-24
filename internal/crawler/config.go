@@ -13,6 +13,10 @@ const (
 	defaultMaxDepth            = 2
 	defaultFetchTimeoutSeconds = 10
 	defaultUserAgent           = "revserp-bot/0.1"
+
+	// maxBodyBytes is the maximum response body size accepted by the fetcher.
+	// Responses larger than this are rejected to prevent memory exhaustion (C-4).
+	maxBodyBytes int64 = 10 << 20 // 10 MiB
 )
 
 // CrawlConfigSnapshot holds the persisted crawl settings for one crawl row.
