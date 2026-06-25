@@ -24,6 +24,7 @@ type FetchResult struct {
 	FinalURL     string
 	StatusCode   int
 	ContentType  string
+	RetryAfter   string // raw Retry-After header value; non-empty only on throttled responses
 	Body         []byte
 	ResponseTime time.Duration
 	ResponseSize int

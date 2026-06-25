@@ -38,7 +38,7 @@ func TestRunnerRunCrawlsInternalPagesUpToMaxDepth(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	runner := NewRunner(CrawlerConfig{
 		AllowedHost: mustParseURL(t, server.URL).Host,
@@ -83,7 +83,7 @@ func TestRunnerRunRespectsMaxPages(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	runner := NewRunner(CrawlerConfig{
 		AllowedHost: mustParseURL(t, server.URL).Host,
@@ -113,7 +113,7 @@ func TestRunnerRunAllowsUnlimitedPagesWhenMaxPagesIsZero(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	runner := NewRunner(CrawlerConfig{
 		AllowedHost: mustParseURL(t, server.URL).Host,
@@ -149,7 +149,7 @@ func TestRunnerRunSkipsDuplicateFinalURLs(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	store := &testResultStore{}
 	runner := NewRunner(CrawlerConfig{
@@ -192,7 +192,7 @@ func TestRunnerRunHandlesManyDiscoveredLinksWithoutDeadlocking(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	runner := NewRunner(CrawlerConfig{
 		AllowedHost: mustParseURL(t, server.URL).Host,
@@ -220,7 +220,7 @@ func TestRunnerRunAndPersistCallsStore(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	store := &testResultStore{}
 	runner := NewRunner(CrawlerConfig{
@@ -262,7 +262,7 @@ func TestRunnerRunAndPersistFailsOnStoreError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	runner := NewRunner(CrawlerConfig{
 		AllowedHost: mustParseURL(t, server.URL).Host,

@@ -30,7 +30,7 @@ func TestProcessJobUsesRenderedHTMLWhenItImprovesExtraction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	renderer := &stubRenderer{
 		fetchResult: FetchResult{
@@ -66,7 +66,7 @@ func TestProcessJobKeepsRawHTMLWhenRendererFails(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	renderer := &stubRenderer{err: fmt.Errorf("boom")}
 

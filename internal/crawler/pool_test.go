@@ -27,7 +27,7 @@ func TestStartWorkerPoolProcessesJobs(t *testing.T) {
 	jobs <- CrawlJob{URL: server.URL + "/three", Depth: 2}
 	close(jobs)
 
-	fetcher := NewFetcher(5*time.Second, "")
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 	results := StartWorkerPool(context.Background(), 2, fetcher, parser, nil, jobs, 0, 0)
 

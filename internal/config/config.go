@@ -45,6 +45,9 @@ type Config struct {
 	GoogleRedirectURL           string
 	GoogleTokenEncryptionSecret string
 	PageSpeedAPIKey             string
+	CrawlMaxRetries             int
+	CrawlRetryBase              time.Duration
+	CrawlRetryMax               time.Duration
 }
 
 // Load reads configuration from the environment.
@@ -85,6 +88,9 @@ func Load() Config {
 		GoogleRedirectURL:           getEnv("GOOGLE_REDIRECT_URL", ""),
 		GoogleTokenEncryptionSecret: getEnv("GOOGLE_TOKEN_ENCRYPTION_SECRET", ""),
 		PageSpeedAPIKey:             getEnv("PAGESPEED_API_KEY", ""),
+		CrawlMaxRetries:             getEnvInt("CRAWL_MAX_RETRIES", 3),
+		CrawlRetryBase:              time.Duration(getEnvInt("CRAWL_RETRY_BASE_MS", 1000)) * time.Millisecond,
+		CrawlRetryMax:               time.Duration(getEnvInt("CRAWL_RETRY_MAX_MS", 15000)) * time.Millisecond,
 	}
 }
 

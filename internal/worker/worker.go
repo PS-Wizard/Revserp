@@ -26,10 +26,13 @@ type Worker struct {
 	crawlPageWorkerCount int
 	renderer             *crawler.Renderer
 	pageSpeedAPIKey      string
+	crawlMaxRetries      int
+	crawlRetryBase       time.Duration
+	crawlRetryMax        time.Duration
 }
 
 // New builds a crawl worker.
-func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlPageWorkerCount int, renderer *crawler.Renderer, pageSpeedAPIKey string) *Worker {
+func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlPageWorkerCount int, renderer *crawler.Renderer, pageSpeedAPIKey string, crawlMaxRetries int, crawlRetryBase time.Duration, crawlRetryMax time.Duration) *Worker {
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -48,6 +51,9 @@ func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlP
 		crawlPageWorkerCount: crawlPageWorkerCount,
 		renderer:             renderer,
 		pageSpeedAPIKey:      pageSpeedAPIKey,
+		crawlMaxRetries:      crawlMaxRetries,
+		crawlRetryBase:       crawlRetryBase,
+		crawlRetryMax:        crawlRetryMax,
 	}
 }
 
@@ -118,7 +124,7 @@ func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQ
 		return fmt.Errorf("build crawler config: %w", err)
 	}
 
-	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent)
+	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, worker.crawlMaxRetries, worker.crawlRetryBase, worker.crawlRetryMax)
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(worker.pool)
 	issueStore := issues.NewStore(worker.pool)

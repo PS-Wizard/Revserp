@@ -12,7 +12,7 @@ func TestNeedsJSRenderLiveURLs(t *testing.T) {
 		t.Skip("set RUN_LIVE_RENDER_DETECTOR_TESTS=1 to run live detector tests")
 	}
 
-	fetcher := NewFetcher(15*time.Second, "revserp-live-test/0.1")
+	fetcher := NewFetcher(15*time.Second, "revserp-live-test/0.1", 0, time.Second, 15*time.Second)
 	parser := NewParser()
 
 	tests := []struct {
