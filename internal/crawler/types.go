@@ -4,11 +4,13 @@ import "time"
 
 // CrawlerConfig holds crawl execution settings.
 type CrawlerConfig struct {
-	AllowedHost  string
-	MaxDepth     int
-	MaxPages     int
-	FetchTimeout time.Duration
-	UserAgent    string
+	AllowedHost   string
+	MaxDepth      int
+	MaxPages      int
+	FetchTimeout  time.Duration
+	RequestDelay  time.Duration
+	RequestJitter time.Duration
+	UserAgent     string
 }
 
 // CrawlJob represents one URL scheduled for crawling.

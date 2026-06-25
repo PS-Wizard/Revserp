@@ -101,7 +101,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	defer cancelRun()
 
 	jobs := make(chan CrawlJob, runner.workerCount)
-	results := StartWorkerPool(runContext, runner.workerCount, runner.fetcher, runner.parser, runner.renderer, jobs)
+	results := StartWorkerPool(runContext, runner.workerCount, runner.fetcher, runner.parser, runner.renderer, jobs, runner.config.RequestDelay, runner.config.RequestJitter)
 
 	if shouldPersist {
 		if err := runner.store.MarkCrawlRunning(runContext, crawlID); err != nil {
@@ -117,6 +117,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	scheduledPages := 1
 	activeJobs := 0
 	urlsCrawled := 0
+	urlsRendered := 0
+	urlsSkippedNon2xx := 0
 	maxDepthReached := 0
 	pendingQueue := []CrawlJob{{URL: normalizedRootURL.String(), Depth: 0}}
 
@@ -162,10 +164,27 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 
 			activeJobs--
 			crawlResults = append(crawlResults, result)
+
+			// Non-2xx responses (rate limits, challenge pages, server errors) are
+			// counted but not persisted or used for link discovery.
+			isNon2xx := result.Fetch.StatusCode != 0 && (result.Fetch.StatusCode < 200 || result.Fetch.StatusCode > 299)
+			if isNon2xx {
+				urlsSkippedNon2xx++
+				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
+					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
+				continue
+			}
+
 			urlsCrawled++
+			if result.JavascriptRendered {
+				urlsRendered++
+			}
 			if result.Job.Depth > maxDepthReached {
 				maxDepthReached = result.Job.Depth
 			}
+
+			log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
+				urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
 
 			isDuplicateProcessedPage := false
 			normalizedResultURL, normalizeErr := NormalizeURL(crawlPageURL(result), nil)

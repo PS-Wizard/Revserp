@@ -20,12 +20,16 @@ type CrawlConfigSnapshot struct {
 	MaxDepth            int  `json:"max_depth"`
 	MaxPages            *int `json:"max_pages,omitempty"`
 	FetchTimeoutSeconds int  `json:"fetch_timeout_seconds"`
+	RequestDelayMs      *int `json:"request_delay_ms,omitempty"`
+	RequestJitterMs     *int `json:"request_jitter_ms,omitempty"`
 }
 
 type crawlConfigSnapshotInput struct {
 	MaxDepth            *int `json:"max_depth"`
 	MaxPages            *int `json:"max_pages"`
 	FetchTimeoutSeconds *int `json:"fetch_timeout_seconds"`
+	RequestDelayMs      *int `json:"request_delay_ms"`
+	RequestJitterMs     *int `json:"request_jitter_ms"`
 }
 
 // NormalizeConfigSnapshot resolves defaults and validates one crawl config snapshot.
@@ -61,6 +65,20 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 			}
 			resolvedSnapshot.FetchTimeoutSeconds = *input.FetchTimeoutSeconds
 		}
+
+		if input.RequestDelayMs != nil {
+			if *input.RequestDelayMs <= 0 {
+				return CrawlConfigSnapshot{}, nil, errors.New("request_delay_ms must be greater than zero when provided")
+			}
+			resolvedSnapshot.RequestDelayMs = input.RequestDelayMs
+		}
+
+		if input.RequestJitterMs != nil {
+			if *input.RequestJitterMs <= 0 {
+				return CrawlConfigSnapshot{}, nil, errors.New("request_jitter_ms must be greater than zero when provided")
+			}
+			resolvedSnapshot.RequestJitterMs = input.RequestJitterMs
+		}
 	}
 
 	normalizedSnapshot, err := json.Marshal(resolvedSnapshot)
@@ -93,11 +111,23 @@ func ConfigFromBaseURLAndSnapshot(baseURL string, rawConfigSnapshot []byte) (Cra
 		maxPages = *configSnapshot.MaxPages
 	}
 
+	var requestDelay time.Duration
+	if configSnapshot.RequestDelayMs != nil {
+		requestDelay = time.Duration(*configSnapshot.RequestDelayMs) * time.Millisecond
+	}
+
+	var requestJitter time.Duration
+	if configSnapshot.RequestJitterMs != nil {
+		requestJitter = time.Duration(*configSnapshot.RequestJitterMs) * time.Millisecond
+	}
+
 	return CrawlerConfig{
-		AllowedHost:  normalizeHostForScope(parsedBaseURL.Hostname()),
-		MaxDepth:     configSnapshot.MaxDepth,
-		MaxPages:     maxPages,
-		FetchTimeout: time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
-		UserAgent:    defaultUserAgent,
+		AllowedHost:   normalizeHostForScope(parsedBaseURL.Hostname()),
+		MaxDepth:      configSnapshot.MaxDepth,
+		MaxPages:      maxPages,
+		FetchTimeout:  time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
+		RequestDelay:  requestDelay,
+		RequestJitter: requestJitter,
+		UserAgent:     defaultUserAgent,
 	}, nil
 }

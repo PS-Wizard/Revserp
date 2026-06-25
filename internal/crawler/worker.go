@@ -23,6 +23,13 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 		Fetch: fetchResult,
 	}
 
+	// Skip processing for non-2xx responses (e.g. 429 rate-limit / challenge pages).
+	// Rendering and parsing error pages wastes JS render quota and pollutes stored content.
+	if fetchResult.StatusCode != 0 && (fetchResult.StatusCode < 200 || fetchResult.StatusCode > 299) {
+		log.Printf("skipping non-2xx page: url=%q status=%d", job.URL, fetchResult.StatusCode)
+		return crawlResult
+	}
+
 	if !strings.Contains(strings.ToLower(fetchResult.ContentType), "text/html") {
 		return crawlResult
 	}

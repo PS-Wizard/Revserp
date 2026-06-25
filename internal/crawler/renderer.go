@@ -42,8 +42,11 @@ func NewRenderer(binaryPath string, concurrency int, timeout time.Duration, kill
 	if killTimeout <= 0 {
 		killTimeout = defaultRendererKillTimeout
 	}
-	if killTimeout < timeout {
-		killTimeout = timeout
+	// Obscura's own --timeout must fire a hair before the hard SIGKILL deadline so
+	// the browser exits cleanly with a timeout error instead of being force-killed
+	// mid-render (which leaves no usable output and looks like a deadline error).
+	if killTimeout <= timeout {
+		killTimeout = timeout + time.Second
 	}
 
 	return &Renderer{
@@ -79,7 +82,15 @@ func (renderer *Renderer) RenderHTML(ctx context.Context, targetURL string) (Fet
 		"fetch",
 		targetURL,
 		"--dump", "html",
-		"--wait-until", "networkidle0",
+		// domcontentloaded returns as soon as the DOM is parsed instead of waiting
+		// for the network to fully settle. networkidle0 routinely blew past the kill
+		// timeout on JS-heavy sites that keep background connections open (analytics,
+		// chat widgets, long-poll), producing spurious "context deadline exceeded"
+		// failures even though the page was already usable.
+		"--wait-until", "domcontentloaded",
+		// Stealth masks the headless fingerprint so bot-aware sites serve the real
+		// page rather than a challenge/blank shell that yields empty rendered HTML.
+		"--stealth",
 		"--timeout", strconv.Itoa(int(renderer.timeout.Seconds())),
 		"--quiet",
 	)
