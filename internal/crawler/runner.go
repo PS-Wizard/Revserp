@@ -3,6 +3,7 @@ package crawler
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -118,6 +119,27 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	urlsCrawled := 0
 	maxDepthReached := 0
 	pendingQueue := []CrawlJob{{URL: normalizedRootURL.String(), Depth: 0}}
+
+	// Seed the frontier from the site's sitemap when available. This gives complete,
+	// flat URL coverage without rendering pages just to discover links; plain
+	// link-following BFS still runs afterward to catch anything the sitemap omits.
+	sitemapURLs := DiscoverSitemapURLs(runContext, runner.fetcher, normalizedRootURL, runner.config.AllowedHost, runner.config.MaxPages)
+	sitemapSeeded := 0
+	for _, sitemapURL := range sitemapURLs {
+		if runner.config.MaxPages > 0 && scheduledPages >= runner.config.MaxPages {
+			break
+		}
+		if _, alreadySeen := seenURLs[sitemapURL]; alreadySeen {
+			continue
+		}
+		seenURLs[sitemapURL] = struct{}{}
+		scheduledPages++
+		sitemapSeeded++
+		pendingQueue = append(pendingQueue, CrawlJob{URL: sitemapURL, Depth: 0})
+	}
+	if sitemapSeeded > 0 {
+		log.Printf("sitemap discovery: seeded %d urls (root=%q)", sitemapSeeded, normalizedRootURL.String())
+	}
 
 	var crawlResults []CrawlResult
 
