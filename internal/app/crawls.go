@@ -85,6 +85,7 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 	crawl, err := queries.CreateCrawl(r.Context(), sqlc.CreateCrawlParams{
 		ProjectID:         projectID,
 		RequestedByUserID: user.ID,
+		Source:            "manual",
 		Status:            "queued",
 		ConfigSnapshot:    normalizedConfigSnapshot,
 		StartedAt:         pgtype.Timestamptz{},
@@ -447,6 +448,65 @@ func buildCrawlResponse(
 	}
 
 	return response
+}
+
+type activeCrawlResponse struct {
+	ID             string `json:"id"`
+	ProjectID      string `json:"project_id"`
+	Status         string `json:"status"`
+	URLsDiscovered int32  `json:"urls_discovered"`
+	URLsCrawled    int32  `json:"urls_crawled"`
+	CreatedAt      string `json:"created_at"`
+}
+
+// handleListActiveOrganizationCrawls returns all queued/running crawls across all projects in an organization.
+func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.Request) {
+	organizationID, err := parseUUIDParam(chi.URLParam(r, "organizationID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid organization id")
+		return
+	}
+
+	var crawls []sqlc.ListActiveCrawlsForOrganizationRow
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		user, _, err := a.ensureCurrentUser(r, queries)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return err
+		}
+
+		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusForbidden, "forbidden")
+				return err
+			}
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return err
+		}
+
+		crawls, err = queries.ListActiveCrawlsForOrganization(r.Context(), organizationID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return err
+		}
+		return nil
+	}) {
+		return
+	}
+
+	responses := make([]activeCrawlResponse, 0, len(crawls))
+	for _, c := range crawls {
+		responses = append(responses, activeCrawlResponse{
+			ID:             c.ID.String(),
+			ProjectID:      c.ProjectID.String(),
+			Status:         c.Status,
+			URLsDiscovered: c.UrlsDiscovered,
+			URLsCrawled:    c.UrlsCrawled,
+			CreatedAt:      formatTimestamp(c.CreatedAt),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"crawls": responses})
 }
 
 // formatTimestamp formats a database timestamp for API responses.

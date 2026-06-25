@@ -56,7 +56,7 @@ type googlePSIAPIResponse struct {
 }
 
 func (worker *Worker) enrichCrawlWithGooglePSI(ctx context.Context, crawlID pgtype.UUID, pageURL string) (*googlePSIStoredResult, error) {
-	apiKey := strings.TrimSpace(worker.pageSpeedAPIKey)
+	apiKey := strings.TrimSpace(worker.cfg.PageSpeedAPIKey)
 	if apiKey == "" {
 		return nil, nil
 	}

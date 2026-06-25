@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ps-wizard/revserp/internal/crawler"
@@ -17,65 +18,123 @@ import (
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
+// Config holds all settings for a crawl Worker instance.
+type Config struct {
+	ManualConcurrency int
+	ManualPoll        time.Duration
+
+	AutoConcurrency       int
+	AutoPoll              time.Duration
+	AutoSchedulerInterval time.Duration
+	AutoCrawlInterval     time.Duration
+
+	CrawlPageWorkerCount int
+	PageSpeedAPIKey      string
+	CrawlMaxRetries      int
+	CrawlRetryBase       time.Duration
+	CrawlRetryMax        time.Duration
+}
+
+// claimedCrawlRow is the minimal data the worker needs from any claim query.
+type claimedCrawlRow struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	RequestedByUserID pgtype.UUID
+	ConfigSnapshot    []byte
+	BaseURL           string
+}
+
+func claimedFromManual(row sqlc.ClaimNextQueuedCrawlManualRow) claimedCrawlRow {
+	return claimedCrawlRow{
+		ID:                row.ID,
+		ProjectID:         row.ProjectID,
+		RequestedByUserID: row.RequestedByUserID,
+		ConfigSnapshot:    row.ConfigSnapshot,
+		BaseURL:           row.BaseUrl,
+	}
+}
+
+func claimedFromAuto(row sqlc.ClaimNextQueuedCrawlAutoRow) claimedCrawlRow {
+	return claimedCrawlRow{
+		ID:                row.ID,
+		ProjectID:         row.ProjectID,
+		RequestedByUserID: row.RequestedByUserID,
+		ConfigSnapshot:    row.ConfigSnapshot,
+		BaseURL:           row.BaseUrl,
+	}
+}
+
 // Worker claims queued crawls from Postgres and runs them.
 type Worker struct {
-	pool                 *pgxpool.Pool
-	queries              *sqlc.Queries
-	concurrency          int
-	pollInterval         time.Duration
-	crawlPageWorkerCount int
-	renderer             *crawler.Renderer
-	pageSpeedAPIKey      string
-	crawlMaxRetries      int
-	crawlRetryBase       time.Duration
-	crawlRetryMax        time.Duration
+	pool     *pgxpool.Pool
+	queries  *sqlc.Queries
+	cfg      Config
+	renderer *crawler.Renderer
 }
 
 // New builds a crawl worker.
-func New(pool *pgxpool.Pool, concurrency int, pollInterval time.Duration, crawlPageWorkerCount int, renderer *crawler.Renderer, pageSpeedAPIKey string, crawlMaxRetries int, crawlRetryBase time.Duration, crawlRetryMax time.Duration) *Worker {
-	if concurrency <= 0 {
-		concurrency = 1
+func New(pool *pgxpool.Pool, cfg Config, renderer *crawler.Renderer) *Worker {
+	if cfg.ManualConcurrency <= 0 {
+		cfg.ManualConcurrency = 1
 	}
-	if pollInterval <= 0 {
-		pollInterval = 2 * time.Second
+	if cfg.ManualPoll <= 0 {
+		cfg.ManualPoll = 2 * time.Second
 	}
-	if crawlPageWorkerCount <= 0 {
-		crawlPageWorkerCount = crawler.DefaultWorkerCount
+	if cfg.AutoConcurrency <= 0 {
+		cfg.AutoConcurrency = 1
+	}
+	if cfg.AutoPoll <= 0 {
+		cfg.AutoPoll = 2 * time.Second
+	}
+	if cfg.AutoSchedulerInterval <= 0 {
+		cfg.AutoSchedulerInterval = 5 * time.Minute
+	}
+	if cfg.AutoCrawlInterval <= 0 {
+		cfg.AutoCrawlInterval = 24 * time.Hour
+	}
+	if cfg.CrawlPageWorkerCount <= 0 {
+		cfg.CrawlPageWorkerCount = crawler.DefaultWorkerCount
 	}
 
 	return &Worker{
-		pool:                 pool,
-		queries:              sqlc.New(pool),
-		concurrency:          concurrency,
-		pollInterval:         pollInterval,
-		crawlPageWorkerCount: crawlPageWorkerCount,
-		renderer:             renderer,
-		pageSpeedAPIKey:      pageSpeedAPIKey,
-		crawlMaxRetries:      crawlMaxRetries,
-		crawlRetryBase:       crawlRetryBase,
-		crawlRetryMax:        crawlRetryMax,
+		pool:     pool,
+		queries:  sqlc.New(pool),
+		cfg:      cfg,
+		renderer: renderer,
 	}
 }
 
-// Run starts worker loops until the context is canceled.
-func (worker *Worker) Run(ctx context.Context) error {
-	errorsChannel := make(chan error, worker.concurrency)
-	for workerIndex := range worker.concurrency {
+const schedulerAdvisoryLockID = 1748290342
+
+// Run starts all worker pools and scheduler until the context is canceled.
+func (w *Worker) Run(ctx context.Context) error {
+	go w.runScheduler(ctx)
+
+	done := make(chan struct{}, w.cfg.ManualConcurrency+w.cfg.AutoConcurrency)
+
+	for i := range w.cfg.ManualConcurrency {
 		go func() {
-			worker.runLoop(ctx, workerIndex+1)
-			errorsChannel <- nil
+			w.runManualLoop(ctx, i+1)
+			done <- struct{}{}
 		}()
 	}
 
-	for range worker.concurrency {
-		<-errorsChannel
+	for i := range w.cfg.AutoConcurrency {
+		go func() {
+			w.runAutoLoop(ctx, i+1)
+			done <- struct{}{}
+		}()
+	}
+
+	for range w.cfg.ManualConcurrency + w.cfg.AutoConcurrency {
+		<-done
 	}
 
 	return nil
 }
 
-// runLoop repeatedly claims and processes queued crawls.
-func (worker *Worker) runLoop(ctx context.Context, workerID int) {
+// runManualLoop repeatedly claims and processes manual crawls.
+func (w *Worker) runManualLoop(ctx context.Context, workerID int) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,93 +142,230 @@ func (worker *Worker) runLoop(ctx context.Context, workerID int) {
 		default:
 		}
 
-		claimedCrawl, err := worker.queries.ClaimNextQueuedCrawl(ctx)
+		row, err := w.queries.ClaimNextQueuedCrawlManual(ctx)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
+				if err := sleepOrCancel(ctx, w.cfg.ManualPoll); err != nil {
 					return
 				}
 				continue
 			}
 			if isRunningCrawlConflict(err) {
-				if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
+				if err := sleepOrCancel(ctx, w.cfg.ManualPoll); err != nil {
 					return
 				}
 				continue
 			}
-			log.Printf("worker %d transient error claiming crawl: %v", workerID, err)
-			if err := sleepOrCancel(ctx, worker.pollInterval); err != nil {
+			log.Printf("manual worker %d transient error claiming crawl: %v", workerID, err)
+			if err := sleepOrCancel(ctx, w.cfg.ManualPoll); err != nil {
 				return
 			}
 			continue
 		}
 
-		log.Printf("worker %d claimed crawl: crawl_id=%s project_id=%s", workerID, claimedCrawl.ID.String(), claimedCrawl.ProjectID.String())
-		if err := worker.runCrawl(ctx, claimedCrawl); err != nil {
-			log.Printf("worker %d crawl failed: crawl_id=%s error=%v", workerID, claimedCrawl.ID.String(), err)
+		claimed := claimedFromManual(row)
+		log.Printf("manual worker %d claimed crawl: crawl_id=%s project_id=%s source=manual", workerID, claimed.ID.String(), claimed.ProjectID.String())
+		if err := w.runCrawl(ctx, claimed); err != nil {
+			log.Printf("manual worker %d crawl failed: crawl_id=%s error=%v", workerID, claimed.ID.String(), err)
 			continue
 		}
-		log.Printf("worker %d crawl completed: crawl_id=%s", workerID, claimedCrawl.ID.String())
+		log.Printf("manual worker %d crawl completed: crawl_id=%s", workerID, claimed.ID.String())
 	}
 }
 
-// runCrawl executes one claimed crawl, derives backend issues, and calculates crawl scores.
-func (worker *Worker) runCrawl(ctx context.Context, claimedCrawl sqlc.ClaimNextQueuedCrawlRow) error {
-	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(claimedCrawl.BaseUrl, claimedCrawl.ConfigSnapshot)
+// runAutoLoop repeatedly claims and processes auto crawls.
+func (w *Worker) runAutoLoop(ctx context.Context, workerID int) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		row, err := w.queries.ClaimNextQueuedCrawlAuto(ctx)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				if err := sleepOrCancel(ctx, w.cfg.AutoPoll); err != nil {
+					return
+				}
+				continue
+			}
+			log.Printf("auto worker %d transient error claiming crawl: %v", workerID, err)
+			if err := sleepOrCancel(ctx, w.cfg.AutoPoll); err != nil {
+				return
+			}
+			continue
+		}
+
+		claimed := claimedFromAuto(row)
+		log.Printf("auto worker %d claimed crawl: crawl_id=%s project_id=%s source=auto", workerID, claimed.ID.String(), claimed.ProjectID.String())
+		if err := w.runCrawl(ctx, claimed); err != nil {
+			log.Printf("auto worker %d crawl failed: crawl_id=%s error=%v", workerID, claimed.ID.String(), err)
+			continue
+		}
+		log.Printf("auto worker %d crawl completed: crawl_id=%s", workerID, claimed.ID.String())
+	}
+}
+
+// runScheduler periodically enqueues auto crawls for due projects.
+func (w *Worker) runScheduler(ctx context.Context) {
+	ticker := time.NewTicker(w.cfg.AutoSchedulerInterval)
+	defer ticker.Stop()
+
+	for {
+		if err := w.sweepDueAutoCrawls(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			log.Printf("auto-crawl scheduler sweep error: %v", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (w *Worker) sweepDueAutoCrawls(ctx context.Context) error {
+	tx, err := w.pool.Begin(ctx)
 	if err != nil {
-		store := crawler.NewStore(worker.pool)
-		if failErr := store.MarkCrawlFailed(ctx, claimedCrawl.ID, 0, 0, 0); failErr != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Acquire a transaction-scoped advisory lock so only one scheduler
+	// instance sweeps at a time. pg_try_advisory_xact_lock releases
+	// automatically when the transaction ends.
+	var locked bool
+	if err := tx.QueryRow(ctx, "SELECT pg_try_advisory_xact_lock($1)", schedulerAdvisoryLockID).Scan(&locked); err != nil {
+		return fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	if !locked {
+		log.Printf("auto-crawl scheduler: advisory lock not acquired, another instance is sweeping")
+		return tx.Rollback(ctx)
+	}
+
+	queries := w.queries.WithTx(tx)
+
+	cutoff := time.Now().UTC().Add(-w.cfg.AutoCrawlInterval)
+	batchLimit := int32(100)
+
+	settings, err := queries.ListDueAutoCrawlSettings(ctx, sqlc.ListDueAutoCrawlSettingsParams{
+		CompletedAt: pgtype.Timestamptz{Time: cutoff, Valid: true},
+		Limit:       batchLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("list due settings: %w", err)
+	}
+
+	if len(settings) == 0 {
+		return tx.Rollback(ctx)
+	}
+
+	enqueued := 0
+	for _, s := range settings {
+		configSnapshot := s.ConfigSnapshot
+		if len(configSnapshot) == 0 {
+			// Normalize empty config to default snapshot.
+			_, norm, err := crawler.NormalizeConfigSnapshot(nil)
+			if err != nil {
+				log.Printf("auto-crawl scheduler: failed to normalize default config for project %s: %v", s.ProjectID.String(), err)
+				continue
+			}
+			configSnapshot = norm
+		}
+
+		// requested_by_user_id is NULL for auto crawls.
+		_, err := queries.CreateCrawl(ctx, sqlc.CreateCrawlParams{
+			ProjectID:         s.ProjectID,
+			RequestedByUserID: pgtype.UUID{},
+			Source:            "auto",
+			Status:            "queued",
+			ConfigSnapshot:    configSnapshot,
+			StartedAt:         pgtype.Timestamptz{},
+		})
+		if err != nil {
+			log.Printf("auto-crawl scheduler: failed to create auto crawl for project %s: %v", s.ProjectID.String(), err)
+			continue
+		}
+
+		if err := queries.UpdateAutoCrawlLastEnqueuedAt(ctx, s.ProjectID); err != nil {
+			log.Printf("auto-crawl scheduler: failed to update last_enqueued_at for project %s: %v", s.ProjectID.String(), err)
+			continue
+		}
+
+		enqueued++
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+
+	if enqueued > 0 {
+		log.Printf("auto-crawl scheduler: enqueued %d auto crawls", enqueued)
+	}
+	return nil
+}
+
+// runCrawl executes one claimed crawl, derives backend issues, and calculates crawl scores.
+func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
+	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(claimed.BaseURL, claimed.ConfigSnapshot)
+	if err != nil {
+		store := crawler.NewStore(w.pool)
+		if failErr := store.MarkCrawlFailed(ctx, claimed.ID, 0, 0, 0); failErr != nil {
 			return fmt.Errorf("build crawler config: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("build crawler config: %w", err)
 	}
 
-	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, worker.crawlMaxRetries, worker.crawlRetryBase, worker.crawlRetryMax)
+	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, w.cfg.CrawlMaxRetries, w.cfg.CrawlRetryBase, w.cfg.CrawlRetryMax)
 	parser := crawler.NewParser()
-	crawlStore := crawler.NewStore(worker.pool)
-	issueStore := issues.NewStore(worker.pool)
-	runner := crawler.NewRunner(crawlConfig, worker.crawlPageWorkerCount, fetcher, parser).
-		WithRenderer(worker.renderer).
+	crawlStore := crawler.NewStore(w.pool)
+	issueStore := issues.NewStore(w.pool)
+	runner := crawler.NewRunner(crawlConfig, w.cfg.CrawlPageWorkerCount, fetcher, parser).
+		WithRenderer(w.renderer).
 		WithStore(crawlStore).
 		WithDeferredFinalStatus()
 
-	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(ctx, claimedCrawl.ID, claimedCrawl.BaseUrl)
+	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(ctx, claimed.ID, claimed.BaseURL)
 	if err != nil {
 		return fmt.Errorf("run crawl: %w", err)
 	}
 
-	if worker.pageSpeedAPIKey != "" {
-		log.Printf("starting google psi: crawl_id=%s url=%s strategy=mobile", claimedCrawl.ID.String(), claimedCrawl.BaseUrl)
+	if w.cfg.PageSpeedAPIKey != "" {
+		log.Printf("starting google psi: crawl_id=%s url=%s strategy=mobile", claimed.ID.String(), claimed.BaseURL)
 	}
-	googlePSIResult, err := worker.enrichCrawlWithGooglePSI(ctx, claimedCrawl.ID, claimedCrawl.BaseUrl)
+	googlePSIResult, err := w.enrichCrawlWithGooglePSI(ctx, claimed.ID, claimed.BaseURL)
 	if err != nil {
-		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimedCrawl.ID.String(), err)
+		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 	}
 
-	derivedIssueCount, err := issueStore.DeriveIssues(ctx, claimedCrawl.ID)
+	derivedIssueCount, err := issueStore.DeriveIssues(ctx, claimed.ID)
 	if err != nil {
-		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+		if failErr := crawlStore.MarkCrawlFailed(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("derive issues: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("derive issues: %w", err)
 	}
 
-	googlePSIIssueCount, err := worker.persistGooglePSIIssues(ctx, claimedCrawl.ID, googlePSIResult)
+	googlePSIIssueCount, err := w.persistGooglePSIIssues(ctx, claimed.ID, googlePSIResult)
 	if err != nil {
-		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimedCrawl.ID.String(), err)
+		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 	}
 	psiInput := toSharedPSIScoreInput(googlePSIResult)
-	crawlScores, err := issueStore.ScoreCrawl(ctx, claimedCrawl.ID, psiInput)
+	crawlScores, err := issueStore.ScoreCrawl(ctx, claimed.ID, psiInput)
 	if err != nil {
-		if failErr := crawlStore.MarkCrawlFailed(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+		if failErr := crawlStore.MarkCrawlFailed(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("score crawl: %w", err)
 	}
 
-	log.Printf("derived crawl issues: crawl_id=%s count=%d google_psi_count=%d", claimedCrawl.ID.String(), derivedIssueCount, googlePSIIssueCount)
-	log.Printf("calculated crawl scores: crawl_id=%s seo=%d aeo=%d pagespeed=%d overall=%d", claimedCrawl.ID.String(), crawlScores.SEOScore, crawlScores.AEOScore, crawlScores.PageSpeedScore, crawlScores.OverallScore)
-	if err := crawlStore.MarkCrawlCompleted(ctx, claimedCrawl.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
+	log.Printf("derived crawl issues: crawl_id=%s count=%d google_psi_count=%d", claimed.ID.String(), derivedIssueCount, googlePSIIssueCount)
+	log.Printf("calculated crawl scores: crawl_id=%s seo=%d aeo=%d pagespeed=%d overall=%d", claimed.ID.String(), crawlScores.SEOScore, crawlScores.AEOScore, crawlScores.PageSpeedScore, crawlScores.OverallScore)
+	if err := crawlStore.MarkCrawlCompleted(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
 		return fmt.Errorf("mark crawl completed: %w", err)
 	}
 

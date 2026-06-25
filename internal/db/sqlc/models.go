@@ -96,6 +96,7 @@ type Crawl struct {
 	GooglePsiResults  []byte
 	HasLlmsTxt        pgtype.Bool
 	RequestedByUserID pgtype.UUID
+	Source            string
 }
 
 type CrawlIssue struct {
@@ -235,6 +236,15 @@ type Project struct {
 	Name           string
 	BaseUrl        string
 	CreatedAt      pgtype.Timestamptz
+}
+
+type ProjectAutoCrawlSetting struct {
+	ProjectID      pgtype.UUID
+	Enabled        bool
+	ConfigSnapshot []byte
+	LastEnqueuedAt pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
 }
 
 type ProjectBusinessProfile struct {

@@ -36,11 +36,59 @@ func (q *Queries) CancelCrawlByIDForUser(ctx context.Context, arg CancelCrawlByI
 	return id, err
 }
 
-const claimNextQueuedCrawl = `-- name: ClaimNextQueuedCrawl :one
+const claimNextQueuedCrawlAuto = `-- name: ClaimNextQueuedCrawlAuto :one
 WITH candidate AS (
     SELECT c.id
     FROM crawls AS c
     WHERE c.status = 'queued'
+      AND c.source = 'auto'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM crawls AS running
+          WHERE running.status = 'running'
+            AND running.project_id = c.project_id
+      )
+    ORDER BY c.created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE crawls AS c
+SET status = 'running',
+    started_at = now(),
+    completed_at = NULL
+FROM candidate, projects AS p
+WHERE c.id = candidate.id
+  AND p.id = c.project_id
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url
+`
+
+type ClaimNextQueuedCrawlAutoRow struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	RequestedByUserID pgtype.UUID
+	ConfigSnapshot    []byte
+	BaseUrl           string
+}
+
+func (q *Queries) ClaimNextQueuedCrawlAuto(ctx context.Context) (ClaimNextQueuedCrawlAutoRow, error) {
+	row := q.db.QueryRow(ctx, claimNextQueuedCrawlAuto)
+	var i ClaimNextQueuedCrawlAutoRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.RequestedByUserID,
+		&i.ConfigSnapshot,
+		&i.BaseUrl,
+	)
+	return i, err
+}
+
+const claimNextQueuedCrawlManual = `-- name: ClaimNextQueuedCrawlManual :one
+WITH candidate AS (
+    SELECT c.id
+    FROM crawls AS c
+    WHERE c.status = 'queued'
+      AND c.source = 'manual'
       AND NOT EXISTS (
           SELECT 1
           FROM crawls AS running
@@ -62,7 +110,7 @@ WHERE c.id = candidate.id
 RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url
 `
 
-type ClaimNextQueuedCrawlRow struct {
+type ClaimNextQueuedCrawlManualRow struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID
 	RequestedByUserID pgtype.UUID
@@ -70,9 +118,9 @@ type ClaimNextQueuedCrawlRow struct {
 	BaseUrl           string
 }
 
-func (q *Queries) ClaimNextQueuedCrawl(ctx context.Context) (ClaimNextQueuedCrawlRow, error) {
-	row := q.db.QueryRow(ctx, claimNextQueuedCrawl)
-	var i ClaimNextQueuedCrawlRow
+func (q *Queries) ClaimNextQueuedCrawlManual(ctx context.Context) (ClaimNextQueuedCrawlManualRow, error) {
+	row := q.db.QueryRow(ctx, claimNextQueuedCrawlManual)
+	var i ClaimNextQueuedCrawlManualRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -106,6 +154,7 @@ const createCrawl = `-- name: CreateCrawl :one
 INSERT INTO crawls (
     project_id,
     requested_by_user_id,
+    source,
     status,
     config_snapshot,
     started_at
@@ -114,7 +163,8 @@ INSERT INTO crawls (
     $2,
     $3,
     $4,
-    $5
+    $5,
+    $6
 )
 RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at
 `
@@ -122,6 +172,7 @@ RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled
 type CreateCrawlParams struct {
 	ProjectID         pgtype.UUID
 	RequestedByUserID pgtype.UUID
+	Source            string
 	Status            string
 	ConfigSnapshot    []byte
 	StartedAt         pgtype.Timestamptz
@@ -150,6 +201,7 @@ func (q *Queries) CreateCrawl(ctx context.Context, arg CreateCrawlParams) (Creat
 	row := q.db.QueryRow(ctx, createCrawl,
 		arg.ProjectID,
 		arg.RequestedByUserID,
+		arg.Source,
 		arg.Status,
 		arg.ConfigSnapshot,
 		arg.StartedAt,
@@ -286,6 +338,57 @@ func (q *Queries) GetCrawlOrgID(ctx context.Context, id pgtype.UUID) (pgtype.UUI
 	var organization_id pgtype.UUID
 	err := row.Scan(&organization_id)
 	return organization_id, err
+}
+
+const listActiveCrawlsForOrganization = `-- name: ListActiveCrawlsForOrganization :many
+SELECT
+    c.id,
+    c.project_id,
+    c.status,
+    c.urls_discovered,
+    c.urls_crawled,
+    c.created_at
+FROM crawls AS c
+INNER JOIN projects AS p ON p.id = c.project_id
+WHERE p.organization_id = $1
+  AND c.status IN ('queued', 'running')
+ORDER BY c.created_at DESC
+`
+
+type ListActiveCrawlsForOrganizationRow struct {
+	ID             pgtype.UUID
+	ProjectID      pgtype.UUID
+	Status         string
+	UrlsDiscovered int32
+	UrlsCrawled    int32
+	CreatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) ListActiveCrawlsForOrganization(ctx context.Context, organizationID pgtype.UUID) ([]ListActiveCrawlsForOrganizationRow, error) {
+	rows, err := q.db.Query(ctx, listActiveCrawlsForOrganization, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveCrawlsForOrganizationRow
+	for rows.Next() {
+		var i ListActiveCrawlsForOrganizationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Status,
+			&i.UrlsDiscovered,
+			&i.UrlsCrawled,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCrawlsForProject = `-- name: ListCrawlsForProject :many

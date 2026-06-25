@@ -2,6 +2,7 @@
 INSERT INTO crawls (
     project_id,
     requested_by_user_id,
+    source,
     status,
     config_snapshot,
     started_at
@@ -10,7 +11,8 @@ INSERT INTO crawls (
     $2,
     $3,
     $4,
-    $5
+    $5,
+    $6
 )
 RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at;
 
@@ -117,17 +119,44 @@ SET status = 'failed',
     completed_at = now()
 WHERE id = $1;
 
--- name: ClaimNextQueuedCrawl :one
+-- name: ClaimNextQueuedCrawlManual :one
 WITH candidate AS (
     SELECT c.id
     FROM crawls AS c
     WHERE c.status = 'queued'
+      AND c.source = 'manual'
       AND NOT EXISTS (
           SELECT 1
           FROM crawls AS running
           WHERE running.status = 'running'
             AND running.requested_by_user_id = c.requested_by_user_id
             AND c.requested_by_user_id IS NOT NULL
+      )
+    ORDER BY c.created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE crawls AS c
+SET status = 'running',
+    started_at = now(),
+    completed_at = NULL
+FROM candidate, projects AS p
+WHERE c.id = candidate.id
+  AND p.id = c.project_id
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url;
+
+
+-- name: ClaimNextQueuedCrawlAuto :one
+WITH candidate AS (
+    SELECT c.id
+    FROM crawls AS c
+    WHERE c.status = 'queued'
+      AND c.source = 'auto'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM crawls AS running
+          WHERE running.status = 'running'
+            AND running.project_id = c.project_id
       )
     ORDER BY c.created_at ASC
     FOR UPDATE SKIP LOCKED
@@ -162,3 +191,17 @@ FROM crawls c
 INNER JOIN projects p ON p.id = c.project_id
 WHERE c.id = $1
 LIMIT 1;
+
+-- name: ListActiveCrawlsForOrganization :many
+SELECT
+    c.id,
+    c.project_id,
+    c.status,
+    c.urls_discovered,
+    c.urls_crawled,
+    c.created_at
+FROM crawls AS c
+INNER JOIN projects AS p ON p.id = c.project_id
+WHERE p.organization_id = $1
+  AND c.status IN ('queued', 'running')
+ORDER BY c.created_at DESC;
