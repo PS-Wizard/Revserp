@@ -83,11 +83,8 @@ func ValidateScoringConfig(config shared.ScoringConfig) error {
 	if config.CoverageScale <= 0 {
 		return errors.New("coverage_scale must be greater than zero")
 	}
-	if config.VolumePressureScale < 0 {
-		return errors.New("volume_pressure_scale must be greater than or equal to zero")
-	}
-	if config.MaximumVolumePressure < 0 {
-		return errors.New("maximum_volume_pressure must be greater than or equal to zero")
+	if config.SoftSumDecay <= 0 || config.SoftSumDecay >= 1 {
+		return errors.New("soft_sum_decay must be greater than zero and less than one")
 	}
 	if len(config.SeverityMultipliers) == 0 {
 		return errors.New("severity_multipliers is required")

@@ -2,14 +2,13 @@ package shared
 
 // ScoringConfig holds the score-combination knobs that can be edited without changing issue derivation.
 type ScoringConfig struct {
-	Version               string                         `json:"version"`
-	MinimumOverallScore   int32                          `json:"minimum_overall_score"`
-	CoverageScale         float64                        `json:"coverage_scale"`
-	VolumePressureScale   float64                        `json:"volume_pressure_scale"`
-	MaximumVolumePressure float64                        `json:"maximum_volume_pressure"`
-	SeverityMultipliers   map[string]float64             `json:"severity_multipliers"`
-	OverallWeights        map[string]float64             `json:"overall_weights"`
-	Pillars               map[string]PillarScoringConfig `json:"pillars"`
+	Version             string                         `json:"version"`
+	MinimumOverallScore int32                          `json:"minimum_overall_score"`
+	CoverageScale       float64                        `json:"coverage_scale"`
+	SoftSumDecay        float64                        `json:"soft_sum_decay"`
+	SeverityMultipliers map[string]float64             `json:"severity_multipliers"`
+	OverallWeights      map[string]float64             `json:"overall_weights"`
+	Pillars             map[string]PillarScoringConfig `json:"pillars"`
 }
 
 // PillarScoringConfig holds score weights and issue penalties for one scoring pillar.
@@ -24,11 +23,10 @@ type PillarScoringConfig struct {
 // DefaultScoringMathConfig returns the shared scoring math defaults.
 func DefaultScoringMathConfig() ScoringConfig {
 	return ScoringConfig{
-		Version:               "v8-configurable",
-		MinimumOverallScore:   MinimumOverallScore,
-		CoverageScale:         CoverageScale,
-		VolumePressureScale:   VolumePressureScale,
-		MaximumVolumePressure: MaximumVolumePressure,
+		Version:             "v9-soft-sum",
+		MinimumOverallScore: MinimumOverallScore,
+		CoverageScale:       CoverageScale,
+		SoftSumDecay:        SoftSumDecay,
 		SeverityMultipliers: map[string]float64{
 			"high":   1.0,
 			"medium": 0.6,

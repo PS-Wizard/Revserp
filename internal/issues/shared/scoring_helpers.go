@@ -6,10 +6,14 @@ import (
 )
 
 const (
-	MinimumOverallScore   = 1
-	CoverageScale         = 8.0
-	VolumePressureScale   = 1.5
-	MaximumVolumePressure = 3.0
+	MinimumOverallScore = 1
+	CoverageScale       = 8.0
+	// SoftSumDecay is the geometric decay applied to each successive (lower) issue penalty
+	// when combining issue penalties within a bucket. The worst issue counts in full, the
+	// next at SoftSumDecay, the next at SoftSumDecay^2, and so on. This keeps a bucket from
+	// free-falling just because several issue types coexist while still rewarding fixes to
+	// the worst issue, and converges to roughly 1/(1-SoftSumDecay) times the worst penalty.
+	SoftSumDecay = 0.5
 )
 
 // BuildPillarBreakdown builds one pillar breakdown from its configured bucket weights and issue penalties.
@@ -42,20 +46,17 @@ func BuildPillarBreakdownWithOptions(pillarID string, pillarConfig PillarScoring
 		}
 	}
 
-	volumeMultiplier := IssueVolumeMultiplierWithConfig(issueRowCount, totalScoredPages, scoringConfig)
 	weightedBucketScoreSum := 0.0
 	for bucketIndex := range buckets {
 		psiScore := resolvePSIBucketScore(buckets[bucketIndex].ID, psiInput)
-		adjustedBucketPenalty := buckets[bucketIndex].TotalPenalty * volumeMultiplier
-		adjustedBucketScore := ClampScore(100-adjustedBucketPenalty, 0)
+		bucketScore := buckets[bucketIndex].Score
 		if psiScore != nil {
-			adjustedBucketScore = ClampScore(*psiScore, 0)
-			adjustedBucketPenalty = float64(100 - adjustedBucketScore)
+			bucketScore = ClampScore(*psiScore, 0)
+			buckets[bucketIndex].Score = bucketScore
+			buckets[bucketIndex].TotalPenalty = RoundFloat64(float64(100-bucketScore), 2)
 		}
-		buckets[bucketIndex].Score = adjustedBucketScore
-		buckets[bucketIndex].WeightedContribution = RoundFloat64(float64(adjustedBucketScore)*buckets[bucketIndex].Weight, 2)
-		buckets[bucketIndex].TotalPenalty = RoundFloat64(adjustedBucketPenalty, 2)
-		weightedBucketScoreSum += float64(adjustedBucketScore) * buckets[bucketIndex].Weight
+		buckets[bucketIndex].WeightedContribution = RoundFloat64(float64(bucketScore)*buckets[bucketIndex].Weight, 2)
+		weightedBucketScoreSum += float64(bucketScore) * buckets[bucketIndex].Weight
 	}
 
 	pillarScore := ClampScore(weightedBucketScoreSum, 0)
@@ -99,7 +100,6 @@ func BuildBucketBreakdownWithIssueCoverage(bucketID string, bucketWeight float64
 // BuildBucketBreakdownWithOptions builds one bucket breakdown from editable scoring config.
 func BuildBucketBreakdownWithOptions(bucketID string, bucketWeight float64, issuePenaltyByType map[string]float64, scoringConfig ScoringConfig, totalScoredPages int, issueGroups map[string]*IssueGroup, issueCoverage func(affectedPages int, totalScoredPages int) float64) BucketScoreBreakdown {
 	issues := make([]IssueTypeScoreBreakdown, 0, len(issueGroups))
-	bucketPenalty := 0.0
 	bucketAffectedURLs := make(map[string]struct{})
 	issueRowCount := int32(0)
 
@@ -121,7 +121,6 @@ func BuildBucketBreakdownWithOptions(bucketID string, bucketWeight float64, issu
 			Message:            issueGroup.Message,
 			DetailsPreview:     issueGroup.Details,
 		})
-		bucketPenalty += finalPenalty
 		issueRowCount += issueGroup.RowCount
 		for affectedURL := range issueGroup.AffectedURLs {
 			bucketAffectedURLs[affectedURL] = struct{}{}
@@ -135,6 +134,7 @@ func BuildBucketBreakdownWithOptions(bucketID string, bucketWeight float64, issu
 		return issues[leftIndex].FinalPenalty > issues[rightIndex].FinalPenalty
 	})
 
+	bucketPenalty := SoftSumPenalties(issues, scoringConfig)
 	bucketScore := ClampScore(100-bucketPenalty, 0)
 	return BucketScoreBreakdown{
 		ID:                   bucketID,
@@ -173,38 +173,21 @@ func IssueCoverageWithConfig(affectedPages int, totalScoredPages int, scoringCon
 	return 1 - math.Exp(-coverageRatio*coverageScale)
 }
 
-// IssueVolumeMultiplier returns an extra pillar-level penalty multiplier from issue rows per scoreable page.
-func IssueVolumeMultiplier(issueRowCount int32, totalScoredPages int) float64 {
-	if issueRowCount <= 0 || totalScoredPages <= 0 {
-		return 1
+// SoftSumPenalties combines per-issue-type bucket penalties with geometric decay so coexisting
+// issue types add up without letting a bucket free-fall. issues must already be sorted by
+// FinalPenalty descending, so the worst issue counts in full and each lower one decays.
+func SoftSumPenalties(issues []IssueTypeScoreBreakdown, scoringConfig ScoringConfig) float64 {
+	decay := scoringConfig.SoftSumDecay
+	if decay <= 0 || decay >= 1 {
+		decay = SoftSumDecay
 	}
-	issueRowsPerPage := float64(issueRowCount) / float64(totalScoredPages)
-	extraPressure := math.Log1p(issueRowsPerPage) * VolumePressureScale
-	if extraPressure > MaximumVolumePressure {
-		extraPressure = MaximumVolumePressure
+	bucketPenalty := 0.0
+	weight := 1.0
+	for issueIndex := range issues {
+		bucketPenalty += issues[issueIndex].FinalPenalty * weight
+		weight *= decay
 	}
-	return 1 + extraPressure
-}
-
-// IssueVolumeMultiplierWithConfig returns an editable issue-volume pressure multiplier.
-func IssueVolumeMultiplierWithConfig(issueRowCount int32, totalScoredPages int, scoringConfig ScoringConfig) float64 {
-	if issueRowCount <= 0 || totalScoredPages <= 0 {
-		return 1
-	}
-	volumePressureScale := scoringConfig.VolumePressureScale
-	if volumePressureScale <= 0 {
-		volumePressureScale = VolumePressureScale
-	}
-	maximumVolumePressure := scoringConfig.MaximumVolumePressure
-	if maximumVolumePressure <= 0 {
-		maximumVolumePressure = MaximumVolumePressure
-	}
-	issueRowsPerPage := float64(issueRowCount) / float64(totalScoredPages)
-	extraPressure := math.Log1p(issueRowsPerPage) * volumePressureScale
-	if extraPressure > maximumVolumePressure {
-		extraPressure = maximumVolumePressure
-	}
-	return 1 + extraPressure
+	return bucketPenalty
 }
 
 // ClampScore rounds one score into the allowed 0-100 range, with an optional minimum.

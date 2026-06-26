@@ -9,7 +9,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
-const scoringVersion = "v8-configurable"
+const scoringVersion = "v9-soft-sum"
 
 // CalculateScores builds the persisted crawl scores from issue-derived pillar scoring.
 func CalculateScores(crawlPageSignals []shared.CrawlPageSignal, crawlIssueSignals []shared.CrawlIssueSignal) shared.CrawlScores {

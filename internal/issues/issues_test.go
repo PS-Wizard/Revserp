@@ -177,27 +177,53 @@ func TestCalculateScoresScalesCoverageByCrawlSize(t *testing.T) {
 	}
 }
 
-func TestCalculateScoresAddsPillarPressureForIssueVolume(t *testing.T) {
+func TestCalculateScoresSoftSumsBucketPenalties(t *testing.T) {
 	crawlPages := []shared.CrawlPageSignal{}
 	for pageIndex := 0; pageIndex < 20; pageIndex++ {
 		crawlPages = append(crawlPages, shared.CrawlPageSignal{URL: "https://example.com/page-" + string(rune('a'+pageIndex)), ContentType: "text/html; charset=utf-8"})
 	}
 
-	lightIssues := []shared.CrawlIssueSignal{
-		{URL: crawlPages[0].URL, Pillar: "seo", Bucket: "serp_metadata", Severity: "high", IssueType: "missing_title"},
+	issueTypes := []struct {
+		issueType string
+		severity  string
+	}{
+		{"missing_title", "high"},
+		{"duplicate_title", "high"},
+		{"missing_meta_description", "medium"},
+		{"title_too_short", "medium"},
+		{"meta_description_too_short", "medium"},
+		{"title_too_long", "medium"},
 	}
-	heavyIssues := []shared.CrawlIssueSignal{}
-	for issueIndex := 0; issueIndex < 20; issueIndex++ {
-		heavyIssues = append(heavyIssues, shared.CrawlIssueSignal{URL: crawlPages[0].URL, Pillar: "seo", Bucket: "serp_metadata", Severity: "high", IssueType: "missing_title"})
+	issues := []shared.CrawlIssueSignal{}
+	for _, definition := range issueTypes {
+		for pageIndex := 0; pageIndex < 8; pageIndex++ {
+			issues = append(issues, shared.CrawlIssueSignal{URL: crawlPages[pageIndex].URL, Pillar: "seo", Bucket: "serp_metadata", Severity: definition.severity, IssueType: definition.issueType})
+		}
 	}
 
-	lightBreakdown := BuildScoreBreakdown("", crawlPages, lightIssues, nil)
-	heavyBreakdown := BuildScoreBreakdown("", crawlPages, heavyIssues, nil)
-	lightPenalty := findBucketBreakdown(t, findPillarBreakdown(t, lightBreakdown, "seo"), "serp_metadata").TotalPenalty
-	heavyPenalty := findBucketBreakdown(t, findPillarBreakdown(t, heavyBreakdown, "seo"), "serp_metadata").TotalPenalty
+	breakdown := BuildScoreBreakdown("", crawlPages, issues, nil)
+	bucket := findBucketBreakdown(t, findPillarBreakdown(t, breakdown, "seo"), "serp_metadata")
 
-	if heavyPenalty <= lightPenalty {
-		t.Fatalf("expected higher issue-row volume to increase the seo bucket penalty, got light=%.2f heavy=%.2f", lightPenalty, heavyPenalty)
+	if len(bucket.Issues) < 2 {
+		t.Fatalf("expected multiple issue types in serp_metadata, got %d", len(bucket.Issues))
+	}
+	naiveSum := 0.0
+	for _, issue := range bucket.Issues {
+		naiveSum += issue.FinalPenalty
+	}
+	largestPenalty := bucket.Issues[0].FinalPenalty
+
+	if bucket.TotalPenalty >= naiveSum {
+		t.Fatalf("expected soft-sum penalty %.2f to stay below the naive additive sum %.2f", bucket.TotalPenalty, naiveSum)
+	}
+	if bucket.TotalPenalty < largestPenalty {
+		t.Fatalf("expected soft-sum penalty %.2f to be at least the worst single issue %.2f", bucket.TotalPenalty, largestPenalty)
+	}
+	if bucket.TotalPenalty > largestPenalty*2 {
+		t.Fatalf("expected soft-sum penalty %.2f to be bounded near 2x the worst issue %.2f", bucket.TotalPenalty, largestPenalty)
+	}
+	if bucket.Score <= 0 {
+		t.Fatalf("expected coexisting issue types not to free-fall the bucket to zero, got score %d", bucket.Score)
 	}
 }
 
