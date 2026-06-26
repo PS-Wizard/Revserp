@@ -217,6 +217,10 @@ type resolvedUserEntry struct {
 	organizations []sqlc.ListOrganizationsForUserRow
 }
 
+// cachedUserContextKey is a private context key for storing just the user row early in the
+// middleware chain (before organizations are loaded).
+type cachedUserContextKey struct{}
+
 // ensureCurrentUser ensures the authenticated identity has a local user and default organization.
 // Results are cached on the request context so the bootstrap cost is paid at most once per request.
 func (a *App) ensureCurrentUser(r *http.Request, queries *sqlc.Queries) (sqlc.User, []sqlc.ListOrganizationsForUserRow, error) {

@@ -119,6 +119,11 @@ func (a *App) ensureUserAndOrganizations(r *http.Request, queries *sqlc.Queries,
 // resolveUser loads or creates the local user for an auth identity.
 // Returns the user and whether a default org should be created.
 func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, bool) {
+	// Use the user already fetched by requireActiveUser middleware if available.
+	if cached, ok := ctx.Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
+		return cached, false
+	}
+
 	userRow, err := queries.GetUserByAuthSubject(ctx, sqlc.GetUserByAuthSubjectParams{
 		AuthProvider: identity.Provider,
 		AuthSubject:  identity.Subject,

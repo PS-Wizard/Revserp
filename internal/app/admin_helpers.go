@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -30,17 +31,24 @@ func (a *App) requirePlatformAdmin(next http.Handler) http.Handler {
 			return
 		}
 
-		user, err := a.Queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
-			AuthProvider: identity.Provider,
-			AuthSubject:  identity.Subject,
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusForbidden, "forbidden")
+		// Use the user already fetched by requireActiveUser if available.
+		var user sqlc.User
+		if cached, ok := r.Context().Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
+			user = cached
+		} else {
+			row, err := a.Queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
+				AuthProvider: identity.Provider,
+				AuthSubject:  identity.Subject,
+			})
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					writeJSONError(w, http.StatusForbidden, "forbidden")
+					return
+				}
+				serverError(w, r, err)
 				return
 			}
-			serverError(w, r, err)
-			return
+			user = userRowToUser(row)
 		}
 
 		if !isPlatformAdmin(user.Email, user.IsPlatformAdmin) {
@@ -60,6 +68,8 @@ func (a *App) platformAdminOnly(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // requireActiveUser is middleware that ensures the authenticated user is not suspended.
+// It stores the resolved user in the request context so downstream middleware and handlers
+// can reuse it without an additional DB round-trip.
 func (a *App) requireActiveUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, ok := internalauth.IdentityFromContext(r.Context())
@@ -68,7 +78,7 @@ func (a *App) requireActiveUser(next http.Handler) http.Handler {
 			return
 		}
 
-		user, err := a.Queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
+		row, err := a.Queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
 			AuthProvider: identity.Provider,
 			AuthSubject:  identity.Subject,
 		})
@@ -81,23 +91,30 @@ func (a *App) requireActiveUser(next http.Handler) http.Handler {
 			return
 		}
 
-		if user.Status != "active" {
+		if row.Status != "active" {
 			writeJSONError(w, http.StatusForbidden, "account suspended")
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Cache the resolved user for the rest of this request.
+		ctx := context.WithValue(r.Context(), cachedUserContextKey{}, userRowToUser(row))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
 // currentUserID returns the authenticated user's UUID from the request context.
 func (a *App) currentUserID(r *http.Request) (pgtype.UUID, error) {
+	// Use the user already fetched by requireActiveUser if available.
+	if cached, ok := r.Context().Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
+		return cached.ID, nil
+	}
+
 	identity, ok := internalauth.IdentityFromContext(r.Context())
 	if !ok {
 		return pgtype.UUID{}, errors.New("missing identity")
 	}
 
-	user, err := a.Queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
+	row, err := a.Queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
 		AuthProvider: identity.Provider,
 		AuthSubject:  identity.Subject,
 	})
@@ -105,5 +122,5 @@ func (a *App) currentUserID(r *http.Request) (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 
-	return user.ID, nil
+	return row.ID, nil
 }
