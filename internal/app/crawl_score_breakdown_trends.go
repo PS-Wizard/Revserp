@@ -54,35 +54,28 @@ func (a *App) handleGetProjectBucketTrends(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var rows []sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserRow
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 
-		if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "project not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
+	if _, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
 		}
+		serverError(w, r, err)
+		return
+	}
 
-		rows, err = queries.ListCompletedProjectCrawlScoreBreakdownsForUser(r.Context(), sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserParams{
-			ProjectID: projectID,
-			UserID:    user.ID,
-			Limit:     defaultTrendLimit,
-		})
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-
-		return nil
-	}) {
+	rows, err := a.Queries.ListCompletedProjectCrawlScoreBreakdownsForUser(r.Context(), sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserParams{
+		ProjectID: projectID,
+		UserID:    user.ID,
+		Limit:     defaultTrendLimit,
+	})
+	if err != nil {
+		serverError(w, r, err)
 		return
 	}
 

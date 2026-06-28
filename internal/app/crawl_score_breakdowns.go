@@ -27,38 +27,37 @@ func (a *App) handleGetCrawlScoreBreakdown(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var breakdown sqlc.CrawlScoreBreakdown
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-
-		if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "crawl not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
-		}
-
-		breakdown, err = queries.GetCrawlScoreBreakdownByCrawlForUser(r.Context(), sqlc.GetCrawlScoreBreakdownByCrawlForUserParams{CrawlID: crawlID, UserID: user.ID})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "crawl score breakdown not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
-		}
-
-		return nil
-	}) {
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		serverError(w, r, err)
 		return
 	}
 
+	crawl, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+
+	breakdown, err := a.Queries.GetCrawlScoreBreakdownByCrawlForUser(r.Context(), sqlc.GetCrawlScoreBreakdownByCrawlForUserParams{CrawlID: crawlID, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl score breakdown not found")
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+
+	if isCrawlStatusTerminal(crawl.Status) {
+		setImmutableCache(w)
+	} else {
+		setNoStore(w)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(breakdown.BreakdownJson)
@@ -88,52 +87,44 @@ func (a *App) handleListScoreBreakdownIssueURLs(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	var total int64
-	var issueURLs []sqlc.ListDistinctCrawlIssueURLsByTypeForCrawlByUserRow
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 
-		if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "crawl not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
+	if _, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
+			return
 		}
+		serverError(w, r, err)
+		return
+	}
 
-		total, err = queries.CountDistinctCrawlIssueURLsByTypeForCrawlByUser(r.Context(), sqlc.CountDistinctCrawlIssueURLsByTypeForCrawlByUserParams{
-			CrawlID:   crawlID,
-			UserID:    user.ID,
-			Pillar:    pillar,
-			Bucket:    bucket,
-			IssueType: issueType,
-		})
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+	total, err := a.Queries.CountDistinctCrawlIssueURLsByTypeForCrawlByUser(r.Context(), sqlc.CountDistinctCrawlIssueURLsByTypeForCrawlByUserParams{
+		CrawlID:   crawlID,
+		UserID:    user.ID,
+		Pillar:    pillar,
+		Bucket:    bucket,
+		IssueType: issueType,
+	})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 
-		issueURLs, err = queries.ListDistinctCrawlIssueURLsByTypeForCrawlByUser(r.Context(), sqlc.ListDistinctCrawlIssueURLsByTypeForCrawlByUserParams{
-			CrawlID:   crawlID,
-			UserID:    user.ID,
-			Pillar:    pillar,
-			Bucket:    bucket,
-			IssueType: issueType,
-			Limit:     limit,
-			Offset:    offset,
-		})
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-
-		return nil
-	}) {
+	issueURLs, err := a.Queries.ListDistinctCrawlIssueURLsByTypeForCrawlByUser(r.Context(), sqlc.ListDistinctCrawlIssueURLsByTypeForCrawlByUserParams{
+		CrawlID:   crawlID,
+		UserID:    user.ID,
+		Pillar:    pillar,
+		Bucket:    bucket,
+		IssueType: issueType,
+		Limit:     limit,
+		Offset:    offset,
+	})
+	if err != nil {
+		serverError(w, r, err)
 		return
 	}
 

@@ -17,6 +17,7 @@ func (a *App) Router() http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(middleware.Compress(5))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   a.Config.CORSAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -37,6 +38,7 @@ func (a *App) Router() http.Handler {
 		protected.Use(internalauth.RequireSession(a.SessionManager))
 		protected.Use(a.requireActiveUser)
 		protected.Get("/me", a.handleMe)
+		protected.Get("/app-bootstrap", a.handleAppBootstrap)
 		protected.Post("/me/active-organization", a.handleSetActiveOrganization)
 		protected.Get("/internal/scoring-config", a.platformAdminOnly(a.handleGetScoringConfig))
 		protected.Put("/internal/scoring-config", a.platformAdminOnly(a.handlePutScoringConfig))

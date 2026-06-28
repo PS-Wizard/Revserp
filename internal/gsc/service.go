@@ -10,8 +10,16 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+const overviewCacheTTL = time.Hour
+
+type overviewCacheEntry struct {
+	payload   OverviewPayload
+	fetchedAt time.Time
+}
 
 // Service owns Google OAuth and Search Console API operations.
 type Service struct {
@@ -20,6 +28,9 @@ type Service struct {
 	redirectURL      string
 	encryptionSecret string
 	httpClient       *http.Client
+
+	overviewCacheMu sync.Mutex
+	overviewCache   map[string]overviewCacheEntry
 }
 
 // NewService builds one Google OAuth and Search Console service.
@@ -32,7 +43,31 @@ func NewService(clientID, clientSecret, redirectURL, encryptionSecret string) *S
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		overviewCache: make(map[string]overviewCacheEntry),
 	}
+}
+
+// FetchOverviewCached returns a cached overview for siteURL if one exists and is
+// younger than overviewCacheTTL; otherwise it fetches live and caches the result.
+func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, siteURL string) (OverviewPayload, error) {
+	service.overviewCacheMu.Lock()
+	entry, ok := service.overviewCache[siteURL]
+	service.overviewCacheMu.Unlock()
+
+	if ok && time.Since(entry.fetchedAt) < overviewCacheTTL {
+		return entry.payload, nil
+	}
+
+	payload, err := service.FetchOverview(ctx, accessToken, siteURL)
+	if err != nil {
+		return OverviewPayload{}, err
+	}
+
+	service.overviewCacheMu.Lock()
+	service.overviewCache[siteURL] = overviewCacheEntry{payload: payload, fetchedAt: time.Now()}
+	service.overviewCacheMu.Unlock()
+
+	return payload, nil
 }
 
 // BuildAuthURL builds one Google consent URL.

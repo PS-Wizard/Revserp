@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
@@ -95,67 +96,71 @@ func (a *App) handleGetCrawlScoreBreakdownCompare(w http.ResponseWriter, r *http
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	baselineCrawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: baselineCrawlID, UserID: user.ID})
-	if err != nil {
+	// Fetch both crawls and both snapshots in parallel — all are independent reads.
+	var (
+		baselineCrawl    sqlc.GetCrawlByIDForUserRow
+		currentCrawl     sqlc.GetCrawlByIDForUserRow
+		baselineSnapshot issueshared.ScoreBreakdownSnapshot
+		currentSnapshot  issueshared.ScoreBreakdownSnapshot
+	)
+	eg, egCtx := errgroup.WithContext(r.Context())
+	eg.Go(func() error {
+		row, err := a.Queries.GetCrawlByIDForUser(egCtx, sqlc.GetCrawlByIDForUserParams{ID: baselineCrawlID, UserID: user.ID})
+		if err != nil {
+			return err
+		}
+		baselineCrawl = row
+		return nil
+	})
+	eg.Go(func() error {
+		row, err := a.Queries.GetCrawlByIDForUser(egCtx, sqlc.GetCrawlByIDForUserParams{ID: currentCrawlID, UserID: user.ID})
+		if err != nil {
+			return err
+		}
+		currentCrawl = row
+		return nil
+	})
+	eg.Go(func() error {
+		snap, err := loadScoreBreakdownSnapshot(r, a.Queries, baselineCrawlID, user.ID)
+		if err != nil {
+			return err
+		}
+		baselineSnapshot = snap
+		return nil
+	})
+	eg.Go(func() error {
+		snap, err := loadScoreBreakdownSnapshot(r, a.Queries, currentCrawlID, user.ID)
+		if err != nil {
+			return err
+		}
+		currentSnapshot = snap
+		return nil
+	})
+	if err := eg.Wait(); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "baseline crawl not found")
+			writeJSONError(w, http.StatusNotFound, "crawl or score breakdown not found")
 			return
 		}
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	currentCrawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: currentCrawlID, UserID: user.ID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "current crawl not found")
-			return
-		}
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+
 	if baselineCrawl.ProjectID != currentCrawl.ProjectID {
 		writeJSONError(w, http.StatusBadRequest, "crawls must belong to the same project")
 		return
 	}
 
-	baselineSnapshot, err := loadScoreBreakdownSnapshot(r, queries, baselineCrawlID, user.ID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "baseline crawl score breakdown not found")
-			return
-		}
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
+	if isCrawlStatusTerminal(baselineCrawl.Status) && isCrawlStatusTerminal(currentCrawl.Status) {
+		setImmutableCache(w)
+	} else {
+		setNoStore(w)
 	}
-	currentSnapshot, err := loadScoreBreakdownSnapshot(r, queries, currentCrawlID, user.ID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "current crawl score breakdown not found")
-			return
-		}
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
 	writeJSON(w, http.StatusOK, buildScoreBreakdownCompareResponse(baselineSnapshot, currentSnapshot))
 }
 
@@ -192,21 +197,13 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	baselineCrawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: baselineCrawlID, UserID: user.ID})
+	baselineCrawl, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: baselineCrawlID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "baseline crawl not found")
@@ -215,7 +212,7 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	currentCrawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: currentCrawlID, UserID: user.ID})
+	currentCrawl, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: currentCrawlID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "current crawl not found")
@@ -233,22 +230,17 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		CrawlID: baselineCrawlID, CrawlID_2: currentCrawlID, UserID: user.ID,
 		Pillar: pillar, Bucket: bucket, IssueType: issueType, Column7: changeType,
 	}
-	total, err := queries.CountCompareCrawlIssueURLsByTypeForCrawlByUser(r.Context(), countParams)
+	total, err := a.Queries.CountCompareCrawlIssueURLsByTypeForCrawlByUser(r.Context(), countParams)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	rows, err := queries.ListCompareCrawlIssueURLsByTypeForCrawlByUser(r.Context(), sqlc.ListCompareCrawlIssueURLsByTypeForCrawlByUserParams{
+	rows, err := a.Queries.ListCompareCrawlIssueURLsByTypeForCrawlByUser(r.Context(), sqlc.ListCompareCrawlIssueURLsByTypeForCrawlByUserParams{
 		CrawlID: baselineCrawlID, CrawlID_2: currentCrawlID, UserID: user.ID,
 		Pillar: pillar, Bucket: bucket, IssueType: issueType, Column7: changeType,
 		Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}

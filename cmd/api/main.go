@@ -45,8 +45,12 @@ func run() error {
 	application := app.New(cfg, dbPool, authVerifier)
 
 	server := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: application.Router(),
+		Addr:              cfg.HTTPAddr,
+		Handler:           application.Router(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second, // exports/large breakdowns can be big
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

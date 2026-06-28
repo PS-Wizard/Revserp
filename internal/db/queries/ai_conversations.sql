@@ -54,14 +54,12 @@ SELECT
     ac.title,
     ac.created_at,
     ac.updated_at,
-    COUNT(am.id)::int AS message_count
+    (SELECT COUNT(*) FROM ai_messages am WHERE am.conversation_id = ac.id)::int AS message_count
 FROM ai_conversations AS ac
 INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-LEFT JOIN ai_messages AS am ON am.conversation_id = ac.id
 WHERE ac.project_id = $1
   AND om.user_id = $2
-GROUP BY ac.id
 ORDER BY ac.updated_at DESC
 LIMIT $3
 OFFSET $4;
@@ -75,15 +73,13 @@ SELECT
     ac.title,
     ac.created_at,
     ac.updated_at,
-    COUNT(am.id)::int AS message_count
+    (SELECT COUNT(*) FROM ai_messages am WHERE am.conversation_id = ac.id)::int AS message_count
 FROM ai_conversations AS ac
 INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-LEFT JOIN ai_messages AS am ON am.conversation_id = ac.id
 WHERE ac.project_id = $1
   AND ac.crawl_id = $2
   AND om.user_id = $3
-GROUP BY ac.id
 ORDER BY ac.updated_at DESC
 LIMIT $4
 OFFSET $5;

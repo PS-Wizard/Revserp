@@ -89,30 +89,24 @@ func (a *App) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var projects []sqlc.Project
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 
-		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusForbidden, "forbidden")
-				return err
-			}
-			serverError(w, r, err)
-			return err
+	if _, err := a.Queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+			return
 		}
+		serverError(w, r, err)
+		return
+	}
 
-		projects, err = queries.ListProjectsForOrganization(r.Context(), organizationID)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-		return nil
-	}) {
+	projects, err := a.Queries.ListProjectsForOrganization(r.Context(), organizationID)
+	if err != nil {
+		serverError(w, r, err)
 		return
 	}
 
@@ -132,28 +126,22 @@ func (a *App) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var project sqlc.Project
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 
-		project, err = queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
-			ID:     projectID,
-			UserID: user.ID,
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "project not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
+	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
+		ID:     projectID,
+		UserID: user.ID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
 		}
-		return nil
-	}) {
+		serverError(w, r, err)
 		return
 	}
 

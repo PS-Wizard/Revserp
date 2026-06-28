@@ -21,6 +21,7 @@ import (
 )
 
 const sessionRefreshSkew = time.Minute
+const lastUsedThrottle = 5 * time.Minute
 
 // SessionManager manages backend-owned auth sessions backed by Postgres.
 type SessionManager struct {
@@ -127,8 +128,10 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 			return Identity{}, SessionContext{}, fmt.Errorf("update refreshed backend session: %w", err)
 		}
 	} else {
-		if err := manager.queries.UpdateSessionLastUsedAt(ctx, sessionRow.ID); err != nil {
-			log.Printf("infra: update session last_used_at (non-fatal): session=%s error=%v", sessionRow.ID.String(), err)
+		if !sessionRow.LastUsedAt.Valid || time.Since(sessionRow.LastUsedAt.Time) > lastUsedThrottle {
+			if err := manager.queries.UpdateSessionLastUsedAt(ctx, sessionRow.ID); err != nil {
+				log.Printf("infra: update session last_used_at (non-fatal): session=%s error=%v", sessionRow.ID.String(), err)
+			}
 		}
 	}
 

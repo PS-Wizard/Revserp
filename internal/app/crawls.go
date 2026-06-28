@@ -121,21 +121,13 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
+	if _, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
 			return
@@ -145,23 +137,18 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	total, err := queries.CountCrawlsForProject(r.Context(), sqlc.CountCrawlsForProjectParams{ProjectID: projectID, Column2: statusFilter})
+	total, err := a.Queries.CountCrawlsForProject(r.Context(), sqlc.CountCrawlsForProjectParams{ProjectID: projectID, Column2: statusFilter})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	crawls, err := queries.ListCrawlsForProject(r.Context(), sqlc.ListCrawlsForProjectParams{
+	crawls, err := a.Queries.ListCrawlsForProject(r.Context(), sqlc.ListCrawlsForProjectParams{
 		ProjectID: projectID,
 		Column2:   statusFilter,
 		Limit:     limit,
 		Offset:    offset,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -190,21 +177,13 @@ func (a *App) handleGetCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	crawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
+	crawl, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "crawl not found")
@@ -215,11 +194,11 @@ func (a *App) handleGetCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
+	if isCrawlStatusTerminal(crawl.Status) {
+		setImmutableCache(w)
+	} else {
+		setNoStore(w)
 	}
-
 	writeJSON(w, http.StatusOK, newCrawlResponseFromGetRow(crawl))
 }
 
@@ -467,30 +446,24 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 		return
 	}
 
-	var crawls []sqlc.ListActiveCrawlsForOrganizationRow
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "internal server error")
-			return err
-		}
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 
-		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusForbidden, "forbidden")
-				return err
-			}
-			writeJSONError(w, http.StatusInternalServerError, "internal server error")
-			return err
+	if _, err := a.Queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+			return
 		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 
-		crawls, err = queries.ListActiveCrawlsForOrganization(r.Context(), organizationID)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "internal server error")
-			return err
-		}
-		return nil
-	}) {
+	crawls, err := a.Queries.ListActiveCrawlsForOrganization(r.Context(), organizationID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -512,6 +485,11 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 // formatTimestamp formats a database timestamp for API responses.
 func formatTimestamp(value pgtype.Timestamptz) string {
 	return value.Time.UTC().Format(time.RFC3339)
+}
+
+// isCrawlStatusTerminal reports whether a crawl status is terminal (content never changes).
+func isCrawlStatusTerminal(status string) bool {
+	return status == "completed" || status == "failed" || status == "cancelled"
 }
 
 // parseCrawlStatusFilter validates the optional crawl list status filter.

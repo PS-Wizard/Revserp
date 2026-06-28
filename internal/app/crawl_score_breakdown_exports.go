@@ -96,37 +96,29 @@ func (a *App) handleExportCrawlScoreBreakdownXLSX(w http.ResponseWriter, r *http
 }
 
 func (a *App) loadCrawlIssueExportRows(w http.ResponseWriter, r *http.Request, crawlID pgtype.UUID, filters exportFilters) ([]crawlIssueExportRow, bool) {
-	var exportRows []crawlIssueExportRow
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-
-		if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "crawl not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
-		}
-
-		crawlIssues, err := queries.ListCrawlIssuesForCrawl(r.Context(), crawlID)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-		crawlIssues = filterCrawlIssues(crawlIssues, filters)
-
-		exportRows = buildCrawlIssueExportRows(crawlIssues)
-		return nil
-	}) {
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		serverError(w, r, err)
 		return nil, false
 	}
 
-	return exportRows, true
+	if _, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
+			return nil, false
+		}
+		serverError(w, r, err)
+		return nil, false
+	}
+
+	crawlIssues, err := a.Queries.ListCrawlIssuesForCrawl(r.Context(), crawlID)
+	if err != nil {
+		serverError(w, r, err)
+		return nil, false
+	}
+	crawlIssues = filterCrawlIssues(crawlIssues, filters)
+
+	return buildCrawlIssueExportRows(crawlIssues), true
 }
 
 // exportFilters holds optional query filters for exporting only selected issue scopes.

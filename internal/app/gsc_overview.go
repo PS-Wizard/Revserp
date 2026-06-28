@@ -10,7 +10,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-// handleProjectGSCOverview fetches one project's Search Console overview live from Google.
+// handleProjectGSCOverview fetches one project's Search Console overview (cached up to 1 hour).
 func (a *App) handleProjectGSCOverview(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -18,20 +18,13 @@ func (a *App) handleProjectGSCOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
+	// All DB work happens on a.Queries directly — no transaction held across Google API calls.
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID})
+	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "project not found")
@@ -41,7 +34,7 @@ func (a *App) handleProjectGSCOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectConnection, hasProjectConnection, err := getProjectGSCConnectionByProjectID(r.Context(), queries, project.ID)
+	projectConnection, hasProjectConnection, err := getProjectGSCConnectionByProjectID(r.Context(), a.Queries, project.ID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -51,7 +44,7 @@ func (a *App) handleProjectGSCOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	googleConnection, hasGoogleConnection, err := getGoogleConnectionByOrganizationID(r.Context(), queries, project.OrganizationID)
+	googleConnection, hasGoogleConnection, err := getGoogleConnectionByOrganizationID(r.Context(), a.Queries, project.OrganizationID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -61,22 +54,20 @@ func (a *App) handleProjectGSCOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	googleConnection, accessToken, err := a.ensureFreshGoogleConnection(r.Context(), queries, googleConnection)
+	// ensureFreshGoogleConnection may write to DB (token refresh); runs on pool directly, not inside a tx.
+	googleConnection, accessToken, err := a.ensureFreshGoogleConnection(r.Context(), a.Queries, googleConnection)
 	if err != nil {
 		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to refresh google connection")
 		return
 	}
 
-	overview, err := a.GSCService.FetchOverview(r.Context(), accessToken, projectConnection.SiteUrl)
+	// Google API call is outside any DB transaction and uses the in-process TTL cache.
+	overview, err := a.GSCService.FetchOverviewCached(r.Context(), accessToken, projectConnection.SiteUrl)
 	if err != nil {
 		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to fetch search console data")
 		return
 	}
 
-	if err := tx.Commit(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project_id":        project.ID.String(),
 		"site_url":          projectConnection.SiteUrl,
