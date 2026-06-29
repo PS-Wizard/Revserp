@@ -76,6 +76,7 @@ func (a *App) Router() http.Handler {
 		protected.Delete("/crawls/{crawlID}", a.handleDeleteCrawl)
 		protected.Post("/crawls/{crawlID}/cancel", a.handleCancelCrawl)
 		protected.Get("/crawls/{crawlID}/score-breakdown", a.handleGetCrawlScoreBreakdown)
+		protected.Get("/crawls/{crawlID}/commentary", a.handleGetCrawlCommentary)
 		protected.Get("/crawls/{crawlID}/score-breakdown/export.csv", a.handleExportCrawlScoreBreakdownCSV)
 		protected.Get("/crawls/{crawlID}/score-breakdown/export.xlsx", a.handleExportCrawlScoreBreakdownXLSX)
 		protected.Get("/crawls/{crawlID}/score-breakdown/{pillar}/{bucket}/{issueType}/urls", a.handleListScoreBreakdownIssueURLs)
