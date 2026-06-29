@@ -21,19 +21,11 @@ type AiAudit struct {
 	UpdatedAt    pgtype.Timestamptz
 }
 
-type AiAuditPrompt struct {
-	ID           pgtype.UUID
-	AuditID      pgtype.UUID
-	PromptText   string
-	PromptSource string
-	DisplayOrder int32
-	CreatedAt    pgtype.Timestamptz
-}
-
 type AiAuditRun struct {
 	ID                 pgtype.UUID
 	AuditID            pgtype.UUID
-	PromptID           pgtype.UUID
+	QuestionText       string
+	DisplayOrder       int32
 	ModelName          string
 	Status             string
 	RawResponse        pgtype.Text
@@ -70,12 +62,25 @@ type AiMessage struct {
 }
 
 type AiPromptConfig struct {
-	ID               int64
-	ContextPrompt    string
-	GuidelinesPrompt string
-	OtherNotesPrompt string
-	UpdatedByUserID  pgtype.UUID
-	UpdatedAt        pgtype.Timestamptz
+	ID                       int64
+	ContextPrompt            string
+	GuidelinesPrompt         string
+	OtherNotesPrompt         string
+	UpdatedByUserID          pgtype.UUID
+	UpdatedAt                pgtype.Timestamptz
+	QuestionGenerationPrompt string
+}
+
+type AiWorkerJob struct {
+	ID           pgtype.UUID
+	JobType      string
+	ProjectID    pgtype.UUID
+	Status       string
+	ErrorMessage pgtype.Text
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
 }
 
 type Crawl struct {
@@ -236,6 +241,14 @@ type Project struct {
 	Name           string
 	BaseUrl        string
 	CreatedAt      pgtype.Timestamptz
+}
+
+type ProjectAiQuestion struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	Questions       []byte
+	GenerationModel string
+	GeneratedAt     pgtype.Timestamptz
 }
 
 type ProjectAutoCrawlSetting struct {

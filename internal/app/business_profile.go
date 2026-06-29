@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -201,6 +202,13 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 	if err := tx.Commit(r.Context()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
+	}
+
+	if _, err := a.Queries.EnqueueAIWorkerJob(r.Context(), sqlc.EnqueueAIWorkerJobParams{
+		JobType:   "prompt_generation",
+		ProjectID: project.ID,
+	}); err != nil {
+		log.Printf("enqueue prompt_generation job for project %s: %v", project.ID.String(), err)
 	}
 
 	response, err := newProjectBusinessProfileResponseFromUpsertRow(profile)

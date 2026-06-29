@@ -54,6 +54,7 @@ func (a *App) Router() http.Handler {
 		protected.Delete("/projects/{projectID}", a.handleDeleteProject)
 		protected.Get("/projects/{projectID}/business-profile", a.handleProjectBusinessProfile)
 		protected.Put("/projects/{projectID}/business-profile", a.handleUpsertProjectBusinessProfile)
+		protected.Get("/projects/{projectID}/ai-questions", a.handleGetProjectAIQuestions)
 		protected.Get("/projects/{projectID}/auto-crawl", a.handleGetAutoCrawlSettings)
 		protected.Put("/projects/{projectID}/auto-crawl", a.handlePutAutoCrawlSettings)
 		protected.Post("/projects/{projectID}/ai-audits", a.handleCreateAIAudit)

@@ -17,19 +17,11 @@ type createAIAuditRequest struct {
 	CrawlID string `json:"crawl_id"`
 }
 
-type aiAuditPromptResponse struct {
-	ID           string `json:"id"`
-	AuditID      string `json:"audit_id"`
-	PromptText   string `json:"prompt_text"`
-	PromptSource string `json:"prompt_source"`
-	DisplayOrder int32  `json:"display_order"`
-	CreatedAt    string `json:"created_at"`
-}
-
 type aiAuditRunResponse struct {
 	ID                 string          `json:"id"`
 	AuditID            string          `json:"audit_id"`
-	PromptID           string          `json:"prompt_id"`
+	QuestionText       string          `json:"question_text"`
+	DisplayOrder       int32           `json:"display_order"`
 	ModelName          string          `json:"model_name"`
 	Status             string          `json:"status"`
 	RawResponse        string          `json:"raw_response,omitempty"`
@@ -45,18 +37,17 @@ type aiAuditRunResponse struct {
 }
 
 type aiAuditResponse struct {
-	ID           string                  `json:"id"`
-	ProjectID    string                  `json:"project_id"`
-	CrawlID      string                  `json:"crawl_id,omitempty"`
-	Status       string                  `json:"status"`
-	Score        *int32                  `json:"score,omitempty"`
-	ErrorMessage string                  `json:"error_message,omitempty"`
-	StartedAt    string                  `json:"started_at,omitempty"`
-	CompletedAt  string                  `json:"completed_at,omitempty"`
-	CreatedAt    string                  `json:"created_at"`
-	UpdatedAt    string                  `json:"updated_at"`
-	Prompts      []aiAuditPromptResponse `json:"prompts,omitempty"`
-	Runs         []aiAuditRunResponse    `json:"runs,omitempty"`
+	ID           string               `json:"id"`
+	ProjectID    string               `json:"project_id"`
+	CrawlID      string               `json:"crawl_id,omitempty"`
+	Status       string               `json:"status"`
+	Score        *int32               `json:"score,omitempty"`
+	ErrorMessage string               `json:"error_message,omitempty"`
+	StartedAt    string               `json:"started_at,omitempty"`
+	CompletedAt  string               `json:"completed_at,omitempty"`
+	CreatedAt    string               `json:"created_at"`
+	UpdatedAt    string               `json:"updated_at"`
+	Runs         []aiAuditRunResponse `json:"runs,omitempty"`
 }
 
 // handleCreateAIAudit creates one AI audit for a project a member can access.
@@ -277,11 +268,6 @@ func (a *App) handleGetAIAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompts, err := queries.ListAIAuditPromptsByAuditID(r.Context(), audit.ID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
 	runs, err := queries.ListAIAuditRunsByAuditID(r.Context(), audit.ID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -294,7 +280,6 @@ func (a *App) handleGetAIAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := newAIAuditResponseFromGetRow(audit)
-	response.Prompts = newAIAuditPromptResponses(prompts)
 	response.Runs = newAIAuditRunResponses(runs)
 	writeJSON(w, http.StatusOK, response)
 }
@@ -337,32 +322,18 @@ func buildAIAuditResponse(id, projectID, crawlID pgtype.UUID, status string, sco
 	return response
 }
 
-func newAIAuditPromptResponses(prompts []sqlc.AiAuditPrompt) []aiAuditPromptResponse {
-	responses := make([]aiAuditPromptResponse, 0, len(prompts))
-	for _, prompt := range prompts {
-		responses = append(responses, aiAuditPromptResponse{
-			ID:           prompt.ID.String(),
-			AuditID:      prompt.AuditID.String(),
-			PromptText:   prompt.PromptText,
-			PromptSource: prompt.PromptSource,
-			DisplayOrder: prompt.DisplayOrder,
-			CreatedAt:    formatTimestamp(prompt.CreatedAt),
-		})
-	}
-	return responses
-}
-
 func newAIAuditRunResponses(runs []sqlc.AiAuditRun) []aiAuditRunResponse {
 	responses := make([]aiAuditRunResponse, 0, len(runs))
 	for _, run := range runs {
 		response := aiAuditRunResponse{
-			ID:        run.ID.String(),
-			AuditID:   run.AuditID.String(),
-			PromptID:  run.PromptID.String(),
-			ModelName: run.ModelName,
-			Status:    run.Status,
-			CreatedAt: formatTimestamp(run.CreatedAt),
-			UpdatedAt: formatTimestamp(run.UpdatedAt),
+			ID:           run.ID.String(),
+			AuditID:      run.AuditID.String(),
+			QuestionText: run.QuestionText,
+			DisplayOrder: run.DisplayOrder,
+			ModelName:    run.ModelName,
+			Status:       run.Status,
+			CreatedAt:    formatTimestamp(run.CreatedAt),
+			UpdatedAt:    formatTimestamp(run.UpdatedAt),
 		}
 		if run.RawResponse.Valid && strings.TrimSpace(run.RawResponse.String) != "" {
 			response.RawResponse = run.RawResponse.String

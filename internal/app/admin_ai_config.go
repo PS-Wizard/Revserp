@@ -11,10 +11,11 @@ import (
 )
 
 type aiConfigResponse struct {
-	ContextPrompt    string `json:"context_prompt"`
-	GuidelinesPrompt string `json:"guidelines_prompt"`
-	OtherNotesPrompt string `json:"other_notes_prompt"`
-	UpdatedAt        string `json:"updated_at,omitempty"`
+	ContextPrompt            string `json:"context_prompt"`
+	GuidelinesPrompt         string `json:"guidelines_prompt"`
+	OtherNotesPrompt         string `json:"other_notes_prompt"`
+	QuestionGenerationPrompt string `json:"question_generation_prompt"`
+	UpdatedAt                string `json:"updated_at,omitempty"`
 }
 
 type adminAIConfigResponse struct {
@@ -23,9 +24,10 @@ type adminAIConfigResponse struct {
 }
 
 type putAIConfigRequest struct {
-	ContextPrompt    string `json:"context_prompt"`
-	GuidelinesPrompt string `json:"guidelines_prompt"`
-	OtherNotesPrompt string `json:"other_notes_prompt"`
+	ContextPrompt            string `json:"context_prompt"`
+	GuidelinesPrompt         string `json:"guidelines_prompt"`
+	OtherNotesPrompt         string `json:"other_notes_prompt"`
+	QuestionGenerationPrompt string `json:"question_generation_prompt"`
 }
 
 // defaultAIConfig returns the built-in default AI prompt config.
@@ -63,9 +65,10 @@ func (a *App) handleAdminGetAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := aiConfigResponse{
-		ContextPrompt:    row.ContextPrompt,
-		GuidelinesPrompt: row.GuidelinesPrompt,
-		OtherNotesPrompt: row.OtherNotesPrompt,
+		ContextPrompt:            row.ContextPrompt,
+		GuidelinesPrompt:         row.GuidelinesPrompt,
+		OtherNotesPrompt:         row.OtherNotesPrompt,
+		QuestionGenerationPrompt: row.QuestionGenerationPrompt,
 	}
 	if row.UpdatedAt.Valid {
 		config.UpdatedAt = row.UpdatedAt.Time.Format("2006-01-02T15:04:05Z")
@@ -92,10 +95,11 @@ func (a *App) handleAdminPutAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row, err := a.Queries.UpsertAIPromptConfig(r.Context(), sqlc.UpsertAIPromptConfigParams{
-		ContextPrompt:    req.ContextPrompt,
-		GuidelinesPrompt: req.GuidelinesPrompt,
-		OtherNotesPrompt: req.OtherNotesPrompt,
-		UpdatedByUserID:  userID,
+		ContextPrompt:            req.ContextPrompt,
+		GuidelinesPrompt:         req.GuidelinesPrompt,
+		OtherNotesPrompt:         req.OtherNotesPrompt,
+		QuestionGenerationPrompt: req.QuestionGenerationPrompt,
+		UpdatedByUserID:          userID,
 	})
 	if err != nil {
 		serverError(w, r, err)
@@ -103,9 +107,10 @@ func (a *App) handleAdminPutAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := aiConfigResponse{
-		ContextPrompt:    row.ContextPrompt,
-		GuidelinesPrompt: row.GuidelinesPrompt,
-		OtherNotesPrompt: row.OtherNotesPrompt,
+		ContextPrompt:            row.ContextPrompt,
+		GuidelinesPrompt:         row.GuidelinesPrompt,
+		OtherNotesPrompt:         row.OtherNotesPrompt,
+		QuestionGenerationPrompt: row.QuestionGenerationPrompt,
 	}
 	if row.UpdatedAt.Valid {
 		config.UpdatedAt = row.UpdatedAt.Time.Format("2006-01-02T15:04:05Z")

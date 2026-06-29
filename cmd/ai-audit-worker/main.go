@@ -35,11 +35,13 @@ func run() error {
 	}
 	defer dbPool.Close()
 
-	aiAuditWorker := aiaudit.New(dbPool, cfg.AIAuditWorkerConcurrency, cfg.AIAuditWorkerPollInterval)
-	log.Printf("ai audit worker: queue processing not yet implemented, exiting")
-	if err := aiAuditWorker.Run(ctx); err != nil {
+	log.Printf("ai audit worker starting: concurrency=%d poll=%s", cfg.AIAuditWorkerConcurrency, cfg.AIAuditWorkerPollInterval)
+
+	worker := aiaudit.New(dbPool, cfg, cfg.AIAuditWorkerConcurrency, cfg.AIAuditWorkerPollInterval)
+	if err := worker.Run(ctx); err != nil {
 		log.Printf("ai audit worker error: %v", err)
 	}
-	log.Printf("ai audit worker shutting down")
+
+	log.Printf("ai audit worker shut down")
 	return nil
 }
