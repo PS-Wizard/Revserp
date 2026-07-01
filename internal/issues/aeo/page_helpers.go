@@ -35,7 +35,7 @@ func selectHomepagePageFact(pageFacts []shared.PageFact) (shared.PageFact, bool)
 
 func pageLooksLikeHomepage(pageURL string) bool {
 	trimmedPageURL := strings.TrimSpace(strings.ToLower(pageURL))
-	return strings.HasSuffix(trimmedPageURL, "/") && countURLPathSegments(trimmedPageURL) == 0
+	return countURLPathSegments(trimmedPageURL) == 0
 }
 
 func countURLPathSegments(pageURL string) int {

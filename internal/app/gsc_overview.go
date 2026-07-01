@@ -62,7 +62,7 @@ func (a *App) handleProjectGSCOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Google API call is outside any DB transaction and uses the in-process TTL cache.
-	overview, err := a.GSCService.FetchOverviewCached(r.Context(), accessToken, projectConnection.SiteUrl)
+	overview, err := a.GSCService.FetchOverviewCached(r.Context(), accessToken, project.OrganizationID.String(), projectConnection.SiteUrl)
 	if err != nil {
 		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to fetch search console data")
 		return

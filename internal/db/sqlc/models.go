@@ -81,6 +81,7 @@ type AiWorkerJob struct {
 	CompletedAt  pgtype.Timestamptz
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
+	AuditID      pgtype.UUID
 }
 
 type Crawl struct {

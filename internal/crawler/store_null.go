@@ -3,6 +3,7 @@ package crawler
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -34,8 +35,15 @@ func nullableText(value string) pgtype.Text {
 	return pgtype.Text{String: value, Valid: true}
 }
 
-// nullableInt4 builds a valid pgtype.Int4 from an int value.
+// nullableInt4 builds a valid pgtype.Int4 from an int value, saturating to
+// the int32 range instead of overflowing/wrapping.
 func nullableInt4(value int) pgtype.Int4 {
+	switch {
+	case value > math.MaxInt32:
+		value = math.MaxInt32
+	case value < math.MinInt32:
+		value = math.MinInt32
+	}
 	return pgtype.Int4{Int32: int32(value), Valid: true}
 }
 

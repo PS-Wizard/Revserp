@@ -90,7 +90,7 @@ func (fetcher *Fetcher) Fetch(ctx context.Context, targetURL string) FetchResult
 		wait := fetcher.backoffDuration(result, attempt)
 		fetcher.setCooldown(host, wait)
 		if !sleepCtx(ctx, wait) {
-			return result
+			return FetchResult{FetchError: ctx.Err()}
 		}
 	}
 }

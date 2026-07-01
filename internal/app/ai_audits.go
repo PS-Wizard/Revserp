@@ -50,7 +50,7 @@ type aiAuditResponse struct {
 	Runs         []aiAuditRunResponse `json:"runs,omitempty"`
 }
 
-// handleCreateAIAudit creates one AI audit for a project a member can access.
+// handleCreateAIAudit creates one AI visibility audit for a project a member can access.
 func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -59,17 +59,20 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createAIAuditRequest
-	if err := decodeOptionalJSON(r, &requestBody); err != nil {
+	if err := readJSON(r, &requestBody); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
-	crawlID, err := parseOptionalUUID(requestBody.CrawlID)
+	if strings.TrimSpace(requestBody.CrawlID) == "" {
+		writeJSONError(w, http.StatusBadRequest, "crawl_id is required")
+		return
+	}
+	crawlID, err := parseUUIDParam(requestBody.CrawlID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
 		return
 	}
-	hasCrawlID := crawlID.Valid
 
 	tx, err := a.DB.Begin(r.Context())
 	if err != nil {
@@ -95,50 +98,53 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if hasCrawlID {
-		crawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusBadRequest, "crawl not found")
+	crawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusBadRequest, "crawl not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if crawl.ProjectID != project.ID {
+		writeJSONError(w, http.StatusBadRequest, "crawl does not belong to project")
+		return
+	}
+
+	if _, err := queries.GetProjectAIQuestions(r.Context(), project.ID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusBadRequest, "ai questions must be generated before running a visibility audit")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	existing, err := queries.GetAIAuditByCrawlAndProject(r.Context(), sqlc.GetAIAuditByCrawlAndProjectParams{
+		ProjectID: project.ID,
+		CrawlID:   crawlID,
+	})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if err == nil {
+		switch existing.Status {
+		case "queued", "running":
+			writeJSONError(w, http.StatusConflict, "a visibility audit is already in progress for this crawl")
+			return
+		default:
+			if delErr := queries.DeleteAIAuditByID(r.Context(), existing.ID); delErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "internal server error")
 				return
 			}
-			writeJSONError(w, http.StatusInternalServerError, "internal server error")
-			return
 		}
-		if crawl.ProjectID != project.ID {
-			writeJSONError(w, http.StatusBadRequest, "crawl does not belong to project")
-			return
-		}
-	}
-
-	businessProfile, hasBusinessProfile, err := getProjectBusinessProfileByProjectID(r.Context(), queries, project.ID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if !hasBusinessProfile {
-		writeJSONError(w, http.StatusBadRequest, "project business profile is required before running an ai audit")
-		return
-	}
-
-	seedPrompts, err := decodeSeedPrompts(businessProfile.SeedPrompts)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if len(seedPrompts) == 0 {
-		writeJSONError(w, http.StatusBadRequest, "project business profile must include at least one seed prompt before running an ai audit")
-		return
-	}
-
-	storedCrawlID := pgtype.UUID{}
-	if hasCrawlID {
-		storedCrawlID = crawlID
 	}
 
 	audit, err := queries.CreateAIAudit(r.Context(), sqlc.CreateAIAuditParams{
 		ProjectID:    project.ID,
-		CrawlID:      storedCrawlID,
+		CrawlID:      crawlID,
 		Status:       "queued",
 		Score:        pgtype.Int4{},
 		ErrorMessage: pgtype.Text{},
@@ -146,6 +152,15 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 		CompletedAt:  pgtype.Timestamptz{},
 	})
 	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if _, err := queries.EnqueueAIWorkerJob(r.Context(), sqlc.EnqueueAIWorkerJobParams{
+		JobType:   "visibility_run",
+		ProjectID: project.ID,
+		AuditID:   pgtype.UUID{Bytes: audit.ID.Bytes, Valid: true},
+	}); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}

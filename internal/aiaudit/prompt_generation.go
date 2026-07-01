@@ -13,16 +13,29 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-const defaultQuestionGenerationPrompt = `You are a search visibility analyst. Given a business profile and seed questions, generate 10 precise, natural-language questions that real users might type into an AI assistant or search engine to find a business like this one.
+const DefaultQuestionGenerationPrompt = `You are a search visibility analyst. Your job is to write questions that test whether a business surfaces on its own when potential customers ask an AI assistant for recommendations — WITHOUT ever naming that business.
 
-Rules:
-- Each question must be a complete, standalone sentence ending with a question mark
-- Questions should vary in intent: some informational, some commercial, some local
-- Incorporate the brand name, category, and location naturally where appropriate
-- Output exactly 10 questions, one per line, numbered 1-10
-- No extra commentary, just the numbered questions`
+You are given a business profile (brand, category, location, audience, description) and seed questions. Use them ONLY to understand the category and target customer. Then generate 10 natural-language questions that a potential customer who has never heard of this specific brand would ask an AI assistant while shopping for a product, service, or tool like this one.
 
-func (w *Worker) handlePromptGeneration(ctx context.Context, job sqlc.AiWorkerJob) error {
+Critical rules:
+- NEVER mention the brand name, domain, or any unique product name. The entire point is to see whether the brand appears unprompted. A question containing the brand is invalid.
+- Every question must be answerable as a LIST of businesses, products, tools, or services — i.e. a "recommend me options" question. Never a yes/no, and never a lookup about one specific company.
+- Write from the customer's point of view: their need, use case, industry, budget, team size, or location.
+- Vary the angle across the 10: best-in-category, alternatives to a well-known competitor, best for a specific use case, best for a specific audience or budget, best in a specific location.
+- Do NOT ask about a single company's pricing, features, or "what is X" — those cannot be answered as a discovery list.
+- Each question must be a complete, standalone sentence ending with a question mark.
+- Output exactly 10 questions, one per line, numbered 1-10. No extra commentary.
+
+Good examples (category-based, brand never named):
+1. What are the best marketing analytics platforms for a small SaaS team?
+2. Which SEO tools are solid alternatives to Semrush for a lean B2B startup?
+3. What affordable lead-tracking tools work well for an early-stage US SaaS company?
+
+Bad examples (never do this):
+- "What is Northstar Reach and how does it help my team?" (names the brand; not discovery)
+- "What are the pricing plans for Northstar Reach?" (single-company lookup; not a list)`
+
+func (w *Worker) handlePromptGeneration(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow) error {
 	profile, err := w.queries.GetProjectBusinessProfileByProjectID(ctx, job.ProjectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -41,7 +54,7 @@ func (w *Worker) handlePromptGeneration(ctx context.Context, job sqlc.AiWorkerJo
 		return fmt.Errorf("no seed prompts configured for project %s", job.ProjectID.String())
 	}
 
-	generationPrompt := defaultQuestionGenerationPrompt
+	generationPrompt := DefaultQuestionGenerationPrompt
 	adminConfig, err := w.queries.GetAIPromptConfig(ctx)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("load ai config: %w", err)
@@ -121,6 +134,19 @@ func buildGenerationPrompt(systemPrompt string, profile sqlc.GetProjectBusinessP
 	return sb.String()
 }
 
+// isDigits reports whether s is a non-empty run of ASCII digits.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func parseGeneratedQuestions(raw string) []string {
 	lines := strings.Split(raw, "\n")
 	questions := make([]string, 0, 10)
@@ -131,7 +157,7 @@ func parseGeneratedQuestions(raw string) []string {
 		}
 		// Strip leading "1." or "1)" numbering (up to 2 digits + separator)
 		for _, sep := range []string{". ", ") "} {
-			if idx := strings.Index(line, sep); idx >= 0 && idx <= 3 {
+			if idx := strings.Index(line, sep); idx >= 0 && idx <= 3 && isDigits(line[:idx]) {
 				candidate := strings.TrimSpace(line[idx+len(sep):])
 				if candidate != "" {
 					line = candidate

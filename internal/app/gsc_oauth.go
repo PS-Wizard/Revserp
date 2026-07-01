@@ -118,7 +118,19 @@ func (a *App) handleGoogleOAuthCallback(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer func() { _, _ = a.Queries.DeleteGoogleOAuthStateByID(r.Context(), oauthState.ID) }()
+
+	// Consume the state token immediately so it cannot be replayed: a failed or
+	// zero-row delete means the state was already used (or is otherwise gone) and
+	// the callback must abort before any code exchange happens.
+	deletedRows, err := a.Queries.DeleteGoogleOAuthStateByID(r.Context(), oauthState.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if deletedRows == 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid oauth state")
+		return
+	}
 
 	if oauthState.ExpiresAt.Valid && time.Now().UTC().After(oauthState.ExpiresAt.Time) {
 		a.writeGoogleOAuthRedirect(w, r, oauthState, "oauth_state_expired")

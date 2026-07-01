@@ -341,22 +341,26 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	tx, err := a.DB.Begin(r.Context())
+	// Phase 1: load and validate the turn context in a short transaction. The
+	// FOR UPDATE lock here serializes against any concurrent turn's phase-2
+	// (persist) transaction below, so the connection and lock are released
+	// before the slow LLM call instead of being held across it.
+	readTx, err := a.DB.Begin(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-
-	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
+	readQueries := a.Queries.WithTx(readTx)
+	user, _, err := a.ensureCurrentUser(r, readQueries)
 	if err != nil {
+		_ = readTx.Rollback(r.Context())
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	turnCtx, httpStatus, err := a.loadConversationTurnContext(r, queries, tx, conversationID, user.ID, &req)
+	turnCtx, httpStatus, err := a.loadConversationTurnContext(r, readQueries, readTx, conversationID, user.ID, &req)
 	if err != nil {
+		_ = readTx.Rollback(r.Context())
 		if httpStatus > 0 {
 			writeJSONError(w, httpStatus, err.Error())
 		} else {
@@ -364,7 +368,12 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		}
 		return
 	}
+	if err := readTx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 
+	// Phase 2: call the LLM with no transaction or pooled connection held.
 	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries)
 	prompt := buildTurnPrompt(systemPrompt, turnCtx, req.Content)
 	content, model, err := a.generateAIText(r.Context(), prompt)
@@ -379,13 +388,33 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	userMessage, assistantMessage, updatedConversation, err := persistTurnMessages(r.Context(), queries, conversationID, turnCtx.crawlID, req.Content, scopePayload, content, model)
+	// Phase 3: persist the turn in a second short transaction, re-acquiring
+	// the FOR UPDATE lock so writes from concurrent turns on this
+	// conversation still never interleave.
+	writeTx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer func() { _ = writeTx.Rollback(r.Context()) }()
+
+	writeQueries := a.Queries.WithTx(writeTx)
+	if _, err := writeQueries.GetAIConversationForUserForUpdate(r.Context(), sqlc.GetAIConversationForUserForUpdateParams{ID: conversationID, UserID: user.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	userMessage, assistantMessage, updatedConversation, err := persistTurnMessages(r.Context(), writeQueries, conversationID, turnCtx.crawlID, req.Content, scopePayload, content, model)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := writeTx.Commit(r.Context()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}

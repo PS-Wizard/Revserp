@@ -53,6 +53,7 @@ func run() error {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	idleConnsClosed := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		log.Printf("api server shutting down...")
@@ -61,11 +62,14 @@ func run() error {
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("api server shutdown error: %v", err)
 		}
+		close(idleConnsClosed)
 	}()
 
 	log.Printf("api listening on %s", cfg.HTTPAddr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("start server: %w", err)
 	}
+
+	<-idleConnsClosed
 	return nil
 }

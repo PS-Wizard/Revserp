@@ -47,11 +47,15 @@ func NewService(clientID, clientSecret, redirectURL, encryptionSecret string) *S
 	}
 }
 
-// FetchOverviewCached returns a cached overview for siteURL if one exists and is
-// younger than overviewCacheTTL; otherwise it fetches live and caches the result.
-func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, siteURL string) (OverviewPayload, error) {
+// FetchOverviewCached returns a cached overview for organizationID+siteURL if one
+// exists and is younger than overviewCacheTTL; otherwise it fetches live and caches
+// the result. The cache key is scoped by organizationID so two organizations sharing
+// the same Search Console site never see each other's cached data.
+func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, organizationID, siteURL string) (OverviewPayload, error) {
+	cacheKey := organizationID + "|" + siteURL
+
 	service.overviewCacheMu.Lock()
-	entry, ok := service.overviewCache[siteURL]
+	entry, ok := service.overviewCache[cacheKey]
 	service.overviewCacheMu.Unlock()
 
 	if ok && time.Since(entry.fetchedAt) < overviewCacheTTL {
@@ -64,7 +68,7 @@ func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, si
 	}
 
 	service.overviewCacheMu.Lock()
-	service.overviewCache[siteURL] = overviewCacheEntry{payload: payload, fetchedAt: time.Now()}
+	service.overviewCache[cacheKey] = overviewCacheEntry{payload: payload, fetchedAt: time.Now()}
 	service.overviewCacheMu.Unlock()
 
 	return payload, nil

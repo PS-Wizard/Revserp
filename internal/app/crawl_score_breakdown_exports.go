@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"net/http"
@@ -26,13 +27,8 @@ func (a *App) handleExportCrawlScoreBreakdownCSV(w http.ResponseWriter, r *http.
 		return
 	}
 
-	filename := "crawl-issues-" + crawlID.String() + ".csv"
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
-	w.WriteHeader(http.StatusOK)
-
-	csvWriter := csv.NewWriter(w)
-	defer csvWriter.Flush()
+	var buf bytes.Buffer
+	csvWriter := csv.NewWriter(&buf)
 
 	if err := csvWriter.Write([]string{
 		"PILLAR",
@@ -47,6 +43,7 @@ func (a *App) handleExportCrawlScoreBreakdownCSV(w http.ResponseWriter, r *http.
 		"RECOMMENDED_FIX",
 		"SUGGESTION",
 	}); err != nil {
+		serverError(w, r, err)
 		return
 	}
 
@@ -64,9 +61,22 @@ func (a *App) handleExportCrawlScoreBreakdownCSV(w http.ResponseWriter, r *http.
 			exportRow.RecommendedFix,
 			exportRow.Suggestion,
 		}); err != nil {
+			serverError(w, r, err)
 			return
 		}
 	}
+
+	csvWriter.Flush()
+	if err := csvWriter.Error(); err != nil {
+		serverError(w, r, err)
+		return
+	}
+
+	filename := "crawl-issues-" + crawlID.String() + ".csv"
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
 }
 
 // handleExportCrawlScoreBreakdownXLSX exports one crawl's detailed issue rows as a styled workbook.

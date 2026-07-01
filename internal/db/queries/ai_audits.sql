@@ -61,3 +61,17 @@ WHERE project_id = $1
 ORDER BY created_at DESC
 LIMIT $3
 OFFSET $4;
+
+-- name: GetAIAuditByCrawlAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+FROM ai_audits
+WHERE project_id = $1 AND crawl_id = $2
+LIMIT 1;
+
+-- name: DeleteAIAuditByID :exec
+DELETE FROM ai_audits WHERE id = $1;
+
+-- name: UpdateAIAuditStatus :exec
+UPDATE ai_audits
+SET status = $2, error_message = $3, started_at = $4, completed_at = $5, updated_at = NOW()
+WHERE id = $1;

@@ -11,6 +11,69 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const insertAIAuditRun = `-- name: InsertAIAuditRun :one
+INSERT INTO ai_audit_runs (
+    audit_id, question_text, display_order, model_name,
+    status, raw_response, mentioned_target, target_rank, visibility_score,
+    error_message, started_at, completed_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+)
+RETURNING id, audit_id, question_text, display_order, model_name, status, raw_response, parsed_response_json, mentioned_target, target_rank, visibility_score, error_message, started_at, completed_at, created_at, updated_at
+`
+
+type InsertAIAuditRunParams struct {
+	AuditID         pgtype.UUID
+	QuestionText    string
+	DisplayOrder    int32
+	ModelName       string
+	Status          string
+	RawResponse     pgtype.Text
+	MentionedTarget pgtype.Bool
+	TargetRank      pgtype.Int4
+	VisibilityScore pgtype.Int4
+	ErrorMessage    pgtype.Text
+	StartedAt       pgtype.Timestamptz
+	CompletedAt     pgtype.Timestamptz
+}
+
+func (q *Queries) InsertAIAuditRun(ctx context.Context, arg InsertAIAuditRunParams) (AiAuditRun, error) {
+	row := q.db.QueryRow(ctx, insertAIAuditRun,
+		arg.AuditID,
+		arg.QuestionText,
+		arg.DisplayOrder,
+		arg.ModelName,
+		arg.Status,
+		arg.RawResponse,
+		arg.MentionedTarget,
+		arg.TargetRank,
+		arg.VisibilityScore,
+		arg.ErrorMessage,
+		arg.StartedAt,
+		arg.CompletedAt,
+	)
+	var i AiAuditRun
+	err := row.Scan(
+		&i.ID,
+		&i.AuditID,
+		&i.QuestionText,
+		&i.DisplayOrder,
+		&i.ModelName,
+		&i.Status,
+		&i.RawResponse,
+		&i.ParsedResponseJson,
+		&i.MentionedTarget,
+		&i.TargetRank,
+		&i.VisibilityScore,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listAIAuditRunsByAuditID = `-- name: ListAIAuditRunsByAuditID :many
 SELECT
     id,

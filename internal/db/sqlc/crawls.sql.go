@@ -552,6 +552,19 @@ func (q *Queries) MarkCrawlRunning(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const reclaimStaleRunningCrawls = `-- name: ReclaimStaleRunningCrawls :exec
+UPDATE crawls
+SET status = 'failed',
+    completed_at = now()
+WHERE status = 'running'
+  AND started_at < $1
+`
+
+func (q *Queries) ReclaimStaleRunningCrawls(ctx context.Context, startedAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, reclaimStaleRunningCrawls, startedAt)
+	return err
+}
+
 const updateCrawlGooglePSIResults = `-- name: UpdateCrawlGooglePSIResults :exec
 UPDATE crawls
 SET google_psi_results = $2

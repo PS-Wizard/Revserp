@@ -106,8 +106,22 @@ func New(pool *pgxpool.Pool, cfg Config, renderer *crawler.Renderer) *Worker {
 
 const schedulerAdvisoryLockID = 1748290342
 
+// staleRunningCrawlAge is how long a crawl may sit in 'running' before it is
+// considered orphaned by a crashed worker process and reclaimed as failed.
+// Multiple worker replicas can run concurrently (see the scheduler's
+// advisory lock), so this must be age-gated rather than an unconditional
+// reset on startup, which would kill another replica's in-flight crawl.
+const staleRunningCrawlAge = 2 * time.Hour
+
 // Run starts all worker pools and scheduler until the context is canceled.
 func (w *Worker) Run(ctx context.Context) error {
+	if err := w.queries.ReclaimStaleRunningCrawls(ctx, pgtype.Timestamptz{
+		Time:  time.Now().UTC().Add(-staleRunningCrawlAge),
+		Valid: true,
+	}); err != nil {
+		log.Printf("failed to reclaim stale running crawls: %v", err)
+	}
+
 	go w.runScheduler(ctx)
 
 	done := make(chan struct{}, w.cfg.ManualConcurrency+w.cfg.AutoConcurrency)

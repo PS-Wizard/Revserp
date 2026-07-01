@@ -34,6 +34,8 @@ type Config struct {
 	AIAuditWorkerConcurrency    int
 	AIAuditWorkerPollInterval   time.Duration
 	OpenRouterAPIKey            string
+	AIVisibilityModels          []string
+	AIVisibilityRateDelay       time.Duration
 	AIProvider                  string
 	GeminiAPIKey                string
 	GeminiModel                 string
@@ -81,6 +83,8 @@ func Load() Config {
 		AIAuditWorkerConcurrency:    getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
 		AIAuditWorkerPollInterval:   getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
 		OpenRouterAPIKey:            getEnv("OPENROUTER_API_KEY", ""),
+		AIVisibilityModels:          getEnvCSV("AI_VISIBILITY_MODELS", []string{"meta-llama/llama-3.3-70b-instruct:free", "nvidia/nemotron-3-super-120b-a12b:free", "nousresearch/hermes-3-llama-3.1-405b:free"}),
+		AIVisibilityRateDelay:       getEnvDuration("AI_VISIBILITY_RATE_DELAY", 9*time.Second),
 		AIProvider:                  strings.ToLower(getEnv("AI_PROVIDER", "deepseek")),
 		GeminiAPIKey:                getEnv("GEMINI_API_KEY", ""),
 		GeminiModel:                 getEnv("GEMINI_MODEL", "gemini-2.5-flash"),

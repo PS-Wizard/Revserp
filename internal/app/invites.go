@@ -333,7 +333,10 @@ func (a *App) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, invite.OrganizationID); err != nil {
+	if err := queries.UpdateSessionActiveOrganization(r.Context(), sqlc.UpdateSessionActiveOrganizationParams{
+		ID:          session.SessionID,
+		ActiveOrgID: invite.OrganizationID,
+	}); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}

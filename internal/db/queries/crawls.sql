@@ -192,6 +192,13 @@ INNER JOIN projects p ON p.id = c.project_id
 WHERE c.id = $1
 LIMIT 1;
 
+-- name: ReclaimStaleRunningCrawls :exec
+UPDATE crawls
+SET status = 'failed',
+    completed_at = now()
+WHERE status = 'running'
+  AND started_at < $1;
+
 -- name: ListActiveCrawlsForOrganization :many
 SELECT
     c.id,

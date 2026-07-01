@@ -80,6 +80,16 @@ func calculateOverallScore(seoScore int32, aeoScore int32, pageSpeedScore int32,
 	if minimumOverallScore <= 0 {
 		minimumOverallScore = shared.MinimumOverallScore
 	}
-	overallScore := scoringConfig.OverallWeights[seo.PillarID]*float64(seoScore) + scoringConfig.OverallWeights[aeo.PillarID]*float64(aeoScore) + scoringConfig.OverallWeights[pagespeed.PillarID]*float64(pageSpeedScore)
+	seoWeight := scoringConfig.OverallWeights[seo.PillarID]
+	aeoWeight := scoringConfig.OverallWeights[aeo.PillarID]
+	pageSpeedWeight := scoringConfig.OverallWeights[pagespeed.PillarID]
+	// Normalize so pillar weights always sum to 1; a stored config whose weights
+	// drift from 1 (e.g. a partial override) must neither inflate nor deflate the score.
+	if weightSum := seoWeight + aeoWeight + pageSpeedWeight; weightSum > 0 {
+		seoWeight /= weightSum
+		aeoWeight /= weightSum
+		pageSpeedWeight /= weightSum
+	}
+	overallScore := seoWeight*float64(seoScore) + aeoWeight*float64(aeoScore) + pageSpeedWeight*float64(pageSpeedScore)
 	return shared.ClampScore(overallScore, minimumOverallScore)
 }

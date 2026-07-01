@@ -87,6 +87,45 @@ func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (A
 	return i, err
 }
 
+const deleteAIAuditByID = `-- name: DeleteAIAuditByID :exec
+DELETE FROM ai_audits WHERE id = $1
+`
+
+func (q *Queries) DeleteAIAuditByID(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAIAuditByID, id)
+	return err
+}
+
+const getAIAuditByCrawlAndProject = `-- name: GetAIAuditByCrawlAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+FROM ai_audits
+WHERE project_id = $1 AND crawl_id = $2
+LIMIT 1
+`
+
+type GetAIAuditByCrawlAndProjectParams struct {
+	ProjectID pgtype.UUID
+	CrawlID   pgtype.UUID
+}
+
+func (q *Queries) GetAIAuditByCrawlAndProject(ctx context.Context, arg GetAIAuditByCrawlAndProjectParams) (AiAudit, error) {
+	row := q.db.QueryRow(ctx, getAIAuditByCrawlAndProject, arg.ProjectID, arg.CrawlID)
+	var i AiAudit
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.CrawlID,
+		&i.Status,
+		&i.Score,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getAIAuditByIDForUser = `-- name: GetAIAuditByIDForUser :one
 SELECT
     aa.id,
@@ -191,4 +230,29 @@ func (q *Queries) ListAIAuditsForProject(ctx context.Context, arg ListAIAuditsFo
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateAIAuditStatus = `-- name: UpdateAIAuditStatus :exec
+UPDATE ai_audits
+SET status = $2, error_message = $3, started_at = $4, completed_at = $5, updated_at = NOW()
+WHERE id = $1
+`
+
+type UpdateAIAuditStatusParams struct {
+	ID           pgtype.UUID
+	Status       string
+	ErrorMessage pgtype.Text
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateAIAuditStatus(ctx context.Context, arg UpdateAIAuditStatusParams) error {
+	_, err := q.db.Exec(ctx, updateAIAuditStatus,
+		arg.ID,
+		arg.Status,
+		arg.ErrorMessage,
+		arg.StartedAt,
+		arg.CompletedAt,
+	)
+	return err
 }

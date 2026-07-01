@@ -41,8 +41,21 @@ func New(pool *pgxpool.Pool, cfg config.Config, concurrency int, pollInterval ti
 	}
 }
 
+// staleRunningJobAge is how long an ai_worker_jobs row may sit in 'running'
+// before it is considered orphaned by a crashed worker process and
+// reclaimed as failed. Age-gated (not an unconditional reset) because
+// multiple worker replicas can run concurrently.
+const staleRunningJobAge = 2 * time.Hour
+
 // Run starts worker goroutines and blocks until the context is canceled.
 func (w *Worker) Run(ctx context.Context) error {
+	if err := w.queries.ReclaimStaleRunningAIWorkerJobs(ctx, pgtype.Timestamptz{
+		Time:  time.Now().UTC().Add(-staleRunningJobAge),
+		Valid: true,
+	}); err != nil {
+		log.Printf("failed to reclaim stale running ai worker jobs: %v", err)
+	}
+
 	done := make(chan struct{}, w.concurrency)
 	for i := range w.concurrency {
 		go func() {
@@ -85,6 +98,8 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 		switch job.JobType {
 		case "prompt_generation":
 			jobErr = w.handlePromptGeneration(ctx, job)
+		case "visibility_run":
+			jobErr = w.handleVisibilityRun(ctx, job)
 		default:
 			jobErr = fmt.Errorf("unknown job type: %s", job.JobType)
 		}

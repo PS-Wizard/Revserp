@@ -21,16 +21,30 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, job_type, project_id, status, error_message, started_at, completed_at, created_at, updated_at
+RETURNING id, job_type, project_id, audit_id, status, error_message, started_at, completed_at, created_at, updated_at
 `
 
-func (q *Queries) ClaimNextPendingAIWorkerJob(ctx context.Context) (AiWorkerJob, error) {
+type ClaimNextPendingAIWorkerJobRow struct {
+	ID           pgtype.UUID
+	JobType      string
+	ProjectID    pgtype.UUID
+	AuditID      pgtype.UUID
+	Status       string
+	ErrorMessage pgtype.Text
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) ClaimNextPendingAIWorkerJob(ctx context.Context) (ClaimNextPendingAIWorkerJobRow, error) {
 	row := q.db.QueryRow(ctx, claimNextPendingAIWorkerJob)
-	var i AiWorkerJob
+	var i ClaimNextPendingAIWorkerJobRow
 	err := row.Scan(
 		&i.ID,
 		&i.JobType,
 		&i.ProjectID,
+		&i.AuditID,
 		&i.Status,
 		&i.ErrorMessage,
 		&i.StartedAt,
@@ -42,23 +56,38 @@ func (q *Queries) ClaimNextPendingAIWorkerJob(ctx context.Context) (AiWorkerJob,
 }
 
 const enqueueAIWorkerJob = `-- name: EnqueueAIWorkerJob :one
-INSERT INTO ai_worker_jobs (job_type, project_id)
-VALUES ($1, $2)
-RETURNING id, job_type, project_id, status, error_message, started_at, completed_at, created_at, updated_at
+INSERT INTO ai_worker_jobs (job_type, project_id, audit_id, status)
+VALUES ($1, $2, $3, 'pending')
+RETURNING id, job_type, project_id, audit_id, status, error_message, started_at, completed_at, created_at, updated_at
 `
 
 type EnqueueAIWorkerJobParams struct {
 	JobType   string
 	ProjectID pgtype.UUID
+	AuditID   pgtype.UUID
 }
 
-func (q *Queries) EnqueueAIWorkerJob(ctx context.Context, arg EnqueueAIWorkerJobParams) (AiWorkerJob, error) {
-	row := q.db.QueryRow(ctx, enqueueAIWorkerJob, arg.JobType, arg.ProjectID)
-	var i AiWorkerJob
+type EnqueueAIWorkerJobRow struct {
+	ID           pgtype.UUID
+	JobType      string
+	ProjectID    pgtype.UUID
+	AuditID      pgtype.UUID
+	Status       string
+	ErrorMessage pgtype.Text
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) EnqueueAIWorkerJob(ctx context.Context, arg EnqueueAIWorkerJobParams) (EnqueueAIWorkerJobRow, error) {
+	row := q.db.QueryRow(ctx, enqueueAIWorkerJob, arg.JobType, arg.ProjectID, arg.AuditID)
+	var i EnqueueAIWorkerJobRow
 	err := row.Scan(
 		&i.ID,
 		&i.JobType,
 		&i.ProjectID,
+		&i.AuditID,
 		&i.Status,
 		&i.ErrorMessage,
 		&i.StartedAt,
@@ -93,5 +122,17 @@ type MarkAIWorkerJobFailedParams struct {
 
 func (q *Queries) MarkAIWorkerJobFailed(ctx context.Context, arg MarkAIWorkerJobFailedParams) error {
 	_, err := q.db.Exec(ctx, markAIWorkerJobFailed, arg.ID, arg.ErrorMessage)
+	return err
+}
+
+const reclaimStaleRunningAIWorkerJobs = `-- name: ReclaimStaleRunningAIWorkerJobs :exec
+UPDATE ai_worker_jobs
+SET status = 'failed', error_message = 'reclaimed: worker restarted', completed_at = NOW(), updated_at = NOW()
+WHERE status = 'running'
+  AND started_at < $1
+`
+
+func (q *Queries) ReclaimStaleRunningAIWorkerJobs(ctx context.Context, startedAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, reclaimStaleRunningAIWorkerJobs, startedAt)
 	return err
 }

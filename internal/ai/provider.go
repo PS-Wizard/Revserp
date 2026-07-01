@@ -52,6 +52,12 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			Model:      model,
 			HTTPClient: httpClient,
 		}, nil
+	case "openrouter":
+		return &OpenRouterClient{
+			APIKey:     cfg.APIKey,
+			Model:      cfg.Model,
+			HTTPClient: httpClient,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported AI provider %q", name)
 	}

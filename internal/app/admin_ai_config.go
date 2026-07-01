@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ps-wizard/revserp/internal/aiaudit"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -33,9 +34,10 @@ type putAIConfigRequest struct {
 // defaultAIConfig returns the built-in default AI prompt config.
 func defaultAIConfig() aiConfigResponse {
 	return aiConfigResponse{
-		ContextPrompt:    defaultAIContextPrompt(),
-		GuidelinesPrompt: "",
-		OtherNotesPrompt: "",
+		ContextPrompt:            defaultAIContextPrompt(),
+		GuidelinesPrompt:         "",
+		OtherNotesPrompt:         "",
+		QuestionGenerationPrompt: aiaudit.DefaultQuestionGenerationPrompt,
 	}
 }
 
