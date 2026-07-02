@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
@@ -103,18 +105,24 @@ func buildExactDuplicateIssues(pageFacts []shared.PageFact, exactDuplicateGroups
 
 func buildNearDuplicateIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
 	candidatePagePairs := buildNearDuplicateCandidatePairs(pageFacts)
-	nearDuplicateNeighborsByPageIndex := make(map[int]map[int]struct{})
+
+	// Precompute each page's normalized fields and character-trigram sets once.
+	// The similarity check runs over tens of thousands of candidate pairs and a
+	// single page appears in many of them, so rebuilding trigrams per pair (the
+	// old path) recomputed the same sets thousands of times.
+	profiles := buildNearDuplicateProfiles(pageFacts)
+
+	candidatePairList := make([][2]int, 0, len(candidatePagePairs))
 	for candidatePagePair := range candidatePagePairs {
-		leftPageFact := pageFacts[candidatePagePair[0]]
-		rightPageFact := pageFacts[candidatePagePair[1]]
-		if leftPageFact.ContentSHA256 == "" || rightPageFact.ContentSHA256 == "" || leftPageFact.ContentSHA256 == rightPageFact.ContentSHA256 {
-			continue
-		}
-		if calculateNearDuplicateContentSimilarity(leftPageFact, rightPageFact) < nearDuplicateContentSimilarityThreshold {
-			continue
-		}
-		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, candidatePagePair[0], candidatePagePair[1])
-		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, candidatePagePair[1], candidatePagePair[0])
+		candidatePairList = append(candidatePairList, candidatePagePair)
+	}
+
+	matchingPairs := verifyNearDuplicatePairs(pageFacts, profiles, candidatePairList)
+
+	nearDuplicateNeighborsByPageIndex := make(map[int]map[int]struct{})
+	for _, matchingPair := range matchingPairs {
+		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair[0], matchingPair[1])
+		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair[1], matchingPair[0])
 	}
 
 	var derivedIssues []shared.DerivedIssue
@@ -139,6 +147,123 @@ func buildNearDuplicateIssues(pageFacts []shared.PageFact) []shared.DerivedIssue
 		))
 	}
 	return derivedIssues
+}
+
+// nearDuplicateProfile holds a page's precomputed normalized fields and their
+// character-trigram sets, so pairwise similarity avoids rebuilding them.
+type nearDuplicateProfile struct {
+	visibleText     nearDuplicateFieldProfile
+	title           nearDuplicateFieldProfile
+	metaDescription nearDuplicateFieldProfile
+	h1              nearDuplicateFieldProfile
+}
+
+type nearDuplicateFieldProfile struct {
+	normalized string
+	trigrams   map[string]struct{}
+}
+
+func buildNearDuplicateProfiles(pageFacts []shared.PageFact) []nearDuplicateProfile {
+	profiles := make([]nearDuplicateProfile, len(pageFacts))
+	for pageIndex := range pageFacts {
+		profiles[pageIndex] = nearDuplicateProfile{
+			visibleText:     buildNearDuplicateFieldProfile(pageFacts[pageIndex].VisibleText),
+			title:           buildNearDuplicateFieldProfile(pageFacts[pageIndex].Title),
+			metaDescription: buildNearDuplicateFieldProfile(pageFacts[pageIndex].MetaDescription),
+			h1:              buildNearDuplicateFieldProfile(pageFacts[pageIndex].H1),
+		}
+	}
+	return profiles
+}
+
+func buildNearDuplicateFieldProfile(value string) nearDuplicateFieldProfile {
+	normalized := normalizeNearDuplicateField(value)
+	if normalized == "" {
+		return nearDuplicateFieldProfile{}
+	}
+	return nearDuplicateFieldProfile{normalized: normalized, trigrams: buildCharacterTrigrams(normalized)}
+}
+
+// similarityFromProfiles mirrors calculateNearDuplicateContentSimilarity exactly
+// but reads precomputed trigram sets instead of rebuilding them per pair.
+func similarityFromProfiles(leftProfile nearDuplicateProfile, rightProfile nearDuplicateProfile) float64 {
+	return fieldSimilarityFromProfiles(leftProfile.visibleText, rightProfile.visibleText)*0.55 +
+		fieldSimilarityFromProfiles(leftProfile.title, rightProfile.title)*0.15 +
+		fieldSimilarityFromProfiles(leftProfile.metaDescription, rightProfile.metaDescription)*0.15 +
+		fieldSimilarityFromProfiles(leftProfile.h1, rightProfile.h1)*0.15
+}
+
+func fieldSimilarityFromProfiles(leftProfile nearDuplicateFieldProfile, rightProfile nearDuplicateFieldProfile) float64 {
+	if leftProfile.normalized == "" || rightProfile.normalized == "" {
+		return 0
+	}
+	if leftProfile.normalized == rightProfile.normalized {
+		return 1
+	}
+	sharedTrigramCount := trigramIntersectionSize(leftProfile.trigrams, rightProfile.trigrams)
+	if sharedTrigramCount == 0 {
+		return 0
+	}
+	return float64(2*sharedTrigramCount) / float64(len(leftProfile.trigrams)+len(rightProfile.trigrams))
+}
+
+func trigramIntersectionSize(leftTrigrams map[string]struct{}, rightTrigrams map[string]struct{}) int {
+	if len(leftTrigrams) > len(rightTrigrams) {
+		leftTrigrams, rightTrigrams = rightTrigrams, leftTrigrams
+	}
+	sharedTrigramCount := 0
+	for trigram := range leftTrigrams {
+		if _, exists := rightTrigrams[trigram]; exists {
+			sharedTrigramCount++
+		}
+	}
+	return sharedTrigramCount
+}
+
+// verifyNearDuplicatePairs returns the candidate pairs whose content similarity
+// meets the threshold. Each pair is independent, so verification fans out
+// across CPUs (this is the dominant cost of duplicate detection on large sites).
+func verifyNearDuplicatePairs(pageFacts []shared.PageFact, profiles []nearDuplicateProfile, candidatePairs [][2]int) [][2]int {
+	if len(candidatePairs) == 0 {
+		return nil
+	}
+	workerCount := runtime.NumCPU()
+	if workerCount > len(candidatePairs) {
+		workerCount = len(candidatePairs)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+
+	matchesByWorker := make([][][2]int, workerCount)
+	var workerGroup sync.WaitGroup
+	for workerIndex := 0; workerIndex < workerCount; workerIndex++ {
+		workerGroup.Add(1)
+		go func(workerIndex int) {
+			defer workerGroup.Done()
+			var localMatches [][2]int
+			for pairIndex := workerIndex; pairIndex < len(candidatePairs); pairIndex += workerCount {
+				candidatePair := candidatePairs[pairIndex]
+				leftPageFact := pageFacts[candidatePair[0]]
+				rightPageFact := pageFacts[candidatePair[1]]
+				if leftPageFact.ContentSHA256 == "" || rightPageFact.ContentSHA256 == "" || leftPageFact.ContentSHA256 == rightPageFact.ContentSHA256 {
+					continue
+				}
+				if similarityFromProfiles(profiles[candidatePair[0]], profiles[candidatePair[1]]) < nearDuplicateContentSimilarityThreshold {
+					continue
+				}
+				localMatches = append(localMatches, candidatePair)
+			}
+			matchesByWorker[workerIndex] = localMatches
+		}(workerIndex)
+	}
+	workerGroup.Wait()
+
+	var matchingPairs [][2]int
+	for _, localMatches := range matchesByWorker {
+		matchingPairs = append(matchingPairs, localMatches...)
+	}
+	return matchingPairs
 }
 
 func buildNearDuplicateCandidatePairs(pageFacts []shared.PageFact) map[[2]int]struct{} {

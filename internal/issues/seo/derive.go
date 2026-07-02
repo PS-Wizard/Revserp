@@ -2,9 +2,7 @@ package seo
 
 import (
 	"fmt"
-	"log"
 	"strings"
-	"time"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
@@ -143,8 +141,6 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 	EnrichPageFactsWithContentFingerprints(pageFacts)
 	derivedIssues = append(derivedIssues, deriveDuplicateTitleIssues(pageFacts)...)
 	derivedIssues = append(derivedIssues, deriveDuplicateMetaDescriptionIssues(pageFacts)...)
-	dupStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, deriveDuplicateContentIssues(pageFacts)...)
-	log.Printf("seo dup-content timing: pages=%d duplicate_content=%s", len(pageFacts), time.Since(dupStartedAt).Round(time.Millisecond))
 	return derivedIssues
 }
