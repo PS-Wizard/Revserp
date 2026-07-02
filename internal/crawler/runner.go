@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -144,6 +145,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	}
 
 	var crawlResults []CrawlResult
+	crawlStartedAt := time.Now()
 
 	for len(pendingQueue) > 0 || activeJobs > 0 {
 		var nextJob CrawlJob
@@ -249,6 +251,14 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	}
 
 	summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+	elapsed := time.Since(crawlStartedAt)
+	pagesPerSec := 0.0
+	if elapsed.Seconds() > 0 {
+		pagesPerSec = float64(urlsCrawled) / elapsed.Seconds()
+	}
+	log.Printf("crawl throughput: crawled=%d rendered=%d skipped_non2xx=%d workers=%d elapsed=%s pages_per_sec=%.2f (root=%s)",
+		urlsCrawled, urlsRendered, urlsSkippedNon2xx, runner.workerCount, elapsed.Round(time.Millisecond), pagesPerSec, rootURL)
+
 	if shouldPersist && !runner.deferFinalStatus {
 		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); err != nil {
 			return crawlResults, summary, fmt.Errorf("mark crawl completed: %w", err)

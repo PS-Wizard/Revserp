@@ -39,8 +39,15 @@ func NewFetcher(fetchTimeout time.Duration, userAgent string, maxRetries int, re
 	if retryMax <= 0 {
 		retryMax = 15 * time.Second
 	}
+	// A crawl hammers a single host, so the default MaxIdleConnsPerHost of 2
+	// forces a fresh TCP+TLS handshake on nearly every concurrent fetch. Raise
+	// per-host idle reuse to cover the page-worker pool so connections stay warm.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 32
+	transport.IdleConnTimeout = 90 * time.Second
 	return &Fetcher{
-		httpClient:        &http.Client{Timeout: fetchTimeout},
+		httpClient:        &http.Client{Timeout: fetchTimeout, Transport: transport},
 		userAgent:         userAgent,
 		maxRetries:        maxRetries,
 		retryBase:         retryBase,
