@@ -332,8 +332,8 @@ func (store *testResultStore) PersistResult(_ context.Context, _ pgtype.UUID, _ 
 	return nil
 }
 
-func (store *testResultStore) UpdateCrawlProgress(_ context.Context, _ pgtype.UUID, _ int, _ int) error {
-	return nil
+func (store *testResultStore) UpdateCrawlProgress(_ context.Context, _ pgtype.UUID, _ int, _ int) (bool, error) {
+	return true, nil
 }
 
 func mustParseURL(t *testing.T, rawURL string) *url.URL {

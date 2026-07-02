@@ -88,17 +88,20 @@ func (store *Store) UpdateCrawlPhase(ctx context.Context, crawlID pgtype.UUID, p
 	return nil
 }
 
-// UpdateCrawlProgress writes in-progress crawl counters for a running crawl.
-func (store *Store) UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) error {
-	if err := store.queries.UpdateCrawlProgress(ctx, sqlc.UpdateCrawlProgressParams{
+// UpdateCrawlProgress writes in-progress crawl counters and reports whether the
+// crawl is still running. The UPDATE is gated on status = 'running', so zero
+// rows affected means the crawl was cancelled (or otherwise ended) out-of-band.
+func (store *Store) UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) (bool, error) {
+	rows, err := store.queries.UpdateCrawlProgress(ctx, sqlc.UpdateCrawlProgressParams{
 		ID:             crawlID,
 		UrlsCrawled:    int32(urlsCrawled),
 		UrlsDiscovered: int32(urlsDiscovered),
-	}); err != nil {
-		return fmt.Errorf("update crawl progress: %w", err)
+	})
+	if err != nil {
+		return false, fmt.Errorf("update crawl progress: %w", err)
 	}
 
-	return nil
+	return rows > 0, nil
 }
 
 // PersistResult stores one processed crawl result and its discovered links.

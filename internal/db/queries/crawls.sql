@@ -123,7 +123,7 @@ SET status = 'failed',
 WHERE id = $1
   AND status = 'running';
 
--- name: UpdateCrawlProgress :exec
+-- name: UpdateCrawlProgress :execrows
 UPDATE crawls
 SET urls_crawled = $2,
     urls_discovered = $3
