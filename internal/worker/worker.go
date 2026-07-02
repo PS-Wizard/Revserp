@@ -348,15 +348,33 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("run crawl: %w", err)
 	}
 
+	// Google PSI is an independent ~15-90s network call whose result is only
+	// needed at scoring time, so run it concurrently with issue derivation
+	// (different tables, no shared rows) instead of serially before it.
 	if w.cfg.PageSpeedAPIKey != "" {
 		log.Printf("starting google psi: crawl_id=%s url=%s strategy=mobile", claimed.ID.String(), claimed.BaseURL)
 	}
-	googlePSIResult, err := w.enrichCrawlWithGooglePSI(ctx, claimed.ID, claimed.BaseURL)
-	if err != nil {
-		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimed.ID.String(), err)
+	type psiOutcome struct {
+		result *googlePSIStoredResult
+		err    error
 	}
+	psiChan := make(chan psiOutcome, 1)
+	go func() {
+		psiStartedAt := time.Now()
+		result, psiErr := w.enrichCrawlWithGooglePSI(ctx, claimed.ID, claimed.BaseURL)
+		log.Printf("phase timing: crawl_id=%s google_psi=%s (concurrent)", claimed.ID.String(), time.Since(psiStartedAt).Round(time.Millisecond))
+		psiChan <- psiOutcome{result: result, err: psiErr}
+	}()
 
+	deriveStartedAt := time.Now()
 	derivedIssueCount, err := issueStore.DeriveIssues(ctx, claimed.ID)
+	log.Printf("phase timing: crawl_id=%s derive_issues=%s", claimed.ID.String(), time.Since(deriveStartedAt).Round(time.Millisecond))
+
+	psi := <-psiChan
+	googlePSIResult := psi.result
+	if psi.err != nil {
+		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimed.ID.String(), psi.err)
+	}
 	if err != nil {
 		if failErr := crawlStore.MarkCrawlFailed(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("derive issues: %w (also failed to mark crawl failed: %v)", err, failErr)
@@ -369,7 +387,9 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 	}
 	psiInput := toSharedPSIScoreInput(googlePSIResult)
+	scoreStartedAt := time.Now()
 	crawlScores, err := issueStore.ScoreCrawl(ctx, claimed.ID, psiInput)
+	log.Printf("phase timing: crawl_id=%s score_crawl=%s", claimed.ID.String(), time.Since(scoreStartedAt).Round(time.Millisecond))
 	if err != nil {
 		if failErr := crawlStore.MarkCrawlFailed(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)

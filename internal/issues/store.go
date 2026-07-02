@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -35,6 +37,7 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	txQueries := store.queries.WithTx(tx)
+	loadStartedAt := time.Now()
 	pageFacts, linkFacts, err := loadFacts(ctx, txQueries, crawlID)
 	if err != nil {
 		return 0, err
@@ -43,8 +46,12 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 	if err := persistPageContentFingerprints(ctx, txQueries, pageFacts); err != nil {
 		return 0, err
 	}
+	loadElapsed := time.Since(loadStartedAt)
 
+	computeStartedAt := time.Now()
 	derivedIssues := DeriveIssues(pageFacts, linkFacts)
+	computeElapsed := time.Since(computeStartedAt)
+	log.Printf("derive timing: crawl_id=%s pages=%d load+fingerprint=%s compute=%s issues=%d", crawlID.String(), len(pageFacts), loadElapsed.Round(time.Millisecond), computeElapsed.Round(time.Millisecond), len(derivedIssues))
 	if err := txQueries.DeleteCrawlIssuesForCrawl(ctx, crawlID); err != nil {
 		return 0, fmt.Errorf("delete crawl issues: %w", err)
 	}
