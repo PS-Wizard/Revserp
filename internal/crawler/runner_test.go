@@ -332,6 +332,10 @@ func (store *testResultStore) PersistResult(_ context.Context, _ pgtype.UUID, _ 
 	return nil
 }
 
+func (store *testResultStore) UpdateCrawlProgress(_ context.Context, _ pgtype.UUID, _ int, _ int) error {
+	return nil
+}
+
 func mustParseURL(t *testing.T, rawURL string) *url.URL {
 	t.Helper()
 

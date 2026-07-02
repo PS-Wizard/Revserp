@@ -166,7 +166,7 @@ INSERT INTO crawls (
     $5,
     $6
 )
-RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at
+RETURNING id, project_id, status, phase, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at
 `
 
 type CreateCrawlParams struct {
@@ -182,6 +182,7 @@ type CreateCrawlRow struct {
 	ID               pgtype.UUID
 	ProjectID        pgtype.UUID
 	Status           string
+	Phase            pgtype.Text
 	ConfigSnapshot   []byte
 	UrlsDiscovered   int32
 	UrlsCrawled      int32
@@ -211,6 +212,7 @@ func (q *Queries) CreateCrawl(ctx context.Context, arg CreateCrawlParams) (Creat
 		&i.ID,
 		&i.ProjectID,
 		&i.Status,
+		&i.Phase,
 		&i.ConfigSnapshot,
 		&i.UrlsDiscovered,
 		&i.UrlsCrawled,
@@ -256,6 +258,7 @@ SELECT
     c.id,
     c.project_id,
     c.status,
+    c.phase,
     c.config_snapshot,
     c.urls_discovered,
     c.urls_crawled,
@@ -286,6 +289,7 @@ type GetCrawlByIDForUserRow struct {
 	ID               pgtype.UUID
 	ProjectID        pgtype.UUID
 	Status           string
+	Phase            pgtype.Text
 	ConfigSnapshot   []byte
 	UrlsDiscovered   int32
 	UrlsCrawled      int32
@@ -308,6 +312,7 @@ func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUs
 		&i.ID,
 		&i.ProjectID,
 		&i.Status,
+		&i.Phase,
 		&i.ConfigSnapshot,
 		&i.UrlsDiscovered,
 		&i.UrlsCrawled,
@@ -345,6 +350,7 @@ SELECT
     c.id,
     c.project_id,
     c.status,
+    c.phase,
     c.urls_discovered,
     c.urls_crawled,
     c.created_at
@@ -359,6 +365,7 @@ type ListActiveCrawlsForOrganizationRow struct {
 	ID             pgtype.UUID
 	ProjectID      pgtype.UUID
 	Status         string
+	Phase          pgtype.Text
 	UrlsDiscovered int32
 	UrlsCrawled    int32
 	CreatedAt      pgtype.Timestamptz
@@ -377,6 +384,7 @@ func (q *Queries) ListActiveCrawlsForOrganization(ctx context.Context, organizat
 			&i.ID,
 			&i.ProjectID,
 			&i.Status,
+			&i.Phase,
 			&i.UrlsDiscovered,
 			&i.UrlsCrawled,
 			&i.CreatedAt,
@@ -396,6 +404,7 @@ SELECT
     id,
     project_id,
     status,
+    phase,
     config_snapshot,
     urls_discovered,
     urls_crawled,
@@ -428,6 +437,7 @@ type ListCrawlsForProjectRow struct {
 	ID               pgtype.UUID
 	ProjectID        pgtype.UUID
 	Status           string
+	Phase            pgtype.Text
 	ConfigSnapshot   []byte
 	UrlsDiscovered   int32
 	UrlsCrawled      int32
@@ -461,6 +471,7 @@ func (q *Queries) ListCrawlsForProject(ctx context.Context, arg ListCrawlsForPro
 			&i.ID,
 			&i.ProjectID,
 			&i.Status,
+			&i.Phase,
 			&i.ConfigSnapshot,
 			&i.UrlsDiscovered,
 			&i.UrlsCrawled,
@@ -493,6 +504,7 @@ SET status = 'completed',
     max_depth_reached = $4,
     completed_at = now()
 WHERE id = $1
+  AND status = 'running'
 `
 
 type MarkCrawlCompletedParams struct {
@@ -520,6 +532,7 @@ SET status = 'failed',
     max_depth_reached = $4,
     completed_at = now()
 WHERE id = $1
+  AND status = 'running'
 `
 
 type MarkCrawlFailedParams struct {
@@ -578,6 +591,42 @@ type UpdateCrawlGooglePSIResultsParams struct {
 
 func (q *Queries) UpdateCrawlGooglePSIResults(ctx context.Context, arg UpdateCrawlGooglePSIResultsParams) error {
 	_, err := q.db.Exec(ctx, updateCrawlGooglePSIResults, arg.ID, arg.GooglePsiResults)
+	return err
+}
+
+const updateCrawlPhase = `-- name: UpdateCrawlPhase :exec
+UPDATE crawls
+SET phase = $2
+WHERE id = $1
+  AND status = 'running'
+`
+
+type UpdateCrawlPhaseParams struct {
+	ID    pgtype.UUID
+	Phase pgtype.Text
+}
+
+func (q *Queries) UpdateCrawlPhase(ctx context.Context, arg UpdateCrawlPhaseParams) error {
+	_, err := q.db.Exec(ctx, updateCrawlPhase, arg.ID, arg.Phase)
+	return err
+}
+
+const updateCrawlProgress = `-- name: UpdateCrawlProgress :exec
+UPDATE crawls
+SET urls_crawled = $2,
+    urls_discovered = $3
+WHERE id = $1
+  AND status = 'running'
+`
+
+type UpdateCrawlProgressParams struct {
+	ID             pgtype.UUID
+	UrlsCrawled    int32
+	UrlsDiscovered int32
+}
+
+func (q *Queries) UpdateCrawlProgress(ctx context.Context, arg UpdateCrawlProgressParams) error {
+	_, err := q.db.Exec(ctx, updateCrawlProgress, arg.ID, arg.UrlsCrawled, arg.UrlsDiscovered)
 	return err
 }
 

@@ -343,6 +343,10 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		WithStore(crawlStore).
 		WithDeferredFinalStatus()
 
+	if phaseErr := crawlStore.UpdateCrawlPhase(ctx, claimed.ID, "crawling"); phaseErr != nil {
+		log.Printf("update crawl phase to crawling failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
+	}
+
 	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(ctx, claimed.ID, claimed.BaseURL)
 	if err != nil {
 		return fmt.Errorf("run crawl: %w", err)
@@ -366,6 +370,10 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		psiChan <- psiOutcome{result: result, err: psiErr}
 	}()
 
+	if phaseErr := crawlStore.UpdateCrawlPhase(ctx, claimed.ID, "analyzing"); phaseErr != nil {
+		log.Printf("update crawl phase to analyzing failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
+	}
+
 	deriveStartedAt := time.Now()
 	derivedIssueCount, err := issueStore.DeriveIssues(ctx, claimed.ID)
 	log.Printf("phase timing: crawl_id=%s derive_issues=%s", claimed.ID.String(), time.Since(deriveStartedAt).Round(time.Millisecond))
@@ -376,7 +384,8 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimed.ID.String(), psi.err)
 	}
 	if err != nil {
-		if failErr := crawlStore.MarkCrawlFailed(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+		finalCtx := context.WithoutCancel(ctx)
+		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("derive issues: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("derive issues: %w", err)
@@ -391,7 +400,8 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	crawlScores, err := issueStore.ScoreCrawl(ctx, claimed.ID, psiInput)
 	log.Printf("phase timing: crawl_id=%s score_crawl=%s", claimed.ID.String(), time.Since(scoreStartedAt).Round(time.Millisecond))
 	if err != nil {
-		if failErr := crawlStore.MarkCrawlFailed(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+		finalCtx := context.WithoutCancel(ctx)
+		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
 			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("score crawl: %w", err)
@@ -399,7 +409,10 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 
 	log.Printf("derived crawl issues: crawl_id=%s count=%d google_psi_count=%d", claimed.ID.String(), derivedIssueCount, googlePSIIssueCount)
 	log.Printf("calculated crawl scores: crawl_id=%s seo=%d aeo=%d pagespeed=%d overall=%d", claimed.ID.String(), crawlScores.SEOScore, crawlScores.AEOScore, crawlScores.PageSpeedScore, crawlScores.OverallScore)
-	if err := crawlStore.MarkCrawlCompleted(ctx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
+
+	finalCtx := context.WithoutCancel(ctx)
+	if err := crawlStore.MarkCrawlCompleted(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
+		log.Printf("crawl succeeded but mark-completed status write failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 		return fmt.Errorf("mark crawl completed: %w", err)
 	}
 

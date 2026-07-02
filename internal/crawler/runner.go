@@ -22,6 +22,7 @@ type resultPersister interface {
 	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
 	MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
 	PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error
+	UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) error
 }
 
 // Runner coordinates an in-memory BFS crawl over the worker pool.
@@ -146,6 +147,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 
 	var crawlResults []CrawlResult
 	crawlStartedAt := time.Now()
+	var lastProgressWrite time.Time
 
 	for len(pendingQueue) > 0 || activeJobs > 0 {
 		var nextJob CrawlJob
@@ -174,6 +176,12 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				urlsSkippedNon2xx++
 				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
 					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
+				if shouldPersist && time.Since(lastProgressWrite) >= 2*time.Second {
+					if progressErr := runner.store.UpdateCrawlProgress(runContext, crawlID, urlsCrawled, scheduledPages); progressErr != nil {
+						log.Printf("crawl progress write failed: %v", progressErr)
+					}
+					lastProgressWrite = time.Now()
+				}
 				continue
 			}
 
@@ -187,6 +195,12 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 
 			log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
 				urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
+			if shouldPersist && time.Since(lastProgressWrite) >= 2*time.Second {
+				if progressErr := runner.store.UpdateCrawlProgress(runContext, crawlID, urlsCrawled, scheduledPages); progressErr != nil {
+					log.Printf("crawl progress write failed: %v", progressErr)
+				}
+				lastProgressWrite = time.Now()
+			}
 
 			isDuplicateProcessedPage := false
 			normalizedResultURL, normalizeErr := NormalizeURL(crawlPageURL(result), nil)

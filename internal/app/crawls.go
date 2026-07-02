@@ -23,6 +23,7 @@ type crawlResponse struct {
 	ID               string          `json:"id"`
 	ProjectID        string          `json:"project_id"`
 	Status           string          `json:"status"`
+	Phase            string          `json:"phase,omitempty"`
 	ConfigSnapshot   json.RawMessage `json:"config_snapshot,omitempty"`
 	URLsDiscovered   int32           `json:"urls_discovered"`
 	URLsCrawled      int32           `json:"urls_crawled"`
@@ -309,6 +310,7 @@ func newCrawlResponseFromCreateRow(crawl sqlc.CreateCrawlRow) crawlResponse {
 		crawl.ID,
 		crawl.ProjectID,
 		crawl.Status,
+		crawl.Phase,
 		crawl.ConfigSnapshot,
 		crawl.UrlsDiscovered,
 		crawl.UrlsCrawled,
@@ -331,6 +333,7 @@ func newCrawlResponseFromGetRow(crawl sqlc.GetCrawlByIDForUserRow) crawlResponse
 		crawl.ID,
 		crawl.ProjectID,
 		crawl.Status,
+		crawl.Phase,
 		crawl.ConfigSnapshot,
 		crawl.UrlsDiscovered,
 		crawl.UrlsCrawled,
@@ -353,6 +356,7 @@ func newCrawlResponseFromListRow(crawl sqlc.ListCrawlsForProjectRow) crawlRespon
 		crawl.ID,
 		crawl.ProjectID,
 		crawl.Status,
+		crawl.Phase,
 		crawl.ConfigSnapshot,
 		crawl.UrlsDiscovered,
 		crawl.UrlsCrawled,
@@ -374,6 +378,7 @@ func buildCrawlResponse(
 	id pgtype.UUID,
 	projectID pgtype.UUID,
 	status string,
+	phase pgtype.Text,
 	configSnapshot []byte,
 	urlsDiscovered int32,
 	urlsCrawled int32,
@@ -398,6 +403,9 @@ func buildCrawlResponse(
 		CreatedAt:       formatTimestamp(createdAt),
 	}
 
+	if phase.Valid {
+		response.Phase = phase.String
+	}
 	if len(configSnapshot) > 0 {
 		response.ConfigSnapshot = json.RawMessage(configSnapshot)
 	}
@@ -433,6 +441,7 @@ type activeCrawlResponse struct {
 	ID             string `json:"id"`
 	ProjectID      string `json:"project_id"`
 	Status         string `json:"status"`
+	Phase          string `json:"phase,omitempty"`
 	URLsDiscovered int32  `json:"urls_discovered"`
 	URLsCrawled    int32  `json:"urls_crawled"`
 	CreatedAt      string `json:"created_at"`
@@ -469,14 +478,18 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 
 	responses := make([]activeCrawlResponse, 0, len(crawls))
 	for _, c := range crawls {
-		responses = append(responses, activeCrawlResponse{
+		response := activeCrawlResponse{
 			ID:             c.ID.String(),
 			ProjectID:      c.ProjectID.String(),
 			Status:         c.Status,
 			URLsDiscovered: c.UrlsDiscovered,
 			URLsCrawled:    c.UrlsCrawled,
 			CreatedAt:      formatTimestamp(c.CreatedAt),
-		})
+		}
+		if c.Phase.Valid {
+			response.Phase = c.Phase.String
+		}
+		responses = append(responses, response)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"crawls": responses})

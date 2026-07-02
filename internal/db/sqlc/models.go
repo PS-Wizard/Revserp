@@ -103,6 +103,7 @@ type Crawl struct {
 	HasLlmsTxt        pgtype.Bool
 	RequestedByUserID pgtype.UUID
 	Source            string
+	Phase             pgtype.Text
 }
 
 type CrawlIssue struct {

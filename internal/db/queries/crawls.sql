@@ -14,13 +14,14 @@ INSERT INTO crawls (
     $5,
     $6
 )
-RETURNING id, project_id, status, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at;
+RETURNING id, project_id, status, phase, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at;
 
 -- name: GetCrawlByIDForUser :one
 SELECT
     c.id,
     c.project_id,
     c.status,
+    c.phase,
     c.config_snapshot,
     c.urls_discovered,
     c.urls_crawled,
@@ -74,6 +75,7 @@ SELECT
     id,
     project_id,
     status,
+    phase,
     config_snapshot,
     urls_discovered,
     urls_crawled,
@@ -108,7 +110,8 @@ SET status = 'completed',
     urls_crawled = $3,
     max_depth_reached = $4,
     completed_at = now()
-WHERE id = $1;
+WHERE id = $1
+  AND status = 'running';
 
 -- name: MarkCrawlFailed :exec
 UPDATE crawls
@@ -117,7 +120,21 @@ SET status = 'failed',
     urls_crawled = $3,
     max_depth_reached = $4,
     completed_at = now()
-WHERE id = $1;
+WHERE id = $1
+  AND status = 'running';
+
+-- name: UpdateCrawlProgress :exec
+UPDATE crawls
+SET urls_crawled = $2,
+    urls_discovered = $3
+WHERE id = $1
+  AND status = 'running';
+
+-- name: UpdateCrawlPhase :exec
+UPDATE crawls
+SET phase = $2
+WHERE id = $1
+  AND status = 'running';
 
 -- name: ClaimNextQueuedCrawlManual :one
 WITH candidate AS (
@@ -204,6 +221,7 @@ SELECT
     c.id,
     c.project_id,
     c.status,
+    c.phase,
     c.urls_discovered,
     c.urls_crawled,
     c.created_at

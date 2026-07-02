@@ -76,6 +76,31 @@ func (store *Store) MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, ur
 	return nil
 }
 
+// UpdateCrawlPhase writes the current sub-phase for a running crawl.
+func (store *Store) UpdateCrawlPhase(ctx context.Context, crawlID pgtype.UUID, phase string) error {
+	if err := store.queries.UpdateCrawlPhase(ctx, sqlc.UpdateCrawlPhaseParams{
+		ID:    crawlID,
+		Phase: pgtype.Text{String: phase, Valid: true},
+	}); err != nil {
+		return fmt.Errorf("update crawl phase: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateCrawlProgress writes in-progress crawl counters for a running crawl.
+func (store *Store) UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) error {
+	if err := store.queries.UpdateCrawlProgress(ctx, sqlc.UpdateCrawlProgressParams{
+		ID:             crawlID,
+		UrlsCrawled:    int32(urlsCrawled),
+		UrlsDiscovered: int32(urlsDiscovered),
+	}); err != nil {
+		return fmt.Errorf("update crawl progress: %w", err)
+	}
+
+	return nil
+}
+
 // PersistResult stores one processed crawl result and its discovered links.
 func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
