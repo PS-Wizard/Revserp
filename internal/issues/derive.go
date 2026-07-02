@@ -2,8 +2,10 @@ package issues
 
 import (
 	"fmt"
+	"log"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ps-wizard/revserp/internal/issues/aeo"
 	pagespeed "github.com/ps-wizard/revserp/internal/issues/page_speed"
@@ -21,9 +23,16 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 		}
 		scoreablePageFacts = append(scoreablePageFacts, pageFact)
 	}
+	seoStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, seo.DeriveIssues(slices.Clone(scoreablePageFacts), linkFacts)...)
+	seoElapsed := time.Since(seoStartedAt)
+	aeoStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, aeo.DeriveIssues(scoreablePageFacts, linkFacts)...)
+	aeoElapsed := time.Since(aeoStartedAt)
+	pagespeedStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, pagespeed.DeriveIssues(scoreablePageFacts, linkFacts)...)
+	pagespeedElapsed := time.Since(pagespeedStartedAt)
+	log.Printf("derive breakdown: scoreable_pages=%d seo=%s aeo=%s pagespeed=%s", len(scoreablePageFacts), seoElapsed.Round(time.Millisecond), aeoElapsed.Round(time.Millisecond), pagespeedElapsed.Round(time.Millisecond))
 	return derivedIssues
 }
 
