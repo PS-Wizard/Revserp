@@ -611,7 +611,7 @@ func (q *Queries) UpdateCrawlPhase(ctx context.Context, arg UpdateCrawlPhasePara
 	return err
 }
 
-const updateCrawlProgress = `-- name: UpdateCrawlProgress :exec
+const updateCrawlProgress = `-- name: UpdateCrawlProgress :execrows
 UPDATE crawls
 SET urls_crawled = $2,
     urls_discovered = $3
@@ -625,9 +625,12 @@ type UpdateCrawlProgressParams struct {
 	UrlsDiscovered int32
 }
 
-func (q *Queries) UpdateCrawlProgress(ctx context.Context, arg UpdateCrawlProgressParams) error {
-	_, err := q.db.Exec(ctx, updateCrawlProgress, arg.ID, arg.UrlsCrawled, arg.UrlsDiscovered)
-	return err
+func (q *Queries) UpdateCrawlProgress(ctx context.Context, arg UpdateCrawlProgressParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCrawlProgress, arg.ID, arg.UrlsCrawled, arg.UrlsDiscovered)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateCrawlScores = `-- name: UpdateCrawlScores :exec

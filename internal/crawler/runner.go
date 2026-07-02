@@ -22,7 +22,7 @@ type resultPersister interface {
 	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
 	MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
 	PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error
-	UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) error
+	UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) (bool, error)
 }
 
 // Runner coordinates an in-memory BFS crawl over the worker pool.
@@ -149,6 +149,25 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	crawlStartedAt := time.Now()
 	var lastProgressWrite time.Time
 
+	// Throttled progress write that doubles as a cancellation probe: the UPDATE
+	// is gated on status = 'running', so if the API marked this crawl cancelled
+	// in another process, we observe zero rows affected and stop the run.
+	maybeWriteProgress := func() {
+		if !shouldPersist || time.Since(lastProgressWrite) < 2*time.Second {
+			return
+		}
+		lastProgressWrite = time.Now()
+		stillRunning, progressErr := runner.store.UpdateCrawlProgress(runContext, crawlID, urlsCrawled, scheduledPages)
+		if progressErr != nil {
+			log.Printf("crawl progress write failed: %v", progressErr)
+			return
+		}
+		if !stillRunning {
+			log.Printf("crawl no longer running (cancelled), stopping: crawl_id=%s", crawlID.String())
+			cancelRun()
+		}
+	}
+
 	for len(pendingQueue) > 0 || activeJobs > 0 {
 		var nextJob CrawlJob
 		var jobsChannel chan<- CrawlJob
@@ -176,12 +195,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				urlsSkippedNon2xx++
 				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
 					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
-				if shouldPersist && time.Since(lastProgressWrite) >= 2*time.Second {
-					if progressErr := runner.store.UpdateCrawlProgress(runContext, crawlID, urlsCrawled, scheduledPages); progressErr != nil {
-						log.Printf("crawl progress write failed: %v", progressErr)
-					}
-					lastProgressWrite = time.Now()
-				}
+				maybeWriteProgress()
 				continue
 			}
 
@@ -195,12 +209,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 
 			log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
 				urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
-			if shouldPersist && time.Since(lastProgressWrite) >= 2*time.Second {
-				if progressErr := runner.store.UpdateCrawlProgress(runContext, crawlID, urlsCrawled, scheduledPages); progressErr != nil {
-					log.Printf("crawl progress write failed: %v", progressErr)
-				}
-				lastProgressWrite = time.Now()
-			}
+			maybeWriteProgress()
 
 			isDuplicateProcessedPage := false
 			normalizedResultURL, normalizeErr := NormalizeURL(crawlPageURL(result), nil)
