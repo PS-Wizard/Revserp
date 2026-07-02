@@ -113,6 +113,18 @@ func (q *Queries) CreateCrawlIssue(ctx context.Context, arg CreateCrawlIssuePara
 	return i, err
 }
 
+type CreateCrawlIssuesParams struct {
+	CrawlID     pgtype.UUID
+	CrawlPageID pgtype.UUID
+	Url         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
+	Severity    string
+	Message     string
+	Details     string
+}
+
 const deleteCrawlIssuesForCrawl = `-- name: DeleteCrawlIssuesForCrawl :exec
 DELETE FROM crawl_issues
 WHERE crawl_id = $1

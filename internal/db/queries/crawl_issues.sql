@@ -22,6 +22,29 @@ INSERT INTO crawl_issues (
 )
 RETURNING id, crawl_id, crawl_page_id, url, pillar, bucket, issue_type, severity, message, details, created_at;
 
+-- name: CreateCrawlIssues :copyfrom
+INSERT INTO crawl_issues (
+    crawl_id,
+    crawl_page_id,
+    url,
+    pillar,
+    bucket,
+    issue_type,
+    severity,
+    message,
+    details
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9
+);
+
 -- name: GetCrawlIssueByIDForUser :one
 SELECT
     ci.id,

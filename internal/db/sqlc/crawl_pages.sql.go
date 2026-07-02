@@ -11,6 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bulkUpdateCrawlPageContentFingerprints = `-- name: BulkUpdateCrawlPageContentFingerprints :exec
+UPDATE crawl_pages AS cp
+SET content_sha256 = NULLIF(data.content_sha256, '')
+FROM (
+    SELECT unnest($1::uuid[]) AS id, unnest($2::text[]) AS content_sha256
+) AS data
+WHERE cp.id = data.id
+`
+
+type BulkUpdateCrawlPageContentFingerprintsParams struct {
+	Column1 []pgtype.UUID
+	Column2 []string
+}
+
+func (q *Queries) BulkUpdateCrawlPageContentFingerprints(ctx context.Context, arg BulkUpdateCrawlPageContentFingerprintsParams) error {
+	_, err := q.db.Exec(ctx, bulkUpdateCrawlPageContentFingerprints, arg.Column1, arg.Column2)
+	return err
+}
+
 const countCrawlPagesForCrawlByUser = `-- name: CountCrawlPagesForCrawlByUser :one
 SELECT COUNT(*)
 FROM crawl_pages AS cp

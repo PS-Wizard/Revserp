@@ -217,3 +217,11 @@ ORDER BY created_at ASC;
 UPDATE crawl_pages
 SET content_sha256 = $2
 WHERE id = $1;
+
+-- name: BulkUpdateCrawlPageContentFingerprints :exec
+UPDATE crawl_pages AS cp
+SET content_sha256 = NULLIF(data.content_sha256, '')
+FROM (
+    SELECT unnest($1::uuid[]) AS id, unnest($2::text[]) AS content_sha256
+) AS data
+WHERE cp.id = data.id;

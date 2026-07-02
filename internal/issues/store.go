@@ -48,8 +48,9 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 	if err := txQueries.DeleteCrawlIssuesForCrawl(ctx, crawlID); err != nil {
 		return 0, fmt.Errorf("delete crawl issues: %w", err)
 	}
+	issueRows := make([]sqlc.CreateCrawlIssuesParams, 0, len(derivedIssues))
 	for _, derivedIssue := range derivedIssues {
-		if _, err := txQueries.CreateCrawlIssue(ctx, sqlc.CreateCrawlIssueParams{
+		issueRows = append(issueRows, sqlc.CreateCrawlIssuesParams{
 			CrawlID:     crawlID,
 			CrawlPageID: derivedIssue.CrawlPageID,
 			Url:         derivedIssue.URL,
@@ -59,9 +60,10 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 			Severity:    derivedIssue.Severity,
 			Message:     derivedIssue.Message,
 			Details:     derivedIssue.Details,
-		}); err != nil {
-			return 0, fmt.Errorf("create crawl issue %q for %q: %w", derivedIssue.IssueType, derivedIssue.URL, err)
-		}
+		})
+	}
+	if _, err := txQueries.CreateCrawlIssues(ctx, issueRows); err != nil {
+		return 0, fmt.Errorf("bulk create crawl issues: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit derive issues transaction: %w", err)

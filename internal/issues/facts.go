@@ -64,13 +64,20 @@ func loadFacts(ctx context.Context, queries *sqlc.Queries, crawlID pgtype.UUID) 
 }
 
 func persistPageContentFingerprints(ctx context.Context, queries *sqlc.Queries, pageFacts []shared.PageFact) error {
+	if len(pageFacts) == 0 {
+		return nil
+	}
+	ids := make([]pgtype.UUID, 0, len(pageFacts))
+	hashes := make([]string, 0, len(pageFacts))
 	for _, pageFact := range pageFacts {
-		if err := queries.UpdateCrawlPageContentFingerprints(ctx, sqlc.UpdateCrawlPageContentFingerprintsParams{
-			ID:            pageFact.ID,
-			ContentSha256: nullableText(pageFact.ContentSHA256),
-		}); err != nil {
-			return fmt.Errorf("update crawl page content fingerprints for %q: %w", pageFact.URL, err)
-		}
+		ids = append(ids, pageFact.ID)
+		hashes = append(hashes, pageFact.ContentSHA256)
+	}
+	if err := queries.BulkUpdateCrawlPageContentFingerprints(ctx, sqlc.BulkUpdateCrawlPageContentFingerprintsParams{
+		Column1: ids,
+		Column2: hashes,
+	}); err != nil {
+		return fmt.Errorf("bulk update crawl page content fingerprints: %w", err)
 	}
 	return nil
 }
