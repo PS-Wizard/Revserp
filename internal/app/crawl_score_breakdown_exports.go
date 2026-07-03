@@ -136,6 +136,7 @@ type exportFilters struct {
 	pillarIDs     []string // raw pillar identifiers, e.g. seo, aeo, pagespeed
 	bucketKeys    []string // composite "pillarId::bucketId", e.g. seo::meta_tags
 	issueTypeKeys []string // composite "pillarId::bucketId::issueTypeId"
+	issueURLs     []string // affected URLs; when set, scoped to bucketKeys if also present
 }
 
 // parseExportFilterParams reads optional filter query parameters from the export request.
@@ -162,17 +163,26 @@ func parseExportFilterParams(r *http.Request) exportFilters {
 			}
 		}
 	}
+	if s := r.URL.Query().Get("issue_urls"); s != "" {
+		for url := range strings.SplitSeq(s, ",") {
+			if url = strings.TrimSpace(url); url != "" {
+				f.issueURLs = append(f.issueURLs, url)
+			}
+		}
+	}
 	return f
 }
 
 // hasAny returns true when at least one filter category is populated.
 func (f exportFilters) hasAny() bool {
-	return len(f.pillarIDs) > 0 || len(f.bucketKeys) > 0 || len(f.issueTypeKeys) > 0
+	return len(f.pillarIDs) > 0 || len(f.bucketKeys) > 0 || len(f.issueTypeKeys) > 0 || len(f.issueURLs) > 0
 }
 
 // filterCrawlIssues applies export filters to raw crawl issue rows.
-// Filter hierarchy: issue_type_keys > bucket_keys > pillar_ids.
+// Filter hierarchy: issue_urls > issue_type_keys > bucket_keys > pillar_ids.
 // When multiple categories are provided, the most specific takes precedence.
+// issue_urls is additionally scoped to bucket_keys when both are present, so a
+// URL that also has issues in other buckets does not leak into a bucket export.
 func filterCrawlIssues(rows []sqlc.ListCrawlIssuesForCrawlRow, filters exportFilters) []sqlc.ListCrawlIssuesForCrawlRow {
 	if !filters.hasAny() {
 		return rows
@@ -190,6 +200,10 @@ func filterCrawlIssues(rows []sqlc.ListCrawlIssuesForCrawlRow, filters exportFil
 	for _, id := range filters.pillarIDs {
 		pillarSet[id] = struct{}{}
 	}
+	urlSet := make(map[string]struct{}, len(filters.issueURLs))
+	for _, u := range filters.issueURLs {
+		urlSet[u] = struct{}{}
+	}
 
 	filtered := make([]sqlc.ListCrawlIssuesForCrawlRow, 0, len(rows))
 	for _, row := range rows {
@@ -197,6 +211,16 @@ func filterCrawlIssues(rows []sqlc.ListCrawlIssuesForCrawlRow, filters exportFil
 		bucketKey := row.Pillar + "::" + row.Bucket
 
 		switch {
+		case len(urlSet) > 0:
+			if _, ok := urlSet[row.Url]; !ok {
+				continue
+			}
+			if len(bucketSet) > 0 {
+				if _, ok := bucketSet[bucketKey]; !ok {
+					continue
+				}
+			}
+			filtered = append(filtered, row)
 		case len(issueTypeSet) > 0:
 			if _, ok := issueTypeSet[compositeKey]; ok {
 				filtered = append(filtered, row)
