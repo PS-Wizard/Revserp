@@ -15,6 +15,18 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
+// CrawlStatus is a typed crawl lifecycle status, used within this file for
+// status filtering/terminal checks (scoped here rather than a repo-wide sweep).
+type CrawlStatus string
+
+const (
+	CrawlStatusQueued    CrawlStatus = "queued"
+	CrawlStatusRunning   CrawlStatus = "running"
+	CrawlStatusCompleted CrawlStatus = "completed"
+	CrawlStatusFailed    CrawlStatus = "failed"
+	CrawlStatusCancelled CrawlStatus = "cancelled"
+)
+
 type createCrawlRequest struct {
 	ConfigSnapshot json.RawMessage `json:"config_snapshot"`
 }
@@ -502,7 +514,8 @@ func formatTimestamp(value pgtype.Timestamptz) string {
 
 // isCrawlStatusTerminal reports whether a crawl status is terminal (content never changes).
 func isCrawlStatusTerminal(status string) bool {
-	return status == "completed" || status == "failed" || status == "cancelled"
+	s := CrawlStatus(status)
+	return s == CrawlStatusCompleted || s == CrawlStatusFailed || s == CrawlStatusCancelled
 }
 
 // parseCrawlStatusFilter validates the optional crawl list status filter.
@@ -512,8 +525,8 @@ func parseCrawlStatusFilter(r *http.Request) (string, error) {
 		return "", nil
 	}
 
-	switch statusFilter {
-	case "queued", "running", "completed", "failed":
+	switch CrawlStatus(statusFilter) {
+	case CrawlStatusQueued, CrawlStatusRunning, CrawlStatusCompleted, CrawlStatusFailed, CrawlStatusCancelled:
 		return statusFilter, nil
 	default:
 		return "", errors.New("invalid status")

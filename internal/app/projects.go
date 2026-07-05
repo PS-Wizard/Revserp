@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
+	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -44,6 +45,16 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	baseURL := strings.TrimSpace(requestBody.BaseURL)
 	if name == "" || baseURL == "" {
 		writeJSONError(w, http.StatusBadRequest, "name and base_url are required")
+		return
+	}
+
+	normalizedBaseURL, err := crawler.NormalizeURL(baseURL, nil)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid base_url")
+		return
+	}
+	if err := crawler.ValidatePublicHost(r.Context(), normalizedBaseURL.Hostname()); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "base_url must not point to a private or internal host")
 		return
 	}
 

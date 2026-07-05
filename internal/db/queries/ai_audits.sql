@@ -75,3 +75,11 @@ DELETE FROM ai_audits WHERE id = $1;
 UPDATE ai_audits
 SET status = $2, error_message = $3, started_at = $4, completed_at = $5, updated_at = NOW()
 WHERE id = $1;
+
+-- name: ReclaimStaleRunningAIAudits :exec
+-- Marks ai_audits rows orphaned by a crashed worker process (stuck in
+-- 'running' past the cutoff) as failed, mirroring ReclaimStaleRunningAIWorkerJobs.
+UPDATE ai_audits
+SET status = 'failed', error_message = 'reclaimed: stale running audit', completed_at = NOW(), updated_at = NOW()
+WHERE status = 'running'
+  AND started_at < $1;

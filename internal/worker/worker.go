@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -70,6 +71,9 @@ type Worker struct {
 	queries  *sqlc.Queries
 	cfg      Config
 	renderer *crawler.Renderer
+
+	cancelsMu sync.Mutex
+	cancels   map[pgtype.UUID]context.CancelFunc
 }
 
 // New builds a crawl worker.
@@ -101,7 +105,43 @@ func New(pool *pgxpool.Pool, cfg Config, renderer *crawler.Renderer) *Worker {
 		queries:  sqlc.New(pool),
 		cfg:      cfg,
 		renderer: renderer,
+		cancels:  make(map[pgtype.UUID]context.CancelFunc),
 	}
+}
+
+// registerCrawlCancel records the cancel func for an in-flight crawl so it
+// can be tripped from within this same process.
+func (w *Worker) registerCrawlCancel(crawlID pgtype.UUID, cancel context.CancelFunc) {
+	w.cancelsMu.Lock()
+	w.cancels[crawlID] = cancel
+	w.cancelsMu.Unlock()
+}
+
+// unregisterCrawlCancel drops the cancel func once a crawl finishes.
+func (w *Worker) unregisterCrawlCancel(crawlID pgtype.UUID) {
+	w.cancelsMu.Lock()
+	delete(w.cancels, crawlID)
+	w.cancelsMu.Unlock()
+}
+
+// CancelCrawl trips the in-memory cancel func for crawlID if this worker
+// process is the one running it, and reports whether it found one.
+//
+// This only works when the caller and the running crawl are in the same
+// process. The API and worker binaries run as separate processes
+// (cmd/api vs cmd/worker), so a cancel request handled by the API cannot
+// reach this map; the DB status UPDATE (status='cancelled') remains the
+// cross-process signal, observed via the periodic progress-write status
+// check in the crawler runner.
+func (w *Worker) CancelCrawl(crawlID pgtype.UUID) bool {
+	w.cancelsMu.Lock()
+	cancel, ok := w.cancels[crawlID]
+	w.cancelsMu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
 }
 
 const schedulerAdvisoryLockID = 1748290342
@@ -112,6 +152,12 @@ const schedulerAdvisoryLockID = 1748290342
 // advisory lock), so this must be age-gated rather than an unconditional
 // reset on startup, which would kill another replica's in-flight crawl.
 const staleRunningCrawlAge = 2 * time.Hour
+
+// staleRunningCrawlAgePeriodic is the shorter cutoff used by the recurring
+// scheduler-tick reclaim (as opposed to the once-at-startup reclaim above),
+// so crawls orphaned by a mid-run worker crash recover within minutes
+// instead of waiting up to staleRunningCrawlAge.
+const staleRunningCrawlAgePeriodic = 15 * time.Minute
 
 // Run starts all worker pools and scheduler until the context is canceled.
 func (w *Worker) Run(ctx context.Context) error {
@@ -234,6 +280,13 @@ func (w *Worker) runScheduler(ctx context.Context) {
 			log.Printf("auto-crawl scheduler sweep error: %v", err)
 		}
 
+		if err := w.queries.ReclaimStaleRunningCrawls(ctx, pgtype.Timestamptz{
+			Time:  time.Now().UTC().Add(-staleRunningCrawlAgePeriodic),
+			Valid: true,
+		}); err != nil {
+			log.Printf("periodic reclaim of stale running crawls failed: %v", err)
+		}
+
 		select {
 		case <-ctx.Done():
 			return
@@ -334,6 +387,15 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("build crawler config: %w", err)
 	}
 
+	// Per-crawl cancellation: registered so CancelCrawl can trip it for
+	// same-process cancel requests (see CancelCrawl's cross-process caveat).
+	crawlCtx, cancelCrawl := context.WithCancel(ctx)
+	w.registerCrawlCancel(claimed.ID, cancelCrawl)
+	defer func() {
+		w.unregisterCrawlCancel(claimed.ID)
+		cancelCrawl()
+	}()
+
 	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, w.cfg.CrawlMaxRetries, w.cfg.CrawlRetryBase, w.cfg.CrawlRetryMax)
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(w.pool)
@@ -343,11 +405,11 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		WithStore(crawlStore).
 		WithDeferredFinalStatus()
 
-	if phaseErr := crawlStore.UpdateCrawlPhase(ctx, claimed.ID, "crawling"); phaseErr != nil {
+	if phaseErr := crawlStore.UpdateCrawlPhase(crawlCtx, claimed.ID, "crawling"); phaseErr != nil {
 		log.Printf("update crawl phase to crawling failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
 	}
 
-	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(ctx, claimed.ID, claimed.BaseURL)
+	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(crawlCtx, claimed.ID, claimed.BaseURL)
 	if err != nil {
 		return fmt.Errorf("run crawl: %w", err)
 	}
@@ -365,17 +427,17 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	psiChan := make(chan psiOutcome, 1)
 	go func() {
 		psiStartedAt := time.Now()
-		result, psiErr := w.enrichCrawlWithGooglePSI(ctx, claimed.ID, claimed.BaseURL)
+		result, psiErr := w.enrichCrawlWithGooglePSI(crawlCtx, claimed.ID, claimed.BaseURL)
 		log.Printf("phase timing: crawl_id=%s google_psi=%s (concurrent)", claimed.ID.String(), time.Since(psiStartedAt).Round(time.Millisecond))
 		psiChan <- psiOutcome{result: result, err: psiErr}
 	}()
 
-	if phaseErr := crawlStore.UpdateCrawlPhase(ctx, claimed.ID, "analyzing"); phaseErr != nil {
+	if phaseErr := crawlStore.UpdateCrawlPhase(crawlCtx, claimed.ID, "analyzing"); phaseErr != nil {
 		log.Printf("update crawl phase to analyzing failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
 	}
 
 	deriveStartedAt := time.Now()
-	derivedIssueCount, err := issueStore.DeriveIssues(ctx, claimed.ID)
+	derivedIssueCount, crawlPages, err := issueStore.DeriveIssuesWithPages(crawlCtx, claimed.ID)
 	log.Printf("phase timing: crawl_id=%s derive_issues=%s", claimed.ID.String(), time.Since(deriveStartedAt).Round(time.Millisecond))
 
 	psi := <-psiChan
@@ -391,13 +453,13 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("derive issues: %w", err)
 	}
 
-	googlePSIIssueCount, err := w.persistGooglePSIIssues(ctx, claimed.ID, googlePSIResult)
+	googlePSIIssueCount, err := w.persistGooglePSIIssues(crawlCtx, claimed.ID, googlePSIResult)
 	if err != nil {
 		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 	}
 	psiInput := toSharedPSIScoreInput(googlePSIResult)
 	scoreStartedAt := time.Now()
-	crawlScores, err := issueStore.ScoreCrawl(ctx, claimed.ID, psiInput)
+	crawlScores, err := issueStore.ScoreCrawlWithPages(crawlCtx, claimed.ID, crawlPages, psiInput)
 	log.Printf("phase timing: crawl_id=%s score_crawl=%s", claimed.ID.String(), time.Since(scoreStartedAt).Round(time.Millisecond))
 	if err != nil {
 		finalCtx := context.WithoutCancel(ctx)

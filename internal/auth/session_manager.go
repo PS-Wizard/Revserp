@@ -105,7 +105,7 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 	accessToken := sessionRow.SupabaseAccessToken
 	refreshToken := sessionRow.SupabaseRefreshToken
 	accessTokenExpiresAt := sessionRow.SupabaseAccessTokenExpiresAt.Time.UTC()
-	if sessionRow.SupabaseAccessTokenExpiresAt.Valid && accessTokenExpiresAt.Before(time.Now().UTC().Add(sessionRefreshSkew)) {
+	if !sessionRow.SupabaseAccessTokenExpiresAt.Valid || accessTokenExpiresAt.Before(time.Now().UTC().Add(sessionRefreshSkew)) {
 		refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, refreshToken)
 		if refreshErr != nil {
 			var authErr *SupabaseAuthError

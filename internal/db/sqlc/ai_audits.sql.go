@@ -232,6 +232,20 @@ func (q *Queries) ListAIAuditsForProject(ctx context.Context, arg ListAIAuditsFo
 	return items, nil
 }
 
+const reclaimStaleRunningAIAudits = `-- name: ReclaimStaleRunningAIAudits :exec
+UPDATE ai_audits
+SET status = 'failed', error_message = 'reclaimed: stale running audit', completed_at = NOW(), updated_at = NOW()
+WHERE status = 'running'
+  AND started_at < $1
+`
+
+// Marks ai_audits rows orphaned by a crashed worker process (stuck in
+// 'running' past the cutoff) as failed, mirroring ReclaimStaleRunningAIWorkerJobs.
+func (q *Queries) ReclaimStaleRunningAIAudits(ctx context.Context, startedAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, reclaimStaleRunningAIAudits, startedAt)
+	return err
+}
+
 const updateAIAuditStatus = `-- name: UpdateAIAuditStatus :exec
 UPDATE ai_audits
 SET status = $2, error_message = $3, started_at = $4, completed_at = $5, updated_at = NOW()

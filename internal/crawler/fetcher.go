@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -46,14 +48,54 @@ func NewFetcher(fetchTimeout time.Duration, userAgent string, maxRetries int, re
 	transport.MaxIdleConns = 100
 	transport.MaxIdleConnsPerHost = 32
 	transport.IdleConnTimeout = 90 * time.Second
+	// DNS rebinding guard: the dialer only sees the already-resolved IP:port, so
+	// re-validate it at connect time regardless of what hostname the request used.
+	dialer := &net.Dialer{Control: ssrfSafeDialControl}
+	transport.DialContext = dialer.DialContext
 	return &Fetcher{
-		httpClient:        &http.Client{Timeout: fetchTimeout, Transport: transport},
+		httpClient: &http.Client{
+			Timeout:       fetchTimeout,
+			Transport:     transport,
+			CheckRedirect: checkRedirectSSRFSafe,
+		},
 		userAgent:         userAgent,
 		maxRetries:        maxRetries,
 		retryBase:         retryBase,
 		retryMax:          retryMax,
 		hostCooldownUntil: make(map[string]time.Time),
 	}
+}
+
+// ssrfSafeDialControl rejects the dial before the connection is established if
+// the resolved address is disallowed. Installed as net.Dialer.Control so it
+// runs after DNS resolution but before any bytes hit the wire, closing the
+// TOCTOU gap between a pre-resolution check and the actual connection target.
+func ssrfSafeDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("parse dial address: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("dial address %q is not an IP", host)
+	}
+	if isDisallowedIP(ip) {
+		return fmt.Errorf("refusing to dial disallowed address %s", ip)
+	}
+	return nil
+}
+
+// checkRedirectSSRFSafe re-validates the redirect target's host on every hop
+// so a same-origin-looking redirect can't be used to smuggle a request to a
+// private or metadata address after the initial URL passed validation.
+func checkRedirectSSRFSafe(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if err := ValidatePublicHost(req.Context(), req.URL.Hostname()); err != nil {
+		return fmt.Errorf("redirect blocked: %w", err)
+	}
+	return nil
 }
 
 // Fetch requests one URL, retrying on 429/503 responses with exponential

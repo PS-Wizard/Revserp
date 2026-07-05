@@ -8,16 +8,24 @@ import (
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/issues/shared"
+	"github.com/ps-wizard/revserp/internal/pgnull"
 )
 
 func loadFacts(ctx context.Context, queries *sqlc.Queries, crawlID pgtype.UUID) ([]shared.PageFact, []shared.LinkFact, error) {
+	_, pageFacts, linkFacts, err := loadFactsWithPages(ctx, queries, crawlID)
+	return pageFacts, linkFacts, err
+}
+
+// loadFactsWithPages behaves like loadFacts but also returns the raw crawl page rows it loaded,
+// so a caller can reuse them (e.g. for scoring) instead of issuing the same heavy query again.
+func loadFactsWithPages(ctx context.Context, queries *sqlc.Queries, crawlID pgtype.UUID) ([]sqlc.ListCrawlPagesForCrawlRow, []shared.PageFact, []shared.LinkFact, error) {
 	crawlPages, err := queries.ListCrawlPagesForCrawl(ctx, crawlID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list crawl pages: %w", err)
+		return nil, nil, nil, fmt.Errorf("list crawl pages: %w", err)
 	}
 	internalCrawlLinks, err := queries.ListInternalCrawlLinksForCrawl(ctx, crawlID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list internal crawl links: %w", err)
+		return nil, nil, nil, fmt.Errorf("list internal crawl links: %w", err)
 	}
 
 	pageFacts := make([]shared.PageFact, 0, len(crawlPages))
@@ -60,7 +68,7 @@ func loadFacts(ctx context.Context, queries *sqlc.Queries, crawlID pgtype.UUID) 
 			TargetStatus: int32Value(internalCrawlLink.TargetStatus),
 		})
 	}
-	return pageFacts, linkFacts, nil
+	return crawlPages, pageFacts, linkFacts, nil
 }
 
 func persistPageContentFingerprints(ctx context.Context, queries *sqlc.Queries, pageFacts []shared.PageFact) error {
@@ -97,8 +105,5 @@ func int32Value(value pgtype.Int4) int32 {
 }
 
 func nullableText(value string) pgtype.Text {
-	if value == "" {
-		return pgtype.Text{}
-	}
-	return pgtype.Text{String: value, Valid: true}
+	return pgnull.Text(value)
 }

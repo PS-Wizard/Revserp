@@ -6,6 +6,8 @@ import (
 	"math"
 
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/ps-wizard/revserp/internal/pgnull"
 )
 
 // nullableFetchStatusCode builds a valid pgtype.Int4 for an HTTP status code when available.
@@ -26,13 +28,10 @@ func nullableFetchResponseSize(value int) pgtype.Int4 {
 	return nullableInt4(value)
 }
 
-// nullableText builds a valid pgtype.Text from a non-empty string.
+// nullableText builds a valid pgtype.Text from a non-blank string, treating
+// whitespace-only values as NULL (see internal/pgnull for the shared rule).
 func nullableText(value string) pgtype.Text {
-	if value == "" {
-		return pgtype.Text{}
-	}
-
-	return pgtype.Text{String: value, Valid: true}
+	return pgnull.Text(value)
 }
 
 // nullableInt4 builds a valid pgtype.Int4 from an int value, saturating to

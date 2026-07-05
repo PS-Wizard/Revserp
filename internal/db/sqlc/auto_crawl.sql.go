@@ -68,6 +68,7 @@ WHERE acs.enabled = true
             AND c.status = 'completed'
       ) < $1
   )
+  AND (acs.last_enqueued_at IS NULL OR acs.last_enqueued_at < $1)
 ORDER BY acs.last_enqueued_at ASC NULLS FIRST
 LIMIT $2
 `

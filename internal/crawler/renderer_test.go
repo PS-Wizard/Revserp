@@ -24,6 +24,8 @@ func (renderer *stubRenderer) RenderHTML(_ context.Context, _ string) (FetchResu
 }
 
 func TestProcessJobUsesRenderedHTMLWhenItImprovesExtraction(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(writer, `<!DOCTYPE html><html><head><title></title></head><body><div id="app"></div><script src="/app.js"></script><script src="/vendor.js"></script><script src="/runtime.js"></script><script src="/chunk.js"></script><script src="/extra.js"></script></body></html>`)
@@ -60,6 +62,8 @@ func TestProcessJobUsesRenderedHTMLWhenItImprovesExtraction(t *testing.T) {
 }
 
 func TestProcessJobKeepsRawHTMLWhenRendererFails(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(writer, `<!DOCTYPE html><html><head><title></title></head><body><div id="app"></div><script src="/app.js"></script><script src="/vendor.js"></script><script src="/runtime.js"></script><script src="/chunk.js"></script><script src="/extra.js"></script></body></html>`)

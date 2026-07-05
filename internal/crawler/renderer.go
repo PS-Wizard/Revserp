@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -61,6 +62,19 @@ func NewRenderer(binaryPath string, concurrency int, timeout time.Duration, kill
 func (renderer *Renderer) RenderHTML(ctx context.Context, targetURL string) (FetchResult, error) {
 	if renderer == nil {
 		return FetchResult{}, fmt.Errorf("renderer is not configured")
+	}
+
+	// The Obscura subprocess does its own DNS resolution and dialing, so we
+	// can't hook a dialer the way the plain-HTTP fetcher does. Pre-resolution
+	// validation here is best-effort: it blocks the common case but is not a
+	// guarantee against DNS rebinding between this check and the subprocess's
+	// own lookup.
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		return FetchResult{}, fmt.Errorf("render url: parse url: %w", err)
+	}
+	if err := ValidatePublicHost(ctx, parsedURL.Hostname()); err != nil {
+		return FetchResult{}, fmt.Errorf("render url: %w", err)
 	}
 
 	select {

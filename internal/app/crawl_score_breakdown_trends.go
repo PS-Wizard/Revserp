@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -12,7 +13,27 @@ import (
 	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
-const defaultTrendLimit = 20
+const (
+	defaultTrendLimit = 50
+	maxTrendLimit     = 200
+)
+
+// parseTrendLimit reads an optional ?limit query param, clamped to
+// [1, maxTrendLimit]; falls back to defaultTrendLimit when absent/invalid.
+func parseTrendLimit(r *http.Request) int32 {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return defaultTrendLimit
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultTrendLimit
+	}
+	if n > maxTrendLimit {
+		return maxTrendLimit
+	}
+	return int32(n)
+}
 
 type projectBucketTrendsResponse struct {
 	Crawls []crawlTrendSnapshot `json:"crawls"`
@@ -72,7 +93,7 @@ func (a *App) handleGetProjectBucketTrends(w http.ResponseWriter, r *http.Reques
 	rows, err := a.Queries.ListCompletedProjectCrawlScoreBreakdownsForUser(r.Context(), sqlc.ListCompletedProjectCrawlScoreBreakdownsForUserParams{
 		ProjectID: projectID,
 		UserID:    user.ID,
-		Limit:     defaultTrendLimit,
+		Limit:     parseTrendLimit(r),
 	})
 	if err != nil {
 		serverError(w, r, err)

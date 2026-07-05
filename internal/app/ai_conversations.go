@@ -1,10 +1,13 @@
 package app
 
 import (
+	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -341,10 +344,30 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Phase 1: load and validate the turn context in a short transaction. The
-	// FOR UPDATE lock here serializes against any concurrent turn's phase-2
-	// (persist) transaction below, so the connection and lock are released
-	// before the slow LLM call instead of being held across it.
+	// Serialize all turns for this conversation across the whole handler,
+	// including the slow LLM call, with a session-level advisory lock held
+	// on a dedicated connection for the duration of the request. The
+	// per-phase FOR UPDATE locks below only protect their own short
+	// transactions and cannot serialize across the LLM call by themselves.
+	lockConn, err := a.DB.Acquire(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	turnLockKey := conversationAdvisoryLockKey(conversationID)
+	if _, err := lockConn.Exec(r.Context(), "select pg_advisory_lock($1)", turnLockKey); err != nil {
+		lockConn.Release()
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = lockConn.Exec(unlockCtx, "select pg_advisory_unlock($1)", turnLockKey)
+		lockConn.Release()
+	}()
+
+	// Phase 1: load and validate the turn context in a short transaction.
 	readTx, err := a.DB.Begin(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -388,9 +411,9 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Phase 3: persist the turn in a second short transaction, re-acquiring
-	// the FOR UPDATE lock so writes from concurrent turns on this
-	// conversation still never interleave.
+	// Phase 3: persist the turn in a second short transaction. Concurrent
+	// turns on this conversation are already serialized by the advisory
+	// lock acquired above; the FOR UPDATE here just re-checks ownership.
 	writeTx, err := a.DB.Begin(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -420,6 +443,12 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, http.StatusOK, newCreateMessageResponse(updatedConversation, userMessage, assistantMessage, turnCtx.previousMessages, turnCtx.pillar, turnCtx.buckets, turnCtx.selectedIssues))
+}
+
+// conversationAdvisoryLockKey derives a stable int8 key from a conversation
+// UUID for use with pg_advisory_lock/pg_advisory_unlock.
+func conversationAdvisoryLockKey(conversationID pgtype.UUID) int64 {
+	return int64(binary.BigEndian.Uint64(conversationID.Bytes[8:16]))
 }
 
 func resolveAIMessageCrawlID(rawCrawlID string, fallback pgtype.UUID) (pgtype.UUID, error) {

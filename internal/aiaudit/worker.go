@@ -41,20 +41,21 @@ func New(pool *pgxpool.Pool, cfg config.Config, concurrency int, pollInterval ti
 	}
 }
 
-// staleRunningJobAge is how long an ai_worker_jobs row may sit in 'running'
-// before it is considered orphaned by a crashed worker process and
-// reclaimed as failed. Age-gated (not an unconditional reset) because
-// multiple worker replicas can run concurrently.
+// staleRunningJobAge is how long an ai_worker_jobs row (or an ai_audits row)
+// may sit in 'running' before it is considered orphaned by a crashed worker
+// process and reclaimed as failed. Age-gated (not an unconditional reset)
+// because multiple worker replicas can run concurrently.
 const staleRunningJobAge = 2 * time.Hour
+
+// staleReclaimInterval is how often the periodic reclaim sweep runs, in
+// addition to the once-at-startup reclaim below.
+const staleReclaimInterval = 15 * time.Minute
 
 // Run starts worker goroutines and blocks until the context is canceled.
 func (w *Worker) Run(ctx context.Context) error {
-	if err := w.queries.ReclaimStaleRunningAIWorkerJobs(ctx, pgtype.Timestamptz{
-		Time:  time.Now().UTC().Add(-staleRunningJobAge),
-		Valid: true,
-	}); err != nil {
-		log.Printf("failed to reclaim stale running ai worker jobs: %v", err)
-	}
+	w.reclaimStale(ctx)
+
+	go w.runStaleReclaimLoop(ctx)
 
 	done := make(chan struct{}, w.concurrency)
 	for i := range w.concurrency {
@@ -67,6 +68,33 @@ func (w *Worker) Run(ctx context.Context) error {
 		<-done
 	}
 	return nil
+}
+
+// runStaleReclaimLoop periodically reclaims stale-running ai_worker_jobs and
+// ai_audits rows so orphaned work recovers without waiting for a restart.
+func (w *Worker) runStaleReclaimLoop(ctx context.Context) {
+	ticker := time.NewTicker(staleReclaimInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.reclaimStale(ctx)
+		}
+	}
+}
+
+func (w *Worker) reclaimStale(ctx context.Context) {
+	cutoff := pgtype.Timestamptz{Time: time.Now().UTC().Add(-staleRunningJobAge), Valid: true}
+
+	if err := w.queries.ReclaimStaleRunningAIWorkerJobs(ctx, cutoff); err != nil {
+		log.Printf("failed to reclaim stale running ai worker jobs: %v", err)
+	}
+	if err := w.queries.ReclaimStaleRunningAIAudits(ctx, cutoff); err != nil {
+		log.Printf("failed to reclaim stale running ai audits: %v", err)
+	}
 }
 
 func (w *Worker) runLoop(ctx context.Context, workerID int) {

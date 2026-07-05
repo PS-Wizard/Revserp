@@ -14,6 +14,8 @@ import (
 )
 
 func TestRunnerRunCrawlsInternalPagesUpToMaxDepth(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -72,6 +74,8 @@ func TestRunnerRunCrawlsInternalPagesUpToMaxDepth(t *testing.T) {
 }
 
 func TestRunnerRunRespectsMaxPages(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(writer, `<!DOCTYPE html>
@@ -102,6 +106,8 @@ func TestRunnerRunRespectsMaxPages(t *testing.T) {
 }
 
 func TestRunnerRunAllowsUnlimitedPagesWhenMaxPagesIsZero(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		switch request.URL.Path {
@@ -132,6 +138,8 @@ func TestRunnerRunAllowsUnlimitedPagesWhenMaxPagesIsZero(t *testing.T) {
 }
 
 func TestRunnerRunSkipsDuplicateFinalURLs(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	redirectTargetPath := "/final"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -176,6 +184,8 @@ func TestRunnerRunSkipsDuplicateFinalURLs(t *testing.T) {
 }
 
 func TestRunnerRunHandlesManyDiscoveredLinksWithoutDeadlocking(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -214,6 +224,8 @@ func TestRunnerRunHandlesManyDiscoveredLinksWithoutDeadlocking(t *testing.T) {
 }
 
 func TestRunnerRunAndPersistCallsStore(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body><a href="/about">About</a></body></html>`)
@@ -256,6 +268,8 @@ func TestRunnerRunAndPersistCallsStore(t *testing.T) {
 }
 
 func TestRunnerRunAndPersistFailsOnStoreError(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body></body></html>`)

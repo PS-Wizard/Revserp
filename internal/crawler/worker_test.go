@@ -10,6 +10,8 @@ import (
 )
 
 func TestProcessJobParsesHTML(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(writer, `
@@ -50,6 +52,8 @@ func TestProcessJobParsesHTML(t *testing.T) {
 }
 
 func TestProcessJobSkipsNonHTML(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/pdf")
 		fmt.Fprint(writer, "not html")

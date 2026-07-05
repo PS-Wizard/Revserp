@@ -186,7 +186,19 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			}
 
 			activeJobs--
-			crawlResults = append(crawlResults, result)
+			if shouldPersist {
+				// The persist path (worker.go) discards the returned slice and
+				// only reads the final CrawlRunSummary, so retain a lightweight
+				// copy instead of every page's full HTML body and visible text
+				// (avoids ~100MB+ retained per large crawl). PersistResult below
+				// still persists the untrimmed result to the DB.
+				lightResult := result
+				lightResult.Fetch.Body = nil
+				lightResult.ParsedPage = nil
+				crawlResults = append(crawlResults, lightResult)
+			} else {
+				crawlResults = append(crawlResults, result)
+			}
 
 			// Non-2xx responses (rate limits, challenge pages, server errors) are
 			// counted but not persisted or used for link discovery.
@@ -226,7 +238,11 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				if err := runner.store.PersistResult(runContext, crawlID, normalizedRootURL.String(), result); err != nil {
 					cancelRun()
 					summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
-					if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
+					// Use a ctx detached from cancellation so this terminal status
+					// write still lands even if the parent ctx is already done
+					// (e.g. process shutdown), matching worker.go's post-crawl writes.
+					finalCtx := context.WithoutCancel(ctx)
+					if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
 						return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
 					}
 					return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
@@ -261,7 +277,12 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 		case <-runContext.Done():
 			summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
 			if shouldPersist {
-				if failErr := runner.store.MarkCrawlFailed(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
+				// Use a ctx detached from cancellation so this terminal status
+				// write still lands even when the parent ctx is already
+				// cancelled (e.g. process shutdown); otherwise the row is
+				// stuck in 'running' forever.
+				finalCtx := context.WithoutCancel(ctx)
+				if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
 					return crawlResults, summary, fmt.Errorf("crawl canceled: %w (also failed to mark crawl failed: %v)", runContext.Err(), failErr)
 				}
 			}

@@ -16,16 +16,6 @@ const (
 	SoftSumDecay = 0.5
 )
 
-// BuildPillarBreakdown builds one pillar breakdown from its configured bucket weights and issue penalties.
-func BuildPillarBreakdown(pillarID string, pillarLabel string, pillarWeight float64, bucketWeights map[string]float64, issuePenaltyByType map[string]float64, totalScoredPages int, crawlIssueSignals []CrawlIssueSignal) PillarScoreBreakdown {
-	return BuildPillarBreakdownWithIssueCoverage(pillarID, pillarLabel, pillarWeight, bucketWeights, issuePenaltyByType, totalScoredPages, crawlIssueSignals, IssueCoverage)
-}
-
-// BuildPillarBreakdownWithIssueCoverage builds one pillar breakdown using a pillar-specific issue coverage function.
-func BuildPillarBreakdownWithIssueCoverage(pillarID string, pillarLabel string, pillarWeight float64, bucketWeights map[string]float64, issuePenaltyByType map[string]float64, totalScoredPages int, crawlIssueSignals []CrawlIssueSignal, issueCoverage func(affectedPages int, totalScoredPages int) float64) PillarScoreBreakdown {
-	return BuildPillarBreakdownWithOptions(pillarID, PillarScoringConfig{Label: pillarLabel, Weight: pillarWeight, BucketWeights: bucketWeights, IssuePenaltyByType: issuePenaltyByType}, DefaultScoringMathConfig(), totalScoredPages, crawlIssueSignals, issueCoverage, nil)
-}
-
 // BuildPillarBreakdownWithOptions builds one pillar breakdown from editable scoring config.
 func BuildPillarBreakdownWithOptions(pillarID string, pillarConfig PillarScoringConfig, scoringConfig ScoringConfig, totalScoredPages int, crawlIssueSignals []CrawlIssueSignal, issueCoverage func(affectedPages int, totalScoredPages int) float64, psiInput *GooglePSIScoreInput) PillarScoreBreakdown {
 	issueGroupsByBucket := BuildIssueGroupsByBucket(pillarID, crawlIssueSignals)
@@ -85,16 +75,6 @@ func resolvePSIBucketScore(bucketID string, psiInput *GooglePSIScoreInput) *floa
 	}
 	score := float64(*psiInput.MobilePerformanceScore)
 	return &score
-}
-
-// BuildBucketBreakdown builds one bucket breakdown from its configured issue groups.
-func BuildBucketBreakdown(bucketID string, bucketWeight float64, issuePenaltyByType map[string]float64, totalScoredPages int, issueGroups map[string]*IssueGroup) BucketScoreBreakdown {
-	return BuildBucketBreakdownWithIssueCoverage(bucketID, bucketWeight, issuePenaltyByType, totalScoredPages, issueGroups, IssueCoverage)
-}
-
-// BuildBucketBreakdownWithIssueCoverage builds one bucket breakdown using a pillar-specific issue coverage function.
-func BuildBucketBreakdownWithIssueCoverage(bucketID string, bucketWeight float64, issuePenaltyByType map[string]float64, totalScoredPages int, issueGroups map[string]*IssueGroup, issueCoverage func(affectedPages int, totalScoredPages int) float64) BucketScoreBreakdown {
-	return BuildBucketBreakdownWithOptions(bucketID, bucketWeight, issuePenaltyByType, DefaultScoringMathConfig(), totalScoredPages, issueGroups, issueCoverage)
 }
 
 // BuildBucketBreakdownWithOptions builds one bucket breakdown from editable scoring config.

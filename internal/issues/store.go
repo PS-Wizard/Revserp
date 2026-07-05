@@ -30,21 +30,28 @@ func NewStore(pool *pgxpool.Pool) *Store {
 
 // DeriveIssues reloads one crawl's pages, derives issues, and replaces persisted issue rows.
 func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int, error) {
+	derivedIssueCount, _, err := store.DeriveIssuesWithPages(ctx, crawlID)
+	return derivedIssueCount, err
+}
+
+// DeriveIssuesWithPages behaves like DeriveIssues but also returns the crawl pages it loaded,
+// so a caller can pass them into ScoreCrawlWithPages instead of reloading the same heavy rows.
+func (store *Store) DeriveIssuesWithPages(ctx context.Context, crawlID pgtype.UUID) (int, []sqlc.ListCrawlPagesForCrawlRow, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("begin derive issues transaction: %w", err)
+		return 0, nil, fmt.Errorf("begin derive issues transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	txQueries := store.queries.WithTx(tx)
 	loadStartedAt := time.Now()
-	pageFacts, linkFacts, err := loadFacts(ctx, txQueries, crawlID)
+	crawlPages, pageFacts, linkFacts, err := loadFactsWithPages(ctx, txQueries, crawlID)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	seo.EnrichPageFactsWithContentFingerprints(pageFacts)
 	if err := persistPageContentFingerprints(ctx, txQueries, pageFacts); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	loadElapsed := time.Since(loadStartedAt)
 
@@ -53,7 +60,7 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 	computeElapsed := time.Since(computeStartedAt)
 	log.Printf("derive timing: crawl_id=%s pages=%d load+fingerprint=%s compute=%s issues=%d", crawlID.String(), len(pageFacts), loadElapsed.Round(time.Millisecond), computeElapsed.Round(time.Millisecond), len(derivedIssues))
 	if err := txQueries.DeleteCrawlIssuesForCrawl(ctx, crawlID); err != nil {
-		return 0, fmt.Errorf("delete crawl issues: %w", err)
+		return 0, nil, fmt.Errorf("delete crawl issues: %w", err)
 	}
 	issueRows := make([]sqlc.CreateCrawlIssuesParams, 0, len(derivedIssues))
 	for _, derivedIssue := range derivedIssues {
@@ -70,12 +77,12 @@ func (store *Store) DeriveIssues(ctx context.Context, crawlID pgtype.UUID) (int,
 		})
 	}
 	if _, err := txQueries.CreateCrawlIssues(ctx, issueRows); err != nil {
-		return 0, fmt.Errorf("bulk create crawl issues: %w", err)
+		return 0, nil, fmt.Errorf("bulk create crawl issues: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit derive issues transaction: %w", err)
+		return 0, nil, fmt.Errorf("commit derive issues transaction: %w", err)
 	}
-	return len(derivedIssues), nil
+	return len(derivedIssues), crawlPages, nil
 }
 
 // ScoreCrawl reloads one crawl's persisted signals, calculates scores, and stores them on the crawl row.
@@ -84,6 +91,12 @@ func (store *Store) ScoreCrawl(ctx context.Context, crawlID pgtype.UUID, psiInpu
 	if err != nil {
 		return shared.CrawlScores{}, fmt.Errorf("list crawl pages: %w", err)
 	}
+	return store.ScoreCrawlWithPages(ctx, crawlID, crawlPages, psiInput)
+}
+
+// ScoreCrawlWithPages behaves like ScoreCrawl but accepts already-loaded crawl pages (e.g. from
+// DeriveIssuesWithPages) instead of reloading the same heavy visible_text/og_tags/json_ld rows.
+func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID, crawlPages []sqlc.ListCrawlPagesForCrawlRow, psiInput *shared.GooglePSIScoreInput) (shared.CrawlScores, error) {
 	crawlIssues, err := store.queries.ListCrawlIssuesForCrawl(ctx, crawlID)
 	if err != nil {
 		return shared.CrawlScores{}, fmt.Errorf("list crawl issues: %w", err)

@@ -12,9 +12,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const overviewCacheTTL = time.Hour
+
+// overviewCacheMaxEntries bounds the overview cache so it can't grow
+// unbounded across org+site keys. When full, the oldest entry is evicted.
+const overviewCacheMaxEntries = 500
 
 type overviewCacheEntry struct {
 	payload   OverviewPayload
@@ -31,6 +37,7 @@ type Service struct {
 
 	overviewCacheMu sync.Mutex
 	overviewCache   map[string]overviewCacheEntry
+	overviewGroup   singleflight.Group
 }
 
 // NewService builds one Google OAuth and Search Console service.
@@ -56,22 +63,65 @@ func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, or
 
 	service.overviewCacheMu.Lock()
 	entry, ok := service.overviewCache[cacheKey]
+	if ok && time.Since(entry.fetchedAt) >= overviewCacheTTL {
+		delete(service.overviewCache, cacheKey)
+		ok = false
+	}
 	service.overviewCacheMu.Unlock()
 
-	if ok && time.Since(entry.fetchedAt) < overviewCacheTTL {
+	if ok {
 		return entry.payload, nil
 	}
 
-	payload, err := service.FetchOverview(ctx, accessToken, siteURL)
+	// Coalesce concurrent misses for the same key into one upstream fetch.
+	result, err, _ := service.overviewGroup.Do(cacheKey, func() (any, error) {
+		payload, err := service.FetchOverview(ctx, accessToken, siteURL)
+		if err != nil {
+			return nil, err
+		}
+
+		service.overviewCacheMu.Lock()
+		service.evictExpiredLocked()
+		if _, exists := service.overviewCache[cacheKey]; !exists && len(service.overviewCache) >= overviewCacheMaxEntries {
+			service.evictOldestLocked()
+		}
+		service.overviewCache[cacheKey] = overviewCacheEntry{payload: payload, fetchedAt: time.Now()}
+		service.overviewCacheMu.Unlock()
+
+		return payload, nil
+	})
 	if err != nil {
 		return OverviewPayload{}, err
 	}
 
-	service.overviewCacheMu.Lock()
-	service.overviewCache[cacheKey] = overviewCacheEntry{payload: payload, fetchedAt: time.Now()}
-	service.overviewCacheMu.Unlock()
+	return result.(OverviewPayload), nil
+}
 
-	return payload, nil
+// evictExpiredLocked removes all cache entries past overviewCacheTTL.
+// Callers must hold overviewCacheMu.
+func (service *Service) evictExpiredLocked() {
+	now := time.Now()
+	for key, entry := range service.overviewCache {
+		if now.Sub(entry.fetchedAt) >= overviewCacheTTL {
+			delete(service.overviewCache, key)
+		}
+	}
+}
+
+// evictOldestLocked removes the least-recently-fetched cache entry.
+// Callers must hold overviewCacheMu.
+func (service *Service) evictOldestLocked() {
+	var oldestKey string
+	var oldestAt time.Time
+	for key, entry := range service.overviewCache {
+		if oldestKey == "" || entry.fetchedAt.Before(oldestAt) {
+			oldestKey = key
+			oldestAt = entry.fetchedAt
+		}
+	}
+	if oldestKey != "" {
+		delete(service.overviewCache, oldestKey)
+	}
 }
 
 // BuildAuthURL builds one Google consent URL.
