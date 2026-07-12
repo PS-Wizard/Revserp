@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
@@ -32,6 +33,11 @@ type SessionManager struct {
 	cookieDomain   string
 	sessionTTL     time.Duration
 	cookieSecure   bool
+	// refreshGroup collapses concurrent Supabase token refreshes for the same
+	// session into a single call. Supabase rotates refresh tokens and revokes
+	// the whole token family if an old one is reused, so racing requests that
+	// each refresh independently would revoke the session and force re-login.
+	refreshGroup singleflight.Group
 }
 
 // NewSessionManager builds a backend session manager.
@@ -106,27 +112,44 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 	refreshToken := sessionRow.SupabaseRefreshToken
 	accessTokenExpiresAt := sessionRow.SupabaseAccessTokenExpiresAt.Time.UTC()
 	if !sessionRow.SupabaseAccessTokenExpiresAt.Valid || accessTokenExpiresAt.Before(time.Now().UTC().Add(sessionRefreshSkew)) {
-		refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, refreshToken)
-		if refreshErr != nil {
-			var authErr *SupabaseAuthError
-			if errors.As(refreshErr, &authErr) && authErr.StatusCode >= 400 && authErr.StatusCode < 500 {
-				_ = manager.queries.RevokeSession(ctx, sessionRow.ID)
-			} else {
-				log.Printf("infra: refresh supabase session (transient, session kept): session=%s error=%v", sessionRow.ID.String(), refreshErr)
+		type refreshedTokens struct {
+			accessToken  string
+			refreshToken string
+			expiresAt    time.Time
+		}
+		resolved, refreshErr, _ := manager.refreshGroup.Do(sessionRow.ID.String(), func() (any, error) {
+			refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, refreshToken)
+			if refreshErr != nil {
+				var authErr *SupabaseAuthError
+				if errors.As(refreshErr, &authErr) && authErr.StatusCode >= 400 && authErr.StatusCode < 500 {
+					_ = manager.queries.RevokeSession(ctx, sessionRow.ID)
+				} else {
+					log.Printf("infra: refresh supabase session (transient, session kept): session=%s error=%v", sessionRow.ID.String(), refreshErr)
+				}
+				return nil, refreshErr
 			}
+			tokens := refreshedTokens{
+				accessToken:  refreshedSession.AccessToken,
+				refreshToken: refreshedSession.RefreshToken,
+				expiresAt:    refreshedSession.ExpiresAt.UTC(),
+			}
+			if err := manager.queries.UpdateSessionTokens(ctx, sqlc.UpdateSessionTokensParams{
+				ID:                           sessionRow.ID,
+				SupabaseAccessToken:          tokens.accessToken,
+				SupabaseRefreshToken:         tokens.refreshToken,
+				SupabaseAccessTokenExpiresAt: timestamptzValue(tokens.expiresAt),
+			}); err != nil {
+				return nil, fmt.Errorf("update refreshed backend session: %w", err)
+			}
+			return tokens, nil
+		})
+		if refreshErr != nil {
 			return Identity{}, SessionContext{}, fmt.Errorf("refresh supabase session: %w", refreshErr)
 		}
-		accessToken = refreshedSession.AccessToken
-		refreshToken = refreshedSession.RefreshToken
-		accessTokenExpiresAt = refreshedSession.ExpiresAt.UTC()
-		if err := manager.queries.UpdateSessionTokens(ctx, sqlc.UpdateSessionTokensParams{
-			ID:                           sessionRow.ID,
-			SupabaseAccessToken:          accessToken,
-			SupabaseRefreshToken:         refreshToken,
-			SupabaseAccessTokenExpiresAt: timestamptzValue(accessTokenExpiresAt),
-		}); err != nil {
-			return Identity{}, SessionContext{}, fmt.Errorf("update refreshed backend session: %w", err)
-		}
+		tokens := resolved.(refreshedTokens)
+		accessToken = tokens.accessToken
+		refreshToken = tokens.refreshToken
+		accessTokenExpiresAt = tokens.expiresAt
 	} else {
 		if !sessionRow.LastUsedAt.Valid || time.Since(sessionRow.LastUsedAt.Time) > lastUsedThrottle {
 			if err := manager.queries.UpdateSessionLastUsedAt(ctx, sessionRow.ID); err != nil {
