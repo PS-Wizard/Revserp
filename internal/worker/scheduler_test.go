@@ -4,35 +4,41 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/ps-wizard/revserp/internal/crawler"
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-func TestSchedulerCutoffCalculation(t *testing.T) {
-	autoCrawlInterval := 24 * time.Hour
-	now := time.Now().UTC()
-	cutoff := now.Add(-autoCrawlInterval)
-
-	// The cutoff should be exactly 24h before now.
-	if now.Sub(cutoff) != autoCrawlInterval {
-		t.Errorf("cutoff diff: got %s, want %s", now.Sub(cutoff), autoCrawlInterval)
+func TestNextAutoCrawlRunAdvancesByFrequency(t *testing.T) {
+	fired := time.Date(2026, 7, 13, 3, 0, 0, 0, time.UTC)
+	s := sqlc.ProjectAutoCrawlSetting{
+		FrequencyDays: 3,
+		RunAt:         pgtype.Time{Microseconds: 3 * 3600 * 1_000_000, Valid: true},
+		Timezone:      "UTC",
+		NextRunAt:     pgtype.Timestamptz{Time: fired, Valid: true},
 	}
 
-	// A crawl completed 25h ago should be older than the cutoff (due).
-	oldCompleted := now.Add(-25 * time.Hour)
-	if !oldCompleted.Before(cutoff) {
-		t.Error("crawl completed 25h ago should be before cutoff (due)")
+	got := nextAutoCrawlRun(s, fired.Add(time.Minute))
+	want := time.Date(2026, 7, 16, 3, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestNextAutoCrawlRunFallsBackOnBadTimezone(t *testing.T) {
+	fired := time.Date(2026, 7, 13, 3, 0, 0, 0, time.UTC)
+	s := sqlc.ProjectAutoCrawlSetting{
+		FrequencyDays: 1,
+		RunAt:         pgtype.Time{Microseconds: 3 * 3600 * 1_000_000, Valid: true},
+		Timezone:      "Not/AZone",
+		NextRunAt:     pgtype.Timestamptz{Time: fired, Valid: true},
 	}
 
-	// A crawl completed 23h ago should not be before the cutoff (not due).
-	recentCompleted := now.Add(-23 * time.Hour)
-	if recentCompleted.Before(cutoff) {
-		t.Error("crawl completed 23h ago should NOT be before cutoff (not due)")
-	}
-
-	// A crawl completed exactly at cutoff should NOT be before (not yet due).
-	exactCompleted := cutoff
-	if exactCompleted.Before(cutoff) {
-		t.Error("crawl completed exactly at cutoff should NOT be before")
+	got := nextAutoCrawlRun(s, fired.Add(time.Minute))
+	want := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
 

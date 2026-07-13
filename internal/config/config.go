@@ -30,7 +30,6 @@ type Config struct {
 	AutoCrawlConcurrency        int
 	AutoCrawlPollInterval       time.Duration
 	AutoCrawlSchedulerInterval  time.Duration
-	AutoCrawlInterval           time.Duration
 	AIAuditWorkerConcurrency    int
 	AIAuditWorkerPollInterval   time.Duration
 	OpenRouterAPIKey            string
@@ -78,8 +77,7 @@ func Load() Config {
 		CrawlPageWorkerCount:        getEnvInt("CRAWL_PAGE_WORKER_COUNT", 4),
 		AutoCrawlConcurrency:        getEnvInt("AUTO_CRAWL_CONCURRENCY", 1),
 		AutoCrawlPollInterval:       getEnvDuration("AUTO_CRAWL_POLL_INTERVAL", 2*time.Second),
-		AutoCrawlSchedulerInterval:  getEnvDuration("AUTO_CRAWL_SCHEDULER_INTERVAL", 5*time.Minute),
-		AutoCrawlInterval:           getEnvDuration("AUTO_CRAWL_INTERVAL", 24*time.Hour),
+		AutoCrawlSchedulerInterval:  getEnvDuration("AUTO_CRAWL_SCHEDULER_INTERVAL", time.Minute),
 		AIAuditWorkerConcurrency:    getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
 		AIAuditWorkerPollInterval:   getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
 		OpenRouterAPIKey:            getEnv("OPENROUTER_API_KEY", ""),

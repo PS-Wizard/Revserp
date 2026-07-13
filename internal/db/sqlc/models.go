@@ -260,6 +260,10 @@ type ProjectAutoCrawlSetting struct {
 	LastEnqueuedAt pgtype.Timestamptz
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	FrequencyDays  int32
+	RunAt          pgtype.Time
+	Timezone       string
+	NextRunAt      pgtype.Timestamptz
 }
 
 type ProjectBusinessProfile struct {

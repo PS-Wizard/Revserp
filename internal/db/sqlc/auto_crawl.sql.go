@@ -18,7 +18,11 @@ SELECT
     config_snapshot,
     last_enqueued_at,
     created_at,
-    updated_at
+    updated_at,
+    frequency_days,
+    run_at,
+    timezone,
+    next_run_at
 FROM project_auto_crawl_settings
 WHERE project_id = $1
 LIMIT 1
@@ -34,6 +38,10 @@ func (q *Queries) GetProjectAutoCrawlSettings(ctx context.Context, projectID pgt
 		&i.LastEnqueuedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FrequencyDays,
+		&i.RunAt,
+		&i.Timezone,
+		&i.NextRunAt,
 	)
 	return i, err
 }
@@ -45,41 +53,27 @@ SELECT
     acs.config_snapshot,
     acs.last_enqueued_at,
     acs.created_at,
-    acs.updated_at
+    acs.updated_at,
+    acs.frequency_days,
+    acs.run_at,
+    acs.timezone,
+    acs.next_run_at
 FROM project_auto_crawl_settings AS acs
 WHERE acs.enabled = true
+  AND acs.next_run_at IS NOT NULL
+  AND acs.next_run_at <= now()
   AND NOT EXISTS (
       SELECT 1
       FROM crawls AS c
       WHERE c.project_id = acs.project_id
         AND c.status IN ('queued', 'running')
   )
-  AND (
-      NOT EXISTS (
-          SELECT 1
-          FROM crawls AS c
-          WHERE c.project_id = acs.project_id
-            AND c.status = 'completed'
-      )
-      OR (
-          SELECT MAX(c.completed_at)
-          FROM crawls AS c
-          WHERE c.project_id = acs.project_id
-            AND c.status = 'completed'
-      ) < $1
-  )
-  AND (acs.last_enqueued_at IS NULL OR acs.last_enqueued_at < $1)
-ORDER BY acs.last_enqueued_at ASC NULLS FIRST
-LIMIT $2
+ORDER BY acs.next_run_at ASC
+LIMIT $1
 `
 
-type ListDueAutoCrawlSettingsParams struct {
-	CompletedAt pgtype.Timestamptz
-	Limit       int32
-}
-
-func (q *Queries) ListDueAutoCrawlSettings(ctx context.Context, arg ListDueAutoCrawlSettingsParams) ([]ProjectAutoCrawlSetting, error) {
-	rows, err := q.db.Query(ctx, listDueAutoCrawlSettings, arg.CompletedAt, arg.Limit)
+func (q *Queries) ListDueAutoCrawlSettings(ctx context.Context, limit int32) ([]ProjectAutoCrawlSetting, error) {
+	rows, err := q.db.Query(ctx, listDueAutoCrawlSettings, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +88,10 @@ func (q *Queries) ListDueAutoCrawlSettings(ctx context.Context, arg ListDueAutoC
 			&i.LastEnqueuedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FrequencyDays,
+			&i.RunAt,
+			&i.Timezone,
+			&i.NextRunAt,
 		); err != nil {
 			return nil, err
 		}
@@ -105,15 +103,21 @@ func (q *Queries) ListDueAutoCrawlSettings(ctx context.Context, arg ListDueAutoC
 	return items, nil
 }
 
-const updateAutoCrawlLastEnqueuedAt = `-- name: UpdateAutoCrawlLastEnqueuedAt :exec
+const updateAutoCrawlEnqueued = `-- name: UpdateAutoCrawlEnqueued :exec
 UPDATE project_auto_crawl_settings
 SET last_enqueued_at = now(),
+    next_run_at = $2,
     updated_at = now()
 WHERE project_id = $1
 `
 
-func (q *Queries) UpdateAutoCrawlLastEnqueuedAt(ctx context.Context, projectID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, updateAutoCrawlLastEnqueuedAt, projectID)
+type UpdateAutoCrawlEnqueuedParams struct {
+	ProjectID pgtype.UUID
+	NextRunAt pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateAutoCrawlEnqueued(ctx context.Context, arg UpdateAutoCrawlEnqueuedParams) error {
+	_, err := q.db.Exec(ctx, updateAutoCrawlEnqueued, arg.ProjectID, arg.NextRunAt)
 	return err
 }
 
@@ -121,27 +125,51 @@ const upsertProjectAutoCrawlSettings = `-- name: UpsertProjectAutoCrawlSettings 
 INSERT INTO project_auto_crawl_settings (
     project_id,
     enabled,
-    config_snapshot
+    config_snapshot,
+    frequency_days,
+    run_at,
+    timezone,
+    next_run_at
 ) VALUES (
     $1,
     $2,
-    $3
+    $3,
+    $4,
+    $5,
+    $6,
+    $7
 )
 ON CONFLICT (project_id) DO UPDATE SET
     enabled = EXCLUDED.enabled,
     config_snapshot = COALESCE(EXCLUDED.config_snapshot, project_auto_crawl_settings.config_snapshot),
+    frequency_days = EXCLUDED.frequency_days,
+    run_at = EXCLUDED.run_at,
+    timezone = EXCLUDED.timezone,
+    next_run_at = EXCLUDED.next_run_at,
     updated_at = now()
-RETURNING project_id, enabled, config_snapshot, last_enqueued_at, created_at, updated_at
+RETURNING project_id, enabled, config_snapshot, last_enqueued_at, created_at, updated_at, frequency_days, run_at, timezone, next_run_at
 `
 
 type UpsertProjectAutoCrawlSettingsParams struct {
 	ProjectID      pgtype.UUID
 	Enabled        bool
 	ConfigSnapshot []byte
+	FrequencyDays  int32
+	RunAt          pgtype.Time
+	Timezone       string
+	NextRunAt      pgtype.Timestamptz
 }
 
 func (q *Queries) UpsertProjectAutoCrawlSettings(ctx context.Context, arg UpsertProjectAutoCrawlSettingsParams) (ProjectAutoCrawlSetting, error) {
-	row := q.db.QueryRow(ctx, upsertProjectAutoCrawlSettings, arg.ProjectID, arg.Enabled, arg.ConfigSnapshot)
+	row := q.db.QueryRow(ctx, upsertProjectAutoCrawlSettings,
+		arg.ProjectID,
+		arg.Enabled,
+		arg.ConfigSnapshot,
+		arg.FrequencyDays,
+		arg.RunAt,
+		arg.Timezone,
+		arg.NextRunAt,
+	)
 	var i ProjectAutoCrawlSetting
 	err := row.Scan(
 		&i.ProjectID,
@@ -150,6 +178,10 @@ func (q *Queries) UpsertProjectAutoCrawlSettings(ctx context.Context, arg Upsert
 		&i.LastEnqueuedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FrequencyDays,
+		&i.RunAt,
+		&i.Timezone,
+		&i.NextRunAt,
 	)
 	return i, err
 }

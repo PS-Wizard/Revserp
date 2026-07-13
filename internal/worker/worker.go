@@ -17,6 +17,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/issues"
 	"github.com/ps-wizard/revserp/internal/issues/shared"
+	"github.com/ps-wizard/revserp/internal/schedule"
 )
 
 // Config holds all settings for a crawl Worker instance.
@@ -27,7 +28,6 @@ type Config struct {
 	AutoConcurrency       int
 	AutoPoll              time.Duration
 	AutoSchedulerInterval time.Duration
-	AutoCrawlInterval     time.Duration
 
 	CrawlPageWorkerCount int
 	PageSpeedAPIKey      string
@@ -91,10 +91,7 @@ func New(pool *pgxpool.Pool, cfg Config, renderer *crawler.Renderer) *Worker {
 		cfg.AutoPoll = 2 * time.Second
 	}
 	if cfg.AutoSchedulerInterval <= 0 {
-		cfg.AutoSchedulerInterval = 5 * time.Minute
-	}
-	if cfg.AutoCrawlInterval <= 0 {
-		cfg.AutoCrawlInterval = 24 * time.Hour
+		cfg.AutoSchedulerInterval = time.Minute
 	}
 	if cfg.CrawlPageWorkerCount <= 0 {
 		cfg.CrawlPageWorkerCount = crawler.DefaultWorkerCount
@@ -316,13 +313,9 @@ func (w *Worker) sweepDueAutoCrawls(ctx context.Context) error {
 
 	queries := w.queries.WithTx(tx)
 
-	cutoff := time.Now().UTC().Add(-w.cfg.AutoCrawlInterval)
 	batchLimit := int32(100)
 
-	settings, err := queries.ListDueAutoCrawlSettings(ctx, sqlc.ListDueAutoCrawlSettingsParams{
-		CompletedAt: pgtype.Timestamptz{Time: cutoff, Valid: true},
-		Limit:       batchLimit,
-	})
+	settings, err := queries.ListDueAutoCrawlSettings(ctx, batchLimit)
 	if err != nil {
 		return fmt.Errorf("list due settings: %w", err)
 	}
@@ -358,8 +351,11 @@ func (w *Worker) sweepDueAutoCrawls(ctx context.Context) error {
 			continue
 		}
 
-		if err := queries.UpdateAutoCrawlLastEnqueuedAt(ctx, s.ProjectID); err != nil {
-			log.Printf("auto-crawl scheduler: failed to update last_enqueued_at for project %s: %v", s.ProjectID.String(), err)
+		if err := queries.UpdateAutoCrawlEnqueued(ctx, sqlc.UpdateAutoCrawlEnqueuedParams{
+			ProjectID: s.ProjectID,
+			NextRunAt: pgtype.Timestamptz{Time: nextAutoCrawlRun(s, time.Now()), Valid: true},
+		}); err != nil {
+			log.Printf("auto-crawl scheduler: failed to advance schedule for project %s: %v", s.ProjectID.String(), err)
 			continue
 		}
 
@@ -374,6 +370,27 @@ func (w *Worker) sweepDueAutoCrawls(ctx context.Context) error {
 		log.Printf("auto-crawl scheduler: enqueued %d auto crawls", enqueued)
 	}
 	return nil
+}
+
+// nextAutoCrawlRun computes the slot after the one that just fired: the
+// scheduled next_run_at plus frequency_days at the configured wall-clock time
+// in the project's timezone, skipping past any missed slots.
+func nextAutoCrawlRun(s sqlc.ProjectAutoCrawlSetting, now time.Time) time.Time {
+	loc, err := time.LoadLocation(s.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	totalMinutes := int(s.RunAt.Microseconds / 60_000_000)
+	hour, minute := totalMinutes/60, totalMinutes%60
+	frequencyDays := int(s.FrequencyDays)
+	if frequencyDays < 1 {
+		frequencyDays = 1
+	}
+	from := now
+	if s.NextRunAt.Valid {
+		from = s.NextRunAt.Time
+	}
+	return schedule.Advance(from, now, frequencyDays, hour, minute, loc)
 }
 
 // runCrawl executes one claimed crawl, derives backend issues, and calculates crawl scores.

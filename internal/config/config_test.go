@@ -26,7 +26,6 @@ func TestLoadAutoCrawlDefaults(t *testing.T) {
 		"AUTO_CRAWL_CONCURRENCY",
 		"AUTO_CRAWL_POLL_INTERVAL",
 		"AUTO_CRAWL_SCHEDULER_INTERVAL",
-		"AUTO_CRAWL_INTERVAL",
 		"DATABASE_URL",
 	} {
 		unsetEnv(t, k)
@@ -41,11 +40,8 @@ func TestLoadAutoCrawlDefaults(t *testing.T) {
 	if cfg.AutoCrawlPollInterval != 2*time.Second {
 		t.Errorf("AutoCrawlPollInterval default: got %s, want 2s", cfg.AutoCrawlPollInterval)
 	}
-	if cfg.AutoCrawlSchedulerInterval != 5*time.Minute {
-		t.Errorf("AutoCrawlSchedulerInterval default: got %s, want 5m", cfg.AutoCrawlSchedulerInterval)
-	}
-	if cfg.AutoCrawlInterval != 24*time.Hour {
-		t.Errorf("AutoCrawlInterval default: got %s, want 24h", cfg.AutoCrawlInterval)
+	if cfg.AutoCrawlSchedulerInterval != time.Minute {
+		t.Errorf("AutoCrawlSchedulerInterval default: got %s, want 1m", cfg.AutoCrawlSchedulerInterval)
 	}
 }
 
@@ -54,7 +50,6 @@ func TestLoadAutoCrawlCustom(t *testing.T) {
 		"AUTO_CRAWL_CONCURRENCY",
 		"AUTO_CRAWL_POLL_INTERVAL",
 		"AUTO_CRAWL_SCHEDULER_INTERVAL",
-		"AUTO_CRAWL_INTERVAL",
 		"DATABASE_URL",
 	} {
 		unsetEnv(t, k)
@@ -63,7 +58,6 @@ func TestLoadAutoCrawlCustom(t *testing.T) {
 	setEnv(t, "AUTO_CRAWL_CONCURRENCY", "3")
 	setEnv(t, "AUTO_CRAWL_POLL_INTERVAL", "5s")
 	setEnv(t, "AUTO_CRAWL_SCHEDULER_INTERVAL", "10m")
-	setEnv(t, "AUTO_CRAWL_INTERVAL", "12h")
 
 	cfg := Load()
 
@@ -75,8 +69,5 @@ func TestLoadAutoCrawlCustom(t *testing.T) {
 	}
 	if cfg.AutoCrawlSchedulerInterval != 10*time.Minute {
 		t.Errorf("AutoCrawlSchedulerInterval: got %s, want 10m", cfg.AutoCrawlSchedulerInterval)
-	}
-	if cfg.AutoCrawlInterval != 12*time.Hour {
-		t.Errorf("AutoCrawlInterval: got %s, want 12h", cfg.AutoCrawlInterval)
 	}
 }
