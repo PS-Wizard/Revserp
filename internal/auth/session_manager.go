@@ -109,47 +109,61 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 	}
 
 	accessToken := sessionRow.SupabaseAccessToken
-	refreshToken := sessionRow.SupabaseRefreshToken
 	accessTokenExpiresAt := sessionRow.SupabaseAccessTokenExpiresAt.Time.UTC()
+
+	sessionContext := SessionContext{
+		SessionID:   sessionRow.ID,
+		UserID:      sessionRow.UserID,
+		ActiveOrgID: sessionRow.ActiveOrgID,
+	}
+
 	if !sessionRow.SupabaseAccessTokenExpiresAt.Valid || accessTokenExpiresAt.Before(time.Now().UTC().Add(sessionRefreshSkew)) {
 		type refreshedTokens struct {
-			accessToken  string
-			refreshToken string
-			expiresAt    time.Time
+			accessToken string
+			expiresAt   time.Time
 		}
 		resolved, refreshErr, _ := manager.refreshGroup.Do(sessionRow.ID.String(), func() (any, error) {
-			refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, refreshToken)
-			if refreshErr != nil {
-				var authErr *SupabaseAuthError
-				if errors.As(refreshErr, &authErr) && authErr.StatusCode >= 400 && authErr.StatusCode < 500 {
-					_ = manager.queries.RevokeSession(ctx, sessionRow.ID)
-				} else {
-					log.Printf("infra: refresh supabase session (transient, session kept): session=%s error=%v", sessionRow.ID.String(), refreshErr)
-				}
-				return nil, refreshErr
+			// Re-read inside the singleflight so the refresh always uses the freshest
+			// stored refresh token. Supabase rotates refresh tokens and rejects a
+			// reused one; a token captured before the flight (already rotated by an
+			// earlier, non-overlapping request) would otherwise trigger that rejection.
+			current, err := manager.queries.GetSessionByTokenHash(ctx, hashSessionToken(rawSessionToken))
+			if err != nil {
+				return nil, fmt.Errorf("reload backend session for refresh: %w", err)
 			}
-			tokens := refreshedTokens{
-				accessToken:  refreshedSession.AccessToken,
-				refreshToken: refreshedSession.RefreshToken,
-				expiresAt:    refreshedSession.ExpiresAt.UTC(),
+			// A prior request may have already refreshed the token; reuse its result.
+			if current.SupabaseAccessTokenExpiresAt.Valid && current.SupabaseAccessTokenExpiresAt.Time.UTC().After(time.Now().UTC().Add(sessionRefreshSkew)) {
+				return refreshedTokens{accessToken: current.SupabaseAccessToken, expiresAt: current.SupabaseAccessTokenExpiresAt.Time.UTC()}, nil
+			}
+			refreshedSession, refreshErr := manager.supabaseClient.Refresh(ctx, current.SupabaseRefreshToken)
+			if refreshErr != nil {
+				// The backend session is the durable authority (see CreateSession and
+				// sessionTTL); a Supabase refresh failure must not end it. Never revoke
+				// here — report so the caller falls back to the last-known-good identity.
+				log.Printf("infra: refresh supabase session failed (session kept): session=%s error=%v", sessionRow.ID.String(), refreshErr)
+				return nil, refreshErr
 			}
 			if err := manager.queries.UpdateSessionTokens(ctx, sqlc.UpdateSessionTokensParams{
 				ID:                           sessionRow.ID,
-				SupabaseAccessToken:          tokens.accessToken,
-				SupabaseRefreshToken:         tokens.refreshToken,
-				SupabaseAccessTokenExpiresAt: timestamptzValue(tokens.expiresAt),
+				SupabaseAccessToken:          refreshedSession.AccessToken,
+				SupabaseRefreshToken:         refreshedSession.RefreshToken,
+				SupabaseAccessTokenExpiresAt: timestamptzValue(refreshedSession.ExpiresAt.UTC()),
 			}); err != nil {
 				return nil, fmt.Errorf("update refreshed backend session: %w", err)
 			}
-			return tokens, nil
+			return refreshedTokens{accessToken: refreshedSession.AccessToken, expiresAt: refreshedSession.ExpiresAt.UTC()}, nil
 		})
 		if refreshErr != nil {
-			return Identity{}, SessionContext{}, fmt.Errorf("refresh supabase session: %w", refreshErr)
+			// Refresh failed (transient Supabase error, or a rotated/reused refresh
+			// token). Fall back to the identity in the last-known-good access token
+			// rather than forcing re-login on an otherwise valid backend session.
+			identity, idErr := manager.verifier.VerifyAllowingExpired(accessToken)
+			if idErr != nil {
+				return Identity{}, SessionContext{}, fmt.Errorf("resolve identity after refresh failure: %w", idErr)
+			}
+			return identity, sessionContext, nil
 		}
-		tokens := resolved.(refreshedTokens)
-		accessToken = tokens.accessToken
-		refreshToken = tokens.refreshToken
-		accessTokenExpiresAt = tokens.expiresAt
+		accessToken = resolved.(refreshedTokens).accessToken
 	} else {
 		if !sessionRow.LastUsedAt.Valid || time.Since(sessionRow.LastUsedAt.Time) > lastUsedThrottle {
 			if err := manager.queries.UpdateSessionLastUsedAt(ctx, sessionRow.ID); err != nil {
@@ -163,11 +177,7 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 		return Identity{}, SessionContext{}, fmt.Errorf("verify stored supabase access token: %w", err)
 	}
 
-	return identity, SessionContext{
-		SessionID:   sessionRow.ID,
-		UserID:      sessionRow.UserID,
-		ActiveOrgID: sessionRow.ActiveOrgID,
-	}, nil
+	return identity, sessionContext, nil
 }
 
 // RevokeSession revokes one backend session token if it exists.

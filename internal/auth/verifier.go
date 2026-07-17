@@ -46,6 +46,29 @@ func (v *Verifier) Verify(token string) (Identity, error) {
 	if !parsedToken.Valid {
 		return Identity{}, errors.New("invalid token")
 	}
+	return v.identityFromClaims(claims)
+}
+
+// VerifyAllowingExpired verifies signature, issuer, and audience but tolerates an
+// expired token. It backs the durable-session fallback: when Supabase refresh is
+// unavailable, the last-known-good (still signed) access token yields a trustworthy
+// identity, and the backend session — not token freshness — is the authority.
+func (v *Verifier) VerifyAllowingExpired(token string) (Identity, error) {
+	claims := new(SupabaseClaims)
+	_, err := jwt.ParseWithClaims(token, claims, v.keyfunc.Keyfunc,
+		jwt.WithIssuer(v.issuer),
+		jwt.WithAudience(v.audience),
+		jwt.WithValidMethods([]string{jwt.SigningMethodES256.Alg()}),
+	)
+	// jwt/v5 verifies the signature before validating expiry, so an ErrTokenExpired
+	// here means the token is authentic but stale — acceptable for this fallback.
+	if err != nil && !errors.Is(err, jwt.ErrTokenExpired) {
+		return Identity{}, err
+	}
+	return v.identityFromClaims(claims)
+}
+
+func (v *Verifier) identityFromClaims(claims *SupabaseClaims) (Identity, error) {
 	if strings.TrimSpace(claims.Subject) == "" {
 		return Identity{}, errors.New("missing subject")
 	}
