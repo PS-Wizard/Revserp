@@ -330,21 +330,6 @@ func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUs
 	return i, err
 }
 
-const getCrawlOrgID = `-- name: GetCrawlOrgID :one
-SELECT p.organization_id
-FROM crawls c
-INNER JOIN projects p ON p.id = c.project_id
-WHERE c.id = $1
-LIMIT 1
-`
-
-func (q *Queries) GetCrawlOrgID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, getCrawlOrgID, id)
-	var organization_id pgtype.UUID
-	err := row.Scan(&organization_id)
-	return organization_id, err
-}
-
 const listActiveCrawlsForOrganization = `-- name: ListActiveCrawlsForOrganization :many
 SELECT
     c.id,

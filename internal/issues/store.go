@@ -3,7 +3,6 @@ package issues
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -129,12 +128,7 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 		})
 	}
 
-	orgID, err := store.queries.GetCrawlOrgID(ctx, crawlID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return shared.CrawlScores{}, fmt.Errorf("get crawl org id: %w", err)
-	}
-
-	scoringConfig, err := LoadEffectiveScoringConfig(ctx, store.queries, orgID)
+	scoringConfig, err := LoadActiveScoringConfig(ctx, store.queries)
 	if err != nil {
 		return shared.CrawlScores{}, err
 	}

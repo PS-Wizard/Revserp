@@ -230,13 +230,6 @@ type OrganizationMember struct {
 	CreatedAt pgtype.Timestamptz
 }
 
-type OrganizationScoringConfig struct {
-	OrgID           pgtype.UUID
-	ConfigJson      []byte
-	UpdatedByUserID pgtype.UUID
-	UpdatedAt       pgtype.Timestamptz
-}
-
 type Project struct {
 	ID             pgtype.UUID
 	OrganizationID pgtype.UUID

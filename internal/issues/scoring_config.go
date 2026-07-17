@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/issues/aeo"
 	pagespeed "github.com/ps-wizard/revserp/internal/issues/page_speed"
@@ -142,19 +141,4 @@ func cloneFloatMap(input map[string]float64) map[string]float64 {
 		cloned[key] = value
 	}
 	return cloned
-}
-
-// LoadEffectiveScoringConfig returns the effective scoring config for the given organization.
-// It checks for an organization override first; if none exists, the global config is used.
-func LoadEffectiveScoringConfig(ctx context.Context, queries *sqlc.Queries, orgID pgtype.UUID) (shared.ScoringConfig, error) {
-	if orgID.Valid {
-		row, err := queries.GetOrgScoringConfig(ctx, orgID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return shared.ScoringConfig{}, fmt.Errorf("get org scoring config: %w", err)
-		}
-		if err == nil {
-			return ParseScoringConfig(row.ConfigJson)
-		}
-	}
-	return LoadActiveScoringConfig(ctx, queries)
 }

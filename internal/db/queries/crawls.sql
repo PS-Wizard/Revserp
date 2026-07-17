@@ -202,13 +202,6 @@ UPDATE crawls
 SET google_psi_results = $2
 WHERE id = $1;
 
--- name: GetCrawlOrgID :one
-SELECT p.organization_id
-FROM crawls c
-INNER JOIN projects p ON p.id = c.project_id
-WHERE c.id = $1
-LIMIT 1;
-
 -- name: ReclaimStaleRunningCrawls :exec
 UPDATE crawls
 SET status = 'failed',
