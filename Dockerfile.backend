@@ -1,0 +1,47 @@
+# Unified backend image: builds ALL backend binaries (api, worker, ai-audit-worker,
+# migrate) into ONE image. Built once per deploy; each Compose service runs this same
+# image with a different command. Replaces the three separate Dockerfiles.
+FROM golang:1.26-bookworm AS build
+WORKDIR /app
+
+# Cap the Go compiler so a deploy can't starve the running services on an 8GB box.
+# GOMEMLIMIT bounds the linker (the memory-hungry step); -p limits parallel compiles.
+ENV GOMAXPROCS=3 GOMEMLIMIT=2048MiB
+
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -p 3 -o /out/api             ./cmd/api \
+ && CGO_ENABLED=0 go build -p 3 -o /out/worker          ./cmd/worker \
+ && CGO_ENABLED=0 go build -p 3 -o /out/ai-audit-worker ./cmd/ai-audit-worker \
+ && CGO_ENABLED=0 go build -p 3 -o /out/migrate         ./cmd/migrate
+
+FROM debian:bookworm-slim
+ARG TARGETARCH
+WORKDIR /app
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl tar \
+ && rm -rf /var/lib/apt/lists/*
+
+# obscura: required at runtime by the crawler (worker). Installed on PATH so the
+# default OBSCURA_PATH=obscura resolves. Harmless for the api/ai-worker to also have it.
+RUN case "$TARGETARCH" in \
+      amd64) arch="x86_64" ;; \
+      arm64) arch="aarch64" ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL -o /tmp/obscura.tar.gz "https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-${arch}-linux.tar.gz" \
+ && tar -xzf /tmp/obscura.tar.gz -C /usr/local/bin obscura \
+ && chmod +x /usr/local/bin/obscura \
+ && rm -f /tmp/obscura.tar.gz
+
+COPY --from=build /out/api             /app/api
+COPY --from=build /out/worker          /app/worker
+COPY --from=build /out/ai-audit-worker /app/ai-audit-worker
+COPY --from=build /out/migrate         /app/migrate
+COPY migrations /app/migrations
+
+EXPOSE 8080
+# Default command; each Compose service overrides this with its own `command:`.
+CMD ["/app/api"]

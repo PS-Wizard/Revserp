@@ -1,0 +1,121 @@
+# Deployed as ONE Coolify "Docker Compose" resource (replaces the 3 separate backend apps).
+#
+# Each service below is STILL its own container — own logs, own resource limits, own
+# restart. Compose only makes them build + deploy together. In Coolify you still click
+# into each service to see just its logs.
+#
+# Flow on every deploy:  build image once  ->  `migrate` runs & must exit 0  ->
+#                        api + worker + ai-audit-worker start on the new code.
+#
+# Secret VALUES live in Coolify's Environment Variables UI (this file only references
+# ${NAMES}, so no secrets are committed to git).
+
+# Shared env block — defined once, reused by all long-running services via `<<: *backend-env`.
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV}
+  HTTP_ADDR: ${HTTP_ADDR}
+  DATABASE_URL: ${DATABASE_URL}
+  AUTH_PROVIDER: ${AUTH_PROVIDER}
+  SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER}
+  SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL}
+  SUPABASE_JWT_AUDIENCE: ${SUPABASE_JWT_AUDIENCE}
+  SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+  SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME}
+  SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN}
+  SESSION_TTL: ${SESSION_TTL}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+  FRONTEND_URL: ${FRONTEND_URL}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY}
+  WORKER_POLL_INTERVAL: ${WORKER_POLL_INTERVAL}
+  CRAWL_PAGE_WORKER_COUNT: ${CRAWL_PAGE_WORKER_COUNT}
+  CRAWL_MAX_RETRIES: ${CRAWL_MAX_RETRIES}
+  CRAWL_RETRY_BASE_MS: ${CRAWL_RETRY_BASE_MS}
+  CRAWL_RETRY_MAX_MS: ${CRAWL_RETRY_MAX_MS}
+  AUTO_CRAWL_CONCURRENCY: ${AUTO_CRAWL_CONCURRENCY}
+  AUTO_CRAWL_POLL_INTERVAL: ${AUTO_CRAWL_POLL_INTERVAL}
+  AUTO_CRAWL_SCHEDULER_INTERVAL: ${AUTO_CRAWL_SCHEDULER_INTERVAL}
+  AI_AUDIT_WORKER_CONCURRENCY: ${AI_AUDIT_WORKER_CONCURRENCY}
+  AI_AUDIT_WORKER_POLL_INTERVAL: ${AI_AUDIT_WORKER_POLL_INTERVAL}
+  AI_PROVIDER: ${AI_PROVIDER}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+  DEEPSEEK_MODEL: ${DEEPSEEK_MODEL}
+  GEMINI_API_KEY: ${GEMINI_API_KEY}
+  GEMINI_MODEL: ${GEMINI_MODEL}
+  AI_VISIBILITY_MODELS: ${AI_VISIBILITY_MODELS}
+  AI_VISIBILITY_RATE_DELAY: ${AI_VISIBILITY_RATE_DELAY}
+  OBSCURA_PATH: ${OBSCURA_PATH}
+  RENDERER_CONCURRENCY: ${RENDERER_CONCURRENCY}
+  OBSCURA_TIMEOUT_SECONDS: ${OBSCURA_TIMEOUT_SECONDS}
+  OBSCURA_KILL_TIMEOUT_SECONDS: ${OBSCURA_KILL_TIMEOUT_SECONDS}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+  GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL}
+  GOOGLE_TOKEN_ENCRYPTION_SECRET: ${GOOGLE_TOKEN_ENCRYPTION_SECRET}
+  PAGESPEED_API_KEY: ${PAGESPEED_API_KEY}
+
+services:
+  # One-shot: runs DB migrations then exits. The image is BUILT here (the other
+  # services reuse the same `revserp-backend:latest` tag without rebuilding).
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: revserp-backend:latest
+    command: ["/app/migrate"]
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  api:
+    image: revserp-backend:latest
+    command: ["/app/api"]
+    restart: unless-stopped
+    environment: *backend-env
+    # Container port for Coolify's proxy. Assign the domain api.revserp.ai to THIS
+    # service (port 8080) in the Coolify UI after the first successful deploy.
+    expose:
+      - "8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  worker:
+    image: revserp-backend:latest
+    command: ["/app/worker"]
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # The heavy one (crawling + headless rendering). If it ever gets OOM-killed,
+    # LOWER RENDERER_CONCURRENCY before raising this memory cap.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2560M
+
+  ai-audit-worker:
+    image: revserp-backend:latest
+    command: ["/app/ai-audit-worker"]
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
