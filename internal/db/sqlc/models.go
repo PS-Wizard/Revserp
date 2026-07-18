@@ -51,14 +51,18 @@ type AiConversation struct {
 }
 
 type AiMessage struct {
-	ID             pgtype.UUID
-	ConversationID pgtype.UUID
-	Role           string
-	Content        string
-	CrawlID        pgtype.UUID
-	Scope          []byte
-	Model          pgtype.Text
-	CreatedAt      pgtype.Timestamptz
+	ID               pgtype.UUID
+	ConversationID   pgtype.UUID
+	Role             string
+	Content          string
+	CrawlID          pgtype.UUID
+	Scope            []byte
+	Model            pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+	ReasoningContent pgtype.Text
+	ToolCalls        []byte
+	ToolCallID       pgtype.Text
+	ToolName         pgtype.Text
 }
 
 type AiPromptConfig struct {

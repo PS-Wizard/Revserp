@@ -81,7 +81,18 @@ type CreateAIMessageParams struct {
 	Model          pgtype.Text
 }
 
-func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams) (AiMessage, error) {
+type CreateAIMessageRow struct {
+	ID             pgtype.UUID
+	ConversationID pgtype.UUID
+	Role           string
+	Content        string
+	CrawlID        pgtype.UUID
+	Scope          []byte
+	Model          pgtype.Text
+	CreatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams) (CreateAIMessageRow, error) {
 	row := q.db.QueryRow(ctx, createAIMessage,
 		arg.ConversationID,
 		arg.Role,
@@ -90,7 +101,7 @@ func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams
 		arg.Scope,
 		arg.Model,
 	)
-	var i AiMessage
+	var i CreateAIMessageRow
 	err := row.Scan(
 		&i.ID,
 		&i.ConversationID,
@@ -372,15 +383,26 @@ type ListAIMessagesForConversationForUserParams struct {
 	UserID         pgtype.UUID
 }
 
-func (q *Queries) ListAIMessagesForConversationForUser(ctx context.Context, arg ListAIMessagesForConversationForUserParams) ([]AiMessage, error) {
+type ListAIMessagesForConversationForUserRow struct {
+	ID             pgtype.UUID
+	ConversationID pgtype.UUID
+	Role           string
+	Content        string
+	CrawlID        pgtype.UUID
+	Scope          []byte
+	Model          pgtype.Text
+	CreatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) ListAIMessagesForConversationForUser(ctx context.Context, arg ListAIMessagesForConversationForUserParams) ([]ListAIMessagesForConversationForUserRow, error) {
 	rows, err := q.db.Query(ctx, listAIMessagesForConversationForUser, arg.ConversationID, arg.UserID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AiMessage
+	var items []ListAIMessagesForConversationForUserRow
 	for rows.Next() {
-		var i AiMessage
+		var i ListAIMessagesForConversationForUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ConversationID,
