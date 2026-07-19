@@ -49,6 +49,62 @@ func (q *Queries) GetProjectBusinessProfileByProjectID(ctx context.Context, proj
 	return i, err
 }
 
+const getProjectBusinessProfileByProjectIDForUser = `-- name: GetProjectBusinessProfileByProjectIDForUser :one
+SELECT
+    pbp.id,
+    pbp.project_id,
+    pbp.brand_name,
+    pbp.website_url,
+    pbp.primary_category,
+    pbp.primary_location,
+    pbp.business_description,
+    pbp.seed_prompts,
+    pbp.created_at,
+    pbp.updated_at
+FROM project_business_profile AS pbp
+INNER JOIN projects AS p ON p.id = pbp.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE pbp.project_id = $1
+  AND om.user_id = $2
+LIMIT 1
+`
+
+type GetProjectBusinessProfileByProjectIDForUserParams struct {
+	ProjectID pgtype.UUID
+	UserID    pgtype.UUID
+}
+
+type GetProjectBusinessProfileByProjectIDForUserRow struct {
+	ID                  pgtype.UUID
+	ProjectID           pgtype.UUID
+	BrandName           string
+	WebsiteUrl          string
+	PrimaryCategory     pgtype.Text
+	PrimaryLocation     pgtype.Text
+	BusinessDescription pgtype.Text
+	SeedPrompts         []byte
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
+func (q *Queries) GetProjectBusinessProfileByProjectIDForUser(ctx context.Context, arg GetProjectBusinessProfileByProjectIDForUserParams) (GetProjectBusinessProfileByProjectIDForUserRow, error) {
+	row := q.db.QueryRow(ctx, getProjectBusinessProfileByProjectIDForUser, arg.ProjectID, arg.UserID)
+	var i GetProjectBusinessProfileByProjectIDForUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.BrandName,
+		&i.WebsiteUrl,
+		&i.PrimaryCategory,
+		&i.PrimaryLocation,
+		&i.BusinessDescription,
+		&i.SeedPrompts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const upsertProjectBusinessProfile = `-- name: UpsertProjectBusinessProfile :one
 INSERT INTO project_business_profile (
     project_id,

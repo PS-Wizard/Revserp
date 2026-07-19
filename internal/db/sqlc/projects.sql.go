@@ -157,3 +157,48 @@ func (q *Queries) ListProjectsForOrganization(ctx context.Context, organizationI
 	}
 	return items, nil
 }
+
+const listProjectsForOrganizationForUser = `-- name: ListProjectsForOrganizationForUser :many
+SELECT
+    p.id,
+    p.organization_id,
+    p.name,
+    p.base_url,
+    p.created_at
+FROM projects AS p
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE p.organization_id = $1
+  AND om.user_id = $2
+ORDER BY p.created_at ASC
+`
+
+type ListProjectsForOrganizationForUserParams struct {
+	OrganizationID pgtype.UUID
+	UserID         pgtype.UUID
+}
+
+func (q *Queries) ListProjectsForOrganizationForUser(ctx context.Context, arg ListProjectsForOrganizationForUserParams) ([]Project, error) {
+	rows, err := q.db.Query(ctx, listProjectsForOrganizationForUser, arg.OrganizationID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Project
+	for rows.Next() {
+		var i Project
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganizationID,
+			&i.Name,
+			&i.BaseUrl,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

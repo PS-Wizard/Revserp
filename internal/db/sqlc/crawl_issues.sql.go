@@ -11,6 +11,43 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCrawlIssuesFilteredForUser = `-- name: CountCrawlIssuesFilteredForUser :one
+SELECT COUNT(*)
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+  AND ($3 = '' OR ci.pillar = $3)
+  AND ($4 = '' OR ci.bucket = $4)
+  AND ($5 = '' OR ci.issue_type = $5)
+  AND ($6 = '' OR ci.severity = $6)
+`
+
+type CountCrawlIssuesFilteredForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Column3 interface{}
+	Column4 interface{}
+	Column5 interface{}
+	Column6 interface{}
+}
+
+func (q *Queries) CountCrawlIssuesFilteredForUser(ctx context.Context, arg CountCrawlIssuesFilteredForUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlIssuesFilteredForUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Column3,
+		arg.Column4,
+		arg.Column5,
+		arg.Column6,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countCrawlIssuesForCrawlByUser = `-- name: CountCrawlIssuesForCrawlByUser :one
 SELECT COUNT(*)
 FROM crawl_issues AS ci
@@ -193,6 +230,100 @@ func (q *Queries) GetCrawlIssueByIDForUser(ctx context.Context, arg GetCrawlIssu
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listCrawlIssuesFilteredForUser = `-- name: ListCrawlIssuesFilteredForUser :many
+SELECT
+    ci.id,
+    ci.crawl_id,
+    ci.crawl_page_id,
+    ci.url,
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type,
+    ci.severity,
+    ci.message,
+    ci.details,
+    ci.created_at
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+  AND ($3 = '' OR ci.pillar = $3)
+  AND ($4 = '' OR ci.bucket = $4)
+  AND ($5 = '' OR ci.issue_type = $5)
+  AND ($6 = '' OR ci.severity = $6)
+  AND ($7 = '' OR ci.url = $7)
+ORDER BY ci.created_at ASC
+LIMIT $8
+`
+
+type ListCrawlIssuesFilteredForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Column3 interface{}
+	Column4 interface{}
+	Column5 interface{}
+	Column6 interface{}
+	Column7 interface{}
+	Limit   int32
+}
+
+type ListCrawlIssuesFilteredForUserRow struct {
+	ID          pgtype.UUID
+	CrawlID     pgtype.UUID
+	CrawlPageID pgtype.UUID
+	Url         string
+	Pillar      string
+	Bucket      string
+	IssueType   string
+	Severity    string
+	Message     string
+	Details     string
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) ListCrawlIssuesFilteredForUser(ctx context.Context, arg ListCrawlIssuesFilteredForUserParams) ([]ListCrawlIssuesFilteredForUserRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlIssuesFilteredForUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Column3,
+		arg.Column4,
+		arg.Column5,
+		arg.Column6,
+		arg.Column7,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCrawlIssuesFilteredForUserRow
+	for rows.Next() {
+		var i ListCrawlIssuesFilteredForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.CrawlPageID,
+			&i.Url,
+			&i.Pillar,
+			&i.Bucket,
+			&i.IssueType,
+			&i.Severity,
+			&i.Message,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCrawlIssuesForCrawl = `-- name: ListCrawlIssuesForCrawl :many

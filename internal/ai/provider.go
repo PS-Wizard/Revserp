@@ -5,11 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 )
-
-// defaultClient is a shared HTTP client used when none is provided.
-var defaultClient = &http.Client{Timeout: 60 * time.Second}
 
 // Provider generates text using an AI model.
 type Provider interface {
@@ -21,6 +17,7 @@ type ProviderConfig struct {
 	Name       string
 	APIKey     string
 	Model      string
+	BaseURL    string       // optional; DeepSeek defaults to https://api.deepseek.com
 	HTTPClient *http.Client // optional; defaults to a shared 60s client
 }
 
@@ -33,25 +30,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	name := strings.ToLower(strings.TrimSpace(cfg.Name))
 	switch name {
 	case "deepseek":
-		model := cfg.Model
-		if model == "" {
-			model = "deepseek-v4-flash"
-		}
-		return &DeepSeekClient{
-			APIKey:     cfg.APIKey,
-			Model:      model,
-			HTTPClient: httpClient,
-		}, nil
-	case "gemini":
-		model := cfg.Model
-		if model == "" {
-			model = "gemini-2.5-flash"
-		}
-		return &GeminiClient{
-			APIKey:     cfg.APIKey,
-			Model:      model,
-			HTTPClient: httpClient,
-		}, nil
+		return NewDeepSeekClient(cfg.APIKey, cfg.Model, cfg.BaseURL, httpClient), nil
 	case "openrouter":
 		return &OpenRouterClient{
 			APIKey:     cfg.APIKey,

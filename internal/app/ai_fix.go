@@ -54,7 +54,7 @@ type aiFixIssueRow struct {
 	CurrentH1          string
 }
 
-// handleAIFix answers a scoped crawl issue question with Gemini.
+// handleAIFix answers a scoped crawl issue question with DeepSeek.
 func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 	crawlID, err := parseUUIDParam(chi.URLParam(r, "crawlID"))
 	if err != nil {

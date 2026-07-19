@@ -36,10 +36,10 @@ type Config struct {
 	AIVisibilityModels          []string
 	AIVisibilityRateDelay       time.Duration
 	AIProvider                  string
-	GeminiAPIKey                string
-	GeminiModel                 string
 	DeepSeekAPIKey              string
 	DeepSeekModel               string
+	DeepSeekBaseURL             string
+	AITurnTimeout               time.Duration
 	ObscuraPath                 string
 	RendererConcurrency         int
 	ObscuraTimeout              time.Duration
@@ -84,10 +84,10 @@ func Load() Config {
 		AIVisibilityModels:          getEnvCSV("AI_VISIBILITY_MODELS", []string{"meta-llama/llama-3.3-70b-instruct:free", "nvidia/nemotron-3-super-120b-a12b:free", "nousresearch/hermes-3-llama-3.1-405b:free"}),
 		AIVisibilityRateDelay:       getEnvDuration("AI_VISIBILITY_RATE_DELAY", 9*time.Second),
 		AIProvider:                  strings.ToLower(getEnv("AI_PROVIDER", "deepseek")),
-		GeminiAPIKey:                getEnv("GEMINI_API_KEY", ""),
-		GeminiModel:                 getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
 		DeepSeekAPIKey:              getEnv("DEEPSEEK_API_KEY", ""),
 		DeepSeekModel:               getEnv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+		DeepSeekBaseURL:             getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+		AITurnTimeout:               getEnvDurationInRange("AI_TURN_TIMEOUT", 5*time.Minute, 30*time.Second, 10*time.Minute),
 		ObscuraPath:                 getEnv("OBSCURA_PATH", ""),
 		RendererConcurrency:         getEnvInt("RENDERER_CONCURRENCY", 2),
 		ObscuraTimeout:              time.Duration(getEnvInt("OBSCURA_TIMEOUT_SECONDS", 5)) * time.Second,
@@ -150,6 +150,19 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	}
 
 	return parsedValue
+}
+
+// getEnvDurationInRange returns a duration environment variable clamped to
+// [min, max], falling back to defaultValue when unset or unparseable.
+func getEnvDurationInRange(key string, defaultValue, min, max time.Duration) time.Duration {
+	value := getEnvDuration(key, defaultValue)
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 // getEnvCSV returns a comma-separated environment variable or a default value.

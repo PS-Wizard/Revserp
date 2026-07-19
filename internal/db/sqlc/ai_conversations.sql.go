@@ -13,38 +13,38 @@ import (
 
 const createAIConversation = `-- name: CreateAIConversation :one
 INSERT INTO ai_conversations (
-    project_id,
-    crawl_id,
+    org_id,
     created_by_user_id,
     title
 ) VALUES (
     $1,
     $2,
-    $3,
-    $4
+    $3
 )
-RETURNING id, project_id, crawl_id, created_by_user_id, title, created_at, updated_at
+RETURNING id, org_id, created_by_user_id, title, created_at, updated_at
 `
 
 type CreateAIConversationParams struct {
-	ProjectID       pgtype.UUID
-	CrawlID         pgtype.UUID
+	OrgID           pgtype.UUID
 	CreatedByUserID pgtype.UUID
 	Title           pgtype.Text
 }
 
-func (q *Queries) CreateAIConversation(ctx context.Context, arg CreateAIConversationParams) (AiConversation, error) {
-	row := q.db.QueryRow(ctx, createAIConversation,
-		arg.ProjectID,
-		arg.CrawlID,
-		arg.CreatedByUserID,
-		arg.Title,
-	)
-	var i AiConversation
+type CreateAIConversationRow struct {
+	ID              pgtype.UUID
+	OrgID           pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           pgtype.Text
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) CreateAIConversation(ctx context.Context, arg CreateAIConversationParams) (CreateAIConversationRow, error) {
+	row := q.db.QueryRow(ctx, createAIConversation, arg.OrgID, arg.CreatedByUserID, arg.Title)
+	var i CreateAIConversationRow
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
-		&i.CrawlID,
+		&i.OrgID,
 		&i.CreatedByUserID,
 		&i.Title,
 		&i.CreatedAt,
@@ -60,36 +60,52 @@ INSERT INTO ai_messages (
     content,
     crawl_id,
     scope,
-    model
+    model,
+    reasoning_content,
+    tool_calls,
+    tool_call_id,
+    tool_name
 ) VALUES (
     $1,
     $2,
     $3,
     $4,
     $5,
-    $6
+    $6,
+    $7,
+    $8,
+    $9,
+    $10
 )
-RETURNING id, conversation_id, role, content, crawl_id, scope, model, created_at
+RETURNING id, conversation_id, role, content, crawl_id, scope, model, reasoning_content, tool_calls, tool_call_id, tool_name, created_at
 `
 
 type CreateAIMessageParams struct {
-	ConversationID pgtype.UUID
-	Role           string
-	Content        string
-	CrawlID        pgtype.UUID
-	Scope          []byte
-	Model          pgtype.Text
+	ConversationID   pgtype.UUID
+	Role             string
+	Content          string
+	CrawlID          pgtype.UUID
+	Scope            []byte
+	Model            pgtype.Text
+	ReasoningContent pgtype.Text
+	ToolCalls        []byte
+	ToolCallID       pgtype.Text
+	ToolName         pgtype.Text
 }
 
 type CreateAIMessageRow struct {
-	ID             pgtype.UUID
-	ConversationID pgtype.UUID
-	Role           string
-	Content        string
-	CrawlID        pgtype.UUID
-	Scope          []byte
-	Model          pgtype.Text
-	CreatedAt      pgtype.Timestamptz
+	ID               pgtype.UUID
+	ConversationID   pgtype.UUID
+	Role             string
+	Content          string
+	CrawlID          pgtype.UUID
+	Scope            []byte
+	Model            pgtype.Text
+	ReasoningContent pgtype.Text
+	ToolCalls        []byte
+	ToolCallID       pgtype.Text
+	ToolName         pgtype.Text
+	CreatedAt        pgtype.Timestamptz
 }
 
 func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams) (CreateAIMessageRow, error) {
@@ -100,6 +116,10 @@ func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams
 		arg.CrawlID,
 		arg.Scope,
 		arg.Model,
+		arg.ReasoningContent,
+		arg.ToolCalls,
+		arg.ToolCallID,
+		arg.ToolName,
 	)
 	var i CreateAIMessageRow
 	err := row.Scan(
@@ -110,6 +130,10 @@ func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams
 		&i.CrawlID,
 		&i.Scope,
 		&i.Model,
+		&i.ReasoningContent,
+		&i.ToolCalls,
+		&i.ToolCallID,
+		&i.ToolName,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -117,10 +141,9 @@ func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams
 
 const deleteAIConversationForUser = `-- name: DeleteAIConversationForUser :one
 DELETE FROM ai_conversations AS ac
-USING projects AS p, organization_members AS om
+USING organization_members AS om
 WHERE ac.id = $1
-  AND p.id = ac.project_id
-  AND om.org_id = p.organization_id
+  AND om.org_id = ac.org_id
   AND om.user_id = $2
 RETURNING ac.id
 `
@@ -140,15 +163,13 @@ func (q *Queries) DeleteAIConversationForUser(ctx context.Context, arg DeleteAIC
 const getAIConversationForUser = `-- name: GetAIConversationForUser :one
 SELECT
     ac.id,
-    ac.project_id,
-    ac.crawl_id,
+    ac.org_id,
     ac.created_by_user_id,
     ac.title,
     ac.created_at,
     ac.updated_at
 FROM ai_conversations AS ac
-INNER JOIN projects AS p ON p.id = ac.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+INNER JOIN organization_members AS om ON om.org_id = ac.org_id
 WHERE ac.id = $1
   AND om.user_id = $2
 LIMIT 1
@@ -159,13 +180,21 @@ type GetAIConversationForUserParams struct {
 	UserID pgtype.UUID
 }
 
-func (q *Queries) GetAIConversationForUser(ctx context.Context, arg GetAIConversationForUserParams) (AiConversation, error) {
+type GetAIConversationForUserRow struct {
+	ID              pgtype.UUID
+	OrgID           pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           pgtype.Text
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) GetAIConversationForUser(ctx context.Context, arg GetAIConversationForUserParams) (GetAIConversationForUserRow, error) {
 	row := q.db.QueryRow(ctx, getAIConversationForUser, arg.ID, arg.UserID)
-	var i AiConversation
+	var i GetAIConversationForUserRow
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
-		&i.CrawlID,
+		&i.OrgID,
 		&i.CreatedByUserID,
 		&i.Title,
 		&i.CreatedAt,
@@ -177,19 +206,17 @@ func (q *Queries) GetAIConversationForUser(ctx context.Context, arg GetAIConvers
 const getAIConversationForUserForUpdate = `-- name: GetAIConversationForUserForUpdate :one
 SELECT
     ac.id,
-    ac.project_id,
-    ac.crawl_id,
+    ac.org_id,
     ac.created_by_user_id,
     ac.title,
     ac.created_at,
     ac.updated_at
 FROM ai_conversations AS ac
-INNER JOIN projects AS p ON p.id = ac.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+INNER JOIN organization_members AS om ON om.org_id = ac.org_id
 WHERE ac.id = $1
   AND om.user_id = $2
 LIMIT 1
-FOR UPDATE
+FOR UPDATE OF ac
 `
 
 type GetAIConversationForUserForUpdateParams struct {
@@ -197,13 +224,21 @@ type GetAIConversationForUserForUpdateParams struct {
 	UserID pgtype.UUID
 }
 
-func (q *Queries) GetAIConversationForUserForUpdate(ctx context.Context, arg GetAIConversationForUserForUpdateParams) (AiConversation, error) {
+type GetAIConversationForUserForUpdateRow struct {
+	ID              pgtype.UUID
+	OrgID           pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           pgtype.Text
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) GetAIConversationForUserForUpdate(ctx context.Context, arg GetAIConversationForUserForUpdateParams) (GetAIConversationForUserForUpdateRow, error) {
 	row := q.db.QueryRow(ctx, getAIConversationForUserForUpdate, arg.ID, arg.UserID)
-	var i AiConversation
+	var i GetAIConversationForUserForUpdateRow
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
-		&i.CrawlID,
+		&i.OrgID,
 		&i.CreatedByUserID,
 		&i.Title,
 		&i.CreatedAt,
@@ -212,112 +247,34 @@ func (q *Queries) GetAIConversationForUserForUpdate(ctx context.Context, arg Get
 	return i, err
 }
 
-const listAIConversationsForCrawlForUser = `-- name: ListAIConversationsForCrawlForUser :many
+const listAIConversationsForOrgForUser = `-- name: ListAIConversationsForOrgForUser :many
 SELECT
     ac.id,
-    ac.project_id,
-    ac.crawl_id,
+    ac.org_id,
     ac.created_by_user_id,
     ac.title,
     ac.created_at,
     ac.updated_at,
     (SELECT COUNT(*) FROM ai_messages am WHERE am.conversation_id = ac.id)::int AS message_count
 FROM ai_conversations AS ac
-INNER JOIN projects AS p ON p.id = ac.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE ac.project_id = $1
-  AND ac.crawl_id = $2
-  AND om.user_id = $3
-ORDER BY ac.updated_at DESC
-LIMIT $4
-OFFSET $5
-`
-
-type ListAIConversationsForCrawlForUserParams struct {
-	ProjectID pgtype.UUID
-	CrawlID   pgtype.UUID
-	UserID    pgtype.UUID
-	Limit     int32
-	Offset    int32
-}
-
-type ListAIConversationsForCrawlForUserRow struct {
-	ID              pgtype.UUID
-	ProjectID       pgtype.UUID
-	CrawlID         pgtype.UUID
-	CreatedByUserID pgtype.UUID
-	Title           pgtype.Text
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-	MessageCount    int32
-}
-
-func (q *Queries) ListAIConversationsForCrawlForUser(ctx context.Context, arg ListAIConversationsForCrawlForUserParams) ([]ListAIConversationsForCrawlForUserRow, error) {
-	rows, err := q.db.Query(ctx, listAIConversationsForCrawlForUser,
-		arg.ProjectID,
-		arg.CrawlID,
-		arg.UserID,
-		arg.Limit,
-		arg.Offset,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListAIConversationsForCrawlForUserRow
-	for rows.Next() {
-		var i ListAIConversationsForCrawlForUserRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.ProjectID,
-			&i.CrawlID,
-			&i.CreatedByUserID,
-			&i.Title,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.MessageCount,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listAIConversationsForProjectForUser = `-- name: ListAIConversationsForProjectForUser :many
-SELECT
-    ac.id,
-    ac.project_id,
-    ac.crawl_id,
-    ac.created_by_user_id,
-    ac.title,
-    ac.created_at,
-    ac.updated_at,
-    (SELECT COUNT(*) FROM ai_messages am WHERE am.conversation_id = ac.id)::int AS message_count
-FROM ai_conversations AS ac
-INNER JOIN projects AS p ON p.id = ac.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE ac.project_id = $1
+INNER JOIN organization_members AS om ON om.org_id = ac.org_id
+WHERE ac.org_id = $1
   AND om.user_id = $2
 ORDER BY ac.updated_at DESC
 LIMIT $3
 OFFSET $4
 `
 
-type ListAIConversationsForProjectForUserParams struct {
-	ProjectID pgtype.UUID
-	UserID    pgtype.UUID
-	Limit     int32
-	Offset    int32
+type ListAIConversationsForOrgForUserParams struct {
+	OrgID  pgtype.UUID
+	UserID pgtype.UUID
+	Limit  int32
+	Offset int32
 }
 
-type ListAIConversationsForProjectForUserRow struct {
+type ListAIConversationsForOrgForUserRow struct {
 	ID              pgtype.UUID
-	ProjectID       pgtype.UUID
-	CrawlID         pgtype.UUID
+	OrgID           pgtype.UUID
 	CreatedByUserID pgtype.UUID
 	Title           pgtype.Text
 	CreatedAt       pgtype.Timestamptz
@@ -325,9 +282,9 @@ type ListAIConversationsForProjectForUserRow struct {
 	MessageCount    int32
 }
 
-func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg ListAIConversationsForProjectForUserParams) ([]ListAIConversationsForProjectForUserRow, error) {
-	rows, err := q.db.Query(ctx, listAIConversationsForProjectForUser,
-		arg.ProjectID,
+func (q *Queries) ListAIConversationsForOrgForUser(ctx context.Context, arg ListAIConversationsForOrgForUserParams) ([]ListAIConversationsForOrgForUserRow, error) {
+	rows, err := q.db.Query(ctx, listAIConversationsForOrgForUser,
+		arg.OrgID,
 		arg.UserID,
 		arg.Limit,
 		arg.Offset,
@@ -336,13 +293,12 @@ func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg 
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListAIConversationsForProjectForUserRow
+	var items []ListAIConversationsForOrgForUserRow
 	for rows.Next() {
-		var i ListAIConversationsForProjectForUserRow
+		var i ListAIConversationsForOrgForUserRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.ProjectID,
-			&i.CrawlID,
+			&i.OrgID,
 			&i.CreatedByUserID,
 			&i.Title,
 			&i.CreatedAt,
@@ -368,11 +324,14 @@ SELECT
     am.crawl_id,
     am.scope,
     am.model,
+    am.reasoning_content,
+    am.tool_calls,
+    am.tool_call_id,
+    am.tool_name,
     am.created_at
 FROM ai_messages AS am
 INNER JOIN ai_conversations AS ac ON ac.id = am.conversation_id
-INNER JOIN projects AS p ON p.id = ac.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+INNER JOIN organization_members AS om ON om.org_id = ac.org_id
 WHERE am.conversation_id = $1
   AND om.user_id = $2
 ORDER BY am.created_at ASC
@@ -384,14 +343,18 @@ type ListAIMessagesForConversationForUserParams struct {
 }
 
 type ListAIMessagesForConversationForUserRow struct {
-	ID             pgtype.UUID
-	ConversationID pgtype.UUID
-	Role           string
-	Content        string
-	CrawlID        pgtype.UUID
-	Scope          []byte
-	Model          pgtype.Text
-	CreatedAt      pgtype.Timestamptz
+	ID               pgtype.UUID
+	ConversationID   pgtype.UUID
+	Role             string
+	Content          string
+	CrawlID          pgtype.UUID
+	Scope            []byte
+	Model            pgtype.Text
+	ReasoningContent pgtype.Text
+	ToolCalls        []byte
+	ToolCallID       pgtype.Text
+	ToolName         pgtype.Text
+	CreatedAt        pgtype.Timestamptz
 }
 
 func (q *Queries) ListAIMessagesForConversationForUser(ctx context.Context, arg ListAIMessagesForConversationForUserParams) ([]ListAIMessagesForConversationForUserRow, error) {
@@ -411,6 +374,10 @@ func (q *Queries) ListAIMessagesForConversationForUser(ctx context.Context, arg 
 			&i.CrawlID,
 			&i.Scope,
 			&i.Model,
+			&i.ReasoningContent,
+			&i.ToolCalls,
+			&i.ToolCallID,
+			&i.ToolName,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -427,16 +394,24 @@ const updateAIConversationTouched = `-- name: UpdateAIConversationTouched :one
 UPDATE ai_conversations
 SET updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, crawl_id, created_by_user_id, title, created_at, updated_at
+RETURNING id, org_id, created_by_user_id, title, created_at, updated_at
 `
 
-func (q *Queries) UpdateAIConversationTouched(ctx context.Context, id pgtype.UUID) (AiConversation, error) {
+type UpdateAIConversationTouchedRow struct {
+	ID              pgtype.UUID
+	OrgID           pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           pgtype.Text
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateAIConversationTouched(ctx context.Context, id pgtype.UUID) (UpdateAIConversationTouchedRow, error) {
 	row := q.db.QueryRow(ctx, updateAIConversationTouched, id)
-	var i AiConversation
+	var i UpdateAIConversationTouchedRow
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
-		&i.CrawlID,
+		&i.OrgID,
 		&i.CreatedByUserID,
 		&i.Title,
 		&i.CreatedAt,

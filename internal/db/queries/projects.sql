@@ -51,3 +51,16 @@ SELECT EXISTS (
       AND om.user_id = $2
       AND c.status IN ('queued', 'running')
 ) AS has_active_crawl;
+
+-- name: ListProjectsForOrganizationForUser :many
+SELECT
+    p.id,
+    p.organization_id,
+    p.name,
+    p.base_url,
+    p.created_at
+FROM projects AS p
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE p.organization_id = $1
+  AND om.user_id = $2
+ORDER BY p.created_at ASC;

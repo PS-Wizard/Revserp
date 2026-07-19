@@ -225,3 +225,74 @@ FROM (
     SELECT unnest($1::uuid[]) AS id, unnest($2::text[]) AS content_sha256
 ) AS data
 WHERE cp.id = data.id;
+
+-- name: GetCrawlPageByURLForUser :one
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.status_code,
+    cp.content_type,
+    cp.size_bytes,
+    cp.is_internal,
+    cp.depth,
+    cp.title,
+    cp.meta_description,
+    cp.h1,
+    cp.h1_count,
+    cp.h2_count,
+    cp.h3_count,
+    cp.word_count,
+    cp.visible_text,
+    cp.content_sha256,
+    cp.author,
+    cp.canonical_url,
+    cp.lang,
+    cp.viewport,
+    cp.robots,
+    cp.image_count,
+    cp.images_without_alt_count,
+    cp.images_without_dimensions,
+    cp.external_links,
+    cp.internal_links,
+    cp.response_time_ms,
+    cp.javascript_rendered,
+    cp.h2_headings,
+    cp.h3_headings,
+    cp.heading_outline,
+    cp.og_tags,
+    cp.json_ld,
+    cp.created_at
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND cp.url = $2
+  AND om.user_id = $3
+LIMIT 1;
+
+-- name: ListCrawlPagesFilteredForUser :many
+SELECT
+    cp.url,
+    cp.title,
+    cp.word_count
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+  AND ($3 = '' OR cp.url ILIKE '%' || $3 || '%')
+ORDER BY cp.url ASC
+LIMIT $4;
+
+-- name: CountCrawlPagesFilteredForUser :one
+SELECT COUNT(*)
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+  AND ($3 = '' OR cp.url ILIKE '%' || $3 || '%');

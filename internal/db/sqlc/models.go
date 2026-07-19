@@ -48,6 +48,7 @@ type AiConversation struct {
 	Title           pgtype.Text
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+	OrgID           pgtype.UUID
 }
 
 type AiMessage struct {

@@ -2,56 +2,25 @@ package app
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"log"
+	"strings"
 
 	"github.com/ps-wizard/revserp/internal/ai"
 )
 
+// generateAIText runs a one-shot (non-agentic) DeepSeek text generation for
+// the legacy flat-prompt callers (ai_fix, crawl_commentary).
 func (a *App) generateAIText(ctx context.Context, prompt string) (string, string, error) {
-	providerName := a.Config.AIProvider // already lowercased by config.Load()
-	if providerName == "" {
-		providerName = "deepseek"
+	model := strings.TrimSpace(a.Config.DeepSeekModel)
+	if model == "" {
+		model = "deepseek-v4-flash"
 	}
 
-	var apiKey string
-	switch providerName {
-	case "deepseek":
-		apiKey = a.Config.DeepSeekAPIKey
-	case "gemini":
-		apiKey = a.Config.GeminiAPIKey
-	default:
-		return "", "", fmt.Errorf("unsupported AI_PROVIDER %q", providerName)
-	}
-
-	model := "" // model is resolved by the factory default
-	provider, err := ai.NewProvider(ai.ProviderConfig{
-		Name:   providerName,
-		APIKey: apiKey,
-		Model:  "",
-	})
+	content, err := ai.NewDeepSeekClient(a.Config.DeepSeekAPIKey, model, a.Config.DeepSeekBaseURL, nil).GenerateText(ctx, prompt)
 	if err != nil {
-		return "", "", err
+		log.Printf("ai provider request failed provider=%q model=%q error_type=%T", "deepseek", model, err)
+		return "", "", errors.New("AI service unavailable")
 	}
-
-	content, err := provider.GenerateText(ctx, prompt)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Determine which model was actually used by re-reading from config.
-	// The factory applied defaults, but we return the configured model name.
-	switch providerName {
-	case "deepseek":
-		model = a.Config.DeepSeekModel
-		if model == "" {
-			model = "deepseek-v4-flash"
-		}
-	case "gemini":
-		model = a.Config.GeminiModel
-		if model == "" {
-			model = "gemini-2.5-flash"
-		}
-	}
-
 	return content, model, nil
 }

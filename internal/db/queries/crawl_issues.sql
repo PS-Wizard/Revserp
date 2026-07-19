@@ -118,3 +118,43 @@ SELECT
 FROM crawl_issues
 WHERE crawl_id = $1
 ORDER BY created_at ASC;
+
+-- name: ListCrawlIssuesFilteredForUser :many
+SELECT
+    ci.id,
+    ci.crawl_id,
+    ci.crawl_page_id,
+    ci.url,
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type,
+    ci.severity,
+    ci.message,
+    ci.details,
+    ci.created_at
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+  AND ($3 = '' OR ci.pillar = $3)
+  AND ($4 = '' OR ci.bucket = $4)
+  AND ($5 = '' OR ci.issue_type = $5)
+  AND ($6 = '' OR ci.severity = $6)
+  AND ($7 = '' OR ci.url = $7)
+ORDER BY ci.created_at ASC
+LIMIT $8;
+
+-- name: CountCrawlIssuesFilteredForUser :one
+SELECT COUNT(*)
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+  AND ($3 = '' OR ci.pillar = $3)
+  AND ($4 = '' OR ci.bucket = $4)
+  AND ($5 = '' OR ci.issue_type = $5)
+  AND ($6 = '' OR ci.severity = $6);
