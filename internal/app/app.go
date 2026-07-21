@@ -50,12 +50,16 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		GSCService:     gscService,
 		AIClient:       ai.NewDeepSeekClient(cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekBaseURL, nil),
 	}
-	app.AIToolRegistry = aitools.NewRegistry(func(ctx context.Context, scope aitools.Scope, raw []byte) (aitools.CrawlStart, error) {
-		crawl, err := app.createCrawlForAgent(ctx, scope.ProjectID, scope.UserID, raw)
-		if err != nil {
-			return aitools.CrawlStart{}, err
-		}
-		return aitools.CrawlStart{ID: crawl.ID.String(), Status: crawl.Status}, nil
+	app.AIToolRegistry = aitools.NewRegistry(aitools.Deps{
+		CreateCrawl: func(ctx context.Context, scope aitools.Scope, raw []byte) (aitools.CrawlStart, error) {
+			crawl, err := app.createCrawlForAgent(ctx, scope.ProjectID, scope.UserID, raw)
+			if err != nil {
+				return aitools.CrawlStart{}, err
+			}
+			return aitools.CrawlStart{ID: crawl.ID.String(), Status: crawl.Status}, nil
+		},
+		ConfigureAutoCrawl:    app.configureAutoCrawlForAgent,
+		UpdateBusinessProfile: app.updateBusinessProfileForAgent,
 	})
 	return app
 }

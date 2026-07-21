@@ -23,7 +23,10 @@ type Scope struct {
 	OrgID     pgtype.UUID
 	ProjectID pgtype.UUID
 	CrawlID   pgtype.UUID
-	Queries   *sqlc.Queries
+	// Timezone is the caller's IANA timezone (browser-resolved), used as the
+	// default when configure_auto_crawl omits one. May be empty.
+	Timezone string
+	Queries  *sqlc.Queries
 }
 
 // Result is one tool's output: Content goes back to the LLM, Summary is a
@@ -79,22 +82,29 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
-// NewRegistry builds the registry of all 12 tools available to the agent.
-func NewRegistry(createCrawl ...CrawlCreator) *Registry {
+// Deps holds the application-owned, authorized write paths the mutating tools
+// depend on. A nil field makes the corresponding tool report itself as
+// unavailable at execution time.
+type Deps struct {
+	CreateCrawl           CrawlCreator
+	ConfigureAutoCrawl    AutoCrawlConfigurer
+	UpdateBusinessProfile BusinessProfileUpdater
+}
+
+// NewRegistry builds the registry of all 14 tools available to the agent.
+func NewRegistry(deps Deps) *Registry {
 	r := newRegistry()
-	var creator CrawlCreator
-	if len(createCrawl) > 0 {
-		creator = createCrawl[0]
-	}
 	r.register(listProjectsTool())
 	r.register(switchProjectTool())
 	r.register(businessProfileTool())
+	r.register(updateBusinessProfileTool(deps.UpdateBusinessProfile))
 	r.register(scoreSummaryTool())
 	r.register(listIssuesTool())
 	r.register(recommendedFixTool())
 	r.register(pageContentTool())
 	r.register(listPagesTool())
-	r.register(startCrawlTool(creator))
+	r.register(startCrawlTool(deps.CreateCrawl))
+	r.register(configureAutoCrawlTool(deps.ConfigureAutoCrawl))
 	r.register(exportCrawlTool())
 	r.register(exportAuditTool())
 	r.register(navigateTool())

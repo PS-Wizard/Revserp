@@ -43,7 +43,7 @@ func TestExportCrawlTool(t *testing.T) {
 }
 
 func TestExportSchemas(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewRegistry(Deps{})
 	for _, name := range []string{"export_audit", "export_crawl"} {
 		tool, ok := registry.Get(name)
 		if !ok || strings.Contains(string(tool.Def.Schema), "id") || strings.Contains(string(tool.Def.Schema), "url") {

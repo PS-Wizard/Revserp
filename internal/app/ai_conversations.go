@@ -30,6 +30,7 @@ type createAIConversationMessageRequest struct {
 	Content   string `json:"content"`
 	ProjectID string `json:"project_id"`
 	CrawlID   string `json:"crawl_id"`
+	Timezone  string `json:"timezone"`
 }
 
 type aiConversationDetailResponse struct {
@@ -336,6 +337,7 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		OrgID:     orgID,
 		ProjectID: turnCtx.projectID,
 		CrawlID:   turnCtx.crawlID,
+		Timezone:  sanitizeRequestTimezone(req.Timezone),
 		Queries:   a.Queries,
 	}
 
@@ -466,6 +468,20 @@ func buildAgentContextBlock(t *agentTurnContext) string {
 			t.crawl.OverallScore.Int32, t.crawl.SeoScore.Int32, t.crawl.AeoScore.Int32, t.crawl.PagespeedScore.Int32)
 	}
 	return b.String()
+}
+
+// sanitizeRequestTimezone trims and validates a client-supplied IANA timezone,
+// returning "" when it is empty or not a loadable location. It becomes the
+// default timezone for configure_auto_crawl when the model omits one.
+func sanitizeRequestTimezone(raw string) string {
+	tz := strings.TrimSpace(raw)
+	if tz == "" {
+		return ""
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return ""
+	}
+	return tz
 }
 
 // conversationAdvisoryLockKey derives a stable int8 key from a conversation

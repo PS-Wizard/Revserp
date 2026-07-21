@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/ps-wizard/revserp/internal/app/aitools"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -218,6 +219,61 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// updateBusinessProfileForAgent runs the authorized business profile write
+// path for the AI agent's update_business_profile tool, in its own
+// transaction. The org-owner requirement is enforced exactly as the HTTP
+// handler enforces it before the upsert. The merged, validated profile is
+// supplied by the tool.
+func (a *App) updateBusinessProfileForAgent(ctx context.Context, scope aitools.Scope, update aitools.BusinessProfileUpdate) error {
+	seedPromptsJSON, err := json.Marshal(update.SeedPrompts)
+	if err != nil {
+		return err
+	}
+
+	tx, err := a.DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	queries := a.Queries.WithTx(tx)
+	project, err := queries.GetProjectByIDForUser(ctx, sqlc.GetProjectByIDForUserParams{
+		ID:     scope.ProjectID,
+		UserID: scope.UserID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := requireOrganizationOwner(ctx, queries, project.OrganizationID, scope.UserID); err != nil {
+		return err
+	}
+
+	if _, err := queries.UpsertProjectBusinessProfile(ctx, sqlc.UpsertProjectBusinessProfileParams{
+		ProjectID:           project.ID,
+		BrandName:           update.BrandName,
+		WebsiteUrl:          update.WebsiteURL,
+		PrimaryCategory:     pgText(update.PrimaryCategory),
+		PrimaryLocation:     pgText(update.PrimaryLocation),
+		BusinessDescription: pgText(update.BusinessDescription),
+		SeedPrompts:         seedPromptsJSON,
+	}); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	if _, err := a.Queries.EnqueueAIWorkerJob(ctx, sqlc.EnqueueAIWorkerJobParams{
+		JobType:   "prompt_generation",
+		ProjectID: project.ID,
+	}); err != nil {
+		log.Printf("enqueue prompt_generation job for project %s: %v", project.ID.String(), err)
+	}
+	return nil
 }
 
 func getProjectBusinessProfileByProjectID(ctx context.Context, queries *sqlc.Queries, projectID pgtype.UUID) (sqlc.GetProjectBusinessProfileByProjectIDRow, bool, error) {
