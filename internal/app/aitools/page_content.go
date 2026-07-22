@@ -23,7 +23,7 @@ func pageContentTool() Tool {
 	return Tool{
 		Def: ai.ToolDef{
 			Name:        "get_page_content",
-			Description: "Get the crawled content for one page URL in the current crawl: title, meta description, H1/H2/H3 headings, canonical URL, robots directive, JSON-LD, word count, and visible text (capped to ~6000 characters). Read this before giving page-specific suggestions.",
+			Description: "Get the crawled content for one page URL in the current crawl: title, meta description, H1/H2/H3 headings, canonical URL, robots directive, JSON-LD, word count, and visible text (capped to ~6000 characters). Use sparingly: this returns a page's full text and consumes a lot of context. Call it ONLY for a specific page (or a small, explicitly named/selected set of pages) the user asked about. For issue fixes prefer list_issues / get_recommended_fix, whose rows already include the affected field values — do not read a page unless you truly need its surrounding copy, and never bulk-read pages to survey a site. Reads are capped at 8 pages per turn; if you need more, ask the user to narrow to specific pages.",
 			Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

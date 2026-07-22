@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -391,10 +392,16 @@ func TestRunAgentTurn_RoundCapReached(t *testing.T) {
 		{Type: ai.EventToolCall, ToolCall: &ai.ToolCall{ID: "call_x", Name: "loop_tool", Args: `{}`}},
 		{Type: ai.EventDone},
 	}
-	turns := make([][]ai.StreamEvent, 0, maxAgentToolRounds)
+	turns := make([][]ai.StreamEvent, 0, maxAgentToolRounds+1)
 	for i := 0; i < maxAgentToolRounds; i++ {
 		turns = append(turns, toolCallTurn)
 	}
+	// After the tool rounds are exhausted, the loop makes one final tool-less
+	// call that must synthesize an answer.
+	turns = append(turns, []ai.StreamEvent{
+		{Type: ai.EventText, Delta: "Here is my best answer."},
+		{Type: ai.EventDone},
+	})
 	client := &scriptedClient{turns: turns}
 	registry := newFakeRegistry()
 	registry.register("loop_tool", func(_ context.Context, _ json.RawMessage, _ aitools.Scope) (aitools.Result, error) {
@@ -416,22 +423,163 @@ func TestRunAgentTurn_RoundCapReached(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runAgentTurn: %v", err)
 	}
-	if client.calls != maxAgentToolRounds {
-		t.Errorf("expected exactly %d StreamTurn calls, got %d", maxAgentToolRounds, client.calls)
+	// maxAgentToolRounds tool rounds plus one final tool-less synthesis call.
+	if client.calls != maxAgentToolRounds+1 {
+		t.Errorf("expected exactly %d StreamTurn calls, got %d", maxAgentToolRounds+1, client.calls)
+	}
+	// The final synthesis call must carry no tools so the model can only answer.
+	finalReq := client.sentReq[len(client.sentReq)-1]
+	if len(finalReq.Tools) != 0 {
+		t.Errorf("expected the synthesis call to send no tools, got %d", len(finalReq.Tools))
 	}
 
 	events := parseSSEEvents(t, recorder.Body.String())
 	if len(events) == 0 || events[len(events)-1].Event != "done" {
 		t.Fatalf("expected the last event to be done, got %+v", events)
 	}
-	foundLimitError := false
 	for _, e := range events {
-		if e.Event == "error" && strings.Contains(e.Data, "tool round limit reached") {
-			foundLimitError = true
+		if e.Event == "error" {
+			t.Errorf("expected no error event after synthesis, got %+v", e)
 		}
 	}
-	if !foundLimitError {
-		t.Errorf("expected a round-limit error event, got %+v", events)
+	if !strings.Contains(recorder.Body.String(), "Here is my best answer.") {
+		t.Errorf("expected the synthesized answer to be streamed, got %s", recorder.Body.String())
+	}
+}
+
+func TestBoundedAgentMessages_StubsOldestLiveToolResults(t *testing.T) {
+	// 20 assistant(tool_call)+tool(result) pairs, each result ~20KB, is ~400KB
+	// of live tool output — well over maxAgentRequestBytes (192KB).
+	var live []ai.Message
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		live = append(live,
+			ai.Message{Role: ai.RoleAssistant, ToolCalls: []ai.ToolCall{{ID: id, Name: "get_page_content", Args: "{}"}}},
+			ai.Message{Role: ai.RoleTool, Content: strings.Repeat("x", 20000), ToolCallID: id, Name: "get_page_content"},
+		)
+	}
+
+	msgs, err := boundedAgentMessages("system", nil, "user", live, nil)
+	if err != nil {
+		t.Fatalf("boundedAgentMessages: unexpected error %v", err)
+	}
+	if got := agentRequestBytes(msgs, nil); got > maxAgentRequestBytes {
+		t.Fatalf("result still over budget: %d > %d", got, maxAgentRequestBytes)
+	}
+
+	// Assistant-tool_call↔tool-result pairing must survive: every tool message's
+	// ToolCallID must have been declared by a preceding assistant tool call, and
+	// no assistant tool call may have been dropped.
+	declared := map[string]bool{}
+	for _, m := range msgs {
+		for _, c := range m.ToolCalls {
+			declared[c.ID] = true
+		}
+	}
+	stubbed, intact := 0, 0
+	for _, m := range msgs {
+		if m.Role != ai.RoleTool {
+			continue
+		}
+		if !declared[m.ToolCallID] {
+			t.Errorf("tool result %q has no matching assistant tool_call", m.ToolCallID)
+		}
+		if m.Content == agentTrimmedToolStub {
+			stubbed++
+		} else {
+			intact++
+		}
+	}
+	if stubbed == 0 {
+		t.Error("expected at least one oldest tool result to be stubbed")
+	}
+	if intact == 0 {
+		t.Error("expected the most-recent tool results to be kept intact")
+	}
+	// Oldest-first, stop-early: the last tool message must be untouched.
+	lastTool := ""
+	for _, m := range msgs {
+		if m.Role == ai.RoleTool {
+			lastTool = m.Content
+		}
+	}
+	if lastTool == agentTrimmedToolStub {
+		t.Error("most-recent tool result was stubbed; trim should be oldest-first and stop early")
+	}
+}
+
+func TestBoundedAgentMessages_SkeletonOverBudgetStillErrors(t *testing.T) {
+	// The user message is part of the non-trimmable skeleton; if it alone
+	// exceeds budget, stubbing tool results cannot help, so it must error.
+	bigUser := strings.Repeat("u", maxAgentRequestBytes+1)
+	live := []ai.Message{
+		{Role: ai.RoleAssistant, ToolCalls: []ai.ToolCall{{ID: "call_1", Name: "get_page_content", Args: "{}"}}},
+		{Role: ai.RoleTool, Content: strings.Repeat("x", 20000), ToolCallID: "call_1", Name: "get_page_content"},
+	}
+	if _, err := boundedAgentMessages("system", nil, bigUser, live, nil); !errors.Is(err, errAIRequestTooLarge) {
+		t.Fatalf("expected errAIRequestTooLarge, got %v", err)
+	}
+}
+
+func TestRunAgentTurn_PageReadCap(t *testing.T) {
+	mkCall := func(id string) ai.StreamEvent {
+		return ai.StreamEvent{Type: ai.EventToolCall, ToolCall: &ai.ToolCall{ID: id, Name: "get_page_content", Args: "{}"}}
+	}
+	// 10 total get_page_content calls across two rounds; only maxAgentPageReads
+	// may execute, the rest must be stubbed without touching the executor.
+	const totalPageCalls = 10
+	expectedStubs := totalPageCalls - maxAgentPageReads
+	turn0 := []ai.StreamEvent{mkCall("c0"), mkCall("c1"), mkCall("c2"), mkCall("c3"), mkCall("c4"), {Type: ai.EventDone}}
+	turn1 := []ai.StreamEvent{mkCall("c5"), mkCall("c6"), mkCall("c7"), mkCall("c8"), mkCall("c9"), {Type: ai.EventDone}}
+	turn2 := []ai.StreamEvent{{Type: ai.EventText, Delta: "done"}, {Type: ai.EventDone}}
+	client := &scriptedClient{turns: [][]ai.StreamEvent{turn0, turn1, turn2}}
+
+	execCount := 0
+	registry := newFakeRegistry()
+	registry.register("get_page_content", func(_ context.Context, _ json.RawMessage, _ aitools.Scope) (aitools.Result, error) {
+		execCount++
+		return aitools.Result{Content: `{"found":true}`, Summary: "ok"}, nil
+	})
+	persister := &fakePersister{}
+	sse, recorder := newTestSSE()
+
+	err := runAgentTurn(context.Background(), agentTurnParams{
+		Client:         client,
+		Registry:       registry,
+		Queries:        persister,
+		ConversationID: fakeUUID(1),
+		Scope:          aitools.Scope{CrawlID: fakeUUID(2)},
+		SystemPrompt:   "system",
+		UserContent:    "read everything",
+		SSE:            sse,
+	})
+	if err != nil {
+		t.Fatalf("runAgentTurn: %v", err)
+	}
+	if execCount != maxAgentPageReads {
+		t.Fatalf("expected exactly %d get_page_content executions, got %d", maxAgentPageReads, execCount)
+	}
+
+	stubResults := 0
+	for _, e := range parseSSEEvents(t, recorder.Body.String()) {
+		if e.Event == "tool_result" && strings.Contains(e.Data, "page-read limit reached") {
+			stubResults++
+		}
+	}
+	if stubResults != expectedStubs {
+		t.Fatalf("expected %d stubbed tool_result events, got %d", expectedStubs, stubResults)
+	}
+
+	// Stubbed calls must still be persisted as tool rows so assistant→tool
+	// pairing stays valid for replay.
+	stubRows := 0
+	for _, r := range persister.rows {
+		if r.Role == "tool" && strings.Contains(r.Content, "page-read limit for this turn reached") {
+			stubRows++
+		}
+	}
+	if stubRows != expectedStubs {
+		t.Fatalf("expected %d persisted stub tool rows, got %d", expectedStubs, stubRows)
 	}
 }
 

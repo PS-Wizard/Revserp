@@ -21,6 +21,10 @@ const (
 	maxAgentToolRounds       = 8
 	maxAgentReplayMessages   = 30
 	maxAgentToolReplayLength = 4000
+	// maxAgentPageReads caps get_page_content executions per turn, so a model
+	// that greedily reads pages cannot balloon liveMessages past budget. Kept
+	// low: each page can be 1-2k words, and fixes should lean on issue rows.
+	maxAgentPageReads = 2
 	// maxAIChatMessageBytes caps new user content before it reaches storage or a model.
 	maxAIChatMessageBytes = 16 << 10
 	// maxAgentReplayBytes caps prior message payloads sent to a model per turn.
@@ -28,6 +32,9 @@ const (
 	// maxAgentRequestBytes bounds all model input, including prompts, tools, and live tool results.
 	maxAgentRequestBytes = 192 << 10
 	agentMaxTokens       = 4096
+	// agentTrimmedToolStub replaces an oldest live tool result's content when
+	// this turn's cumulative tool output would otherwise overflow the request.
+	agentTrimmedToolStub = "[earlier tool output omitted to fit context]"
 )
 
 var errAIRequestTooLarge = errors.New("AI request is too large")
@@ -124,6 +131,7 @@ func runAgentTurn(ctx context.Context, p agentTurnParams) error {
 
 	historyGroups := cappedReplayGroups(replayMessageGroups(p.History))
 	liveMessages := make([]ai.Message, 0, maxAgentToolRounds*2)
+	pageReads := 0
 
 	maxTokens := p.MaxTokens
 	if maxTokens <= 0 {
@@ -209,6 +217,39 @@ func runAgentTurn(ctx context.Context, p agentTurnParams) error {
 		liveMessages = append(liveMessages, ai.Message{Role: ai.RoleAssistant, Content: text, ToolCalls: toolCalls})
 
 		for _, call := range toolCalls {
+			// Cap get_page_content per turn: past the budget, stub the result
+			// instead of executing, so a greedy read stampede can't balloon
+			// liveMessages past the request budget and hard-fail the turn.
+			if call.Name == "get_page_content" {
+				pageReads++
+				if pageReads > maxAgentPageReads {
+					result := aitools.Result{
+						Content: fmt.Sprintf(`{"error":"page-read limit for this turn reached (%d pages). Do not read more pages; synthesize your answer from the pages already read and the issue rows already fetched."}`, maxAgentPageReads),
+						Summary: "page-read limit reached",
+					}
+					toolRow, err := persistAgentMessage(ctx, p.Queries, agentMessageParams{
+						conversationID: p.ConversationID,
+						role:           "tool",
+						content:        result.Content,
+						crawlID:        p.Scope.CrawlID,
+						toolCallID:     call.ID,
+						toolName:       call.Name,
+					})
+					if err != nil {
+						if sseErr := p.SSE.send("error", sseErrorPayload{Message: "failed to save tool result"}); sseErr != nil {
+							return sseErr
+						}
+						return err
+					}
+					messageIDs = append(messageIDs, toolRow.ID.String())
+					if err := p.SSE.send("tool_result", sseToolResultPayload{ID: call.ID, Name: call.Name, Summary: result.Summary}); err != nil {
+						return err
+					}
+					liveMessages = append(liveMessages, ai.Message{Role: ai.RoleTool, Content: truncateAIFixText(result.Content, maxAgentToolReplayLength), ToolCallID: call.ID, Name: call.Name})
+					continue
+				}
+			}
+
 			toolStart := time.Now()
 			result, succeeded := executeAgentTool(ctx, p.Registry, call, p.Scope)
 			log.Printf("ai agent tool call conversation=%s name=%s duration=%s failed=%t", convID, call.Name, time.Since(toolStart), !succeeded)
@@ -244,15 +285,55 @@ func runAgentTurn(ctx context.Context, p agentTurnParams) error {
 			if err := p.SSE.send("tool_result", sseToolResultPayload{ID: call.ID, Name: call.Name, Summary: result.Summary}); err != nil {
 				return err
 			}
-			liveMessages = append(liveMessages, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
+			// Truncate only the model-facing copy; the DB row above keeps full content.
+			liveMessages = append(liveMessages, ai.Message{Role: ai.RoleTool, Content: truncateAIFixText(result.Content, maxAgentToolReplayLength), ToolCallID: call.ID, Name: call.Name})
 		}
 	}
 
-	log.Printf("ai agent turn failed conversation=%s rounds=%d duration=%s err=tool round limit reached", convID, maxAgentToolRounds, time.Since(turnStart))
-	if err := p.SSE.send("error", sseErrorPayload{Message: "tool round limit reached"}); err != nil {
+	// Tool-call budget exhausted. Instead of failing the turn, make one final
+	// tool-less call so the model must synthesize an answer from what it has
+	// already gathered rather than dead-ending on "round limit reached".
+	log.Printf("ai agent turn rounds exhausted, forcing synthesis conversation=%s rounds=%d duration=%s", convID, maxAgentToolRounds, time.Since(turnStart))
+	messages, requestErr := boundedAgentMessages(p.SystemPrompt, historyGroups, p.UserContent, liveMessages, nil)
+	if requestErr != nil {
+		if err := p.SSE.send("error", sseErrorPayload{Message: errAIRequestTooLarge.Error()}); err != nil {
+			return err
+		}
+		return requestErr
+	}
+	messages = append(messages, ai.Message{
+		Role:    ai.RoleUser,
+		Content: "You have reached the tool-call limit for this turn. Do not request any more tools. Answer now with concrete, ready-to-apply recommendations based only on what you have already gathered above. If key information is still missing, briefly say what it is and what you would check next.",
+	})
+	events, err := p.Client.StreamTurn(ctx, ai.TurnRequest{Messages: messages, MaxTokens: maxTokens})
+	if err != nil {
+		if sseErr := p.SSE.send("error", sseErrorPayload{Message: safeAgentProviderError(err)}); sseErr != nil {
+			return sseErr
+		}
 		return err
 	}
-	if err := p.SSE.send("done", sseDonePayload{}); err != nil {
+	reasoning, text, _, usage, streamErr := drainAgentStream(events, p.SSE)
+	if streamErr != nil {
+		if sseErr := p.SSE.send("error", sseErrorPayload{Message: safeAgentProviderError(streamErr)}); sseErr != nil {
+			return sseErr
+		}
+		return streamErr
+	}
+	assistantRow, err := persistAgentMessage(ctx, p.Queries, agentMessageParams{
+		conversationID: p.ConversationID,
+		role:           "assistant",
+		content:        text,
+		crawlID:        p.Scope.CrawlID,
+		reasoning:      reasoning,
+	})
+	if err != nil {
+		if sseErr := p.SSE.send("error", sseErrorPayload{Message: "failed to save response"}); sseErr != nil {
+			return sseErr
+		}
+		return err
+	}
+	log.Printf("ai agent turn done via synthesis conversation=%s rounds=%d duration=%s usage=%+v", convID, maxAgentToolRounds, time.Since(turnStart), usage)
+	if err := p.SSE.send("done", sseDonePayload{MessageIDs: []string{assistantRow.ID.String()}}); err != nil {
 		return err
 	}
 	return nil
@@ -513,6 +594,20 @@ func boundedAgentMessages(systemPrompt string, historyGroups [][]ai.Message, use
 	fixed = append(fixed, ai.Message{Role: ai.RoleSystem, Content: systemPrompt})
 	fixed = append(fixed, ai.Message{Role: ai.RoleUser, Content: userContent})
 	fixed = append(fixed, liveMessages...)
+	// If this turn's live tool output alone overflows, stub oldest tool results
+	// first (append copied the structs, so the caller's liveMessages is left
+	// intact). Assistant rows carry the tool_calls and DeepSeek requires every
+	// tool_call to keep its matching tool result, so we only replace tool-message
+	// content in place — never drop a message or touch an assistant row — which
+	// preserves the assistant-tool_call↔tool-result pairing. We give up only if
+	// the non-trimmable skeleton (system + user + assistant tool_calls) alone
+	// still exceeds budget after every live tool result has been stubbed.
+	// liveMessages begin at index 2 (after system and user).
+	for i := 2; i < len(fixed) && agentRequestBytes(fixed, tools) > maxAgentRequestBytes; i++ {
+		if fixed[i].Role == ai.RoleTool {
+			fixed[i].Content = agentTrimmedToolStub
+		}
+	}
 	if agentRequestBytes(fixed, tools) > maxAgentRequestBytes {
 		return nil, errAIRequestTooLarge
 	}
