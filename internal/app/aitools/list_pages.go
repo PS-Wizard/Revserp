@@ -25,7 +25,7 @@ func listPagesTool() Tool {
 	return Tool{
 		Def: ai.ToolDef{
 			Name:        "list_pages",
-			Description: "List pages crawled in the current crawl, optionally filtered by a substring match on the URL. Returns url, title, and word count for up to 100 pages (default 25) plus the total matching count.",
+			Description: "List pages crawled in the current crawl, optionally filtered by a substring match on the URL. Returns url, title, and word count for up to 100 pages (default 25) plus the total matching count. Use this to DISCOVER or browse pages when you don't already have their URLs. Do NOT call it to look up pages whose URLs you were already given (e.g. the affected URLs from list_issues or from the user's request) — you already have those, and list_issues already returns each page's current field values. Never call it once per URL.",
 			Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

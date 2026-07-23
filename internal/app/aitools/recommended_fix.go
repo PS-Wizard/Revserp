@@ -15,7 +15,7 @@ func recommendedFixTool() Tool {
 	return Tool{
 		Def: ai.ToolDef{
 			Name:        "get_recommended_fix",
-			Description: "Get the deterministic, ground-truth recommended fix for one issue type found in the current crawl, grounded in an actual affected row. Treat the result as ground truth; adapt or explain it rather than inventing a fix from scratch.",
+			Description: "Get the deterministic, ground-truth recommended fix for one issue type found in the current crawl, grounded in an actual affected row. Treat the result as ground truth; adapt or explain it rather than inventing a fix from scratch. The recommended fix for an issue type is the same pattern across pages - call this ONCE per issue_type (optionally with a representative url) and apply it to the affected URLs given to you; do not call it once per URL.",
 			Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

@@ -25,6 +25,32 @@ func TestParseListIssuesArgs(t *testing.T) {
 	if _, err := parseListIssuesArgs(nil); err != nil {
 		t.Errorf("empty args should be valid, got: %v", err)
 	}
+
+	withURLs, err := parseListIssuesArgs(json.RawMessage(`{"urls":["https://example.com/a","https://example.com/b"]}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(withURLs.URLs) != 2 || withURLs.URLs[0] != "https://example.com/a" || withURLs.URLs[1] != "https://example.com/b" {
+		t.Errorf("expected urls to be parsed, got %+v", withURLs.URLs)
+	}
+}
+
+func TestParseListIssuesArgs_CapsURLs(t *testing.T) {
+	urls := make([]string, maxListIssuesURLs+10)
+	for i := range urls {
+		urls[i] = "https://example.com/p"
+	}
+	raw, err := json.Marshal(map[string]any{"urls": urls})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	parsed, err := parseListIssuesArgs(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(parsed.URLs) != maxListIssuesURLs {
+		t.Errorf("expected urls capped to %d, got %d", maxListIssuesURLs, len(parsed.URLs))
+	}
 }
 
 type fakeIssueLister struct {
@@ -67,6 +93,9 @@ func TestExecListIssues_UsesScopeIDsAndForwardsFilters(t *testing.T) {
 	if fake.gotListArg.Column3 != "seo" || fake.gotListArg.Column6 != "high" {
 		t.Errorf("expected filters to be forwarded, got %+v", fake.gotListArg)
 	}
+	if fake.gotListArg.Column8 != nil || fake.gotCountArg.Column7 != nil {
+		t.Errorf("expected empty urls to leave params unchanged, got list=%v count=%v", fake.gotListArg.Column8, fake.gotCountArg.Column7)
+	}
 
 	var output listIssuesOutput
 	if err := json.Unmarshal([]byte(result.Content), &output); err != nil {
@@ -74,6 +103,22 @@ func TestExecListIssues_UsesScopeIDsAndForwardsFilters(t *testing.T) {
 	}
 	if output.TotalMatching != 3 || len(output.Issues) != 1 {
 		t.Errorf("unexpected output: %+v", output)
+	}
+}
+
+func TestExecListIssues_ForwardsURLsFilter(t *testing.T) {
+	fake := &fakeIssueLister{}
+	urls := []string{"https://example.com/a", "https://example.com/b"}
+	if _, err := execListIssues(context.Background(), testUUID(1), testUUID(2), listIssuesArgs{IssueType: "missing_title", URLs: urls}, fake); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gotList := fake.gotListArg.Column8
+	if len(gotList) != 2 || gotList[0] != urls[0] || gotList[1] != urls[1] {
+		t.Errorf("expected urls forwarded to list params, got %+v", fake.gotListArg.Column8)
+	}
+	gotCount := fake.gotCountArg.Column7
+	if len(gotCount) != 2 || gotCount[0] != urls[0] || gotCount[1] != urls[1] {
+		t.Errorf("expected urls forwarded to count params, got %+v", fake.gotCountArg.Column7)
 	}
 }
 

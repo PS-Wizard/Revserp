@@ -143,8 +143,9 @@ WHERE ci.crawl_id = $1
   AND ($5 = '' OR ci.issue_type = $5)
   AND ($6 = '' OR ci.severity = $6)
   AND ($7 = '' OR ci.url = $7)
+  AND (coalesce(cardinality($8::text[]), 0) = 0 OR ci.url = ANY($8::text[]))
 ORDER BY ci.created_at ASC
-LIMIT $8;
+LIMIT $9;
 
 -- name: CountCrawlIssuesFilteredForUser :one
 SELECT COUNT(*)
@@ -157,4 +158,5 @@ WHERE ci.crawl_id = $1
   AND ($3 = '' OR ci.pillar = $3)
   AND ($4 = '' OR ci.bucket = $4)
   AND ($5 = '' OR ci.issue_type = $5)
-  AND ($6 = '' OR ci.severity = $6);
+  AND ($6 = '' OR ci.severity = $6)
+  AND (coalesce(cardinality($7::text[]), 0) = 0 OR ci.url = ANY($7::text[]));

@@ -13,6 +13,7 @@ import (
 const (
 	defaultListIssuesLimit = 25
 	maxListIssuesLimit     = 50
+	maxListIssuesURLs      = 25
 )
 
 var validPillars = map[string]struct{}{"seo": {}, "aeo": {}, "pagespeed": {}}
@@ -28,7 +29,7 @@ func listIssuesTool() Tool {
 	return Tool{
 		Def: ai.ToolDef{
 			Name:        "list_issues",
-			Description: "List issue rows found in the current crawl, optionally filtered by pillar, bucket, issue_type, and severity. Returns up to 50 rows (default 25) plus the total matching count.",
+			Description: "List issue rows found in the current crawl, optionally filtered by pillar, bucket, issue_type, severity, and specific page urls. Returns up to 50 rows (default 25) plus the total matching count. When helping with a specific issue type on specific pages, pass BOTH issue_type AND urls in ONE call rather than making many calls; the returned rows already include each page's current field values (message/details), so you usually do not need get_page_content.",
 			Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -36,6 +37,7 @@ func listIssuesTool() Tool {
     "bucket": {"type": "string", "description": "Restrict results to one bucket id within a pillar, e.g. serp_metadata, answerability, server_responsiveness."},
     "issue_type": {"type": "string", "description": "Restrict results to one issue type id, e.g. missing_title."},
     "severity": {"type": "string", "enum": ["high", "medium", "low"], "description": "Restrict results to one severity level."},
+    "urls": {"type": "array", "items": {"type": "string"}, "description": "Restrict to issues on these exact page URLs (max 25)."},
     "limit": {"type": "integer", "description": "Max rows to return (default 25, max 50)."}
   },
   "additionalProperties": false
@@ -52,11 +54,12 @@ func listIssuesTool() Tool {
 }
 
 type listIssuesArgs struct {
-	Pillar    string `json:"pillar"`
-	Bucket    string `json:"bucket"`
-	IssueType string `json:"issue_type"`
-	Severity  string `json:"severity"`
-	Limit     int    `json:"limit"`
+	Pillar    string   `json:"pillar"`
+	Bucket    string   `json:"bucket"`
+	IssueType string   `json:"issue_type"`
+	Severity  string   `json:"severity"`
+	URLs      []string `json:"urls"`
+	Limit     int      `json:"limit"`
 }
 
 func parseListIssuesArgs(args json.RawMessage) (listIssuesArgs, error) {
@@ -75,6 +78,9 @@ func parseListIssuesArgs(args json.RawMessage) (listIssuesArgs, error) {
 		if _, ok := validSeverities[parsed.Severity]; !ok {
 			return listIssuesArgs{}, fmt.Errorf("invalid severity %q, expected one of high, medium, low", parsed.Severity)
 		}
+	}
+	if len(parsed.URLs) > maxListIssuesURLs {
+		parsed.URLs = parsed.URLs[:maxListIssuesURLs]
 	}
 	return parsed, nil
 }
@@ -108,6 +114,7 @@ func execListIssues(ctx context.Context, crawlID pgtype.UUID, userID pgtype.UUID
 		Column4: args.Bucket,
 		Column5: args.IssueType,
 		Column6: args.Severity,
+		Column7: args.URLs,
 	})
 	if err != nil {
 		return Result{}, err
@@ -121,6 +128,7 @@ func execListIssues(ctx context.Context, crawlID pgtype.UUID, userID pgtype.UUID
 		Column5: args.IssueType,
 		Column6: args.Severity,
 		Column7: "",
+		Column8: args.URLs,
 		Limit:   limit,
 	})
 	if err != nil {

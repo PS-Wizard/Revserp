@@ -23,6 +23,7 @@ WHERE ci.crawl_id = $1
   AND ($4 = '' OR ci.bucket = $4)
   AND ($5 = '' OR ci.issue_type = $5)
   AND ($6 = '' OR ci.severity = $6)
+  AND (coalesce(cardinality($7::text[]), 0) = 0 OR ci.url = ANY($7::text[]))
 `
 
 type CountCrawlIssuesFilteredForUserParams struct {
@@ -32,6 +33,7 @@ type CountCrawlIssuesFilteredForUserParams struct {
 	Column4 interface{}
 	Column5 interface{}
 	Column6 interface{}
+	Column7 []string
 }
 
 func (q *Queries) CountCrawlIssuesFilteredForUser(ctx context.Context, arg CountCrawlIssuesFilteredForUserParams) (int64, error) {
@@ -42,6 +44,7 @@ func (q *Queries) CountCrawlIssuesFilteredForUser(ctx context.Context, arg Count
 		arg.Column4,
 		arg.Column5,
 		arg.Column6,
+		arg.Column7,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -256,8 +259,9 @@ WHERE ci.crawl_id = $1
   AND ($5 = '' OR ci.issue_type = $5)
   AND ($6 = '' OR ci.severity = $6)
   AND ($7 = '' OR ci.url = $7)
+  AND (coalesce(cardinality($8::text[]), 0) = 0 OR ci.url = ANY($8::text[]))
 ORDER BY ci.created_at ASC
-LIMIT $8
+LIMIT $9
 `
 
 type ListCrawlIssuesFilteredForUserParams struct {
@@ -268,6 +272,7 @@ type ListCrawlIssuesFilteredForUserParams struct {
 	Column5 interface{}
 	Column6 interface{}
 	Column7 interface{}
+	Column8 []string
 	Limit   int32
 }
 
@@ -294,6 +299,7 @@ func (q *Queries) ListCrawlIssuesFilteredForUser(ctx context.Context, arg ListCr
 		arg.Column5,
 		arg.Column6,
 		arg.Column7,
+		arg.Column8,
 		arg.Limit,
 	)
 	if err != nil {
