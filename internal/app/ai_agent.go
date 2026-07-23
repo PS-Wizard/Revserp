@@ -18,7 +18,10 @@ import (
 )
 
 const (
-	maxAgentToolRounds       = 8
+	// maxAgentToolRounds is a high safety backstop against a runaway loop, not a
+	// working limit — the model is free to call tools as many times as it needs.
+	// The only real per-turn cap is maxAgentPageReads (get_page_content).
+	maxAgentToolRounds       = 40
 	maxAgentReplayMessages   = 30
 	maxAgentToolReplayLength = 4000
 	// maxAgentPageReads caps get_page_content executions per turn, so a model
