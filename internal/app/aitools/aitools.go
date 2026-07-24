@@ -40,6 +40,9 @@ type Result struct {
 	Destination    string
 	ProjectID      string
 	ExportAction   *ExportAction
+	// Chart, when set, drives a "chart" SSE event that renders a visualization
+	// in the chat. It does not go back to the model (Content does).
+	Chart *ChartSpec
 }
 
 // Tool pairs a model-facing definition with its scoped executor.
@@ -91,7 +94,7 @@ type Deps struct {
 	UpdateBusinessProfile BusinessProfileUpdater
 }
 
-// NewRegistry builds the registry of all 14 tools available to the agent.
+// NewRegistry builds the registry of all 15 tools available to the agent.
 func NewRegistry(deps Deps) *Registry {
 	r := newRegistry()
 	r.register(listProjectsTool())
@@ -108,5 +111,6 @@ func NewRegistry(deps Deps) *Registry {
 	r.register(exportCrawlTool())
 	r.register(exportAuditTool())
 	r.register(navigateTool())
+	r.register(renderChartTool())
 	return r
 }

@@ -111,6 +111,11 @@ type sseExportPayload struct {
 	CrawlID   string `json:"crawl_id,omitempty"`
 }
 
+type sseChartPayload struct {
+	ID    string             `json:"id"`
+	Chart *aitools.ChartSpec `json:"chart"`
+}
+
 // storedToolCall is the JSON shape persisted in ai_messages.tool_calls for an
 // assistant row that invoked tools.
 type storedToolCall struct {
@@ -281,7 +286,7 @@ func runAgentTurn(ctx context.Context, p agentTurnParams) error {
 			}
 			messageIDs = append(messageIDs, toolRow.ID.String())
 			if succeeded {
-				if err := emitAgentToolAction(p.SSE, result); err != nil {
+				if err := emitAgentToolAction(p.SSE, call.ID, result); err != nil {
 					return err
 				}
 			}
@@ -423,8 +428,10 @@ func executeAgentTool(ctx context.Context, registry agentToolRegistry, call ai.T
 	return result, true
 }
 
-func emitAgentToolAction(sse *sseWriter, result aitools.Result) error {
+func emitAgentToolAction(sse *sseWriter, callID string, result aitools.Result) error {
 	switch {
+	case result.Chart != nil:
+		return sse.send("chart", sseChartPayload{ID: callID, Chart: result.Chart})
 	case result.ExportAction != nil:
 		action := result.ExportAction
 		return sse.send("export", sseExportPayload{Kind: action.Kind, Format: action.Format, ProjectID: action.ProjectID, CrawlID: action.CrawlID})
