@@ -9,7 +9,7 @@ import (
 
 // ProcessJob fetches and parses one crawl job.
 func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer htmlRenderer, job CrawlJob) CrawlResult {
-	fetchResult := fetcher.Fetch(ctx, job.URL)
+	fetchResult := fetcher.FetchConditional(ctx, job.URL, job.ETag, job.LastModified)
 	if fetchResult.FetchError != nil {
 		return CrawlResult{
 			Job:        job,
@@ -21,6 +21,14 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 	crawlResult := CrawlResult{
 		Job:   job,
 		Fetch: fetchResult,
+	}
+
+	// A 304 must be handled before the non-2xx skip below: the page is unchanged,
+	// not missing. Returning here skips the parse and the JS render, and the
+	// caller copies the baseline crawl's facts forward instead.
+	if fetchResult.NotModified {
+		crawlResult.NotModified = true
+		return crawlResult
 	}
 
 	// Skip processing for non-2xx responses (e.g. 429 rate-limit / challenge pages).

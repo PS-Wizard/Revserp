@@ -22,6 +22,10 @@ const overviewCacheTTL = time.Hour
 // unbounded across org+site keys. When full, the oldest entry is evicted.
 const overviewCacheMaxEntries = 500
 
+// defaultMaxResponseBytes caps response body reads when a caller does not
+// configure maxResponseBytes.
+const defaultMaxResponseBytes = 10 << 20
+
 type overviewCacheEntry struct {
 	payload   OverviewPayload
 	fetchedAt time.Time
@@ -34,6 +38,7 @@ type Service struct {
 	redirectURL      string
 	encryptionSecret string
 	httpClient       *http.Client
+	maxResponseBytes int64
 
 	overviewCacheMu sync.Mutex
 	overviewCache   map[string]overviewCacheEntry
@@ -41,7 +46,7 @@ type Service struct {
 }
 
 // NewService builds one Google OAuth and Search Console service.
-func NewService(clientID, clientSecret, redirectURL, encryptionSecret string) *Service {
+func NewService(clientID, clientSecret, redirectURL, encryptionSecret string, maxResponseBytes int64) *Service {
 	return &Service{
 		clientID:         strings.TrimSpace(clientID),
 		clientSecret:     strings.TrimSpace(clientSecret),
@@ -50,8 +55,33 @@ func NewService(clientID, clientSecret, redirectURL, encryptionSecret string) *S
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		overviewCache: make(map[string]overviewCacheEntry),
+		maxResponseBytes: maxResponseBytes,
+		overviewCache:    make(map[string]overviewCacheEntry),
 	}
+}
+
+// responseByteLimit returns the configured maximum response body size,
+// falling back to defaultMaxResponseBytes when unset.
+func (service *Service) responseByteLimit() int64 {
+	if service.maxResponseBytes > 0 {
+		return service.maxResponseBytes
+	}
+	return defaultMaxResponseBytes
+}
+
+// readLimitedBody reads response.Body up to the configured byte limit and
+// returns a clear error if the body is truncated, instead of silently
+// handing a truncated payload to the JSON decoder.
+func (service *Service) readLimitedBody(response *http.Response) ([]byte, error) {
+	maxBytes := service.responseByteLimit()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("response body exceeds %d byte limit", maxBytes)
+	}
+	return body, nil
 }
 
 // FetchOverviewCached returns a cached overview for organizationID+siteURL if one
@@ -200,7 +230,7 @@ func (service *Service) FetchSites(ctx context.Context, accessToken string) ([]S
 		return nil, fmt.Errorf("send Google sites request: %w", err)
 	}
 	defer response.Body.Close()
-	responseBody, err := io.ReadAll(response.Body)
+	responseBody, err := service.readLimitedBody(response)
 	if err != nil {
 		return nil, fmt.Errorf("read Google sites response: %w", err)
 	}
@@ -274,7 +304,7 @@ func (service *Service) postTokenRequest(ctx context.Context, payload url.Values
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
+	responseBody, err := service.readLimitedBody(response)
 	if err != nil {
 		return TokenResponse{}, fmt.Errorf("read Google token response: %w", err)
 	}
@@ -312,7 +342,7 @@ func (service *Service) querySearchAnalytics(ctx context.Context, accessToken, s
 		return nil, fmt.Errorf("send Search Analytics request: %w", err)
 	}
 	defer response.Body.Close()
-	responseBody, err := io.ReadAll(response.Body)
+	responseBody, err := service.readLimitedBody(response)
 	if err != nil {
 		return nil, fmt.Errorf("read Search Analytics response: %w", err)
 	}

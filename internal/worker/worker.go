@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -34,6 +35,8 @@ type Config struct {
 	CrawlMaxRetries      int
 	CrawlRetryBase       time.Duration
 	CrawlRetryMax        time.Duration
+	CrawlTimeout         time.Duration
+	MaxAPIResponseBytes  int64
 }
 
 // claimedCrawlRow is the minimal data the worker needs from any claim query.
@@ -96,6 +99,9 @@ func New(pool *pgxpool.Pool, cfg Config, renderer *crawler.Renderer) *Worker {
 	if cfg.CrawlPageWorkerCount <= 0 {
 		cfg.CrawlPageWorkerCount = crawler.DefaultWorkerCount
 	}
+	if cfg.CrawlTimeout <= 0 {
+		cfg.CrawlTimeout = defaultCrawlTimeout
+	}
 
 	return &Worker{
 		pool:     pool,
@@ -155,6 +161,13 @@ const staleRunningCrawlAge = 2 * time.Hour
 // so crawls orphaned by a mid-run worker crash recover within minutes
 // instead of waiting up to staleRunningCrawlAge.
 const staleRunningCrawlAgePeriodic = 15 * time.Minute
+
+// defaultCrawlTimeout bounds one crawl end-to-end. Without it a hung origin
+// (slow headers, redirect loop, stalled PSI call) holds its worker slot forever,
+// and with the default concurrency of 2 a pair of bad sites halts all crawling.
+// It must stay well under staleRunningCrawlAge so a timed-out crawl is marked
+// failed by its own worker rather than waiting to be reclaimed as orphaned.
+const defaultCrawlTimeout = 30 * time.Minute
 
 // Run starts all worker pools and scheduler until the context is canceled.
 func (w *Worker) Run(ctx context.Context) error {
@@ -222,7 +235,7 @@ func (w *Worker) runManualLoop(ctx context.Context, workerID int) {
 
 		claimed := claimedFromManual(row)
 		log.Printf("manual worker %d claimed crawl: crawl_id=%s project_id=%s source=manual", workerID, claimed.ID.String(), claimed.ProjectID.String())
-		if err := w.runCrawl(ctx, claimed); err != nil {
+		if err := w.runCrawlGuarded(ctx, claimed); err != nil {
 			log.Printf("manual worker %d crawl failed: crawl_id=%s error=%v", workerID, claimed.ID.String(), err)
 			continue
 		}
@@ -256,7 +269,7 @@ func (w *Worker) runAutoLoop(ctx context.Context, workerID int) {
 
 		claimed := claimedFromAuto(row)
 		log.Printf("auto worker %d claimed crawl: crawl_id=%s project_id=%s source=auto", workerID, claimed.ID.String(), claimed.ProjectID.String())
-		if err := w.runCrawl(ctx, claimed); err != nil {
+		if err := w.runCrawlGuarded(ctx, claimed); err != nil {
 			log.Printf("auto worker %d crawl failed: crawl_id=%s error=%v", workerID, claimed.ID.String(), err)
 			continue
 		}
@@ -393,6 +406,38 @@ func nextAutoCrawlRun(s sqlc.ProjectAutoCrawlSetting, now time.Time) time.Time {
 	return schedule.Advance(from, now, frequencyDays, hour, minute, loc)
 }
 
+// runCrawlGuarded runs one crawl under a bounded timeout and turns a panic into
+// a failed crawl instead of a dead process.
+//
+// Go terminates the whole program on an unrecovered panic in any goroutine, so
+// without this one bad page would kill the worker process and every crawl its
+// siblings were running. The persist path can panic today (mustMarshalJSON on an
+// unencodable page field), so this is a live risk rather than a theoretical one.
+// The crawl row is marked failed here so it does not sit in 'running' until the
+// stale-crawl reclaim eventually notices it.
+func (w *Worker) runCrawlGuarded(ctx context.Context, claimed claimedCrawlRow) (err error) {
+	crawlCtx, cancelTimeout := context.WithTimeout(ctx, w.cfg.CrawlTimeout)
+	defer cancelTimeout()
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+
+		log.Printf("PANIC recovered in crawl: crawl_id=%s value=%v\n%s", claimed.ID.String(), recovered, debug.Stack())
+		// Detached from ctx: the timeout may already have fired, and the status
+		// write has to land regardless.
+		finalCtx := context.WithoutCancel(ctx)
+		if failErr := crawler.NewStore(w.pool).MarkCrawlFailed(finalCtx, claimed.ID, 0, 0, 0); failErr != nil {
+			log.Printf("failed to mark panicked crawl as failed: crawl_id=%s error=%v", claimed.ID.String(), failErr)
+		}
+		err = fmt.Errorf("crawl panicked: %v", recovered)
+	}()
+
+	return w.runCrawl(crawlCtx, claimed)
+}
+
 // runCrawl executes one claimed crawl, derives backend issues, and calculates crawl scores.
 func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(claimed.BaseURL, claimed.ConfigSnapshot)
@@ -413,7 +458,8 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		cancelCrawl()
 	}()
 
-	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, w.cfg.CrawlMaxRetries, w.cfg.CrawlRetryBase, w.cfg.CrawlRetryMax)
+	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, w.cfg.CrawlMaxRetries, w.cfg.CrawlRetryBase, w.cfg.CrawlRetryMax).
+		WithMaxBodyBytes(w.cfg.MaxAPIResponseBytes)
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(w.pool)
 	issueStore := issues.NewStore(w.pool)
@@ -421,6 +467,20 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		WithRenderer(w.renderer).
 		WithStore(crawlStore).
 		WithDeferredFinalStatus()
+
+	// Incremental crawl: ask each origin whether a page changed since the last
+	// completed crawl, and copy unchanged pages forward instead of refetching and
+	// reparsing them. Any failure here degrades to a full crawl, never an error.
+	if crawlConfig.ForceFullCrawl {
+		log.Printf("incremental crawl disabled by config: crawl_id=%s", claimed.ID.String())
+	} else if baseline, baselineErr := crawlStore.LoadBaseline(crawlCtx, claimed.ProjectID, claimed.ID); baselineErr != nil {
+		log.Printf("baseline load failed, crawling unconditionally: crawl_id=%s error=%v", claimed.ID.String(), baselineErr)
+	} else if baseline != nil {
+		runner = runner.WithBaseline(baseline, crawlStore)
+		log.Printf("incremental crawl enabled: crawl_id=%s baseline_crawl_id=%s baseline_pages=%d", claimed.ID.String(), baseline.CrawlID.String(), baseline.Len())
+	} else {
+		log.Printf("no usable crawl baseline, crawling unconditionally: crawl_id=%s", claimed.ID.String())
+	}
 
 	if phaseErr := crawlStore.UpdateCrawlPhase(crawlCtx, claimed.ID, "crawling"); phaseErr != nil {
 		log.Printf("update crawl phase to crawling failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)

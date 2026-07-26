@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,11 @@ import (
 )
 
 const googlePSIEndpoint = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+
+// defaultMaxResponseBytes caps the google psi response body read. callGooglePSI
+// is a package-level function without access to *config.Config, so this is a
+// package-level const rather than a configured value.
+const defaultMaxResponseBytes = 10 << 20
 
 var googlePSIHTTPClient = &http.Client{Timeout: 90 * time.Second}
 
@@ -61,7 +67,7 @@ func (worker *Worker) enrichCrawlWithGooglePSI(ctx context.Context, crawlID pgty
 		return nil, nil
 	}
 
-	result, err := runGooglePSIMobile(ctx, apiKey, pageURL)
+	result, err := runGooglePSIMobile(ctx, apiKey, pageURL, worker.cfg.MaxAPIResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -78,13 +84,13 @@ func (worker *Worker) enrichCrawlWithGooglePSI(ctx context.Context, crawlID pgty
 	return &result, nil
 }
 
-func runGooglePSIMobile(ctx context.Context, apiKey string, pageURL string) (googlePSIStoredResult, error) {
+func runGooglePSIMobile(ctx context.Context, apiKey string, pageURL string, maxResponseBytes int64) (googlePSIStoredResult, error) {
 	psiURL, err := normalizeGooglePSIPageURL(pageURL)
 	if err != nil {
 		return googlePSIStoredResult{}, err
 	}
 
-	mobileResult, err := callGooglePSI(ctx, apiKey, psiURL, "mobile")
+	mobileResult, err := callGooglePSI(ctx, apiKey, psiURL, "mobile", maxResponseBytes)
 	if err != nil {
 		mobileResult = googlePSIDeviceResult{Success: false, Strategy: "mobile", Error: err.Error()}
 	}
@@ -96,7 +102,7 @@ func runGooglePSIMobile(ctx context.Context, apiKey string, pageURL string) (goo
 	}, nil
 }
 
-func callGooglePSI(ctx context.Context, apiKey string, pageURL string, strategy string) (googlePSIDeviceResult, error) {
+func callGooglePSI(ctx context.Context, apiKey string, pageURL string, strategy string, maxResponseBytes int64) (googlePSIDeviceResult, error) {
 	requestURL, err := buildGooglePSIURL(apiKey, pageURL, strategy)
 	if err != nil {
 		return googlePSIDeviceResult{}, err
@@ -113,8 +119,11 @@ func callGooglePSI(ctx context.Context, apiKey string, pageURL string, strategy 
 	}
 	defer response.Body.Close()
 
+	if maxResponseBytes <= 0 {
+		maxResponseBytes = defaultMaxResponseBytes
+	}
 	var apiResponse googlePSIAPIResponse
-	if err := json.NewDecoder(response.Body).Decode(&apiResponse); err != nil {
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes)).Decode(&apiResponse); err != nil {
 		return googlePSIDeviceResult{}, fmt.Errorf("decode google psi response: %w", err)
 	}
 

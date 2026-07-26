@@ -11,6 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const copyCrawlLinksFromBaseline = `-- name: CopyCrawlLinksFromBaseline :execrows
+INSERT INTO crawl_links (
+    crawl_id,
+    source_url,
+    target_url,
+    anchor_text,
+    is_internal,
+    target_status,
+    nofollow
+)
+SELECT
+    $1,
+    source_url,
+    target_url,
+    anchor_text,
+    is_internal,
+    target_status,
+    nofollow
+FROM crawl_links
+WHERE crawl_links.crawl_id = $2
+  AND crawl_links.source_url = $3
+ON CONFLICT DO NOTHING
+`
+
+type CopyCrawlLinksFromBaselineParams struct {
+	CrawlID         pgtype.UUID
+	BaselineCrawlID pgtype.UUID
+	SourceUrl       string
+}
+
+func (q *Queries) CopyCrawlLinksFromBaseline(ctx context.Context, arg CopyCrawlLinksFromBaselineParams) (int64, error) {
+	result, err := q.db.Exec(ctx, copyCrawlLinksFromBaseline, arg.CrawlID, arg.BaselineCrawlID, arg.SourceUrl)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countCrawlLinksForCrawlByUser = `-- name: CountCrawlLinksForCrawlByUser :one
 SELECT COUNT(*)
 FROM crawl_links AS cl
@@ -232,6 +270,38 @@ func (q *Queries) ListInternalCrawlLinksForCrawl(ctx context.Context, crawlID pg
 			&i.Nofollow,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInternalLinkPairsForCrawl = `-- name: ListInternalLinkPairsForCrawl :many
+SELECT source_url, target_url
+FROM crawl_links
+WHERE crawl_id = $1
+  AND is_internal = TRUE
+`
+
+type ListInternalLinkPairsForCrawlRow struct {
+	SourceUrl string
+	TargetUrl string
+}
+
+func (q *Queries) ListInternalLinkPairsForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListInternalLinkPairsForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listInternalLinkPairsForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListInternalLinkPairsForCrawlRow
+	for rows.Next() {
+		var i ListInternalLinkPairsForCrawlRow
+		if err := rows.Scan(&i.SourceUrl, &i.TargetUrl); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

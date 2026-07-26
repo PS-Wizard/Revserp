@@ -173,6 +173,8 @@ type CrawlPage struct {
 	CreatedAt               pgtype.Timestamptz
 	VisibleText             pgtype.Text
 	ContentSha256           pgtype.Text
+	Etag                    pgtype.Text
+	LastModified            pgtype.Text
 }
 
 type CrawlScoreBreakdown struct {

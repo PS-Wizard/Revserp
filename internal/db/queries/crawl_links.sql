@@ -83,3 +83,32 @@ FROM crawl_links
 WHERE crawl_id = $1
   AND is_internal = TRUE
 ORDER BY created_at ASC;
+
+-- name: CopyCrawlLinksFromBaseline :execrows
+INSERT INTO crawl_links (
+    crawl_id,
+    source_url,
+    target_url,
+    anchor_text,
+    is_internal,
+    target_status,
+    nofollow
+)
+SELECT
+    sqlc.arg(crawl_id),
+    source_url,
+    target_url,
+    anchor_text,
+    is_internal,
+    target_status,
+    nofollow
+FROM crawl_links
+WHERE crawl_links.crawl_id = sqlc.arg(baseline_crawl_id)
+  AND crawl_links.source_url = sqlc.arg(source_url)
+ON CONFLICT DO NOTHING;
+
+-- name: ListInternalLinkPairsForCrawl :many
+SELECT source_url, target_url
+FROM crawl_links
+WHERE crawl_id = sqlc.arg(crawl_id)
+  AND is_internal = TRUE;

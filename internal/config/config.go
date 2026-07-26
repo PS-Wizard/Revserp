@@ -53,6 +53,8 @@ type Config struct {
 	CrawlMaxRetries             int
 	CrawlRetryBase              time.Duration
 	CrawlRetryMax               time.Duration
+	CrawlTimeout                time.Duration
+	MaxAPIResponseBytes         int64
 }
 
 // Load reads configuration from the environment.
@@ -101,6 +103,8 @@ func Load() Config {
 		CrawlMaxRetries:             getEnvInt("CRAWL_MAX_RETRIES", 3),
 		CrawlRetryBase:              time.Duration(getEnvInt("CRAWL_RETRY_BASE_MS", 1000)) * time.Millisecond,
 		CrawlRetryMax:               time.Duration(getEnvInt("CRAWL_RETRY_MAX_MS", 15000)) * time.Millisecond,
+		CrawlTimeout:                getEnvDuration("CRAWL_TIMEOUT", 30*time.Minute),
+		MaxAPIResponseBytes:         getEnvInt64("MAX_API_RESPONSE_BYTES", 10<<20),
 	}
 }
 
@@ -130,6 +134,21 @@ func getEnvInt(key string, defaultValue int) int {
 	}
 
 	parsedValue, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+
+	return parsedValue
+}
+
+// getEnvInt64 returns an int64 environment variable or a default value.
+func getEnvInt64(key string, defaultValue int64) int64 {
+	value := getEnv(key, "")
+	if value == "" {
+		return defaultValue
+	}
+
+	parsedValue, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		return defaultValue
 	}
