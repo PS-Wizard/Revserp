@@ -38,7 +38,7 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		cfg.SessionTTL,
 		cfg.AppEnv == "production",
 	)
-	gscService := gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret)
+	gscService := gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes)
 
 	app := &App{
 		Config:         cfg,

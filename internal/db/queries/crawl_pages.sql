@@ -32,7 +32,9 @@ INSERT INTO crawl_pages (
     h3_headings,
     heading_outline,
     og_tags,
-    json_ld
+    json_ld,
+    etag,
+    last_modified
 ) VALUES (
     $1,
     $2,
@@ -66,9 +68,11 @@ INSERT INTO crawl_pages (
     $30,
     $31,
     $32,
-    $33
+    $33,
+    $34,
+    $35
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at;
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, etag, last_modified, created_at;
 
 -- name: GetCrawlPageByIDForUser :one
 SELECT
@@ -296,3 +300,98 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE cp.crawl_id = $1
   AND om.user_id = $2
   AND ($3 = '' OR cp.url ILIKE '%' || $3 || '%');
+
+-- name: GetLatestCompletedCrawlIDForProject :one
+SELECT id
+FROM crawls
+WHERE project_id = sqlc.arg(project_id)
+  AND status = 'completed'
+  AND id <> sqlc.arg(exclude_crawl_id)
+ORDER BY completed_at DESC NULLS LAST
+LIMIT 1;
+
+-- name: ListPageValidatorsForCrawl :many
+SELECT url, etag, last_modified
+FROM crawl_pages
+WHERE crawl_id = sqlc.arg(crawl_id)
+  AND status_code BETWEEN 200 AND 299
+  AND (etag IS NOT NULL OR last_modified IS NOT NULL);
+
+-- name: CopyCrawlPageFromBaseline :execrows
+INSERT INTO crawl_pages (
+    crawl_id,
+    url,
+    status_code,
+    content_type,
+    size_bytes,
+    is_internal,
+    depth,
+    title,
+    meta_description,
+    h1,
+    h1_count,
+    h2_count,
+    h3_count,
+    word_count,
+    visible_text,
+    content_sha256,
+    author,
+    canonical_url,
+    lang,
+    viewport,
+    robots,
+    image_count,
+    images_without_alt_count,
+    images_without_dimensions,
+    external_links,
+    internal_links,
+    response_time_ms,
+    javascript_rendered,
+    h2_headings,
+    h3_headings,
+    heading_outline,
+    og_tags,
+    json_ld,
+    etag,
+    last_modified
+)
+SELECT
+    sqlc.arg(crawl_id),
+    url,
+    status_code,
+    content_type,
+    size_bytes,
+    is_internal,
+    sqlc.arg(depth),
+    title,
+    meta_description,
+    h1,
+    h1_count,
+    h2_count,
+    h3_count,
+    word_count,
+    visible_text,
+    content_sha256,
+    author,
+    canonical_url,
+    lang,
+    viewport,
+    robots,
+    image_count,
+    images_without_alt_count,
+    images_without_dimensions,
+    external_links,
+    internal_links,
+    response_time_ms,
+    javascript_rendered,
+    h2_headings,
+    h3_headings,
+    heading_outline,
+    og_tags,
+    json_ld,
+    COALESCE(sqlc.narg(fresh_etag)::text, crawl_pages.etag),
+    last_modified
+FROM crawl_pages
+WHERE crawl_pages.crawl_id = sqlc.arg(baseline_crawl_id)
+  AND crawl_pages.url = sqlc.arg(url)
+ON CONFLICT (crawl_id, url) DO NOTHING;

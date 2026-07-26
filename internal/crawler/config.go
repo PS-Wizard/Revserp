@@ -22,14 +22,18 @@ type CrawlConfigSnapshot struct {
 	FetchTimeoutSeconds int  `json:"fetch_timeout_seconds"`
 	RequestDelayMs      *int `json:"request_delay_ms,omitempty"`
 	RequestJitterMs     *int `json:"request_jitter_ms,omitempty"`
+	// ForceFullCrawl disables conditional requests for this crawl, refetching and
+	// reparsing every page even when the origin reports it unchanged.
+	ForceFullCrawl bool `json:"force_full_crawl,omitempty"`
 }
 
 type crawlConfigSnapshotInput struct {
-	MaxDepth            *int `json:"max_depth"`
-	MaxPages            *int `json:"max_pages"`
-	FetchTimeoutSeconds *int `json:"fetch_timeout_seconds"`
-	RequestDelayMs      *int `json:"request_delay_ms"`
-	RequestJitterMs     *int `json:"request_jitter_ms"`
+	MaxDepth            *int  `json:"max_depth"`
+	MaxPages            *int  `json:"max_pages"`
+	FetchTimeoutSeconds *int  `json:"fetch_timeout_seconds"`
+	RequestDelayMs      *int  `json:"request_delay_ms"`
+	RequestJitterMs     *int  `json:"request_jitter_ms"`
+	ForceFullCrawl      *bool `json:"force_full_crawl"`
 }
 
 // NormalizeConfigSnapshot resolves defaults and validates one crawl config snapshot.
@@ -79,6 +83,10 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 			}
 			resolvedSnapshot.RequestJitterMs = input.RequestJitterMs
 		}
+
+		if input.ForceFullCrawl != nil {
+			resolvedSnapshot.ForceFullCrawl = *input.ForceFullCrawl
+		}
 	}
 
 	normalizedSnapshot, err := json.Marshal(resolvedSnapshot)
@@ -122,12 +130,13 @@ func ConfigFromBaseURLAndSnapshot(baseURL string, rawConfigSnapshot []byte) (Cra
 	}
 
 	return CrawlerConfig{
-		AllowedHost:   normalizeHostForScope(parsedBaseURL.Hostname()),
-		MaxDepth:      configSnapshot.MaxDepth,
-		MaxPages:      maxPages,
-		FetchTimeout:  time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
-		RequestDelay:  requestDelay,
-		RequestJitter: requestJitter,
-		UserAgent:     defaultUserAgent,
+		AllowedHost:    normalizeHostForScope(parsedBaseURL.Hostname()),
+		MaxDepth:       configSnapshot.MaxDepth,
+		MaxPages:       maxPages,
+		FetchTimeout:   time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
+		RequestDelay:   requestDelay,
+		RequestJitter:  requestJitter,
+		UserAgent:      defaultUserAgent,
+		ForceFullCrawl: configSnapshot.ForceFullCrawl,
 	}, nil
 }

@@ -23,9 +23,15 @@ type Fetcher struct {
 	maxRetries        int
 	retryBase         time.Duration
 	retryMax          time.Duration
+	maxBodyBytes      int64
 	cooldownMu        sync.Mutex
 	hostCooldownUntil map[string]time.Time
 }
+
+// defaultMaxBodyBytes caps a single fetched response body. Without a cap a
+// multi-GB response (or a decompression bomb) exhausts the worker's heap; the
+// fetch timeout bounds wall-clock, not bytes.
+const defaultMaxBodyBytes int64 = 10 << 20
 
 // NewFetcher builds a fetcher with the provided settings.
 // maxRetries is the number of retries after the first attempt (total attempts = 1 + maxRetries).
@@ -62,8 +68,19 @@ func NewFetcher(fetchTimeout time.Duration, userAgent string, maxRetries int, re
 		maxRetries:        maxRetries,
 		retryBase:         retryBase,
 		retryMax:          retryMax,
+		maxBodyBytes:      defaultMaxBodyBytes,
 		hostCooldownUntil: make(map[string]time.Time),
 	}
+}
+
+// WithMaxBodyBytes overrides the per-response body cap. A non-positive value
+// restores the default.
+func (fetcher *Fetcher) WithMaxBodyBytes(maxBodyBytes int64) *Fetcher {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultMaxBodyBytes
+	}
+	fetcher.maxBodyBytes = maxBodyBytes
+	return fetcher
 }
 
 // ssrfSafeDialControl rejects the dial before the connection is established if
@@ -98,13 +115,26 @@ func checkRedirectSSRFSafe(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// Fetch requests one URL, retrying on 429/503 responses with exponential
-// backoff and a shared per-host cooldown. Network errors are not retried.
+// Fetch requests one URL unconditionally, retrying on 429/503 responses with
+// exponential backoff and a shared per-host cooldown. Network errors are not
+// retried.
 func (fetcher *Fetcher) Fetch(ctx context.Context, targetURL string) FetchResult {
+	return fetcher.FetchConditional(ctx, targetURL, "", "")
+}
+
+// FetchConditional behaves like Fetch but sends the supplied cache validators
+// so an unchanged resource can answer 304 with no body.
+//
+// Only one validator is sent. RFC 9110 requires a recipient to ignore
+// If-Modified-Since whenever If-None-Match is present, so sending a placeholder
+// ETag would suppress the Last-Modified path entirely on the origins that offer
+// only Last-Modified — which is most of them. ETag wins when both are known
+// because entity-tag comparison is exact, where date comparison is not.
+func (fetcher *Fetcher) FetchConditional(ctx context.Context, targetURL string, etag string, lastModified string) FetchResult {
 	parsed, err := url.Parse(targetURL)
 	if err != nil || parsed.Host == "" {
 		// Unparseable URL: attempt once and return whatever we get.
-		return fetcher.doFetch(ctx, targetURL)
+		return fetcher.doFetch(ctx, targetURL, etag, lastModified)
 	}
 	host := parsed.Hostname()
 
@@ -116,7 +146,7 @@ func (fetcher *Fetcher) Fetch(ctx context.Context, targetURL string) FetchResult
 			}
 		}
 
-		result := fetcher.doFetch(ctx, targetURL)
+		result := fetcher.doFetch(ctx, targetURL, etag, lastModified)
 
 		// Network errors are not retried — they indicate a connectivity problem,
 		// not a server-side rate limit.
@@ -147,7 +177,7 @@ func (fetcher *Fetcher) Fetch(ctx context.Context, targetURL string) FetchResult
 // doFetch performs a single HTTP GET and captures the full response.
 // The Retry-After header value is preserved on FetchResult so the retry loop
 // can honour explicit server-provided delays.
-func (fetcher *Fetcher) doFetch(ctx context.Context, targetURL string) FetchResult {
+func (fetcher *Fetcher) doFetch(ctx context.Context, targetURL string, etag string, lastModified string) FetchResult {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return FetchResult{FetchError: fmt.Errorf("build request: %w", err)}
@@ -157,6 +187,17 @@ func (fetcher *Fetcher) doFetch(ctx context.Context, targetURL string) FetchResu
 		request.Header.Set("User-Agent", fetcher.userAgent)
 	}
 
+	// Validators are echoed back byte-for-byte as the origin sent them. They are
+	// opaque tokens: parsing and reformatting an HTTP-date is the classic way to
+	// produce a string the origin no longer recognizes, which silently costs the
+	// 304 and gains nothing.
+	switch {
+	case etag != "":
+		request.Header.Set("If-None-Match", etag)
+	case lastModified != "":
+		request.Header.Set("If-Modified-Since", lastModified)
+	}
+
 	startedAt := time.Now()
 	response, err := fetcher.httpClient.Do(request)
 	if err != nil {
@@ -164,9 +205,31 @@ func (fetcher *Fetcher) doFetch(ctx context.Context, targetURL string) FetchResu
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
+	// 304 carries no body by definition, and the caller must not treat it as a
+	// normal non-2xx skip — the page exists and is merely unchanged.
+	if response.StatusCode == http.StatusNotModified {
+		return FetchResult{
+			FinalURL:     response.Request.URL.String(),
+			StatusCode:   response.StatusCode,
+			ETag:         response.Header.Get("ETag"),
+			LastModified: response.Header.Get("Last-Modified"),
+			NotModified:  true,
+			ResponseTime: time.Since(startedAt),
+		}
+	}
+
+	maxBodyBytes := fetcher.maxBodyBytes
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultMaxBodyBytes
+	}
+	// Read one byte past the cap so an oversized body is detected rather than
+	// silently truncated into a half-parsed page.
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxBodyBytes+1))
 	if err != nil {
 		return FetchResult{FetchError: fmt.Errorf("read response body: %w", err)}
+	}
+	if int64(len(responseBody)) > maxBodyBytes {
+		return FetchResult{FetchError: fmt.Errorf("response body for %q exceeds %d byte limit", targetURL, maxBodyBytes)}
 	}
 
 	return FetchResult{
@@ -174,6 +237,8 @@ func (fetcher *Fetcher) doFetch(ctx context.Context, targetURL string) FetchResu
 		StatusCode:   response.StatusCode,
 		ContentType:  response.Header.Get("Content-Type"),
 		RetryAfter:   response.Header.Get("Retry-After"),
+		ETag:         response.Header.Get("ETag"),
+		LastModified: response.Header.Get("Last-Modified"),
 		Body:         responseBody,
 		ResponseTime: time.Since(startedAt),
 		ResponseSize: len(responseBody),

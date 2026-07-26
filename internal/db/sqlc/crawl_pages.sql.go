@@ -30,6 +30,108 @@ func (q *Queries) BulkUpdateCrawlPageContentFingerprints(ctx context.Context, ar
 	return err
 }
 
+const copyCrawlPageFromBaseline = `-- name: CopyCrawlPageFromBaseline :execrows
+INSERT INTO crawl_pages (
+    crawl_id,
+    url,
+    status_code,
+    content_type,
+    size_bytes,
+    is_internal,
+    depth,
+    title,
+    meta_description,
+    h1,
+    h1_count,
+    h2_count,
+    h3_count,
+    word_count,
+    visible_text,
+    content_sha256,
+    author,
+    canonical_url,
+    lang,
+    viewport,
+    robots,
+    image_count,
+    images_without_alt_count,
+    images_without_dimensions,
+    external_links,
+    internal_links,
+    response_time_ms,
+    javascript_rendered,
+    h2_headings,
+    h3_headings,
+    heading_outline,
+    og_tags,
+    json_ld,
+    etag,
+    last_modified
+)
+SELECT
+    $1,
+    url,
+    status_code,
+    content_type,
+    size_bytes,
+    is_internal,
+    $2,
+    title,
+    meta_description,
+    h1,
+    h1_count,
+    h2_count,
+    h3_count,
+    word_count,
+    visible_text,
+    content_sha256,
+    author,
+    canonical_url,
+    lang,
+    viewport,
+    robots,
+    image_count,
+    images_without_alt_count,
+    images_without_dimensions,
+    external_links,
+    internal_links,
+    response_time_ms,
+    javascript_rendered,
+    h2_headings,
+    h3_headings,
+    heading_outline,
+    og_tags,
+    json_ld,
+    COALESCE($3::text, crawl_pages.etag),
+    last_modified
+FROM crawl_pages
+WHERE crawl_pages.crawl_id = $4
+  AND crawl_pages.url = $5
+ON CONFLICT (crawl_id, url) DO NOTHING
+`
+
+type CopyCrawlPageFromBaselineParams struct {
+	CrawlID         pgtype.UUID
+	Depth           pgtype.Int4
+	FreshEtag       pgtype.Text
+	BaselineCrawlID pgtype.UUID
+	Url             string
+}
+
+func (q *Queries) CopyCrawlPageFromBaseline(ctx context.Context, arg CopyCrawlPageFromBaselineParams) (int64, error) {
+	result, err := q.db.Exec(ctx, copyCrawlPageFromBaseline,
+		arg.CrawlID,
+		arg.Depth,
+		arg.FreshEtag,
+		arg.BaselineCrawlID,
+		arg.Url,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countCrawlPagesFilteredForUser = `-- name: CountCrawlPagesFilteredForUser :one
 SELECT COUNT(*)
 FROM crawl_pages AS cp
@@ -110,7 +212,9 @@ INSERT INTO crawl_pages (
     h3_headings,
     heading_outline,
     og_tags,
-    json_ld
+    json_ld,
+    etag,
+    last_modified
 ) VALUES (
     $1,
     $2,
@@ -144,9 +248,11 @@ INSERT INTO crawl_pages (
     $30,
     $31,
     $32,
-    $33
+    $33,
+    $34,
+    $35
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, created_at
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, etag, last_modified, created_at
 `
 
 type CreateCrawlPageParams struct {
@@ -183,6 +289,8 @@ type CreateCrawlPageParams struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	Etag                    pgtype.Text
+	LastModified            pgtype.Text
 }
 
 type CreateCrawlPageRow struct {
@@ -220,6 +328,8 @@ type CreateCrawlPageRow struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	Etag                    pgtype.Text
+	LastModified            pgtype.Text
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -258,6 +368,8 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.HeadingOutline,
 		arg.OgTags,
 		arg.JsonLd,
+		arg.Etag,
+		arg.LastModified,
 	)
 	var i CreateCrawlPageRow
 	err := row.Scan(
@@ -295,6 +407,8 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		&i.HeadingOutline,
 		&i.OgTags,
 		&i.JsonLd,
+		&i.Etag,
+		&i.LastModified,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -564,6 +678,28 @@ func (q *Queries) GetCrawlPageByURLForUser(ctx context.Context, arg GetCrawlPage
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getLatestCompletedCrawlIDForProject = `-- name: GetLatestCompletedCrawlIDForProject :one
+SELECT id
+FROM crawls
+WHERE project_id = $1
+  AND status = 'completed'
+  AND id <> $2
+ORDER BY completed_at DESC NULLS LAST
+LIMIT 1
+`
+
+type GetLatestCompletedCrawlIDForProjectParams struct {
+	ProjectID      pgtype.UUID
+	ExcludeCrawlID pgtype.UUID
+}
+
+func (q *Queries) GetLatestCompletedCrawlIDForProject(ctx context.Context, arg GetLatestCompletedCrawlIDForProjectParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLatestCompletedCrawlIDForProject, arg.ProjectID, arg.ExcludeCrawlID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const listCrawlPagesFilteredForUser = `-- name: ListCrawlPagesFilteredForUser :many
@@ -900,6 +1036,40 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 			&i.JsonLd,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPageValidatorsForCrawl = `-- name: ListPageValidatorsForCrawl :many
+SELECT url, etag, last_modified
+FROM crawl_pages
+WHERE crawl_id = $1
+  AND status_code BETWEEN 200 AND 299
+  AND (etag IS NOT NULL OR last_modified IS NOT NULL)
+`
+
+type ListPageValidatorsForCrawlRow struct {
+	Url          string
+	Etag         pgtype.Text
+	LastModified pgtype.Text
+}
+
+func (q *Queries) ListPageValidatorsForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListPageValidatorsForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listPageValidatorsForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPageValidatorsForCrawlRow
+	for rows.Next() {
+		var i ListPageValidatorsForCrawlRow
+		if err := rows.Scan(&i.Url, &i.Etag, &i.LastModified); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
