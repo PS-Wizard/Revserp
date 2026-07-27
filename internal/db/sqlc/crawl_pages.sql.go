@@ -680,6 +680,64 @@ func (q *Queries) GetCrawlPageByURLForUser(ctx context.Context, arg GetCrawlPage
 	return i, err
 }
 
+const getCrawlPageIssueHistogramForUser = `-- name: GetCrawlPageIssueHistogramForUser :many
+WITH scoreable_pages AS (
+    SELECT cp.id
+    FROM crawl_pages AS cp
+    INNER JOIN crawls AS c ON c.id = cp.crawl_id
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE cp.crawl_id = $1
+      AND om.user_id = $2
+      AND (cp.content_type IS NULL OR cp.content_type = '' OR cp.content_type ILIKE '%text/html%')
+),
+page_issue_counts AS (
+    SELECT sp.id, COUNT(ci.id) AS issue_count
+    FROM scoreable_pages AS sp
+    LEFT JOIN crawl_issues AS ci ON ci.crawl_page_id = sp.id
+    GROUP BY sp.id
+)
+SELECT
+    LEAST(issue_count, 20)::int AS issue_count,
+    COUNT(*)::bigint AS page_count
+FROM page_issue_counts
+GROUP BY 1
+ORDER BY 1
+`
+
+type GetCrawlPageIssueHistogramForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+}
+
+type GetCrawlPageIssueHistogramForUserRow struct {
+	IssueCount int32
+	PageCount  int64
+}
+
+// Distribution of scoreable pages by how many issues each carries, capped at 20+.
+// Mirrors the scoreable-content-type filter used by crawl scoring so the totals
+// agree with score_breakdown.total_scored_pages.
+func (q *Queries) GetCrawlPageIssueHistogramForUser(ctx context.Context, arg GetCrawlPageIssueHistogramForUserParams) ([]GetCrawlPageIssueHistogramForUserRow, error) {
+	rows, err := q.db.Query(ctx, getCrawlPageIssueHistogramForUser, arg.CrawlID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetCrawlPageIssueHistogramForUserRow
+	for rows.Next() {
+		var i GetCrawlPageIssueHistogramForUserRow
+		if err := rows.Scan(&i.IssueCount, &i.PageCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getLatestCompletedCrawlIDForProject = `-- name: GetLatestCompletedCrawlIDForProject :one
 SELECT id
 FROM crawls
