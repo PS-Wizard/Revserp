@@ -156,23 +156,45 @@ const schedulerAdvisoryLockID = 1748290342
 // reset on startup, which would kill another replica's in-flight crawl.
 const staleRunningCrawlAge = 2 * time.Hour
 
-// staleRunningCrawlAgePeriodic is the shorter cutoff used by the recurring
-// scheduler-tick reclaim (as opposed to the once-at-startup reclaim above),
-// so crawls orphaned by a mid-run worker crash recover within minutes
-// instead of waiting up to staleRunningCrawlAge.
-const staleRunningCrawlAgePeriodic = 15 * time.Minute
+// staleRunningCrawlGrace pads a reclaim cutoff past a crawl's own hard timeout.
+//
+// Both sweeps must only ever catch crawls whose worker died without writing a
+// terminal status. Since the heartbeat was removed there is no liveness signal,
+// so "orphaned" can only be inferred from age — and a crawl still inside its
+// CrawlTimeout is legitimately running, not orphaned. The recurring sweep
+// previously used a flat 15 minutes, which is *below* the 30-minute default
+// timeout, so any crawl running longer than 15 minutes was marked failed while
+// its worker was still crawling it. Deriving the cutoff from CrawlTimeout keeps
+// that invariant true even when CRAWL_TIMEOUT is overridden.
+//
+// The cost is detection latency: a dead worker's crawl is not reclaimed until
+// CrawlTimeout elapses. Restoring a heartbeat is the only way to detect a dead
+// worker sooner without risking a live crawl.
+const staleRunningCrawlGrace = 5 * time.Minute
 
 // defaultCrawlTimeout bounds one crawl end-to-end. Without it a hung origin
 // (slow headers, redirect loop, stalled PSI call) holds its worker slot forever,
 // and with the default concurrency of 2 a pair of bad sites halts all crawling.
-// It must stay well under staleRunningCrawlAge so a timed-out crawl is marked
-// failed by its own worker rather than waiting to be reclaimed as orphaned.
+// It must stay under every reclaim cutoff so a timed-out crawl is marked failed
+// by its own worker rather than reclaimed as orphaned; reclaimCutoff enforces
+// that rather than leaving it to two constants drifting apart.
 const defaultCrawlTimeout = 30 * time.Minute
+
+// reclaimCutoff returns the age past which a 'running' crawl is treated as
+// orphaned, never earlier than the crawl's own timeout plus grace. floor keeps
+// the once-at-startup sweep as conservative as it has always been.
+func (w *Worker) reclaimCutoff(floor time.Duration) time.Duration {
+	cutoff := w.cfg.CrawlTimeout + staleRunningCrawlGrace
+	if cutoff < floor {
+		return floor
+	}
+	return cutoff
+}
 
 // Run starts all worker pools and scheduler until the context is canceled.
 func (w *Worker) Run(ctx context.Context) error {
 	if err := w.queries.ReclaimStaleRunningCrawls(ctx, pgtype.Timestamptz{
-		Time:  time.Now().UTC().Add(-staleRunningCrawlAge),
+		Time:  time.Now().UTC().Add(-w.reclaimCutoff(staleRunningCrawlAge)),
 		Valid: true,
 	}); err != nil {
 		log.Printf("failed to reclaim stale running crawls: %v", err)
@@ -291,7 +313,7 @@ func (w *Worker) runScheduler(ctx context.Context) {
 		}
 
 		if err := w.queries.ReclaimStaleRunningCrawls(ctx, pgtype.Timestamptz{
-			Time:  time.Now().UTC().Add(-staleRunningCrawlAgePeriodic),
+			Time:  time.Now().UTC().Add(-w.reclaimCutoff(0)),
 			Valid: true,
 		}); err != nil {
 			log.Printf("periodic reclaim of stale running crawls failed: %v", err)
