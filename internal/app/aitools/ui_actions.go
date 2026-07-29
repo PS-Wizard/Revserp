@@ -24,7 +24,7 @@ func navigateTool() Tool {
 	return Tool{
 		Def: ai.ToolDef{
 			Name:        "navigate",
-			Description: "Navigate within Revserp to an audit section, Search Console, or Visibility. Use site_graph for the sitemap/site graph.",
+			Description: "Navigate within Revserp to an audit section, Search Console, or Visibility. Use site_graph for the sitemap/site graph. This cannot open the comparison view — for a competitor analysis or a comparison against another project, use compare_projects instead.",
 			Schema:      json.RawMessage(`{"type":"object","properties":{"destination":{"type":"string","enum":["audit_summary","audit_seo","audit_aeo","audit_pagespeed","site_graph","search_console","visibility"]}},"required":["destination"],"additionalProperties":false}`),
 		},
 		Execute: func(_ context.Context, args json.RawMessage, _ Scope) (Result, error) {

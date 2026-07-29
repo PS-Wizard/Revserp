@@ -39,7 +39,11 @@ type Result struct {
 	CrawlProjectID string
 	Destination    string
 	ProjectID      string
-	ExportAction   *ExportAction
+	// CompareProjectID/CompareCrawlID together drive a "compare_started" action,
+	// opening the cross-project comparison view against that project's crawl.
+	CompareProjectID string
+	CompareCrawlID   string
+	ExportAction     *ExportAction
 	// Chart, when set, drives a "chart" SSE event that renders a visualization
 	// in the chat. It does not go back to the model (Content does).
 	Chart *ChartSpec
@@ -94,7 +98,7 @@ type Deps struct {
 	UpdateBusinessProfile BusinessProfileUpdater
 }
 
-// NewRegistry builds the registry of all 15 tools available to the agent.
+// NewRegistry builds the registry of all 16 tools available to the agent.
 func NewRegistry(deps Deps) *Registry {
 	r := newRegistry()
 	r.register(listProjectsTool())
@@ -111,6 +115,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.register(exportCrawlTool())
 	r.register(exportAuditTool())
 	r.register(navigateTool())
+	r.register(compareProjectsTool())
 	r.register(renderChartTool())
 	return r
 }

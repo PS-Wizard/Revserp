@@ -104,6 +104,11 @@ type sseProjectSwitchedPayload struct {
 	ProjectID string `json:"project_id"`
 }
 
+type sseCompareStartedPayload struct {
+	ProjectID string `json:"project_id"`
+	CrawlID   string `json:"crawl_id"`
+}
+
 type sseExportPayload struct {
 	Kind      string `json:"kind"`
 	Format    string `json:"format"`
@@ -437,6 +442,8 @@ func emitAgentToolAction(sse *sseWriter, callID string, result aitools.Result) e
 		return sse.send("export", sseExportPayload{Kind: action.Kind, Format: action.Format, ProjectID: action.ProjectID, CrawlID: action.CrawlID})
 	case result.CrawlID != "" && result.CrawlProjectID != "":
 		return sse.send("crawl_started", map[string]string{"id": result.CrawlID, "project_id": result.CrawlProjectID})
+	case result.CompareProjectID != "" && result.CompareCrawlID != "":
+		return sse.send("compare_started", sseCompareStartedPayload{ProjectID: result.CompareProjectID, CrawlID: result.CompareCrawlID})
 	case result.Destination != "":
 		return sse.send("navigate", sseNavigatePayload{Destination: result.Destination})
 	case result.ProjectID != "":
