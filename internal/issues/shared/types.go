@@ -31,6 +31,18 @@ type PageFact struct {
 	JSONLD                  []byte
 	HeadingOutline          []byte
 	ContentSHA256           string
+	// Soft404 marks a page that answered 2xx while being the site's "not found"
+	// response. FetchError is non-empty when the page could not be fetched at all.
+	// Either one, like a status of 400 or above, makes the page unhealthy: it has
+	// no real content, so content issues derived from it would be noise.
+	Soft404    bool
+	FetchError string
+}
+
+// IsHealthy reports whether a page has real content worth deriving content
+// issues from. An unhealthy page still gets its own status issue.
+func (pageFact PageFact) IsHealthy() bool {
+	return pageFact.StatusCode < 400 && !pageFact.Soft404 && pageFact.FetchError == ""
 }
 
 // LinkFact holds the persisted internal link fields used for issue derivation.
@@ -62,6 +74,8 @@ type CrawlPageSignal struct {
 	SizeBytes      int32
 	OGTags         []byte
 	JSONLD         []byte
+	Soft404        bool
+	FetchError     string
 }
 
 // CrawlIssueSignal holds the persisted issue fields used for crawl scoring.

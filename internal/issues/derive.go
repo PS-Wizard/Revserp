@@ -17,12 +17,21 @@ import (
 func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []shared.DerivedIssue {
 	var derivedIssues []shared.DerivedIssue
 	scoreablePageFacts := make([]shared.PageFact, 0, len(pageFacts))
+	brokenPageFacts := make([]shared.PageFact, 0)
 	for _, pageFact := range pageFacts {
 		if !shared.IsScoreableContentType(pageFact.ContentType) {
 			continue
 		}
+		// A broken page reports only that it is broken. Passing it to the content
+		// rules would turn one problem into a handful of missing-metadata issues,
+		// and the link-target rules already attribute it to the pages linking here.
+		if !pageFact.IsHealthy() {
+			brokenPageFacts = append(brokenPageFacts, pageFact)
+			continue
+		}
 		scoreablePageFacts = append(scoreablePageFacts, pageFact)
 	}
+	derivedIssues = append(derivedIssues, seo.DeriveBrokenPageIssues(brokenPageFacts)...)
 	seoStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, seo.DeriveIssues(slices.Clone(scoreablePageFacts), linkFacts)...)
 	seoElapsed := time.Since(seoStartedAt)
@@ -32,7 +41,7 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 	pagespeedStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, pagespeed.DeriveIssues(scoreablePageFacts, linkFacts)...)
 	pagespeedElapsed := time.Since(pagespeedStartedAt)
-	log.Printf("derive breakdown: scoreable_pages=%d seo=%s aeo=%s pagespeed=%s", len(scoreablePageFacts), seoElapsed.Round(time.Millisecond), aeoElapsed.Round(time.Millisecond), pagespeedElapsed.Round(time.Millisecond))
+	log.Printf("derive breakdown: scoreable_pages=%d broken_pages=%d seo=%s aeo=%s pagespeed=%s", len(scoreablePageFacts), len(brokenPageFacts), seoElapsed.Round(time.Millisecond), aeoElapsed.Round(time.Millisecond), pagespeedElapsed.Round(time.Millisecond))
 	return derivedIssues
 }
 
@@ -62,6 +71,8 @@ var recommendedFixes = map[string]string{
 	"nofollow_page": "Remove the nofollow directive if search engines should follow the page's internal links.",
 	"client_error_status": "Fix the underlying HTTP error so the page responds successfully and can be crawled and indexed.",
 	"server_error_status": "Fix the underlying HTTP error so the page responds successfully and can be crawled and indexed.",
+	"soft_404":            "Return a real 404 or 410 status for URLs that do not exist, instead of a 200 with not-found content. A success status tells search engines the page is real, so the URL stays in the index as thin duplicate content and the broken link that led here goes unreported.",
+	"fetch_failed":        "Confirm the URL is reachable: check DNS, TLS, server errors, and any rate limiting or bot protection that blocks crawlers. If the page no longer exists, remove the internal links pointing to it.",
 	"missing_viewport": "Add a viewport meta tag so the page renders correctly on mobile devices.",
 	"missing_lang":  "Add a lang attribute to the root HTML element to declare the page language.",
 	"images_missing_alt": "Add descriptive alt text to meaningful images and keep decorative images empty with alt=\"\".",

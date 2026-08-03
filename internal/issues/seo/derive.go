@@ -22,11 +22,9 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 		inboundInternalLinkCount := inboundInternalLinkCounts[pageFact.URL]
 		visibleTextWordCount := len(strings.Fields(pageFact.VisibleText))
 
-		if pageFact.StatusCode >= 400 && pageFact.StatusCode < 500 {
-			derivedIssues = append(derivedIssues, newIssue(pageFact, "technical_seo", "client_error_status", "high", "Page returned a client error", fmt.Sprintf("Page returned HTTP %d.", pageFact.StatusCode)))
-		} else if pageFact.StatusCode >= 500 {
-			derivedIssues = append(derivedIssues, newIssue(pageFact, "technical_seo", "server_error_status", "high", "Page returned a server error", fmt.Sprintf("Page returned HTTP %d.", pageFact.StatusCode)))
-		}
+		// Status issues are not derived here: an unhealthy page never reaches this
+		// loop. DeriveBrokenPageIssues owns them, so a broken page yields one issue
+		// instead of the full content set. See issues.DeriveIssues for the split.
 		if titleLength == 0 {
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "serp_metadata", "missing_title", "high", "Page is missing a title", "Add a descriptive <title> tag."))
 		} else {

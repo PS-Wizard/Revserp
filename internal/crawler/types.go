@@ -49,5 +49,9 @@ type CrawlResult struct {
 	// request. Such a result has no ParsedPage: its facts are copied forward
 	// from the baseline crawl instead of being re-derived from a fresh parse.
 	NotModified bool
-	ProcessErr  error
+	// SoftNotFound marks a page that answered 2xx while actually being the
+	// site's "not found" response. Set by the runner, which owns the probe
+	// fingerprint; a single result cannot determine this on its own.
+	SoftNotFound bool
+	ProcessErr   error
 }

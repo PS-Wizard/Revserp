@@ -58,7 +58,17 @@ func CountScoreablePages(crawlPageSignals []CrawlPageSignal) int {
 }
 
 // IsScoreablePage reports whether the page should count toward crawl-level scoring.
+//
+// Unhealthy pages are excluded from the coverage denominator. They produce no
+// content issues, so counting them would dilute every other issue's coverage
+// and make a site with many broken pages score better than the same site with
+// those pages removed. Excluding them also keeps the denominator identical to
+// what it was before broken pages began being persisted, so scores stay
+// comparable across that change.
 func IsScoreablePage(crawlPageSignal CrawlPageSignal) bool {
+	if crawlPageSignal.StatusCode >= 400 || crawlPageSignal.Soft404 || crawlPageSignal.FetchError != "" {
+		return false
+	}
 	return IsScoreableContentType(crawlPageSignal.ContentType)
 }
 

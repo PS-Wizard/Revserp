@@ -175,6 +175,8 @@ type CrawlPage struct {
 	ContentSha256           pgtype.Text
 	Etag                    pgtype.Text
 	LastModified            pgtype.Text
+	Soft404                 bool
+	FetchError              pgtype.Text
 }
 
 type CrawlScoreBreakdown struct {

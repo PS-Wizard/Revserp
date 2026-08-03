@@ -134,6 +134,19 @@ func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, root
 	return nil
 }
 
+// ResolveInternalLinkTargetStatuses fills target_status on this crawl's internal
+// links from the pages the crawl actually fetched. It must run after the crawl
+// loop finishes: a link row is normally written before its target has been
+// fetched, so resolving inline would leave almost every value NULL. Until this
+// runs, broken-internal-link derivation has nothing to work from.
+func (store *Store) ResolveInternalLinkTargetStatuses(ctx context.Context, crawlID pgtype.UUID) (int64, error) {
+	rows, err := store.queries.ResolveInternalLinkTargetStatuses(ctx, crawlID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve internal link target statuses: %w", err)
+	}
+	return rows, nil
+}
+
 // isUniqueViolation reports whether an error is a Postgres unique constraint violation.
 func isUniqueViolation(err error) bool {
 	var postgresError *pgconn.PgError
@@ -192,7 +205,36 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		// Stored verbatim so the next crawl can echo them back unchanged.
 		Etag:         nullableText(result.Fetch.ETag),
 		LastModified: nullableText(result.Fetch.LastModified),
+		Soft404:      result.SoftNotFound,
+		FetchError:   nullableText(fetchErrorMessage(result)),
 	}
+}
+
+// fetchErrorMessage returns the reason a page could not be fetched, or an empty
+// string when the fetch succeeded. A network failure persists as a page row with
+// no status code, so without this marker it is indistinguishable from a page
+// that genuinely has no title, meta description, or H1.
+func fetchErrorMessage(result CrawlResult) string {
+	if result.Fetch.FetchError != nil {
+		return capErrorMessage(result.Fetch.FetchError.Error())
+	}
+	// A result with no status code and no parsed page never produced content,
+	// even when no transport error surfaced.
+	if result.Fetch.StatusCode == 0 && result.ParsedPage == nil && !result.NotModified {
+		if result.ProcessErr != nil {
+			return capErrorMessage(result.ProcessErr.Error())
+		}
+		return "page could not be fetched"
+	}
+	return ""
+}
+
+func capErrorMessage(message string) string {
+	const maxFetchErrorLength = 500
+	if len(message) > maxFetchErrorLength {
+		return message[:maxFetchErrorLength]
+	}
+	return message
 }
 
 // crawlPageURL returns the best available URL to persist for one crawl result.

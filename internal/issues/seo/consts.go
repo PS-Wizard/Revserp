@@ -58,6 +58,8 @@ var IssuePenaltyByType = map[string]float64{
 	"missing_lang":                          4,
 	"client_error_status":                   12,
 	"server_error_status":                   14,
+	"soft_404":                              12,
+	"fetch_failed":                          10,
 	"images_missing_alt":                    5,
 	"images_missing_dimensions":             4,
 	"too_many_images_on_page":               4,

@@ -143,6 +143,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	urlsRendered := 0
 	urlsReused := 0
 	urlsSkippedNon2xx := 0
+	urlsSoftNotFound := 0
 	maxDepthReached := 0
 	pendingQueue := []CrawlJob{{URL: normalizedRootURL.String(), Depth: 0}}
 
@@ -166,6 +167,11 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	if sitemapSeeded > 0 {
 		log.Printf("sitemap discovery: seeded %d urls (root=%q)", sitemapSeeded, normalizedRootURL.String())
 	}
+
+	// One probe for a URL that cannot exist. If the origin answers 2xx instead of
+	// 404, every page matching this fingerprint is a soft 404. Nil means the
+	// origin returns proper 404s, or the probe could not be evaluated.
+	softNotFoundFingerprint := DetectSoftNotFound(runContext, runner.fetcher, runner.parser, normalizedRootURL.String())
 
 	var crawlResults []CrawlResult
 	crawlStartedAt := time.Now()
@@ -312,21 +318,26 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 					}
 				}
 
-				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d reused=%d skipped=%d (root=%s)",
-					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsReused, urlsSkippedNon2xx, rootURL)
+				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d reused=%d non2xx=%d soft404=%d (root=%s)",
+					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsReused, urlsSkippedNon2xx, urlsSoftNotFound, rootURL)
 				maybeWriteProgress()
 				continue
 			}
 
-			// Non-2xx responses (rate limits, challenge pages, server errors) are
-			// counted but not persisted or used for link discovery.
+			// Non-2xx responses are persisted so a broken page is visible in the
+			// site graph and can be attributed to the pages linking to it. They are
+			// still not parsed or rendered (see ProcessJob) and still do not expand
+			// the frontier: a 404 has no trustworthy links to follow.
 			isNon2xx := result.Fetch.StatusCode != 0 && (result.Fetch.StatusCode < 200 || result.Fetch.StatusCode > 299)
 			if isNon2xx {
 				urlsSkippedNon2xx++
-				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
-					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
-				maybeWriteProgress()
-				continue
+			} else if softNotFoundFingerprint.Matches(result.ParsedPage) || LooksLikeSoftNotFound(result.ParsedPage) {
+				// A soft 404 answered 2xx, so it reached here as a normal page. Mark
+				// it and stop it expanding the frontier for the same reason a hard
+				// 404 does not.
+				result.SoftNotFound = true
+				urlsSoftNotFound++
+				log.Printf("soft 404 detected: url=%q", crawlPageURL(result))
 			}
 
 			urlsCrawled++
@@ -337,8 +348,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				maxDepthReached = result.Job.Depth
 			}
 
-			log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d skipped=%d (root=%s)",
-				urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, rootURL)
+			log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d non2xx=%d soft404=%d (root=%s)",
+				urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, urlsSoftNotFound, rootURL)
 			maybeWriteProgress()
 
 			isDuplicateProcessedPage := false
@@ -370,7 +381,10 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				}
 			}
 
-			if !isDuplicateProcessedPage && result.ProcessErr == nil && result.ParsedPage != nil && result.Job.Depth < runner.config.MaxDepth {
+			// A soft 404 has a parsed body, so unlike a hard 404 it would otherwise
+			// expand the frontier — usually into the site's own nav, which is
+			// already covered, or into more nonexistent URLs.
+			if !isDuplicateProcessedPage && !result.SoftNotFound && result.ProcessErr == nil && result.ParsedPage != nil && result.Job.Depth < runner.config.MaxDepth {
 				for _, parsedLink := range result.ParsedPage.Links {
 					if !parsedLink.IsInternal {
 						continue
@@ -405,8 +419,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	if elapsed.Seconds() > 0 {
 		pagesPerSec = float64(urlsCrawled) / elapsed.Seconds()
 	}
-	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d skipped_non2xx=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
-		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
+	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d non2xx=%d soft404=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
+		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
 
 	if shouldPersist && !runner.deferFinalStatus {
 		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); err != nil {

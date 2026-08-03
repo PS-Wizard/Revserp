@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -18,6 +19,11 @@ type siteGraphNodeResponse struct {
 	Status int    `json:"status"`
 	In     int    `json:"in"`
 	Out    int    `json:"out"`
+	// Broken is the single flag the graph renders on. A page is broken on a 4xx/5xx
+	// status, on being a soft 404 (which answers 200, so status alone misses it),
+	// or on having failed to fetch at all (which has no status at all).
+	Broken bool   `json:"broken"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type siteGraphStatsResponse struct {
@@ -93,11 +99,19 @@ func (a *App) handleGetCrawlSiteGraph(w http.ResponseWriter, r *http.Request) {
 			title = page.Title.String
 		}
 
+		fetchError := ""
+		if page.FetchError.Valid {
+			fetchError = page.FetchError.String
+		}
+		broken, reason := siteGraphBrokenReason(status, page.Soft404, fetchError)
+
 		nodeIndexByURL[normalized] = len(nodes)
 		nodes = append(nodes, siteGraphNodeResponse{
 			URL:    page.Url,
 			Title:  title,
 			Status: status,
+			Broken: broken,
+			Reason: reason,
 		})
 	}
 
@@ -123,7 +137,7 @@ func (a *App) handleGetCrawlSiteGraph(w http.ResponseWriter, r *http.Request) {
 
 	broken := 0
 	for _, node := range nodes {
-		if node.Status >= 400 {
+		if node.Broken {
 			broken++
 		}
 	}
@@ -143,6 +157,22 @@ func (a *App) handleGetCrawlSiteGraph(w http.ResponseWriter, r *http.Request) {
 			Broken: broken,
 		},
 	})
+}
+
+// siteGraphBrokenReason classifies one page's health for the graph, returning a
+// short human-readable reason for the broken ones.
+func siteGraphBrokenReason(status int, soft404 bool, fetchError string) (bool, string) {
+	switch {
+	case fetchError != "":
+		return true, "Could not be fetched"
+	case soft404:
+		return true, "Not found (returned " + strconv.Itoa(status) + ")"
+	case status >= 500:
+		return true, "Server error " + strconv.Itoa(status)
+	case status >= 400:
+		return true, "Client error " + strconv.Itoa(status)
+	}
+	return false, ""
 }
 
 // normalizeGraphURL normalizes a URL for internal-link graph matching: it

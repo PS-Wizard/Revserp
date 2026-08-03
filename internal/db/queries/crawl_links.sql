@@ -112,3 +112,19 @@ SELECT source_url, target_url
 FROM crawl_links
 WHERE crawl_id = sqlc.arg(crawl_id)
   AND is_internal = TRUE;
+
+-- name: ResolveInternalLinkTargetStatuses :execrows
+-- Fills target_status for this crawl's internal links from the pages actually
+-- crawled. It runs once after the crawl finishes, because a link is normally
+-- persisted before its target has been fetched. URLs are matched on the same
+-- normalization the site graph uses: fragment stripped, lowercased scheme and
+-- host, and no trailing slash except on a bare root.
+UPDATE crawl_links AS cl
+SET target_status = cp.status_code
+FROM crawl_pages AS cp
+WHERE cl.crawl_id = sqlc.arg(crawl_id)
+  AND cp.crawl_id = sqlc.arg(crawl_id)
+  AND cl.is_internal = TRUE
+  AND cp.status_code IS NOT NULL
+  AND regexp_replace(lower(split_part(cl.target_url, '#', 1)), '(.)/+$', '\1') =
+      regexp_replace(lower(split_part(cp.url, '#', 1)), '(.)/+$', '\1');

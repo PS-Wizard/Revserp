@@ -513,6 +513,19 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("run crawl: %w", err)
 	}
 
+	// Attribute broken targets back to the pages linking to them. This has to
+	// happen after the crawl loop and before derivation, since it is what gives
+	// the broken/redirecting internal-link issues their input. A failure here
+	// costs those two issue types, not the crawl.
+	resolveStartedAt := time.Now()
+	resolvedLinks, err := crawlStore.ResolveInternalLinkTargetStatuses(crawlCtx, claimed.ID)
+	if err != nil {
+		log.Printf("resolve internal link target statuses failed: crawl_id=%s error=%v", claimed.ID.String(), err)
+	} else {
+		log.Printf("phase timing: crawl_id=%s resolve_link_targets=%s resolved=%d",
+			claimed.ID.String(), time.Since(resolveStartedAt).Round(time.Millisecond), resolvedLinks)
+	}
+
 	// Google PSI is an independent ~15-90s network call whose result is only
 	// needed at scoring time, so run it concurrently with issue derivation
 	// (different tables, no shared rows) instead of serially before it.

@@ -311,3 +311,28 @@ func (q *Queries) ListInternalLinkPairsForCrawl(ctx context.Context, crawlID pgt
 	}
 	return items, nil
 }
+
+const resolveInternalLinkTargetStatuses = `-- name: ResolveInternalLinkTargetStatuses :execrows
+UPDATE crawl_links AS cl
+SET target_status = cp.status_code
+FROM crawl_pages AS cp
+WHERE cl.crawl_id = $1
+  AND cp.crawl_id = $1
+  AND cl.is_internal = TRUE
+  AND cp.status_code IS NOT NULL
+  AND regexp_replace(lower(split_part(cl.target_url, '#', 1)), '(.)/+$', '\1') =
+      regexp_replace(lower(split_part(cp.url, '#', 1)), '(.)/+$', '\1')
+`
+
+// Fills target_status for this crawl's internal links from the pages actually
+// crawled. It runs once after the crawl finishes, because a link is normally
+// persisted before its target has been fetched. URLs are matched on the same
+// normalization the site graph uses: fragment stripped, lowercased scheme and
+// host, and no trailing slash except on a bare root.
+func (q *Queries) ResolveInternalLinkTargetStatuses(ctx context.Context, crawlID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveInternalLinkTargetStatuses, crawlID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

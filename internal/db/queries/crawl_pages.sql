@@ -34,7 +34,9 @@ INSERT INTO crawl_pages (
     og_tags,
     json_ld,
     etag,
-    last_modified
+    last_modified,
+    soft_404,
+    fetch_error
 ) VALUES (
     $1,
     $2,
@@ -70,9 +72,11 @@ INSERT INTO crawl_pages (
     $32,
     $33,
     $34,
-    $35
+    $35,
+    $36,
+    $37
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, etag, last_modified, created_at;
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, etag, last_modified, soft_404, fetch_error, created_at;
 
 -- name: GetCrawlPageByIDForUser :one
 SELECT
@@ -159,6 +163,8 @@ SELECT
     cp.internal_links,
     cp.response_time_ms,
     cp.javascript_rendered,
+    cp.soft_404,
+    cp.fetch_error,
     cp.h2_headings,
     cp.h3_headings,
     cp.heading_outline,
@@ -207,6 +213,8 @@ SELECT
     internal_links,
     response_time_ms,
     javascript_rendered,
+    soft_404,
+    fetch_error,
     h2_headings,
     h3_headings,
     heading_outline,
@@ -353,7 +361,9 @@ INSERT INTO crawl_pages (
     og_tags,
     json_ld,
     etag,
-    last_modified
+    last_modified,
+    soft_404,
+    fetch_error
 )
 SELECT
     sqlc.arg(crawl_id),
@@ -390,7 +400,11 @@ SELECT
     og_tags,
     json_ld,
     COALESCE(sqlc.narg(fresh_etag)::text, crawl_pages.etag),
-    last_modified
+    last_modified,
+    -- A 304 means the body is unchanged, so a soft 404 stays a soft 404. The
+    -- fetch itself succeeded, so no fetch error is carried forward.
+    soft_404,
+    NULL
 FROM crawl_pages
 WHERE crawl_pages.crawl_id = sqlc.arg(baseline_crawl_id)
   AND crawl_pages.url = sqlc.arg(url)
