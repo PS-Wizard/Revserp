@@ -70,6 +70,7 @@ func (a *App) Router() http.Handler {
 		protected.Post("/projects/{projectID}/gsc/select-site", a.handleSelectProjectGSCSite)
 		protected.Post("/projects/{projectID}/gsc/disconnect", a.handleDisconnectProjectGSC)
 		protected.Get("/projects/{projectID}/gsc/overview", a.handleProjectGSCOverview)
+		protected.Get("/projects/{projectID}/gsc/queries", a.handleProjectGSCQueries)
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 		protected.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)

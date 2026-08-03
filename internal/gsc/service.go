@@ -16,18 +16,21 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const overviewCacheTTL = time.Hour
+const responseCacheTTL = time.Hour
 
-// overviewCacheMaxEntries bounds the overview cache so it can't grow
-// unbounded across org+site keys. When full, the oldest entry is evicted.
-const overviewCacheMaxEntries = 500
+// responseCacheMaxEntries bounds the response cache so it can't grow
+// unbounded across org+site+request keys. When full, the oldest entry is evicted.
+const responseCacheMaxEntries = 500
 
 // defaultMaxResponseBytes caps response body reads when a caller does not
 // configure maxResponseBytes.
 const defaultMaxResponseBytes = 10 << 20
 
-type overviewCacheEntry struct {
-	payload   OverviewPayload
+// cacheEntry holds one cached Google response. The payload is an OverviewPayload
+// or a QueryPage; both share this cache so they share its TTL, eviction, and
+// single-flight behavior.
+type cacheEntry struct {
+	payload   any
 	fetchedAt time.Time
 }
 
@@ -39,10 +42,13 @@ type Service struct {
 	encryptionSecret string
 	httpClient       *http.Client
 	maxResponseBytes int64
+	// searchAnalyticsBaseURL is googleSearchAnalyticsURLBase in production and
+	// a stub server in tests.
+	searchAnalyticsBaseURL string
 
-	overviewCacheMu sync.Mutex
-	overviewCache   map[string]overviewCacheEntry
-	overviewGroup   singleflight.Group
+	responseCacheMu sync.Mutex
+	responseCache   map[string]cacheEntry
+	responseGroup   singleflight.Group
 }
 
 // NewService builds one Google OAuth and Search Console service.
@@ -55,8 +61,9 @@ func NewService(clientID, clientSecret, redirectURL, encryptionSecret string, ma
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		maxResponseBytes: maxResponseBytes,
-		overviewCache:    make(map[string]overviewCacheEntry),
+		maxResponseBytes:       maxResponseBytes,
+		searchAnalyticsBaseURL: googleSearchAnalyticsURLBase,
+		responseCache:          make(map[string]cacheEntry),
 	}
 }
 
@@ -85,72 +92,81 @@ func (service *Service) readLimitedBody(response *http.Response) ([]byte, error)
 }
 
 // FetchOverviewCached returns a cached overview for organizationID+siteURL if one
-// exists and is younger than overviewCacheTTL; otherwise it fetches live and caches
+// exists and is younger than responseCacheTTL; otherwise it fetches live and caches
 // the result. The cache key is scoped by organizationID so two organizations sharing
 // the same Search Console site never see each other's cached data.
 func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, organizationID, siteURL string) (OverviewPayload, error) {
-	cacheKey := organizationID + "|" + siteURL
+	result, err := service.fetchCached("overview|"+organizationID+"|"+siteURL, func() (any, error) {
+		return service.FetchOverview(ctx, accessToken, siteURL)
+	})
+	if err != nil {
+		return OverviewPayload{}, err
+	}
+	return result.(OverviewPayload), nil
+}
 
-	service.overviewCacheMu.Lock()
-	entry, ok := service.overviewCache[cacheKey]
-	if ok && time.Since(entry.fetchedAt) >= overviewCacheTTL {
-		delete(service.overviewCache, cacheKey)
+// fetchCached returns the cached payload for cacheKey when one exists and is
+// younger than responseCacheTTL, otherwise it calls fetch and caches the result.
+// Concurrent misses for one key are coalesced into a single upstream fetch.
+func (service *Service) fetchCached(cacheKey string, fetch func() (any, error)) (any, error) {
+	service.responseCacheMu.Lock()
+	entry, ok := service.responseCache[cacheKey]
+	if ok && time.Since(entry.fetchedAt) >= responseCacheTTL {
+		delete(service.responseCache, cacheKey)
 		ok = false
 	}
-	service.overviewCacheMu.Unlock()
+	service.responseCacheMu.Unlock()
 
 	if ok {
 		return entry.payload, nil
 	}
 
-	// Coalesce concurrent misses for the same key into one upstream fetch.
-	result, err, _ := service.overviewGroup.Do(cacheKey, func() (any, error) {
-		payload, err := service.FetchOverview(ctx, accessToken, siteURL)
+	result, err, _ := service.responseGroup.Do(cacheKey, func() (any, error) {
+		payload, err := fetch()
 		if err != nil {
 			return nil, err
 		}
 
-		service.overviewCacheMu.Lock()
+		service.responseCacheMu.Lock()
 		service.evictExpiredLocked()
-		if _, exists := service.overviewCache[cacheKey]; !exists && len(service.overviewCache) >= overviewCacheMaxEntries {
+		if _, exists := service.responseCache[cacheKey]; !exists && len(service.responseCache) >= responseCacheMaxEntries {
 			service.evictOldestLocked()
 		}
-		service.overviewCache[cacheKey] = overviewCacheEntry{payload: payload, fetchedAt: time.Now()}
-		service.overviewCacheMu.Unlock()
+		service.responseCache[cacheKey] = cacheEntry{payload: payload, fetchedAt: time.Now()}
+		service.responseCacheMu.Unlock()
 
 		return payload, nil
 	})
 	if err != nil {
-		return OverviewPayload{}, err
+		return nil, err
 	}
-
-	return result.(OverviewPayload), nil
+	return result, nil
 }
 
-// evictExpiredLocked removes all cache entries past overviewCacheTTL.
-// Callers must hold overviewCacheMu.
+// evictExpiredLocked removes all cache entries past responseCacheTTL.
+// Callers must hold responseCacheMu.
 func (service *Service) evictExpiredLocked() {
 	now := time.Now()
-	for key, entry := range service.overviewCache {
-		if now.Sub(entry.fetchedAt) >= overviewCacheTTL {
-			delete(service.overviewCache, key)
+	for key, entry := range service.responseCache {
+		if now.Sub(entry.fetchedAt) >= responseCacheTTL {
+			delete(service.responseCache, key)
 		}
 	}
 }
 
 // evictOldestLocked removes the least-recently-fetched cache entry.
-// Callers must hold overviewCacheMu.
+// Callers must hold responseCacheMu.
 func (service *Service) evictOldestLocked() {
 	var oldestKey string
 	var oldestAt time.Time
-	for key, entry := range service.overviewCache {
+	for key, entry := range service.responseCache {
 		if oldestKey == "" || entry.fetchedAt.Before(oldestAt) {
 			oldestKey = key
 			oldestAt = entry.fetchedAt
 		}
 	}
 	if oldestKey != "" {
-		delete(service.overviewCache, oldestKey)
+		delete(service.responseCache, oldestKey)
 	}
 }
 
@@ -330,7 +346,11 @@ func (service *Service) querySearchAnalytics(ctx context.Context, accessToken, s
 		return nil, fmt.Errorf("marshal Search Analytics payload: %w", err)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, googleSearchAnalyticsURLBase+"/"+encodedSiteURL+"/searchAnalytics/query", bytes.NewReader(requestBody))
+	baseURL := service.searchAnalyticsBaseURL
+	if baseURL == "" {
+		baseURL = googleSearchAnalyticsURLBase
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/"+encodedSiteURL+"/searchAnalytics/query", bytes.NewReader(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("build Search Analytics request: %w", err)
 	}
