@@ -8,8 +8,8 @@ import (
 func TestNewRegistry_HasAllToolsWithNoTenantParams(t *testing.T) {
 	registry := NewRegistry(Deps{})
 	defs := registry.Defs()
-	if len(defs) != 16 {
-		t.Fatalf("expected 16 tools, got %d", len(defs))
+	if len(defs) != 17 {
+		t.Fatalf("expected 17 tools, got %d", len(defs))
 	}
 
 	forbidden := []string{"project_id", "crawl_id", "org_id", "user_id", "source"}
@@ -27,6 +27,7 @@ func TestNewRegistry_HasAllToolsWithNoTenantParams(t *testing.T) {
 	expected := []string{
 		"list_projects", "switch_project", "get_business_profile", "update_business_profile",
 		"get_score_summary", "list_issues", "get_recommended_fix", "get_page_content", "list_pages",
+		"get_search_console_data",
 		"start_crawl", "configure_auto_crawl", "export_crawl", "export_audit", "navigate",
 		"compare_projects", "render_chart",
 	}

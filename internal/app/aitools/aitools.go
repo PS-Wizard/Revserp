@@ -96,9 +96,10 @@ type Deps struct {
 	CreateCrawl           CrawlCreator
 	ConfigureAutoCrawl    AutoCrawlConfigurer
 	UpdateBusinessProfile BusinessProfileUpdater
+	ReadSearchConsole     SearchConsoleReader
 }
 
-// NewRegistry builds the registry of all 16 tools available to the agent.
+// NewRegistry builds the registry of all 17 tools available to the agent.
 func NewRegistry(deps Deps) *Registry {
 	r := newRegistry()
 	r.register(listProjectsTool())
@@ -110,6 +111,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.register(recommendedFixTool())
 	r.register(pageContentTool())
 	r.register(listPagesTool())
+	r.register(searchConsoleTool(deps.ReadSearchConsole))
 	r.register(startCrawlTool(deps.CreateCrawl))
 	r.register(configureAutoCrawlTool(deps.ConfigureAutoCrawl))
 	r.register(exportCrawlTool())

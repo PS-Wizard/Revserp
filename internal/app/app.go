@@ -60,6 +60,7 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		},
 		ConfigureAutoCrawl:    app.configureAutoCrawlForAgent,
 		UpdateBusinessProfile: app.updateBusinessProfileForAgent,
+		ReadSearchConsole:     app.searchConsoleForAgent,
 	})
 	return app
 }

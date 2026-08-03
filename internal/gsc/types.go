@@ -10,6 +10,47 @@ const (
 
 var overviewWindowOptions = []int{180}
 
+// questionQueryPattern matches queries phrased as a question or a comparison.
+// It is RE2, Google's dimension-filter regex syntax, so the match runs at
+// Google and paging walks the matched set instead of a locally trimmed top-N
+// slice. Case folding is explicit because regex filters are not documented as
+// case-insensitive the way "contains" is.
+const questionQueryPattern = `(?i)^(who|whos|what|whats|when|where|why|how|which|is|are|can|could|do|does|did|should|will|would|best)\b|\bvs\.?\b|\bversus\b`
+
+// Bounds for one page of query rows. Google accepts a rowLimit up to 25,000 and
+// a non-negative startRow; these are the narrower limits this API exposes.
+const (
+	queryPageMinDays      = 7
+	queryPageDefaultDays  = 180
+	queryPageMaxDays      = 480
+	queryPageDefaultLimit = 50
+	queryPageMaxLimit     = 500
+	queryPageMaxOffset    = 25000
+	queryPageMaxSearch    = 100
+)
+
+// QueryPageOptions selects one page of Search Console query rows.
+type QueryPageOptions struct {
+	Days   int
+	Limit  int
+	Offset int
+	// Search is a case-insensitive substring match applied by Google.
+	Search string
+	// QuestionsOnly restricts rows to questionQueryPattern.
+	QuestionsOnly bool
+}
+
+// QueryPage holds one page of Search Console query rows.
+type QueryPage struct {
+	Rows      []SearchAnalyticsRow `json:"rows"`
+	Days      int                  `json:"days"`
+	Limit     int                  `json:"limit"`
+	Offset    int                  `json:"offset"`
+	HasMore   bool                 `json:"has_more"`
+	StartDate string               `json:"start_date"`
+	EndDate   string               `json:"end_date"`
+}
+
 // Error reports one Google OAuth or Search Console failure.
 type Error struct {
 	Message string
