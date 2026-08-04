@@ -353,8 +353,11 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 	defer cancel()
 
 	_ = runAgentTurn(ctx, agentTurnParams{
-		Client:         a.AIClient,
-		Registry:       a.AIToolRegistry,
+		Client: a.AIClient,
+		// Gated by the workspace's feature settings, resolved by the AI chat
+		// middleware on this route. The model is never offered a disabled tool,
+		// and cannot run one if it names it anyway.
+		Registry:       gateRegistryForRequest(r.Context(), a.AIToolRegistry),
 		Queries:        a.Queries,
 		ConversationID: conversationID,
 		Scope:          scope,

@@ -167,7 +167,7 @@ func runAgentTurn(ctx context.Context, p agentTurnParams) error {
 			MaxTokens: maxTokens,
 		})
 		if err != nil {
-			log.Printf("ai agent turn failed conversation=%s round=%d duration=%s error_type=%T", convID, round, time.Since(turnStart), err)
+			log.Printf("ai agent turn failed conversation=%s round=%d duration=%s tools=%d error_type=%T err=%v", convID, round, time.Since(turnStart), len(tools), err, err)
 			if sseErr := p.SSE.send("error", sseErrorPayload{Message: safeAgentProviderError(err)}); sseErr != nil {
 				return sseErr
 			}
@@ -176,7 +176,7 @@ func runAgentTurn(ctx context.Context, p agentTurnParams) error {
 
 		reasoning, text, toolCalls, usage, streamErr := drainAgentStream(events, p.SSE)
 		if streamErr != nil {
-			log.Printf("ai agent turn failed conversation=%s round=%d duration=%s error_type=%T", convID, round, time.Since(turnStart), streamErr)
+			log.Printf("ai agent turn failed conversation=%s round=%d duration=%s tools=%d error_type=%T err=%v", convID, round, time.Since(turnStart), len(tools), streamErr, streamErr)
 			if sseErr := p.SSE.send("error", sseErrorPayload{Message: safeAgentProviderError(streamErr)}); sseErr != nil {
 				return sseErr
 			}

@@ -220,6 +220,16 @@ type Organization struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type OrganizationFeature struct {
+	OrgID           pgtype.UUID
+	AutoCrawl       bool
+	GscConnector    bool
+	AiChat          bool
+	DisabledAiTools []string
+	UpdatedAt       pgtype.Timestamptz
+	UpdatedByUserID pgtype.UUID
+}
+
 type OrganizationInvite struct {
 	ID              pgtype.UUID
 	OrganizationID  pgtype.UUID

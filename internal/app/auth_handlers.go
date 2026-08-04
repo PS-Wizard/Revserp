@@ -159,7 +159,9 @@ func (a *App) finishBackendSignIn(w http.ResponseWriter, r *http.Request, supaba
 	}
 
 	a.SessionManager.SetSessionCookie(w, rawSessionToken)
-	writeJSON(w, http.StatusOK, newMeResponse(user, organizations, activeOrganizationID))
+	meBody := newMeResponse(user, organizations, activeOrganizationID)
+	a.attachActiveOrgFeatures(r.Context(), &meBody, activeOrganizationID)
+	writeJSON(w, http.StatusOK, meBody)
 	return nil
 }
 

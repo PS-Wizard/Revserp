@@ -55,22 +55,44 @@ func (a *App) Router() http.Handler {
 		protected.Get("/projects/{projectID}/business-profile", a.handleProjectBusinessProfile)
 		protected.Put("/projects/{projectID}/business-profile", a.handleUpsertProjectBusinessProfile)
 		protected.Get("/projects/{projectID}/ai-questions", a.handleGetProjectAIQuestions)
-		protected.Get("/projects/{projectID}/auto-crawl", a.handleGetAutoCrawlSettings)
-		protected.Put("/projects/{projectID}/auto-crawl", a.handlePutAutoCrawlSettings)
 		protected.Post("/projects/{projectID}/ai-audits", a.handleCreateAIAudit)
 		protected.Get("/projects/{projectID}/ai-audits", a.handleListAIAudits)
 		protected.Get("/ai-audits/{auditID}", a.handleGetAIAudit)
-		protected.Get("/ai/conversations", a.handleListAIConversations)
-		protected.Post("/ai/conversations", a.handleCreateAIConversation)
-		protected.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
-		protected.Post("/ai/conversations/{conversationID}/messages", a.handleCreateAIConversationMessage)
-		protected.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
-		protected.Post("/projects/{projectID}/gsc/connect/start", a.handleStartProjectGSCConnect)
-		protected.Get("/projects/{projectID}/gsc/status", a.handleProjectGSCStatus)
-		protected.Post("/projects/{projectID}/gsc/select-site", a.handleSelectProjectGSCSite)
-		protected.Post("/projects/{projectID}/gsc/disconnect", a.handleDisconnectProjectGSC)
-		protected.Get("/projects/{projectID}/gsc/overview", a.handleProjectGSCOverview)
-		protected.Get("/projects/{projectID}/gsc/queries", a.handleProjectGSCQueries)
+
+		// Feature-gated route groups. Each group resolves the governing workspace
+		// once in middleware and rejects before reaching a handler, so hiding a
+		// surface in the UI is never the only thing standing in the way.
+		protected.Group(func(gated chi.Router) {
+			gated.Use(a.requireFeature(FeatureAutoCrawl, featuresByProjectParam))
+			gated.Get("/projects/{projectID}/auto-crawl", a.handleGetAutoCrawlSettings)
+			gated.Put("/projects/{projectID}/auto-crawl", a.handlePutAutoCrawlSettings)
+		})
+
+		protected.Group(func(gated chi.Router) {
+			gated.Use(a.requireFeature(FeatureGSCConnector, featuresByProjectParam))
+			gated.Post("/projects/{projectID}/gsc/connect/start", a.handleStartProjectGSCConnect)
+			gated.Get("/projects/{projectID}/gsc/status", a.handleProjectGSCStatus)
+			gated.Post("/projects/{projectID}/gsc/select-site", a.handleSelectProjectGSCSite)
+			gated.Post("/projects/{projectID}/gsc/disconnect", a.handleDisconnectProjectGSC)
+			gated.Get("/projects/{projectID}/gsc/overview", a.handleProjectGSCOverview)
+			gated.Get("/projects/{projectID}/gsc/queries", a.handleProjectGSCQueries)
+		})
+
+		// Conversation-scoped AI routes resolve through the conversation's own
+		// workspace; the collection routes have no path scope, so they resolve
+		// through the caller's active workspace.
+		protected.Group(func(gated chi.Router) {
+			gated.Use(a.requireFeature(FeatureAIChat, featuresByActiveOrg))
+			gated.Get("/ai/conversations", a.handleListAIConversations)
+			gated.Post("/ai/conversations", a.handleCreateAIConversation)
+		})
+
+		protected.Group(func(gated chi.Router) {
+			gated.Use(a.requireFeature(FeatureAIChat, featuresByConversationParam))
+			gated.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
+			gated.Post("/ai/conversations/{conversationID}/messages", a.handleCreateAIConversationMessage)
+			gated.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
+		})
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 		protected.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)
@@ -108,6 +130,8 @@ func (a *App) Router() http.Handler {
 			admin.Post("/admin/users/{userID}/unsuspend", a.handleAdminUnsuspendUser)
 			admin.Delete("/admin/users/{userID}", a.handleAdminDeleteUser)
 			admin.Get("/admin/organizations", a.handleAdminListOrganizations)
+			admin.Get("/admin/features", a.handleAdminListFeatures)
+			admin.Put("/admin/features", a.handleAdminPutFeatures)
 			admin.Get("/admin/ai-config", a.handleAdminGetAIConfig)
 			admin.Put("/admin/ai-config", a.handleAdminPutAIConfig)
 			admin.Post("/admin/ai-config/reset", a.handleAdminResetAIConfig)

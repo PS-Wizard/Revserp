@@ -15,7 +15,7 @@ import (
 )
 
 type appBootstrapResponse struct {
-	Me              meResponse       `json:"me"`
+	Me              meResponse        `json:"me"`
 	Projects        []projectResponse `json:"projects"`
 	ActiveProject   *projectResponse  `json:"active_project"`
 	Crawls          []crawlResponse   `json:"crawls"`
@@ -60,6 +60,7 @@ func (a *App) handleAppBootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp.Me = newMeResponse(user, orgs, activeOrgID)
+		a.attachActiveOrgFeatures(r.Context(), &resp.Me, activeOrgID)
 
 		// Step 2: list projects for the active org (membership implied by org ownership).
 		var projects []sqlc.Project

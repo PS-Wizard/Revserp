@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -21,6 +22,10 @@ type meResponse struct {
 	ActiveOrgID     string                 `json:"active_org_id"`
 	IsPlatformAdmin bool                   `json:"is_platform_admin"`
 	Status          string                 `json:"status,omitempty"`
+	// Features gates what the UI offers for the active workspace. It is a
+	// convenience for the client only: every gated route and AI tool enforces
+	// the same state server-side, so a client ignoring this changes nothing.
+	Features orgFeaturesResponse `json:"features"`
 }
 
 type userResponse struct {
@@ -73,7 +78,9 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newMeResponse(user, organizations, activeOrgID))
+	meBody := newMeResponse(user, organizations, activeOrgID)
+	a.attachActiveOrgFeatures(r.Context(), &meBody, activeOrgID)
+	writeJSON(w, http.StatusOK, meBody)
 }
 
 // ensureUserAndOrganizations maps the auth identity to a local user and default organization.
@@ -160,6 +167,7 @@ func newMeResponse(user sqlc.User, organizations []sqlc.ListOrganizationsForUser
 	if activeOrgID.Valid {
 		response.ActiveOrgID = activeOrgID.String()
 	}
+	response.Features = newOrgFeaturesResponse(allFeaturesEnabled())
 	return response
 }
 
@@ -355,4 +363,21 @@ func userRowToUser(row any) sqlc.User {
 	default:
 		return sqlc.User{}
 	}
+}
+
+// attachActiveOrgFeatures fills the /me feature block for the caller's active
+// workspace. On a lookup error it leaves the all-enabled default in place: the
+// gated routes and the AI tool registry enforce the real state regardless, so
+// the worst case is the UI offering something that then returns 403 — better
+// than stripping features from a user because of a transient query failure.
+func (a *App) attachActiveOrgFeatures(ctx context.Context, response *meResponse, activeOrgID pgtype.UUID) {
+	if !activeOrgID.Valid {
+		return
+	}
+	features, err := a.OrgFeaturesForOrg(ctx, activeOrgID)
+	if err != nil {
+		log.Printf("resolve org features for /me failed: org_id=%s error=%v", activeOrgID.String(), err)
+		return
+	}
+	response.Features = newOrgFeaturesResponse(features)
 }
