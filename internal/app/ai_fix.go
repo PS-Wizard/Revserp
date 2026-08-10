@@ -155,7 +155,7 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries)
+	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries, user.Email)
 	prompt := buildAIFixPrompt(systemPrompt, pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
 	content, _, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {

@@ -12,16 +12,15 @@ import (
 )
 
 const getAIPromptConfig = `-- name: GetAIPromptConfig :one
-SELECT id, context_prompt, guidelines_prompt, other_notes_prompt, question_generation_prompt, updated_by_user_id, updated_at
+SELECT id, internal_system_prompt, external_system_prompt, question_generation_prompt, updated_by_user_id, updated_at
 FROM ai_prompt_configs
 WHERE id = 1
 `
 
 type GetAIPromptConfigRow struct {
 	ID                       int64
-	ContextPrompt            string
-	GuidelinesPrompt         string
-	OtherNotesPrompt         string
+	InternalSystemPrompt     string
+	ExternalSystemPrompt     string
 	QuestionGenerationPrompt string
 	UpdatedByUserID          pgtype.UUID
 	UpdatedAt                pgtype.Timestamptz
@@ -32,9 +31,8 @@ func (q *Queries) GetAIPromptConfig(ctx context.Context) (GetAIPromptConfigRow, 
 	var i GetAIPromptConfigRow
 	err := row.Scan(
 		&i.ID,
-		&i.ContextPrompt,
-		&i.GuidelinesPrompt,
-		&i.OtherNotesPrompt,
+		&i.InternalSystemPrompt,
+		&i.ExternalSystemPrompt,
 		&i.QuestionGenerationPrompt,
 		&i.UpdatedByUserID,
 		&i.UpdatedAt,
@@ -54,9 +52,8 @@ func (q *Queries) ResetAIPromptConfig(ctx context.Context) error {
 const upsertAIPromptConfig = `-- name: UpsertAIPromptConfig :one
 INSERT INTO ai_prompt_configs (
     id,
-    context_prompt,
-    guidelines_prompt,
-    other_notes_prompt,
+    internal_system_prompt,
+    external_system_prompt,
     question_generation_prompt,
     updated_by_user_id
 ) VALUES (
@@ -64,32 +61,28 @@ INSERT INTO ai_prompt_configs (
     $1,
     $2,
     $3,
-    $4,
-    $5
+    $4
 )
 ON CONFLICT (id) DO UPDATE SET
-    context_prompt = EXCLUDED.context_prompt,
-    guidelines_prompt = EXCLUDED.guidelines_prompt,
-    other_notes_prompt = EXCLUDED.other_notes_prompt,
+    internal_system_prompt = EXCLUDED.internal_system_prompt,
+    external_system_prompt = EXCLUDED.external_system_prompt,
     question_generation_prompt = EXCLUDED.question_generation_prompt,
     updated_by_user_id = EXCLUDED.updated_by_user_id,
     updated_at = NOW()
-RETURNING id, context_prompt, guidelines_prompt, other_notes_prompt, question_generation_prompt, updated_by_user_id, updated_at
+RETURNING id, internal_system_prompt, external_system_prompt, question_generation_prompt, updated_by_user_id, updated_at
 `
 
 type UpsertAIPromptConfigParams struct {
-	ContextPrompt            string
-	GuidelinesPrompt         string
-	OtherNotesPrompt         string
+	InternalSystemPrompt     string
+	ExternalSystemPrompt     string
 	QuestionGenerationPrompt string
 	UpdatedByUserID          pgtype.UUID
 }
 
 type UpsertAIPromptConfigRow struct {
 	ID                       int64
-	ContextPrompt            string
-	GuidelinesPrompt         string
-	OtherNotesPrompt         string
+	InternalSystemPrompt     string
+	ExternalSystemPrompt     string
 	QuestionGenerationPrompt string
 	UpdatedByUserID          pgtype.UUID
 	UpdatedAt                pgtype.Timestamptz
@@ -97,18 +90,16 @@ type UpsertAIPromptConfigRow struct {
 
 func (q *Queries) UpsertAIPromptConfig(ctx context.Context, arg UpsertAIPromptConfigParams) (UpsertAIPromptConfigRow, error) {
 	row := q.db.QueryRow(ctx, upsertAIPromptConfig,
-		arg.ContextPrompt,
-		arg.GuidelinesPrompt,
-		arg.OtherNotesPrompt,
+		arg.InternalSystemPrompt,
+		arg.ExternalSystemPrompt,
 		arg.QuestionGenerationPrompt,
 		arg.UpdatedByUserID,
 	)
 	var i UpsertAIPromptConfigRow
 	err := row.Scan(
 		&i.ID,
-		&i.ContextPrompt,
-		&i.GuidelinesPrompt,
-		&i.OtherNotesPrompt,
+		&i.InternalSystemPrompt,
+		&i.ExternalSystemPrompt,
 		&i.QuestionGenerationPrompt,
 		&i.UpdatedByUserID,
 		&i.UpdatedAt,

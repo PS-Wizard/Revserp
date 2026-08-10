@@ -68,12 +68,11 @@ type AiMessage struct {
 
 type AiPromptConfig struct {
 	ID                       int64
-	ContextPrompt            string
-	GuidelinesPrompt         string
-	OtherNotesPrompt         string
 	UpdatedByUserID          pgtype.UUID
 	UpdatedAt                pgtype.Timestamptz
 	QuestionGenerationPrompt string
+	InternalSystemPrompt     string
+	ExternalSystemPrompt     string
 }
 
 type AiWorkerJob struct {

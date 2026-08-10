@@ -310,7 +310,7 @@ func (a *App) handleCreateAIConversationMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	systemPrompt := loadEffectiveAgentSystemPrompt(r.Context(), a.Queries) + buildAgentContextBlock(turnCtx)
+	systemPrompt := loadEffectiveAgentSystemPrompt(r.Context(), a.Queries, user.Email) + buildAgentContextBlock(turnCtx)
 	if _, err := boundedAgentMessages(systemPrompt, cappedReplayGroups(replayMessageGroups(turnCtx.previousMessages)), req.Content, nil, a.AIToolRegistry.Defs()); err != nil {
 		writeJSONError(w, http.StatusBadRequest, errAIRequestTooLarge.Error())
 		return

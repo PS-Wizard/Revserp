@@ -12,9 +12,8 @@ import (
 )
 
 type aiConfigResponse struct {
-	ContextPrompt            string `json:"context_prompt"`
-	GuidelinesPrompt         string `json:"guidelines_prompt"`
-	OtherNotesPrompt         string `json:"other_notes_prompt"`
+	InternalSystemPrompt     string `json:"internal_system_prompt"`
+	ExternalSystemPrompt     string `json:"external_system_prompt"`
 	QuestionGenerationPrompt string `json:"question_generation_prompt"`
 	UpdatedAt                string `json:"updated_at,omitempty"`
 }
@@ -25,18 +24,16 @@ type adminAIConfigResponse struct {
 }
 
 type putAIConfigRequest struct {
-	ContextPrompt            string `json:"context_prompt"`
-	GuidelinesPrompt         string `json:"guidelines_prompt"`
-	OtherNotesPrompt         string `json:"other_notes_prompt"`
+	InternalSystemPrompt     string `json:"internal_system_prompt"`
+	ExternalSystemPrompt     string `json:"external_system_prompt"`
 	QuestionGenerationPrompt string `json:"question_generation_prompt"`
 }
 
 // defaultAIConfig returns the built-in default AI prompt config.
 func defaultAIConfig() aiConfigResponse {
 	return aiConfigResponse{
-		ContextPrompt:            defaultAIContextPrompt(),
-		GuidelinesPrompt:         "",
-		OtherNotesPrompt:         "",
+		InternalSystemPrompt:     defaultAIContextPrompt(),
+		ExternalSystemPrompt:     defaultAIContextPrompt(),
 		QuestionGenerationPrompt: aiaudit.DefaultQuestionGenerationPrompt,
 	}
 }
@@ -67,9 +64,8 @@ func (a *App) handleAdminGetAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := aiConfigResponse{
-		ContextPrompt:            row.ContextPrompt,
-		GuidelinesPrompt:         row.GuidelinesPrompt,
-		OtherNotesPrompt:         row.OtherNotesPrompt,
+		InternalSystemPrompt:     row.InternalSystemPrompt,
+		ExternalSystemPrompt:     row.ExternalSystemPrompt,
 		QuestionGenerationPrompt: row.QuestionGenerationPrompt,
 	}
 	if row.UpdatedAt.Valid {
@@ -97,9 +93,8 @@ func (a *App) handleAdminPutAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row, err := a.Queries.UpsertAIPromptConfig(r.Context(), sqlc.UpsertAIPromptConfigParams{
-		ContextPrompt:            req.ContextPrompt,
-		GuidelinesPrompt:         req.GuidelinesPrompt,
-		OtherNotesPrompt:         req.OtherNotesPrompt,
+		InternalSystemPrompt:     req.InternalSystemPrompt,
+		ExternalSystemPrompt:     req.ExternalSystemPrompt,
 		QuestionGenerationPrompt: req.QuestionGenerationPrompt,
 		UpdatedByUserID:          userID,
 	})
@@ -109,9 +104,8 @@ func (a *App) handleAdminPutAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := aiConfigResponse{
-		ContextPrompt:            row.ContextPrompt,
-		GuidelinesPrompt:         row.GuidelinesPrompt,
-		OtherNotesPrompt:         row.OtherNotesPrompt,
+		InternalSystemPrompt:     row.InternalSystemPrompt,
+		ExternalSystemPrompt:     row.ExternalSystemPrompt,
 		QuestionGenerationPrompt: row.QuestionGenerationPrompt,
 	}
 	if row.UpdatedAt.Valid {
