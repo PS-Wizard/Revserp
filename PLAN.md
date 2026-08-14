@@ -4,7 +4,7 @@
 
 - Legacy chat cleanup, durable schema, and workspace controls are implemented through migration `000043`.
 - Project-scoped conversation CRUD is implemented.
-- Turn submission, worker execution, resumable SSE, and the new frontend remain.
+- Turn submission is implemented; worker execution, resumable SSE, and the new frontend remain.
 - Production reuse of migration `000041` still requires confirmation that no shared environment ran the old migration.
 - Visibility/audit data and non-chat AI behavior remain preserved.
 - The first working version has no tools, artifacts, charts, navigation actions, exports, or crawl actions.

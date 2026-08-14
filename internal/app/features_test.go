@@ -1,6 +1,8 @@
 package app
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 )
@@ -82,5 +84,20 @@ func TestDefaultAIChatSettings(t *testing.T) {
 	}
 	if !slices.Equal(features.AIAllowedReasoningEfforts, []string{"none", "low", "high", "max"}) {
 		t.Fatalf("default efforts = %v, want all canonical efforts", features.AIAllowedReasoningEfforts)
+	}
+}
+
+func TestAIChatFeatureGateUsesStableError(t *testing.T) {
+	app := &App{}
+	resolver := func(*App, *http.Request) (OrgFeatures, error) {
+		return featuresFromRow(true, true, false, 50, canonicalAIReasoningEfforts), nil
+	}
+	response := httptest.NewRecorder()
+	app.requireFeature(FeatureAIChat, resolver)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("disabled feature reached handler")
+	})).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
+
+	if response.Code != http.StatusForbidden || response.Body.String() != "{\"error\":\"ai_chat_disabled\"}\n" {
+		t.Fatalf("feature response = %d %q", response.Code, response.Body.String())
 	}
 }

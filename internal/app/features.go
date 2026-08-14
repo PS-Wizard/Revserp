@@ -193,7 +193,11 @@ func (a *App) requireFeature(feature Feature, resolve orgFeatureResolver) func(h
 				return
 			}
 			if !features.Enabled(feature) {
-				writeJSONError(w, http.StatusForbidden, "feature not enabled for this workspace")
+				if feature == FeatureAIChat {
+					writeJSONError(w, http.StatusForbidden, "ai_chat_disabled")
+				} else {
+					writeJSONError(w, http.StatusForbidden, "feature not enabled for this workspace")
+				}
 				return
 			}
 			next.ServeHTTP(w, r)

@@ -68,6 +68,7 @@ func (a *App) Router() http.Handler {
 			gated.Use(a.requireFeature(FeatureAIChat, featuresByConversationParam))
 			gated.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
 			gated.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
+			gated.Post("/ai/conversations/{conversationID}/turns", a.handleSubmitAITurn)
 		})
 
 		// Feature-gated route groups. Each group resolves the governing workspace
