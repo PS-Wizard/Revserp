@@ -148,6 +148,7 @@ func (w *Worker) loop(claimCtx, activeCtx context.Context) {
 	for claimCtx.Err() == nil {
 		claimed, err := w.claim(claimCtx)
 		if err == nil {
+			log.Printf("ai chat turn claimed: worker_id=%s turn_id=%s conversation_id=%s attempt=%d effort=%s model=%s", w.cfg.ID, claimed.ID.String(), claimed.ConversationID.String(), claimed.AttemptCount, claimed.Effort, claimed.Model)
 			w.run(activeCtx, claimed)
 			continue
 		}
@@ -222,6 +223,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 
 	messages, err := w.loadContext(ctx, claimed)
 	if err != nil {
+		log.Printf("ai chat context load failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
 		w.finalizeAndLog(claimed, "failed", "worker_interrupted", "failed", ai.Usage{})
 		return
 	}
@@ -369,6 +371,8 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		if classified.Temporary && !output && claimed.AttemptCount < defaultAttempts {
 			if err := w.requeue(claimed); err != nil {
 				log.Printf("ai chat retry failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
+			} else {
+				log.Printf("ai chat turn requeued: worker_id=%s turn_id=%s attempt=%d error_code=%s", w.cfg.ID, claimed.ID.String(), claimed.AttemptCount, classified.Code)
 			}
 			return
 		}
@@ -584,7 +588,9 @@ func (w *Worker) finalizeAndLog(claimed turn, status, code, messageStatus string
 	defer cancel()
 	if err := w.finalize(ctx, claimed, status, code, messageStatus, usage); err != nil {
 		log.Printf("ai chat finalize failed: worker_id=%s turn_id=%s status=%s error=%v", w.cfg.ID, claimed.ID.String(), status, err)
+		return
 	}
+	log.Printf("ai chat turn finalized: worker_id=%s turn_id=%s conversation_id=%s status=%s error_code=%s attempt=%d prompt_tokens=%d reasoning_tokens=%d completion_tokens=%d total_tokens=%d", w.cfg.ID, claimed.ID.String(), claimed.ConversationID.String(), status, code, claimed.AttemptCount, usage.Prompt, usage.Reasoning, usage.Completion, usage.Total)
 }
 
 func (w *Worker) finalize(ctx context.Context, claimed turn, status, code, messageStatus string, usage ai.Usage) error {

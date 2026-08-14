@@ -40,13 +40,19 @@ func run() error {
 	defer pool.Close()
 
 	provider := ai.NewDeepSeekClient(cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekBaseURL, nil)
+	workerID := fmt.Sprintf("%s-%d", hostname(), os.Getpid())
 	worker := aichatworker.New(pool, provider, aichatworker.Config{
-		ID:           fmt.Sprintf("%s-%d", hostname(), os.Getpid()),
+		ID:           workerID,
 		Concurrency:  cfg.AIChatWorkerConcurrency,
 		PollInterval: cfg.AIChatWorkerPollInterval,
 		TurnTimeout:  cfg.AITurnTimeout,
 	})
-	return worker.Run(ctx)
+	log.Printf("ai chat worker starting: worker_id=%s concurrency=%d poll=%s turn_timeout=%s model=%s", workerID, cfg.AIChatWorkerConcurrency, cfg.AIChatWorkerPollInterval, cfg.AITurnTimeout, cfg.DeepSeekModel)
+	if err := worker.Run(ctx); err != nil {
+		return fmt.Errorf("run ai chat worker: %w", err)
+	}
+	log.Printf("ai chat worker shut down: worker_id=%s", workerID)
+	return nil
 }
 
 func hostname() string {
