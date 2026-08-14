@@ -5,7 +5,7 @@
 - Legacy chat cleanup, durable schema, and workspace controls are implemented through migration `000044`.
 - Project-scoped conversation CRUD and durable turn submission are implemented.
 - AI chat worker claiming, concurrency, leases, retries, recovery, cancellation handling, and DeepSeek streaming are implemented.
-- Turn status/cancellation APIs, resumable SSE, and the new frontend remain.
+- Turn status, cancellation, and resumable SSE are implemented; the new frontend remains.
 - Production reuse of migration `000041` still requires confirmation that no shared environment ran the old migration.
 - Visibility/audit data and non-chat AI behavior remain preserved.
 - The first working version has no tools, artifacts, charts, navigation actions, exports, or crawl actions.
@@ -499,6 +499,8 @@ Do not log user content, raw reasoning, access tokens, or raw provider payloads 
 - Add the separate worker command and deployment configuration.
 
 ### Phase 5: Add status and resumable SSE
+
+Status: complete
 
 - Add turn status, cancellation, and event-tail endpoints.
 - Verify disconnect and reconnect behavior across API and worker processes.

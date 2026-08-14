@@ -108,3 +108,107 @@ RETURNING id;
 UPDATE ai_conversations
 SET updated_at = now()
 WHERE id = sqlc.arg(conversation_id);
+
+-- name: GetAITurnForUser :one
+SELECT
+    t.id,
+    t.conversation_id,
+    t.status,
+    t.requested_effort,
+    t.effective_effort,
+    t.model,
+    t.attempt_count,
+    (t.cancel_requested_at IS NOT NULL)::boolean AS cancel_requested,
+    t.prompt_tokens,
+    t.reasoning_tokens,
+    t.completion_tokens,
+    t.total_tokens,
+    t.error_code,
+    t.queued_at,
+    t.started_at,
+    t.completed_at,
+    t.created_at,
+    t.updated_at
+FROM ai_turns AS t
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = sqlc.arg(user_id)
+WHERE t.id = sqlc.arg(turn_id);
+
+-- name: LockAITurnForUser :one
+SELECT
+    t.id,
+    t.conversation_id,
+    t.status,
+    t.requested_effort,
+    t.effective_effort,
+    t.model,
+    t.attempt_count,
+    (t.cancel_requested_at IS NOT NULL)::boolean AS cancel_requested,
+    t.prompt_tokens,
+    t.reasoning_tokens,
+    t.completion_tokens,
+    t.total_tokens,
+    t.error_code,
+    t.queued_at,
+    t.started_at,
+    t.completed_at,
+    t.created_at,
+    t.updated_at
+FROM ai_turns AS t
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = sqlc.arg(user_id)
+WHERE t.id = sqlc.arg(turn_id)
+FOR UPDATE OF t
+FOR KEY SHARE OF om;
+
+-- name: ListAIMessagesForUser :many
+SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+FROM ai_messages AS m
+INNER JOIN ai_turns AS t ON t.id = m.turn_id
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = sqlc.arg(user_id)
+WHERE m.turn_id = sqlc.arg(turn_id)
+ORDER BY CASE m.role WHEN 'user' THEN 0 ELSE 1 END;
+
+-- name: ListAITurnEventsForUser :many
+SELECT e.id, e.event_type, e.payload
+FROM ai_turn_events AS e
+INNER JOIN ai_turns AS t ON t.id = e.turn_id
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = sqlc.arg(user_id)
+WHERE e.turn_id = sqlc.arg(turn_id)
+  AND e.id > sqlc.arg(after_id)::bigint
+ORDER BY e.id ASC
+LIMIT 100;
+
+-- name: StopQueuedAITurn :execrows
+UPDATE ai_turns
+SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
+    status = 'stopped',
+    error_code = 'cancelled',
+    completed_at = now(),
+    updated_at = now()
+WHERE id = sqlc.arg(turn_id) AND status = 'queued';
+
+-- name: RequestCancelRunningAITurn :execrows
+UPDATE ai_turns
+SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
+    updated_at = now()
+WHERE id = sqlc.arg(turn_id) AND status = 'running';
+
+-- name: MarkCancelledAssistantMessage :exec
+UPDATE ai_messages
+SET status = 'partial', updated_at = now()
+WHERE turn_id = sqlc.arg(turn_id) AND role = 'assistant' AND status = 'pending';
+
+-- name: CreateCancelledAITurnEvent :exec
+INSERT INTO ai_turn_events (turn_id, event_type, payload)
+VALUES (sqlc.arg(turn_id), 'stopped', '{"error_code":"cancelled"}'::jsonb);

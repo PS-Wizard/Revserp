@@ -95,6 +95,16 @@ func (q *Queries) CreateAITurn(ctx context.Context, arg CreateAITurnParams) (pgt
 	return id, err
 }
 
+const createCancelledAITurnEvent = `-- name: CreateCancelledAITurnEvent :exec
+INSERT INTO ai_turn_events (turn_id, event_type, payload)
+VALUES ($1, 'stopped', '{"error_code":"cancelled"}'::jsonb)
+`
+
+func (q *Queries) CreateCancelledAITurnEvent(ctx context.Context, turnID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, createCancelledAITurnEvent, turnID)
+	return err
+}
+
 const findAITurnByClientRequestID = `-- name: FindAITurnByClientRequestID :one
 SELECT
     t.id AS turn_id,
@@ -132,6 +142,86 @@ func (q *Queries) FindAITurnByClientRequestID(ctx context.Context, arg FindAITur
 		&i.UserMessageID,
 		&i.AssistantMessageID,
 		&i.RequestHash,
+	)
+	return i, err
+}
+
+const getAITurnForUser = `-- name: GetAITurnForUser :one
+SELECT
+    t.id,
+    t.conversation_id,
+    t.status,
+    t.requested_effort,
+    t.effective_effort,
+    t.model,
+    t.attempt_count,
+    (t.cancel_requested_at IS NOT NULL)::boolean AS cancel_requested,
+    t.prompt_tokens,
+    t.reasoning_tokens,
+    t.completion_tokens,
+    t.total_tokens,
+    t.error_code,
+    t.queued_at,
+    t.started_at,
+    t.completed_at,
+    t.created_at,
+    t.updated_at
+FROM ai_turns AS t
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = $1
+WHERE t.id = $2
+`
+
+type GetAITurnForUserParams struct {
+	UserID pgtype.UUID
+	TurnID pgtype.UUID
+}
+
+type GetAITurnForUserRow struct {
+	ID               pgtype.UUID
+	ConversationID   pgtype.UUID
+	Status           string
+	RequestedEffort  string
+	EffectiveEffort  string
+	Model            string
+	AttemptCount     int32
+	CancelRequested  bool
+	PromptTokens     pgtype.Int4
+	ReasoningTokens  pgtype.Int4
+	CompletionTokens pgtype.Int4
+	TotalTokens      pgtype.Int4
+	ErrorCode        pgtype.Text
+	QueuedAt         pgtype.Timestamptz
+	StartedAt        pgtype.Timestamptz
+	CompletedAt      pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) GetAITurnForUser(ctx context.Context, arg GetAITurnForUserParams) (GetAITurnForUserRow, error) {
+	row := q.db.QueryRow(ctx, getAITurnForUser, arg.UserID, arg.TurnID)
+	var i GetAITurnForUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.Status,
+		&i.RequestedEffort,
+		&i.EffectiveEffort,
+		&i.Model,
+		&i.AttemptCount,
+		&i.CancelRequested,
+		&i.PromptTokens,
+		&i.ReasoningTokens,
+		&i.CompletionTokens,
+		&i.TotalTokens,
+		&i.ErrorCode,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -188,6 +278,105 @@ func (q *Queries) HasActiveAITurnForConversation(ctx context.Context, conversati
 	return exists, err
 }
 
+const listAIMessagesForUser = `-- name: ListAIMessagesForUser :many
+SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+FROM ai_messages AS m
+INNER JOIN ai_turns AS t ON t.id = m.turn_id
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = $1
+WHERE m.turn_id = $2
+ORDER BY CASE m.role WHEN 'user' THEN 0 ELSE 1 END
+`
+
+type ListAIMessagesForUserParams struct {
+	UserID pgtype.UUID
+	TurnID pgtype.UUID
+}
+
+type ListAIMessagesForUserRow struct {
+	ID        pgtype.UUID
+	Role      string
+	Status    string
+	Content   string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListAIMessagesForUser(ctx context.Context, arg ListAIMessagesForUserParams) ([]ListAIMessagesForUserRow, error) {
+	rows, err := q.db.Query(ctx, listAIMessagesForUser, arg.UserID, arg.TurnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAIMessagesForUserRow
+	for rows.Next() {
+		var i ListAIMessagesForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Role,
+			&i.Status,
+			&i.Content,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAITurnEventsForUser = `-- name: ListAITurnEventsForUser :many
+SELECT e.id, e.event_type, e.payload
+FROM ai_turn_events AS e
+INNER JOIN ai_turns AS t ON t.id = e.turn_id
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = $1
+WHERE e.turn_id = $2
+  AND e.id > $3::bigint
+ORDER BY e.id ASC
+LIMIT 100
+`
+
+type ListAITurnEventsForUserParams struct {
+	UserID  pgtype.UUID
+	TurnID  pgtype.UUID
+	AfterID int64
+}
+
+type ListAITurnEventsForUserRow struct {
+	ID        int64
+	EventType string
+	Payload   []byte
+}
+
+func (q *Queries) ListAITurnEventsForUser(ctx context.Context, arg ListAITurnEventsForUserParams) ([]ListAITurnEventsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listAITurnEventsForUser, arg.UserID, arg.TurnID, arg.AfterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAITurnEventsForUserRow
+	for rows.Next() {
+		var i ListAITurnEventsForUserRow
+		if err := rows.Scan(&i.ID, &i.EventType, &i.Payload); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAIConversationForTurn = `-- name: LockAIConversationForTurn :one
 SELECT
     ac.project_id,
@@ -234,6 +423,114 @@ func (q *Queries) LockAIConversationForTurn(ctx context.Context, arg LockAIConve
 	return i, err
 }
 
+const lockAITurnForUser = `-- name: LockAITurnForUser :one
+SELECT
+    t.id,
+    t.conversation_id,
+    t.status,
+    t.requested_effort,
+    t.effective_effort,
+    t.model,
+    t.attempt_count,
+    (t.cancel_requested_at IS NOT NULL)::boolean AS cancel_requested,
+    t.prompt_tokens,
+    t.reasoning_tokens,
+    t.completion_tokens,
+    t.total_tokens,
+    t.error_code,
+    t.queued_at,
+    t.started_at,
+    t.completed_at,
+    t.created_at,
+    t.updated_at
+FROM ai_turns AS t
+INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = $1
+WHERE t.id = $2
+FOR UPDATE OF t
+FOR KEY SHARE OF om
+`
+
+type LockAITurnForUserParams struct {
+	UserID pgtype.UUID
+	TurnID pgtype.UUID
+}
+
+type LockAITurnForUserRow struct {
+	ID               pgtype.UUID
+	ConversationID   pgtype.UUID
+	Status           string
+	RequestedEffort  string
+	EffectiveEffort  string
+	Model            string
+	AttemptCount     int32
+	CancelRequested  bool
+	PromptTokens     pgtype.Int4
+	ReasoningTokens  pgtype.Int4
+	CompletionTokens pgtype.Int4
+	TotalTokens      pgtype.Int4
+	ErrorCode        pgtype.Text
+	QueuedAt         pgtype.Timestamptz
+	StartedAt        pgtype.Timestamptz
+	CompletedAt      pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) LockAITurnForUser(ctx context.Context, arg LockAITurnForUserParams) (LockAITurnForUserRow, error) {
+	row := q.db.QueryRow(ctx, lockAITurnForUser, arg.UserID, arg.TurnID)
+	var i LockAITurnForUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.Status,
+		&i.RequestedEffort,
+		&i.EffectiveEffort,
+		&i.Model,
+		&i.AttemptCount,
+		&i.CancelRequested,
+		&i.PromptTokens,
+		&i.ReasoningTokens,
+		&i.CompletionTokens,
+		&i.TotalTokens,
+		&i.ErrorCode,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markCancelledAssistantMessage = `-- name: MarkCancelledAssistantMessage :exec
+UPDATE ai_messages
+SET status = 'partial', updated_at = now()
+WHERE turn_id = $1 AND role = 'assistant' AND status = 'pending'
+`
+
+func (q *Queries) MarkCancelledAssistantMessage(ctx context.Context, turnID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markCancelledAssistantMessage, turnID)
+	return err
+}
+
+const requestCancelRunningAITurn = `-- name: RequestCancelRunningAITurn :execrows
+UPDATE ai_turns
+SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
+    updated_at = now()
+WHERE id = $1 AND status = 'running'
+`
+
+func (q *Queries) RequestCancelRunningAITurn(ctx context.Context, turnID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, requestCancelRunningAITurn, turnID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const reserveAIWorkspaceMonthlyMessage = `-- name: ReserveAIWorkspaceMonthlyMessage :one
 INSERT INTO ai_workspace_monthly_usage (organization_id, period_start, used_messages)
 SELECT
@@ -258,6 +555,24 @@ func (q *Queries) ReserveAIWorkspaceMonthlyMessage(ctx context.Context, arg Rese
 	var used_messages int32
 	err := row.Scan(&used_messages)
 	return used_messages, err
+}
+
+const stopQueuedAITurn = `-- name: StopQueuedAITurn :execrows
+UPDATE ai_turns
+SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
+    status = 'stopped',
+    error_code = 'cancelled',
+    completed_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'queued'
+`
+
+func (q *Queries) StopQueuedAITurn(ctx context.Context, turnID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, stopQueuedAITurn, turnID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchAIConversation = `-- name: TouchAIConversation :exec

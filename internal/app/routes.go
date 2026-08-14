@@ -21,7 +21,7 @@ func (a *App) Router() http.Handler {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   a.Config.CORSAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "Last-Event-ID"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
@@ -70,6 +70,9 @@ func (a *App) Router() http.Handler {
 			gated.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
 			gated.Post("/ai/conversations/{conversationID}/turns", a.handleSubmitAITurn)
 		})
+		protected.Get("/ai/turns/{turnID}", a.handleGetAITurn)
+		protected.Post("/ai/turns/{turnID}/cancel", a.handleCancelAITurn)
+		protected.Get("/ai/turns/{turnID}/events", a.handleGetAITurnEvents)
 
 		// Feature-gated route groups. Each group resolves the governing workspace
 		// once in middleware and rejects before reaching a handler, so hiding a
