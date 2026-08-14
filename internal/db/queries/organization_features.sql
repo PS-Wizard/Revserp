@@ -5,6 +5,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -20,6 +21,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -37,6 +39,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -57,6 +60,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -70,7 +74,7 @@ ORDER BY o.name ASC;
 
 -- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
-    org_id, auto_crawl, gsc_connector, ai_chat,
+    org_id, auto_crawl, gsc_connector, ai_chat, ai_use_internal_prompt,
     ai_monthly_message_limit, ai_concurrent_turn_limit_per_user, ai_allowed_reasoning_efforts,
     updated_by_user_id, updated_at
 ) VALUES (
@@ -78,6 +82,7 @@ INSERT INTO organization_features (
     sqlc.arg(auto_crawl),
     sqlc.arg(gsc_connector),
     sqlc.arg(ai_chat),
+    sqlc.arg(ai_use_internal_prompt),
     sqlc.arg(ai_monthly_message_limit),
     sqlc.arg(ai_concurrent_turn_limit_per_user),
     ARRAY(
@@ -92,6 +97,7 @@ ON CONFLICT (org_id) DO UPDATE SET
     auto_crawl = EXCLUDED.auto_crawl,
     gsc_connector = EXCLUDED.gsc_connector,
     ai_chat = EXCLUDED.ai_chat,
+    ai_use_internal_prompt = EXCLUDED.ai_use_internal_prompt,
     ai_monthly_message_limit = EXCLUDED.ai_monthly_message_limit,
     ai_concurrent_turn_limit_per_user = EXCLUDED.ai_concurrent_turn_limit_per_user,
     ai_allowed_reasoning_efforts = EXCLUDED.ai_allowed_reasoning_efforts,

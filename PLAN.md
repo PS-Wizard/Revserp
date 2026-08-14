@@ -2,10 +2,11 @@
 
 ## Status
 
-- Legacy chat cleanup, durable schema, and workspace controls are implemented through migration `000044`.
+- Legacy chat cleanup, durable schema, and workspace controls are implemented through migration `000045`.
 - Project-scoped conversation CRUD and durable turn submission are implemented.
 - AI chat worker claiming, concurrency, leases, retries, recovery, cancellation handling, and DeepSeek streaming are implemented.
 - Turn delivery and the minimal Revbot frontend are implemented; history, quota display, and UI polish remain.
+- AI Config system prompts are selected per workspace; external is the default.
 - Production reuse of migration `000041` still requires confirmation that no shared environment ran the old migration.
 - Visibility/audit data and non-chat AI behavior remain preserved.
 - The first working version has no tools, artifacts, charts, navigation actions, exports, or crawl actions.

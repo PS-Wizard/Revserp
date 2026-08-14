@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ps-wizard/revserp/internal/aiaudit"
+	"github.com/ps-wizard/revserp/internal/aiprompt"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -32,20 +33,10 @@ type putAIConfigRequest struct {
 // defaultAIConfig returns the built-in default AI prompt config.
 func defaultAIConfig() aiConfigResponse {
 	return aiConfigResponse{
-		InternalSystemPrompt:     defaultAIContextPrompt(),
-		ExternalSystemPrompt:     defaultAIContextPrompt(),
+		InternalSystemPrompt:     aiprompt.DefaultSystemPrompt,
+		ExternalSystemPrompt:     aiprompt.DefaultSystemPrompt,
 		QuestionGenerationPrompt: aiaudit.DefaultQuestionGenerationPrompt,
 	}
-}
-
-// defaultAIContextPrompt returns the hardcoded base revserp assistant framing.
-func defaultAIContextPrompt() string {
-	return "You are Revserp's in-product SEO, AEO, and PageSpeed crawl issue assistant.\n" +
-		"The crawl context is background, not the user's instruction. Always answer the latest user message first.\n" +
-		"If the latest user message is a greeting, small talk, or a product/meta question, respond naturally and briefly; do not analyze the crawl or recommend fixes unless the user asks.\n" +
-		"If the latest user message asks for crawl help, use only the provided crawl context. If context is insufficient, say exactly what is missing.\n" +
-		"Avoid generic advice when affected rows include exact current field values. Produce concrete fixes.\n" +
-		"Return clean markdown. Be concise. Do not include a long restatement of the selected scope unless it changes the answer.\n"
 }
 
 // handleAdminGetAIConfig returns the current AI prompt config with defaults for empty fields.

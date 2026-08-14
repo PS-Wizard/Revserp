@@ -66,11 +66,14 @@ func TestOrgWithNoRowResolvesToEverythingEnabled(t *testing.T) {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
 
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
 	for _, feature := range []Feature{FeatureAutoCrawl, FeatureGSCConnector, FeatureAIChat} {
 		if !features.Enabled(feature) {
 			t.Errorf("unrestricted workspace has %q disabled", feature)
 		}
+	}
+	if row.AiUseInternalPrompt {
+		t.Error("workspace without a feature row resolved internal prompt enabled")
 	}
 	if row.AiMonthlyMessageLimit != 50 {
 		t.Errorf("unrestricted workspace limit = %d, want 50", row.AiMonthlyMessageLimit)
@@ -89,6 +92,7 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 		AutoCrawl:                    false,
 		GscConnector:                 true,
 		AiChat:                       true,
+		AiUseInternalPrompt:          true,
 		AiMonthlyMessageLimit:        123,
 		AiConcurrentTurnLimitPerUser: 2,
 		AiAllowedReasoningEfforts:    []string{"none", "high"},
@@ -100,13 +104,16 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
 
 	if features.Enabled(FeatureAutoCrawl) {
 		t.Error("auto_crawl was saved disabled but read back enabled")
 	}
 	if !features.Enabled(FeatureGSCConnector) {
 		t.Error("gsc_connector was saved enabled but read back disabled")
+	}
+	if !features.AIUseInternalPrompt {
+		t.Error("ai_use_internal_prompt was saved true but read back false")
 	}
 	if row.AiMonthlyMessageLimit != 123 {
 		t.Errorf("limit = %d, want 123", row.AiMonthlyMessageLimit)
@@ -142,7 +149,7 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
 
 	if !features.Enabled(FeatureAutoCrawl) || !features.Enabled(FeatureGSCConnector) || !features.Enabled(FeatureAIChat) {
 		t.Error("re-enabling via a second save did not take effect")

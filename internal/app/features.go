@@ -35,6 +35,7 @@ type OrgFeatures struct {
 	AutoCrawl                    bool
 	GSCConnector                 bool
 	AIChat                       bool
+	AIUseInternalPrompt          bool
 	AIMonthlyMessageLimit        int32
 	AIConcurrentTurnLimitPerUser int32
 	AIAllowedReasoningEfforts    []string
@@ -46,6 +47,7 @@ func allFeaturesEnabled() OrgFeatures {
 		AutoCrawl:                    true,
 		GSCConnector:                 true,
 		AIChat:                       true,
+		AIUseInternalPrompt:          false,
 		AIMonthlyMessageLimit:        defaultAIMonthlyMessageLimit,
 		AIConcurrentTurnLimitPerUser: defaultAIConcurrentTurnLimitPerUser,
 		AIAllowedReasoningEfforts:    append([]string(nil), canonicalAIReasoningEfforts...),
@@ -112,11 +114,12 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func featuresFromRow(autoCrawl, gscConnector, aiChat bool, monthlyLimit, concurrentLimit int32, efforts []string) OrgFeatures {
+func featuresFromRow(autoCrawl, gscConnector, aiChat, useInternalPrompt bool, monthlyLimit, concurrentLimit int32, efforts []string) OrgFeatures {
 	return OrgFeatures{
 		AutoCrawl:                    autoCrawl,
 		GSCConnector:                 gscConnector,
 		AIChat:                       aiChat,
+		AIUseInternalPrompt:          useInternalPrompt,
 		AIMonthlyMessageLimit:        monthlyLimit,
 		AIConcurrentTurnLimitPerUser: concurrentLimit,
 		AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(efforts),
@@ -132,7 +135,7 @@ func (a *App) OrgFeaturesForOrg(ctx context.Context, orgID pgtype.UUID) (OrgFeat
 		}
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
 }
 
 type orgFeatureResolver func(*App, *http.Request) (OrgFeatures, error)
@@ -158,7 +161,7 @@ func featuresByProjectParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
 }
 
 // featuresByConversationParam resolves a conversation route to its project workspace.
@@ -178,7 +181,7 @@ func featuresByConversationParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
 }
 
 // requireFeature gates a route group on its governing workspace feature.
@@ -219,6 +222,7 @@ type orgFeaturesResponse struct {
 	AIChat                       bool     `json:"ai_chat"`
 	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
 	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
+	AIUseInternalPrompt          bool     `json:"ai_use_internal_prompt"`
 	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
 }
 
@@ -227,6 +231,7 @@ func newOrgFeaturesResponse(features OrgFeatures) orgFeaturesResponse {
 		AutoCrawl:                    features.AutoCrawl,
 		GSCConnector:                 features.GSCConnector,
 		AIChat:                       features.AIChat,
+		AIUseInternalPrompt:          features.AIUseInternalPrompt,
 		AIMonthlyMessageLimit:        features.AIMonthlyMessageLimit,
 		AIConcurrentTurnLimitPerUser: features.AIConcurrentTurnLimitPerUser,
 		AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(features.AIAllowedReasoningEfforts),

@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ps-wizard/revserp/internal/ai"
+	"github.com/ps-wizard/revserp/internal/aiprompt"
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
 const (
@@ -390,18 +392,19 @@ func (w *Worker) loadContext(ctx context.Context, claimed turn) ([]ai.Message, e
 	var projectName string
 	var baseURL string
 	var crawlID pgtype.UUID
+	var useInternalPrompt bool
 	if err := w.pool.QueryRow(ctx, `
-SELECT p.name, p.base_url, t.crawl_id
+SELECT p.name, p.base_url, t.crawl_id, COALESCE(f.ai_use_internal_prompt, FALSE)::boolean
 FROM ai_turns AS t
 JOIN ai_conversations AS c ON c.id = t.conversation_id
 JOIN projects AS p ON p.id = c.project_id
-WHERE t.id = $1 AND t.conversation_id = $2`, claimed.ID, claimed.ConversationID).Scan(&projectName, &baseURL, &crawlID); err != nil {
+LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
+WHERE t.id = $1 AND t.conversation_id = $2`, claimed.ID, claimed.ConversationID).Scan(&projectName, &baseURL, &crawlID, &useInternalPrompt); err != nil {
 		return nil, err
 	}
 
-	system := "You are RevSERP chat v1. Give concise, useful, text-only SEO guidance. Project: " + projectName + " (" + baseURL + ")."
+	var completedAt pgtype.Timestamptz
 	if crawlID.Valid {
-		var completedAt pgtype.Timestamptz
 		if err := w.pool.QueryRow(ctx, `
 SELECT crawl.completed_at
 FROM crawls AS crawl
@@ -411,10 +414,18 @@ WHERE crawl.id = $1
   AND crawl.status = 'completed'`, crawlID, claimed.ConversationID).Scan(&completedAt); err != nil {
 			return nil, fmt.Errorf("validate turn crawl: %w", err)
 		}
-		if completedAt.Valid {
-			system += " The selected crawl completed at " + completedAt.Time.UTC().Format(time.RFC3339) + "."
-		}
 	}
+
+	configRow, err := sqlc.New(w.pool).GetAIPromptConfig(ctx)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("load AI prompt config: %w", err)
+	}
+	internalPrompt, externalPrompt := "", ""
+	if err == nil {
+		internalPrompt = configRow.InternalSystemPrompt
+		externalPrompt = configRow.ExternalSystemPrompt
+	}
+	system := composeSystemContext(aiprompt.SelectSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt)
 
 	var currentUser string
 	if err := w.pool.QueryRow(ctx, `
@@ -469,6 +480,18 @@ ORDER BY historical_turn.created_at DESC, historical_turn.id DESC`, claimed.Conv
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: currentUser})
 	return messages, nil
+}
+
+func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtype.Timestamptz) string {
+	var builder strings.Builder
+	builder.WriteString(prompt)
+	builder.WriteString("\n\n--- Project context ---\n")
+	fmt.Fprintf(&builder, "Name: %s\nURL: %s\n", projectName, baseURL)
+	if completedAt.Valid {
+		builder.WriteString("\n--- Crawl context ---\n")
+		fmt.Fprintf(&builder, "Selected crawl completed at %s.\n", completedAt.Time.UTC().Format(time.RFC3339))
+	}
+	return builder.String()
 }
 
 func (w *Worker) refreshLease(ctx context.Context, claimed turn) (bool, error) {

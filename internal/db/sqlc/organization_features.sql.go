@@ -17,6 +17,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -32,6 +33,7 @@ type GetOrganizationFeaturesRow struct {
 	AutoCrawl                    bool
 	GscConnector                 bool
 	AiChat                       bool
+	AiUseInternalPrompt          bool
 	AiMonthlyMessageLimit        int32
 	AiConcurrentTurnLimitPerUser int32
 	AiAllowedReasoningEfforts    []string
@@ -45,6 +47,7 @@ func (q *Queries) GetOrganizationFeatures(ctx context.Context, orgID pgtype.UUID
 		&i.AutoCrawl,
 		&i.GscConnector,
 		&i.AiChat,
+		&i.AiUseInternalPrompt,
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
 		&i.AiAllowedReasoningEfforts,
@@ -57,6 +60,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -80,6 +84,7 @@ type GetOrganizationFeaturesByConversationIDRow struct {
 	AutoCrawl                    bool
 	GscConnector                 bool
 	AiChat                       bool
+	AiUseInternalPrompt          bool
 	AiMonthlyMessageLimit        int32
 	AiConcurrentTurnLimitPerUser int32
 	AiAllowedReasoningEfforts    []string
@@ -92,6 +97,7 @@ func (q *Queries) GetOrganizationFeaturesByConversationID(ctx context.Context, a
 		&i.AutoCrawl,
 		&i.GscConnector,
 		&i.AiChat,
+		&i.AiUseInternalPrompt,
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
 		&i.AiAllowedReasoningEfforts,
@@ -104,6 +110,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -126,6 +133,7 @@ type GetOrganizationFeaturesByProjectIDRow struct {
 	AutoCrawl                    bool
 	GscConnector                 bool
 	AiChat                       bool
+	AiUseInternalPrompt          bool
 	AiMonthlyMessageLimit        int32
 	AiConcurrentTurnLimitPerUser int32
 	AiAllowedReasoningEfforts    []string
@@ -138,6 +146,7 @@ func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, arg Ge
 		&i.AutoCrawl,
 		&i.GscConnector,
 		&i.AiChat,
+		&i.AiUseInternalPrompt,
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
 		&i.AiAllowedReasoningEfforts,
@@ -152,6 +161,7 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(
@@ -170,6 +180,7 @@ type ListOrganizationFeaturesForAdminRow struct {
 	AutoCrawl                    bool
 	GscConnector                 bool
 	AiChat                       bool
+	AiUseInternalPrompt          bool
 	AiMonthlyMessageLimit        int32
 	AiConcurrentTurnLimitPerUser int32
 	AiAllowedReasoningEfforts    []string
@@ -191,6 +202,7 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 			&i.AutoCrawl,
 			&i.GscConnector,
 			&i.AiChat,
+			&i.AiUseInternalPrompt,
 			&i.AiMonthlyMessageLimit,
 			&i.AiConcurrentTurnLimitPerUser,
 			&i.AiAllowedReasoningEfforts,
@@ -208,7 +220,7 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 
 const upsertOrganizationFeatures = `-- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
-    org_id, auto_crawl, gsc_connector, ai_chat,
+    org_id, auto_crawl, gsc_connector, ai_chat, ai_use_internal_prompt,
     ai_monthly_message_limit, ai_concurrent_turn_limit_per_user, ai_allowed_reasoning_efforts,
     updated_by_user_id, updated_at
 ) VALUES (
@@ -218,18 +230,20 @@ INSERT INTO organization_features (
     $4,
     $5,
     $6,
+    $7,
     ARRAY(
         SELECT effort
-        FROM unnest($7::TEXT[]) AS effort
+        FROM unnest($8::TEXT[]) AS effort
         ORDER BY array_position(ARRAY['none', 'low', 'high', 'max']::TEXT[], effort)
     ),
-    $8,
+    $9,
     now()
 )
 ON CONFLICT (org_id) DO UPDATE SET
     auto_crawl = EXCLUDED.auto_crawl,
     gsc_connector = EXCLUDED.gsc_connector,
     ai_chat = EXCLUDED.ai_chat,
+    ai_use_internal_prompt = EXCLUDED.ai_use_internal_prompt,
     ai_monthly_message_limit = EXCLUDED.ai_monthly_message_limit,
     ai_concurrent_turn_limit_per_user = EXCLUDED.ai_concurrent_turn_limit_per_user,
     ai_allowed_reasoning_efforts = EXCLUDED.ai_allowed_reasoning_efforts,
@@ -242,6 +256,7 @@ type UpsertOrganizationFeaturesParams struct {
 	AutoCrawl                    bool
 	GscConnector                 bool
 	AiChat                       bool
+	AiUseInternalPrompt          bool
 	AiMonthlyMessageLimit        int32
 	AiConcurrentTurnLimitPerUser int32
 	AiAllowedReasoningEfforts    []string
@@ -254,6 +269,7 @@ func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrga
 		arg.AutoCrawl,
 		arg.GscConnector,
 		arg.AiChat,
+		arg.AiUseInternalPrompt,
 		arg.AiMonthlyMessageLimit,
 		arg.AiConcurrentTurnLimitPerUser,
 		arg.AiAllowedReasoningEfforts,

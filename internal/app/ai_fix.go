@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/ps-wizard/revserp/internal/aiprompt"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	issueshared "github.com/ps-wizard/revserp/internal/issues/shared"
 )
@@ -144,6 +145,12 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	featureRow, err := queries.GetOrganizationFeaturesByProjectID(r.Context(), sqlc.GetOrganizationFeaturesByProjectIDParams{ProjectID: crawl.ProjectID, UserID: user.ID})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
 	businessProfile, hasBusinessProfile, err := getProjectBusinessProfileByProjectID(r.Context(), queries, crawl.ProjectID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -155,7 +162,17 @@ func (a *App) handleAIFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	systemPrompt := loadEffectiveAISystemPrompt(r.Context(), a.Queries, user.Email)
+	internalPrompt, externalPrompt := "", ""
+	configRow, configErr := a.Queries.GetAIPromptConfig(r.Context())
+	if configErr != nil && !errors.Is(configErr, pgx.ErrNoRows) {
+		serverError(w, r, configErr)
+		return
+	}
+	if configErr == nil {
+		internalPrompt = configRow.InternalSystemPrompt
+		externalPrompt = configRow.ExternalSystemPrompt
+	}
+	systemPrompt := aiprompt.SelectSystemPrompt(featureRow.AiUseInternalPrompt, internalPrompt, externalPrompt)
 	prompt := buildAIFixPrompt(systemPrompt, pillar, buckets, selectedIssues, issueRows, businessProfile, hasBusinessProfile, requestBody.Messages)
 	content, _, err := a.generateAIText(r.Context(), prompt)
 	if err != nil {

@@ -268,6 +268,7 @@ type OrganizationFeature struct {
 	AiMonthlyMessageLimit        int32
 	AiAllowedReasoningEfforts    []string
 	AiConcurrentTurnLimitPerUser int32
+	AiUseInternalPrompt          bool
 }
 
 type OrganizationInvite struct {

@@ -16,6 +16,7 @@ type adminWorkspaceFeaturesResponse struct {
 	AutoCrawl                    bool     `json:"auto_crawl"`
 	GSCConnector                 bool     `json:"gsc_connector"`
 	AIChat                       bool     `json:"ai_chat"`
+	AIUseInternalPrompt          bool     `json:"ai_use_internal_prompt"`
 	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
 	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
@@ -42,6 +43,7 @@ func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 			AutoCrawl:                    row.AutoCrawl,
 			GSCConnector:                 row.GscConnector,
 			AIChat:                       row.AiChat,
+			AIUseInternalPrompt:          row.AiUseInternalPrompt,
 			AIMonthlyMessageLimit:        row.AiMonthlyMessageLimit,
 			AIConcurrentTurnLimitPerUser: row.AiConcurrentTurnLimitPerUser,
 			AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(row.AiAllowedReasoningEfforts),
@@ -65,6 +67,7 @@ type adminPutWorkspaceFeatures struct {
 	AutoCrawl                    bool     `json:"auto_crawl"`
 	GSCConnector                 bool     `json:"gsc_connector"`
 	AIChat                       bool     `json:"ai_chat"`
+	AIUseInternalPrompt          bool     `json:"ai_use_internal_prompt"`
 	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
 	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
@@ -87,6 +90,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 		autoCrawl                    bool
 		gscConnector                 bool
 		aiChat                       bool
+		aiUseInternalPrompt          bool
 		aiMonthlyMessageLimit        int32
 		aiConcurrentTurnLimitPerUser int32
 		aiAllowedReasoningEfforts    []string
@@ -108,6 +112,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			autoCrawl:                    workspace.AutoCrawl,
 			gscConnector:                 workspace.GSCConnector,
 			aiChat:                       workspace.AIChat,
+			aiUseInternalPrompt:          workspace.AIUseInternalPrompt,
 			aiMonthlyMessageLimit:        workspace.AIMonthlyMessageLimit,
 			aiConcurrentTurnLimitPerUser: workspace.AIConcurrentTurnLimitPerUser,
 			aiAllowedReasoningEfforts:    normalizedEfforts,
@@ -133,6 +138,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			AutoCrawl:                    workspace.autoCrawl,
 			GscConnector:                 workspace.gscConnector,
 			AiChat:                       workspace.aiChat,
+			AiUseInternalPrompt:          workspace.aiUseInternalPrompt,
 			AiMonthlyMessageLimit:        workspace.aiMonthlyMessageLimit,
 			AiConcurrentTurnLimitPerUser: workspace.aiConcurrentTurnLimitPerUser,
 			AiAllowedReasoningEfforts:    workspace.aiAllowedReasoningEfforts,
