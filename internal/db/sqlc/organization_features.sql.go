@@ -16,93 +16,23 @@ const getOrganizationFeatures = `-- name: GetOrganizationFeatures :one
 SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
-    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
-    COALESCE(f.disabled_ai_tools, '{}')::text[] AS disabled_ai_tools
+    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat
 FROM organizations AS o
 LEFT JOIN organization_features AS f ON f.org_id = o.id
 WHERE o.id = $1
 `
 
 type GetOrganizationFeaturesRow struct {
-	AutoCrawl       bool
-	GscConnector    bool
-	AiChat          bool
-	DisabledAiTools []string
+	AutoCrawl    bool
+	GscConnector bool
+	AiChat       bool
 }
 
-// Every read below LEFT JOINs and COALESCEs to the enabled default, so a
-// workspace with no organization_features row resolves to all-features-on
-// without the caller needing to distinguish "no row" from "everything allowed".
+// A workspace with no organization_features row resolves to all features on.
 func (q *Queries) GetOrganizationFeatures(ctx context.Context, orgID pgtype.UUID) (GetOrganizationFeaturesRow, error) {
 	row := q.db.QueryRow(ctx, getOrganizationFeatures, orgID)
 	var i GetOrganizationFeaturesRow
-	err := row.Scan(
-		&i.AutoCrawl,
-		&i.GscConnector,
-		&i.AiChat,
-		&i.DisabledAiTools,
-	)
-	return i, err
-}
-
-const getOrganizationFeaturesByConversationID = `-- name: GetOrganizationFeaturesByConversationID :one
-SELECT
-    COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
-    COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
-    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
-    COALESCE(f.disabled_ai_tools, '{}')::text[] AS disabled_ai_tools
-FROM ai_conversations AS c
-LEFT JOIN organization_features AS f ON f.org_id = c.org_id
-WHERE c.id = $1
-`
-
-type GetOrganizationFeaturesByConversationIDRow struct {
-	AutoCrawl       bool
-	GscConnector    bool
-	AiChat          bool
-	DisabledAiTools []string
-}
-
-func (q *Queries) GetOrganizationFeaturesByConversationID(ctx context.Context, conversationID pgtype.UUID) (GetOrganizationFeaturesByConversationIDRow, error) {
-	row := q.db.QueryRow(ctx, getOrganizationFeaturesByConversationID, conversationID)
-	var i GetOrganizationFeaturesByConversationIDRow
-	err := row.Scan(
-		&i.AutoCrawl,
-		&i.GscConnector,
-		&i.AiChat,
-		&i.DisabledAiTools,
-	)
-	return i, err
-}
-
-const getOrganizationFeaturesByCrawlID = `-- name: GetOrganizationFeaturesByCrawlID :one
-SELECT
-    COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
-    COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
-    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
-    COALESCE(f.disabled_ai_tools, '{}')::text[] AS disabled_ai_tools
-FROM crawls AS c
-INNER JOIN projects AS p ON p.id = c.project_id
-LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
-WHERE c.id = $1
-`
-
-type GetOrganizationFeaturesByCrawlIDRow struct {
-	AutoCrawl       bool
-	GscConnector    bool
-	AiChat          bool
-	DisabledAiTools []string
-}
-
-func (q *Queries) GetOrganizationFeaturesByCrawlID(ctx context.Context, crawlID pgtype.UUID) (GetOrganizationFeaturesByCrawlIDRow, error) {
-	row := q.db.QueryRow(ctx, getOrganizationFeaturesByCrawlID, crawlID)
-	var i GetOrganizationFeaturesByCrawlIDRow
-	err := row.Scan(
-		&i.AutoCrawl,
-		&i.GscConnector,
-		&i.AiChat,
-		&i.DisabledAiTools,
-	)
+	err := row.Scan(&i.AutoCrawl, &i.GscConnector, &i.AiChat)
 	return i, err
 }
 
@@ -110,30 +40,22 @@ const getOrganizationFeaturesByProjectID = `-- name: GetOrganizationFeaturesByPr
 SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
-    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
-    COALESCE(f.disabled_ai_tools, '{}')::text[] AS disabled_ai_tools
+    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat
 FROM projects AS p
 LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
 WHERE p.id = $1
 `
 
 type GetOrganizationFeaturesByProjectIDRow struct {
-	AutoCrawl       bool
-	GscConnector    bool
-	AiChat          bool
-	DisabledAiTools []string
+	AutoCrawl    bool
+	GscConnector bool
+	AiChat       bool
 }
 
-// Resolves a project-scoped route to its workspace's features in one round trip.
 func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, projectID pgtype.UUID) (GetOrganizationFeaturesByProjectIDRow, error) {
 	row := q.db.QueryRow(ctx, getOrganizationFeaturesByProjectID, projectID)
 	var i GetOrganizationFeaturesByProjectIDRow
-	err := row.Scan(
-		&i.AutoCrawl,
-		&i.GscConnector,
-		&i.AiChat,
-		&i.DisabledAiTools,
-	)
+	err := row.Scan(&i.AutoCrawl, &i.GscConnector, &i.AiChat)
 	return i, err
 }
 
@@ -144,7 +66,6 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
-    COALESCE(f.disabled_ai_tools, '{}')::text[] AS disabled_ai_tools,
     f.updated_at
 FROM organizations AS o
 LEFT JOIN organization_features AS f ON f.org_id = o.id
@@ -152,16 +73,14 @@ ORDER BY o.name ASC
 `
 
 type ListOrganizationFeaturesForAdminRow struct {
-	OrgID           pgtype.UUID
-	OrgName         string
-	AutoCrawl       bool
-	GscConnector    bool
-	AiChat          bool
-	DisabledAiTools []string
-	UpdatedAt       pgtype.Timestamptz
+	OrgID        pgtype.UUID
+	OrgName      string
+	AutoCrawl    bool
+	GscConnector bool
+	AiChat       bool
+	UpdatedAt    pgtype.Timestamptz
 }
 
-// Backs the admin matrix: every workspace, whether or not it has been restricted.
 func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListOrganizationFeaturesForAdminRow, error) {
 	rows, err := q.db.Query(ctx, listOrganizationFeaturesForAdmin)
 	if err != nil {
@@ -177,7 +96,6 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 			&i.AutoCrawl,
 			&i.GscConnector,
 			&i.AiChat,
-			&i.DisabledAiTools,
 			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -192,21 +110,19 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 
 const upsertOrganizationFeatures = `-- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
-    org_id, auto_crawl, gsc_connector, ai_chat, disabled_ai_tools, updated_by_user_id, updated_at
+    org_id, auto_crawl, gsc_connector, ai_chat, updated_by_user_id, updated_at
 ) VALUES (
     $1,
     $2,
     $3,
     $4,
     $5,
-    $6,
     now()
 )
 ON CONFLICT (org_id) DO UPDATE SET
     auto_crawl = EXCLUDED.auto_crawl,
     gsc_connector = EXCLUDED.gsc_connector,
     ai_chat = EXCLUDED.ai_chat,
-    disabled_ai_tools = EXCLUDED.disabled_ai_tools,
     updated_by_user_id = EXCLUDED.updated_by_user_id,
     updated_at = now()
 `
@@ -216,7 +132,6 @@ type UpsertOrganizationFeaturesParams struct {
 	AutoCrawl       bool
 	GscConnector    bool
 	AiChat          bool
-	DisabledAiTools []string
 	UpdatedByUserID pgtype.UUID
 }
 
@@ -226,7 +141,6 @@ func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrga
 		arg.AutoCrawl,
 		arg.GscConnector,
 		arg.AiChat,
-		arg.DisabledAiTools,
 		arg.UpdatedByUserID,
 	)
 	return err

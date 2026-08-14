@@ -1,12 +1,8 @@
 package app
 
 import (
-	"context"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ps-wizard/revserp/internal/ai"
-	"github.com/ps-wizard/revserp/internal/app/aitools"
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
@@ -22,8 +18,6 @@ type App struct {
 	SupabaseClient *internalauth.SupabaseClient
 	SessionManager *internalauth.SessionManager
 	GSCService     *gsc.Service
-	AIClient       ai.Client
-	AIToolRegistry *aitools.Registry
 }
 
 // New builds an application with shared dependencies.
@@ -38,29 +32,14 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		cfg.SessionTTL,
 		cfg.AppEnv == "production",
 	)
-	gscService := gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes)
 
-	app := &App{
+	return &App{
 		Config:         cfg,
 		DB:             dbPool,
 		Queries:        sqlc.New(dbPool),
 		AuthVerifier:   authVerifier,
 		SupabaseClient: supabaseClient,
 		SessionManager: sessionManager,
-		GSCService:     gscService,
-		AIClient:       ai.NewDeepSeekClient(cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekBaseURL, nil),
+		GSCService:     gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes),
 	}
-	app.AIToolRegistry = aitools.NewRegistry(aitools.Deps{
-		CreateCrawl: func(ctx context.Context, scope aitools.Scope, raw []byte) (aitools.CrawlStart, error) {
-			crawl, err := app.createCrawlForAgent(ctx, scope.ProjectID, scope.UserID, raw)
-			if err != nil {
-				return aitools.CrawlStart{}, err
-			}
-			return aitools.CrawlStart{ID: crawl.ID.String(), Status: crawl.Status}, nil
-		},
-		ConfigureAutoCrawl:    app.configureAutoCrawlForAgent,
-		UpdateBusinessProfile: app.updateBusinessProfileForAgent,
-		ReadSearchConsole:     app.searchConsoleForAgent,
-	})
-	return app
 }

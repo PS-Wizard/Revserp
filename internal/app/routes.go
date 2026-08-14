@@ -78,21 +78,6 @@ func (a *App) Router() http.Handler {
 			gated.Get("/projects/{projectID}/gsc/queries", a.handleProjectGSCQueries)
 		})
 
-		// Conversation-scoped AI routes resolve through the conversation's own
-		// workspace; the collection routes have no path scope, so they resolve
-		// through the caller's active workspace.
-		protected.Group(func(gated chi.Router) {
-			gated.Use(a.requireFeature(FeatureAIChat, featuresByActiveOrg))
-			gated.Get("/ai/conversations", a.handleListAIConversations)
-			gated.Post("/ai/conversations", a.handleCreateAIConversation)
-		})
-
-		protected.Group(func(gated chi.Router) {
-			gated.Use(a.requireFeature(FeatureAIChat, featuresByConversationParam))
-			gated.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
-			gated.Post("/ai/conversations/{conversationID}/messages", a.handleCreateAIConversationMessage)
-			gated.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
-		})
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 		protected.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)

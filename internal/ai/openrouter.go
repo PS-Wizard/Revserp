@@ -20,9 +20,9 @@ type OpenRouterClient struct {
 }
 
 type openRouterChatRequest struct {
-	Model       string               `json:"model"`
-	Messages    []openRouterMessage  `json:"messages"`
-	Temperature float64              `json:"temperature"`
+	Model       string              `json:"model"`
+	Messages    []openRouterMessage `json:"messages"`
+	Temperature float64             `json:"temperature"`
 }
 
 type openRouterMessage struct {

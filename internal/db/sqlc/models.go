@@ -40,32 +40,6 @@ type AiAuditRun struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
-type AiConversation struct {
-	ID              pgtype.UUID
-	ProjectID       pgtype.UUID
-	CrawlID         pgtype.UUID
-	CreatedByUserID pgtype.UUID
-	Title           pgtype.Text
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-	OrgID           pgtype.UUID
-}
-
-type AiMessage struct {
-	ID               pgtype.UUID
-	ConversationID   pgtype.UUID
-	Role             string
-	Content          string
-	CrawlID          pgtype.UUID
-	Scope            []byte
-	Model            pgtype.Text
-	CreatedAt        pgtype.Timestamptz
-	ReasoningContent pgtype.Text
-	ToolCalls        []byte
-	ToolCallID       pgtype.Text
-	ToolName         pgtype.Text
-}
-
 type AiPromptConfig struct {
 	ID                       int64
 	UpdatedByUserID          pgtype.UUID
@@ -224,7 +198,6 @@ type OrganizationFeature struct {
 	AutoCrawl       bool
 	GscConnector    bool
 	AiChat          bool
-	DisabledAiTools []string
 	UpdatedAt       pgtype.Timestamptz
 	UpdatedByUserID pgtype.UUID
 }

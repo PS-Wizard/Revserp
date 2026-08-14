@@ -15,9 +15,8 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-// The denylist default lives in SQL (LEFT JOIN + COALESCE), not in Go, so it can
-// only be verified against a real Postgres. If it were wrong, either every
-// workspace would be fully disabled or nothing could ever be gated.
+// The enabled default lives in SQL (LEFT JOIN + COALESCE), so it is verified
+// against a real Postgres.
 func newFeaturesTestQueries(t *testing.T) (*sqlc.Queries, *pgxpool.Pool, context.Context) {
 	t.Helper()
 
@@ -66,14 +65,11 @@ func TestOrgWithNoRowResolvesToEverythingEnabled(t *testing.T) {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
 
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.DisabledAiTools)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat)
 	for _, feature := range []Feature{FeatureAutoCrawl, FeatureGSCConnector, FeatureAIChat} {
 		if !features.Enabled(feature) {
 			t.Errorf("unrestricted workspace has %q disabled", feature)
 		}
-	}
-	if len(features.DisabledAITools()) != 0 {
-		t.Errorf("unrestricted workspace has disabled tools: %v", features.DisabledAITools())
 	}
 }
 
@@ -82,11 +78,10 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 	orgID := createFeaturesTestOrg(t, ctx, pool)
 
 	if err := queries.UpsertOrganizationFeatures(ctx, sqlc.UpsertOrganizationFeaturesParams{
-		OrgID:           orgID,
-		AutoCrawl:       false,
-		GscConnector:    true,
-		AiChat:          true,
-		DisabledAiTools: []string{"start_crawl", "export_crawl"},
+		OrgID:        orgID,
+		AutoCrawl:    false,
+		GscConnector: true,
+		AiChat:       true,
 	}); err != nil {
 		t.Fatalf("UpsertOrganizationFeatures: %v", err)
 	}
@@ -95,19 +90,13 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.DisabledAiTools)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat)
 
 	if features.Enabled(FeatureAutoCrawl) {
 		t.Error("auto_crawl was saved disabled but read back enabled")
 	}
 	if !features.Enabled(FeatureGSCConnector) {
 		t.Error("gsc_connector was saved enabled but read back disabled")
-	}
-	if features.AIToolEnabled("start_crawl") || features.AIToolEnabled("export_crawl") {
-		t.Error("a disabled tool read back enabled")
-	}
-	if !features.AIToolEnabled("list_issues") {
-		t.Error("an untouched tool read back disabled")
 	}
 }
 
@@ -119,7 +108,6 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 
 	first := sqlc.UpsertOrganizationFeaturesParams{
 		OrgID: orgID, AutoCrawl: false, GscConnector: false, AiChat: false,
-		DisabledAiTools: []string{"start_crawl"},
 	}
 	if err := queries.UpsertOrganizationFeatures(ctx, first); err != nil {
 		t.Fatalf("first upsert: %v", err)
@@ -127,7 +115,6 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 
 	second := sqlc.UpsertOrganizationFeaturesParams{
 		OrgID: orgID, AutoCrawl: true, GscConnector: true, AiChat: true,
-		DisabledAiTools: []string{},
 	}
 	if err := queries.UpsertOrganizationFeatures(ctx, second); err != nil {
 		t.Fatalf("second upsert: %v", err)
@@ -137,13 +124,10 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.DisabledAiTools)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat)
 
 	if !features.Enabled(FeatureAutoCrawl) || !features.Enabled(FeatureGSCConnector) || !features.Enabled(FeatureAIChat) {
 		t.Error("re-enabling via a second save did not take effect")
-	}
-	if !features.AIToolEnabled("start_crawl") {
-		t.Error("clearing the tool denylist did not take effect")
 	}
 }
 

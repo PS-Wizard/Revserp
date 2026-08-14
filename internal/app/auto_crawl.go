@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/ps-wizard/revserp/internal/app/aitools"
 	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/schedule"
@@ -342,31 +341,4 @@ func writeAutoCrawlSettingsError(w http.ResponseWriter, r *http.Request, err err
 	default:
 		serverError(w, r, err)
 	}
-}
-
-// configureAutoCrawlForAgent runs the authorized auto-crawl configuration path
-// for the AI agent's configure_auto_crawl tool, in its own transaction.
-func (a *App) configureAutoCrawlForAgent(ctx context.Context, scope aitools.Scope, params aitools.AutoCrawlParams) error {
-	in := autoCrawlSettingsInput{
-		Enabled:        params.Enabled,
-		RunAt:          params.RunAt,
-		Timezone:       params.Timezone,
-		ConfigSnapshot: params.ConfigSnapshot,
-	}
-	if params.FrequencyDays != nil {
-		frequency := int32(*params.FrequencyDays)
-		in.FrequencyDays = &frequency
-	}
-
-	tx, err := a.DB.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	queries := a.Queries.WithTx(tx)
-	if _, err := a.applyAutoCrawlSettings(ctx, queries, scope.ProjectID, scope.UserID, in); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }

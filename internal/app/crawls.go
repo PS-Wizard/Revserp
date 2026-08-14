@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -115,41 +114,6 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, newCrawlResponseFromCreateRow(crawl))
-}
-
-// createCrawlForAgent runs the authorized crawl creation path for the AI
-// agent's start_crawl tool, in its own transaction. Ownership is enforced via
-// GetProjectByIDForUser before the crawl is queued.
-func (a *App) createCrawlForAgent(ctx context.Context, projectID, userID pgtype.UUID, rawConfigSnapshot json.RawMessage) (sqlc.CreateCrawlRow, error) {
-	normalizedConfigSnapshot, err := normalizeCreateCrawlConfigSnapshot(rawConfigSnapshot)
-	if err != nil {
-		return sqlc.CreateCrawlRow{}, err
-	}
-	tx, err := a.DB.Begin(ctx)
-	if err != nil {
-		return sqlc.CreateCrawlRow{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	queries := a.Queries.WithTx(tx)
-	if _, err := queries.GetProjectByIDForUser(ctx, sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: userID}); err != nil {
-		return sqlc.CreateCrawlRow{}, err
-	}
-	crawl, err := queries.CreateCrawl(ctx, sqlc.CreateCrawlParams{
-		ProjectID:         projectID,
-		RequestedByUserID: userID,
-		Source:            "manual",
-		Status:            "queued",
-		ConfigSnapshot:    normalizedConfigSnapshot,
-		StartedAt:         pgtype.Timestamptz{},
-	})
-	if err != nil {
-		return sqlc.CreateCrawlRow{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return sqlc.CreateCrawlRow{}, err
-	}
-	return crawl, nil
 }
 
 // handleListCrawls lists crawls for a project the user can access.
