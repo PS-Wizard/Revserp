@@ -1,6 +1,5 @@
-# Unified backend image: builds ALL backend binaries (api, worker, ai-audit-worker,
-# migrate) into ONE image. Built once per deploy; each Compose service runs this same
-# image with a different command. Replaces the three separate Dockerfiles.
+# Unified backend image: builds all backend binaries into one image. Built once
+# per deploy; each Compose service runs this image with a different command.
 FROM golang:1.26-bookworm AS build
 WORKDIR /app
 
@@ -14,6 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -p 3 -o /out/api             ./cmd/api \
  && CGO_ENABLED=0 go build -p 3 -o /out/worker          ./cmd/worker \
  && CGO_ENABLED=0 go build -p 3 -o /out/ai-audit-worker ./cmd/ai-audit-worker \
+ && CGO_ENABLED=0 go build -p 3 -o /out/ai-chat-worker  ./cmd/ai-chat-worker \
  && CGO_ENABLED=0 go build -p 3 -o /out/migrate         ./cmd/migrate
 
 FROM debian:bookworm-slim
@@ -39,6 +39,7 @@ RUN case "$TARGETARCH" in \
 COPY --from=build /out/api             /app/api
 COPY --from=build /out/worker          /app/worker
 COPY --from=build /out/ai-audit-worker /app/ai-audit-worker
+COPY --from=build /out/ai-chat-worker  /app/ai-chat-worker
 COPY --from=build /out/migrate         /app/migrate
 COPY migrations /app/migrations
 

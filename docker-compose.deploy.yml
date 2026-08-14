@@ -1,11 +1,11 @@
-# Deployed as ONE Coolify "Docker Compose" resource (replaces the 3 separate backend apps).
+# Deployed as one Coolify Docker Compose resource.
 #
 # Each service below is STILL its own container — own logs, own resource limits, own
 # restart. Compose only makes them build + deploy together. In Coolify you still click
 # into each service to see just its logs.
 #
-# Flow on every deploy:  build image once  ->  `migrate` runs & must exit 0  ->
-#                        api + worker + ai-audit-worker start on the new code.
+# Flow on every deploy: build image once -> migrations must pass -> API and all
+# workers start on the new code.
 #
 # Secret VALUES live in Coolify's Environment Variables UI (this file only references
 # ${NAMES}, so no secrets are committed to git).
@@ -36,10 +36,14 @@ x-backend-env: &backend-env
   AUTO_CRAWL_SCHEDULER_INTERVAL: ${AUTO_CRAWL_SCHEDULER_INTERVAL}
   AI_AUDIT_WORKER_CONCURRENCY: ${AI_AUDIT_WORKER_CONCURRENCY}
   AI_AUDIT_WORKER_POLL_INTERVAL: ${AI_AUDIT_WORKER_POLL_INTERVAL}
+  AI_CHAT_WORKER_CONCURRENCY: ${AI_CHAT_WORKER_CONCURRENCY}
+  AI_CHAT_WORKER_POLL_INTERVAL: ${AI_CHAT_WORKER_POLL_INTERVAL}
+  AI_TURN_TIMEOUT: ${AI_TURN_TIMEOUT}
   AI_PROVIDER: ${AI_PROVIDER}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
   DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
   DEEPSEEK_MODEL: ${DEEPSEEK_MODEL}
+  DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL}
   GEMINI_API_KEY: ${GEMINI_API_KEY}
   GEMINI_MODEL: ${GEMINI_MODEL}
   AI_VISIBILITY_MODELS: ${AI_VISIBILITY_MODELS}
@@ -119,3 +123,17 @@ services:
         limits:
           cpus: "1.0"
           memory: 1G
+
+  ai-chat-worker:
+    image: revserp-backend:latest
+    command: ["/app/ai-chat-worker"]
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M

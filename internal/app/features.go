@@ -24,28 +24,31 @@ const (
 )
 
 const (
-	defaultAIMonthlyMessageLimit int32 = 50
+	defaultAIMonthlyMessageLimit        int32 = 50
+	defaultAIConcurrentTurnLimitPerUser int32 = 2
 )
 
 var canonicalAIReasoningEfforts = []string{"none", "low", "high", "max"}
 
 // OrgFeatures is one workspace's resolved gating state.
 type OrgFeatures struct {
-	AutoCrawl                 bool
-	GSCConnector              bool
-	AIChat                    bool
-	AIMonthlyMessageLimit     int32
-	AIAllowedReasoningEfforts []string
+	AutoCrawl                    bool
+	GSCConnector                 bool
+	AIChat                       bool
+	AIMonthlyMessageLimit        int32
+	AIConcurrentTurnLimitPerUser int32
+	AIAllowedReasoningEfforts    []string
 }
 
 // allFeaturesEnabled is used for a workspace with no organization_features row.
 func allFeaturesEnabled() OrgFeatures {
 	return OrgFeatures{
-		AutoCrawl:                 true,
-		GSCConnector:              true,
-		AIChat:                    true,
-		AIMonthlyMessageLimit:     defaultAIMonthlyMessageLimit,
-		AIAllowedReasoningEfforts: append([]string(nil), canonicalAIReasoningEfforts...),
+		AutoCrawl:                    true,
+		GSCConnector:                 true,
+		AIChat:                       true,
+		AIMonthlyMessageLimit:        defaultAIMonthlyMessageLimit,
+		AIConcurrentTurnLimitPerUser: defaultAIConcurrentTurnLimitPerUser,
+		AIAllowedReasoningEfforts:    append([]string(nil), canonicalAIReasoningEfforts...),
 	}
 }
 
@@ -77,9 +80,12 @@ func normalizeAIReasoningEfforts(efforts []string) []string {
 	return normalized
 }
 
-func validateAIChatSettings(limit int32, efforts []string) ([]string, error) {
+func validateAIChatSettings(limit, concurrentLimit int32, efforts []string) ([]string, error) {
 	if limit < 0 || limit > 1000000 {
 		return nil, fmt.Errorf("ai_monthly_message_limit must be between 0 and 1000000")
+	}
+	if concurrentLimit < 1 || concurrentLimit > 20 {
+		return nil, fmt.Errorf("ai_concurrent_turn_limit_per_user must be between 1 and 20")
 	}
 	if len(efforts) == 0 {
 		return nil, fmt.Errorf("ai_allowed_reasoning_efforts must not be empty")
@@ -106,13 +112,14 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func featuresFromRow(autoCrawl, gscConnector, aiChat bool, monthlyLimit int32, efforts []string) OrgFeatures {
+func featuresFromRow(autoCrawl, gscConnector, aiChat bool, monthlyLimit, concurrentLimit int32, efforts []string) OrgFeatures {
 	return OrgFeatures{
-		AutoCrawl:                 autoCrawl,
-		GSCConnector:              gscConnector,
-		AIChat:                    aiChat,
-		AIMonthlyMessageLimit:     monthlyLimit,
-		AIAllowedReasoningEfforts: normalizeAIReasoningEfforts(efforts),
+		AutoCrawl:                    autoCrawl,
+		GSCConnector:                 gscConnector,
+		AIChat:                       aiChat,
+		AIMonthlyMessageLimit:        monthlyLimit,
+		AIConcurrentTurnLimitPerUser: concurrentLimit,
+		AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(efforts),
 	}
 }
 
@@ -125,7 +132,7 @@ func (a *App) OrgFeaturesForOrg(ctx context.Context, orgID pgtype.UUID) (OrgFeat
 		}
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
 }
 
 type orgFeatureResolver func(*App, *http.Request) (OrgFeatures, error)
@@ -151,7 +158,7 @@ func featuresByProjectParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
 }
 
 // featuresByConversationParam resolves a conversation route to its project workspace.
@@ -171,7 +178,7 @@ func featuresByConversationParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
 }
 
 // requireFeature gates a route group on its governing workspace feature.
@@ -207,19 +214,21 @@ func (a *App) requireFeature(feature Feature, resolve orgFeatureResolver) func(h
 
 // orgFeaturesResponse is the wire shape shared by /me and the admin matrix.
 type orgFeaturesResponse struct {
-	AutoCrawl                 bool     `json:"auto_crawl"`
-	GSCConnector              bool     `json:"gsc_connector"`
-	AIChat                    bool     `json:"ai_chat"`
-	AIMonthlyMessageLimit     int32    `json:"ai_monthly_message_limit"`
-	AIAllowedReasoningEfforts []string `json:"ai_allowed_reasoning_efforts"`
+	AutoCrawl                    bool     `json:"auto_crawl"`
+	GSCConnector                 bool     `json:"gsc_connector"`
+	AIChat                       bool     `json:"ai_chat"`
+	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
+	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
+	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
 }
 
 func newOrgFeaturesResponse(features OrgFeatures) orgFeaturesResponse {
 	return orgFeaturesResponse{
-		AutoCrawl:                 features.AutoCrawl,
-		GSCConnector:              features.GSCConnector,
-		AIChat:                    features.AIChat,
-		AIMonthlyMessageLimit:     features.AIMonthlyMessageLimit,
-		AIAllowedReasoningEfforts: normalizeAIReasoningEfforts(features.AIAllowedReasoningEfforts),
+		AutoCrawl:                    features.AutoCrawl,
+		GSCConnector:                 features.GSCConnector,
+		AIChat:                       features.AIChat,
+		AIMonthlyMessageLimit:        features.AIMonthlyMessageLimit,
+		AIConcurrentTurnLimitPerUser: features.AIConcurrentTurnLimitPerUser,
+		AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(features.AIAllowedReasoningEfforts),
 	}
 }

@@ -56,7 +56,7 @@ func newAITurnFixture(t *testing.T, limit int32, efforts []string) aiTurnFixture
 	}
 	if err := queries.UpsertOrganizationFeatures(ctx, sqlc.UpsertOrganizationFeaturesParams{
 		OrgID: org.ID, AutoCrawl: true, GscConnector: true, AiChat: true,
-		AiMonthlyMessageLimit: limit, AiAllowedReasoningEfforts: efforts,
+		AiMonthlyMessageLimit: limit, AiConcurrentTurnLimitPerUser: 2, AiAllowedReasoningEfforts: efforts,
 	}); err != nil {
 		t.Fatalf("configure organization features: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestAITurnSubmissionIntegration(t *testing.T) {
 
 	if err := fixture.queries.UpsertOrganizationFeatures(fixture.ctx, sqlc.UpsertOrganizationFeaturesParams{
 		OrgID: fixture.organizationID, AutoCrawl: true, GscConnector: true, AiChat: true,
-		AiMonthlyMessageLimit: 10, AiAllowedReasoningEfforts: []string{"none"},
+		AiMonthlyMessageLimit: 10, AiConcurrentTurnLimitPerUser: 2, AiAllowedReasoningEfforts: []string{"none"},
 	}); err != nil {
 		t.Fatalf("restrict reasoning: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestAITurnSubmissionIntegration(t *testing.T) {
 	}
 	if err := fixture.queries.UpsertOrganizationFeatures(fixture.ctx, sqlc.UpsertOrganizationFeaturesParams{
 		OrgID: fixture.organizationID, AutoCrawl: true, GscConnector: true, AiChat: false,
-		AiMonthlyMessageLimit: 10, AiAllowedReasoningEfforts: canonicalAIReasoningEfforts,
+		AiMonthlyMessageLimit: 10, AiConcurrentTurnLimitPerUser: 2, AiAllowedReasoningEfforts: canonicalAIReasoningEfforts,
 	}); err != nil {
 		t.Fatalf("disable ai chat: %v", err)
 	}

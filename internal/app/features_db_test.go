@@ -66,7 +66,7 @@ func TestOrgWithNoRowResolvesToEverythingEnabled(t *testing.T) {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
 
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
 	for _, feature := range []Feature{FeatureAutoCrawl, FeatureGSCConnector, FeatureAIChat} {
 		if !features.Enabled(feature) {
 			t.Errorf("unrestricted workspace has %q disabled", feature)
@@ -85,12 +85,13 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 	orgID := createFeaturesTestOrg(t, ctx, pool)
 
 	if err := queries.UpsertOrganizationFeatures(ctx, sqlc.UpsertOrganizationFeaturesParams{
-		OrgID:                     orgID,
-		AutoCrawl:                 false,
-		GscConnector:              true,
-		AiChat:                    true,
-		AiMonthlyMessageLimit:     123,
-		AiAllowedReasoningEfforts: []string{"none", "high"},
+		OrgID:                        orgID,
+		AutoCrawl:                    false,
+		GscConnector:                 true,
+		AiChat:                       true,
+		AiMonthlyMessageLimit:        123,
+		AiConcurrentTurnLimitPerUser: 2,
+		AiAllowedReasoningEfforts:    []string{"none", "high"},
 	}); err != nil {
 		t.Fatalf("UpsertOrganizationFeatures: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
 
 	if features.Enabled(FeatureAutoCrawl) {
 		t.Error("auto_crawl was saved disabled but read back enabled")
@@ -123,7 +124,7 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 
 	first := sqlc.UpsertOrganizationFeaturesParams{
 		OrgID: orgID, AutoCrawl: false, GscConnector: false, AiChat: false,
-		AiMonthlyMessageLimit: 1, AiAllowedReasoningEfforts: []string{"max"},
+		AiMonthlyMessageLimit: 1, AiConcurrentTurnLimitPerUser: 2, AiAllowedReasoningEfforts: []string{"max"},
 	}
 	if err := queries.UpsertOrganizationFeatures(ctx, first); err != nil {
 		t.Fatalf("first upsert: %v", err)
@@ -131,7 +132,7 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 
 	second := sqlc.UpsertOrganizationFeaturesParams{
 		OrgID: orgID, AutoCrawl: true, GscConnector: true, AiChat: true,
-		AiMonthlyMessageLimit: 999, AiAllowedReasoningEfforts: []string{"low", "none"},
+		AiMonthlyMessageLimit: 999, AiConcurrentTurnLimitPerUser: 2, AiAllowedReasoningEfforts: []string{"low", "none"},
 	}
 	if err := queries.UpsertOrganizationFeatures(ctx, second); err != nil {
 		t.Fatalf("second upsert: %v", err)
@@ -141,7 +142,7 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts)
 
 	if !features.Enabled(FeatureAutoCrawl) || !features.Enabled(FeatureGSCConnector) || !features.Enabled(FeatureAIChat) {
 		t.Error("re-enabling via a second save did not take effect")

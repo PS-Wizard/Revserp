@@ -23,11 +23,11 @@ func TestEnabledReadsEachFeatureIndependently(t *testing.T) {
 		feature     Feature
 		wantEnabled bool
 	}{
-		{"autocrawl off", featuresFromRow(false, true, true, 50, canonicalAIReasoningEfforts), FeatureAutoCrawl, false},
-		{"autocrawl off leaves gsc on", featuresFromRow(false, true, true, 50, canonicalAIReasoningEfforts), FeatureGSCConnector, true},
-		{"gsc off", featuresFromRow(true, false, true, 50, canonicalAIReasoningEfforts), FeatureGSCConnector, false},
-		{"gsc off leaves autocrawl on", featuresFromRow(true, false, true, 50, canonicalAIReasoningEfforts), FeatureAutoCrawl, true},
-		{"ai chat off", featuresFromRow(true, true, false, 50, canonicalAIReasoningEfforts), FeatureAIChat, false},
+		{"autocrawl off", featuresFromRow(false, true, true, 50, 2, canonicalAIReasoningEfforts), FeatureAutoCrawl, false},
+		{"autocrawl off leaves gsc on", featuresFromRow(false, true, true, 50, 2, canonicalAIReasoningEfforts), FeatureGSCConnector, true},
+		{"gsc off", featuresFromRow(true, false, true, 50, 2, canonicalAIReasoningEfforts), FeatureGSCConnector, false},
+		{"gsc off leaves autocrawl on", featuresFromRow(true, false, true, 50, 2, canonicalAIReasoningEfforts), FeatureAutoCrawl, true},
+		{"ai chat off", featuresFromRow(true, true, false, 50, 2, canonicalAIReasoningEfforts), FeatureAIChat, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -39,7 +39,7 @@ func TestEnabledReadsEachFeatureIndependently(t *testing.T) {
 }
 
 func TestUnknownFeatureFailsOpen(t *testing.T) {
-	if !featuresFromRow(false, false, false, 50, canonicalAIReasoningEfforts).Enabled(Feature("not_a_real_feature")) {
+	if !featuresFromRow(false, false, false, 50, 2, canonicalAIReasoningEfforts).Enabled(Feature("not_a_real_feature")) {
 		t.Error("an unrecognized feature resolved to disabled")
 	}
 }
@@ -63,7 +63,7 @@ func TestValidateAIChatSettings(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			efforts, err := validateAIChatSettings(test.limit, test.efforts)
+			efforts, err := validateAIChatSettings(test.limit, 2, test.efforts)
 			if (err != nil) != test.wantErr {
 				t.Fatalf("validateAIChatSettings() error = %v, wantErr %v", err, test.wantErr)
 			}
@@ -90,7 +90,7 @@ func TestDefaultAIChatSettings(t *testing.T) {
 func TestAIChatFeatureGateUsesStableError(t *testing.T) {
 	app := &App{}
 	resolver := func(*App, *http.Request) (OrgFeatures, error) {
-		return featuresFromRow(true, true, false, 50, canonicalAIReasoningEfforts), nil
+		return featuresFromRow(true, true, false, 50, 2, canonicalAIReasoningEfforts), nil
 	}
 	response := httptest.NewRecorder()
 	app.requireFeature(FeatureAIChat, resolver)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

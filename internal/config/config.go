@@ -32,6 +32,8 @@ type Config struct {
 	AutoCrawlSchedulerInterval  time.Duration
 	AIAuditWorkerConcurrency    int
 	AIAuditWorkerPollInterval   time.Duration
+	AIChatWorkerConcurrency     int
+	AIChatWorkerPollInterval    time.Duration
 	OpenRouterAPIKey            string
 	AIVisibilityModels          []string
 	AIVisibilityRateDelay       time.Duration
@@ -82,6 +84,8 @@ func Load() Config {
 		AutoCrawlSchedulerInterval:  getEnvDuration("AUTO_CRAWL_SCHEDULER_INTERVAL", time.Minute),
 		AIAuditWorkerConcurrency:    getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
 		AIAuditWorkerPollInterval:   getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
+		AIChatWorkerConcurrency:     getEnvInt("AI_CHAT_WORKER_CONCURRENCY", 20),
+		AIChatWorkerPollInterval:    getEnvDuration("AI_CHAT_WORKER_POLL_INTERVAL", 2*time.Second),
 		OpenRouterAPIKey:            getEnv("OPENROUTER_API_KEY", ""),
 		AIVisibilityModels:          getEnvCSV("AI_VISIBILITY_MODELS", []string{"meta-llama/llama-3.3-70b-instruct:free", "nvidia/nemotron-3-super-120b-a12b:free", "nousresearch/hermes-3-llama-3.1-405b:free"}),
 		AIVisibilityRateDelay:       getEnvDuration("AI_VISIBILITY_RATE_DELAY", 9*time.Second),

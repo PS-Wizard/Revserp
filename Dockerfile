@@ -9,6 +9,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api \
 	&& CGO_ENABLED=0 go build -o /out/worker ./cmd/worker \
+	&& CGO_ENABLED=0 go build -o /out/ai-chat-worker ./cmd/ai-chat-worker \
 	&& CGO_ENABLED=0 go build -o /out/migrate ./cmd/migrate
 
 FROM debian:bookworm-slim
@@ -21,12 +22,13 @@ RUN apt-get update \
 
 COPY --from=build /out/api /app/api
 COPY --from=build /out/worker /app/worker
+COPY --from=build /out/ai-chat-worker /app/ai-chat-worker
 COPY --from=build /out/migrate /app/migrate
 COPY migrations /app/migrations
 COPY scripts/start-api.sh /app/start-api.sh
 COPY scripts/start-worker.sh /app/start-worker.sh
 
-RUN chmod +x /app/api /app/worker /app/migrate /app/start-api.sh /app/start-worker.sh
+RUN chmod +x /app/api /app/worker /app/ai-chat-worker /app/migrate /app/start-api.sh /app/start-worker.sh
 
 EXPOSE 8080
 
