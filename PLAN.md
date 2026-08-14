@@ -163,8 +163,6 @@ Rules:
 - `id UUID PRIMARY KEY`
 - `conversation_id UUID NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE`
 - `created_by_user_id UUID NOT NULL REFERENCES users(id)`
-- `user_message_id UUID NOT NULL`
-- `assistant_message_id UUID NOT NULL`
 - `status TEXT NOT NULL`: `queued`, `running`, `completed`, `stopped`, `failed`
 - `requested_effort TEXT NOT NULL`: `none`, `low`, `high`, `max`
 - `effective_effort TEXT NOT NULL`: `none`, `low`, `high`, `max`
@@ -172,6 +170,7 @@ Rules:
 - `prompt_version TEXT NOT NULL`
 - `crawl_id UUID NULL REFERENCES crawls(id) ON DELETE SET NULL`
 - `client_request_id TEXT NOT NULL`
+- `request_hash BYTEA NOT NULL`
 - `attempt_count INTEGER NOT NULL DEFAULT 0`
 - `claimed_by TEXT NULL`
 - `lease_expires_at TIMESTAMPTZ NULL`
@@ -190,13 +189,13 @@ Rules:
 
 - A partial unique index permits only one `queued` or `running` turn per conversation.
 - A unique idempotency constraint prevents the same client request from creating or charging two turns.
+- `request_hash` is the SHA-256 hash of the accepted request fields. It detects reuse of an idempotency key with different input.
 - `crawl_id`, when present, must belong to the conversation project. Validate this before insertion and again when the worker loads context.
 - Only the current lease owner can write worker progress or terminal state.
 
 ### `ai_messages`
 
 - `id UUID PRIMARY KEY`
-- `conversation_id UUID NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE`
 - `turn_id UUID NOT NULL REFERENCES ai_turns(id) ON DELETE CASCADE`
 - `role TEXT NOT NULL`: `user`, `assistant`
 - `status TEXT NOT NULL`: `pending`, `complete`, `partial`, `failed`
@@ -206,6 +205,7 @@ Rules:
 
 Rules:
 
+- Each turn has at most one user message and one assistant message.
 - No `tool` role.
 - No raw reasoning column.
 - Only complete user and assistant messages enter later model context.

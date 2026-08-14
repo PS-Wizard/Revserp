@@ -40,6 +40,25 @@ type AiAuditRun struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
+type AiConversation struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type AiMessage struct {
+	ID        pgtype.UUID
+	TurnID    pgtype.UUID
+	Role      string
+	Status    string
+	Content   string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
 type AiPromptConfig struct {
 	ID                       int64
 	UpdatedByUserID          pgtype.UUID
@@ -47,6 +66,45 @@ type AiPromptConfig struct {
 	QuestionGenerationPrompt string
 	InternalSystemPrompt     string
 	ExternalSystemPrompt     string
+}
+
+type AiTurn struct {
+	ID                pgtype.UUID
+	ConversationID    pgtype.UUID
+	CreatedByUserID   pgtype.UUID
+	Status            string
+	RequestedEffort   string
+	EffectiveEffort   string
+	Model             string
+	PromptVersion     string
+	CrawlID           pgtype.UUID
+	ClientRequestID   string
+	RequestHash       []byte
+	AttemptCount      int32
+	ClaimedBy         pgtype.Text
+	LeaseExpiresAt    pgtype.Timestamptz
+	HeartbeatAt       pgtype.Timestamptz
+	CancelRequestedAt pgtype.Timestamptz
+	OutputStartedAt   pgtype.Timestamptz
+	PromptTokens      pgtype.Int4
+	ReasoningTokens   pgtype.Int4
+	CompletionTokens  pgtype.Int4
+	TotalTokens       pgtype.Int4
+	ErrorCode         pgtype.Text
+	ErrorMessage      pgtype.Text
+	QueuedAt          pgtype.Timestamptz
+	StartedAt         pgtype.Timestamptz
+	CompletedAt       pgtype.Timestamptz
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
+type AiTurnEvent struct {
+	ID        int64
+	TurnID    pgtype.UUID
+	EventType string
+	Payload   []byte
+	CreatedAt pgtype.Timestamptz
 }
 
 type AiWorkerJob struct {
@@ -60,6 +118,13 @@ type AiWorkerJob struct {
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
 	AuditID      pgtype.UUID
+}
+
+type AiWorkspaceMonthlyUsage struct {
+	OrganizationID pgtype.UUID
+	PeriodStart    pgtype.Date
+	UsedMessages   int32
+	UpdatedAt      pgtype.Timestamptz
 }
 
 type Crawl struct {
@@ -194,12 +259,14 @@ type Organization struct {
 }
 
 type OrganizationFeature struct {
-	OrgID           pgtype.UUID
-	AutoCrawl       bool
-	GscConnector    bool
-	AiChat          bool
-	UpdatedAt       pgtype.Timestamptz
-	UpdatedByUserID pgtype.UUID
+	OrgID                 pgtype.UUID
+	AutoCrawl             bool
+	GscConnector          bool
+	AiChat                bool
+	UpdatedAt             pgtype.Timestamptz
+	UpdatedByUserID       pgtype.UUID
+	AiMonthlyMessageLimit int32
+	AiMaxReasoningEffort  string
 }
 
 type OrganizationInvite struct {
