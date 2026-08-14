@@ -9,6 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
 // Feature names a gateable product surface.
@@ -128,13 +130,44 @@ func (a *App) OrgFeaturesForOrg(ctx context.Context, orgID pgtype.UUID) (OrgFeat
 
 type orgFeatureResolver func(*App, *http.Request) (OrgFeatures, error)
 
+type featureParamError string
+
+func (err featureParamError) Error() string { return string(err) }
+
 // featuresByProjectParam resolves a project-scoped route to its workspace.
 func featuresByProjectParam(a *App, r *http.Request) (OrgFeatures, error) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
+		return allFeaturesEnabled(), featureParamError("invalid project id")
+	}
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	row, err := a.Queries.GetOrganizationFeaturesByProjectID(r.Context(), projectID)
+	row, err := a.Queries.GetOrganizationFeaturesByProjectID(r.Context(), sqlc.GetOrganizationFeaturesByProjectIDParams{
+		ProjectID: projectID,
+		UserID:    user.ID,
+	})
+	if err != nil {
+		return allFeaturesEnabled(), err
+	}
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts), nil
+}
+
+// featuresByConversationParam resolves a conversation route to its project workspace.
+func featuresByConversationParam(a *App, r *http.Request) (OrgFeatures, error) {
+	conversationID, err := parseUUIDParam(chi.URLParam(r, "conversationID"))
+	if err != nil {
+		return allFeaturesEnabled(), featureParamError("invalid conversation id")
+	}
+	user, _, err := a.ensureCurrentUser(r, a.Queries)
+	if err != nil {
+		return allFeaturesEnabled(), err
+	}
+	row, err := a.Queries.GetOrganizationFeaturesByConversationID(r.Context(), sqlc.GetOrganizationFeaturesByConversationIDParams{
+		ConversationID: conversationID,
+		UserID:         user.ID,
+	})
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
@@ -147,6 +180,11 @@ func (a *App) requireFeature(feature Feature, resolve orgFeatureResolver) func(h
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			features, err := resolve(a, r)
 			if err != nil {
+				var paramErr featureParamError
+				if errors.As(err, &paramErr) {
+					writeJSONError(w, http.StatusBadRequest, paramErr.Error())
+					return
+				}
 				if errors.Is(err, pgx.ErrNoRows) {
 					writeJSONError(w, http.StatusNotFound, "not found")
 					return

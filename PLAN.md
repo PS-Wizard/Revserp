@@ -2,11 +2,11 @@
 
 ## Status
 
-- Planning only. The destructive chat-data boundary is confirmed.
-- Existing chats and chat artifacts may be permanently deleted.
-- `000041_ai_artifacts.sql` is untracked, has not been pushed, and has run only in the expendable local database.
-- Preserve the visibility/audit system and its small existing dataset.
-- This plan replaces the AI chat system from the database through the frontend.
+- Legacy chat cleanup, durable schema, and workspace controls are implemented through migration `000043`.
+- Project-scoped conversation CRUD is implemented.
+- Turn submission, worker execution, resumable SSE, and the new frontend remain.
+- Production reuse of migration `000041` still requires confirmation that no shared environment ran the old migration.
+- Visibility/audit data and non-chat AI behavior remain preserved.
 - The first working version has no tools, artifacts, charts, navigation actions, exports, or crawl actions.
 
 ## Product decisions
@@ -21,7 +21,7 @@
 - The workspace has a shared monthly user-message allowance.
 - Only an accepted, explicit user message consumes the allowance. Provider retries and future internal actions do not consume it.
 - The user can request `none`, `low`, `high`, or `max` reasoning.
-- The workspace controls the maximum permitted reasoning effort.
+- The workspace controls which reasoning efforts are available.
 - SSE is a resumable view of durable work. SSE does not own or execute the work.
 - Raw chain-of-thought is not persisted, replayed, or exposed. The UI receives only phase changes such as `thinking` and `writing`.
 

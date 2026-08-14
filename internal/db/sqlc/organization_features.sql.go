@@ -49,6 +49,50 @@ func (q *Queries) GetOrganizationFeatures(ctx context.Context, orgID pgtype.UUID
 	return i, err
 }
 
+const getOrganizationFeaturesByConversationID = `-- name: GetOrganizationFeaturesByConversationID :one
+SELECT
+    COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
+    COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
+    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
+    COALESCE(
+        f.ai_allowed_reasoning_efforts,
+        ARRAY['none', 'low', 'high', 'max']::TEXT[]
+    ) AS ai_allowed_reasoning_efforts
+FROM ai_conversations AS ac
+INNER JOIN projects AS p ON p.id = ac.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = $1
+LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
+WHERE ac.id = $2
+`
+
+type GetOrganizationFeaturesByConversationIDParams struct {
+	UserID         pgtype.UUID
+	ConversationID pgtype.UUID
+}
+
+type GetOrganizationFeaturesByConversationIDRow struct {
+	AutoCrawl                 bool
+	GscConnector              bool
+	AiChat                    bool
+	AiMonthlyMessageLimit     int32
+	AiAllowedReasoningEfforts []string
+}
+
+func (q *Queries) GetOrganizationFeaturesByConversationID(ctx context.Context, arg GetOrganizationFeaturesByConversationIDParams) (GetOrganizationFeaturesByConversationIDRow, error) {
+	row := q.db.QueryRow(ctx, getOrganizationFeaturesByConversationID, arg.UserID, arg.ConversationID)
+	var i GetOrganizationFeaturesByConversationIDRow
+	err := row.Scan(
+		&i.AutoCrawl,
+		&i.GscConnector,
+		&i.AiChat,
+		&i.AiMonthlyMessageLimit,
+		&i.AiAllowedReasoningEfforts,
+	)
+	return i, err
+}
+
 const getOrganizationFeaturesByProjectID = `-- name: GetOrganizationFeaturesByProjectID :one
 SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
@@ -60,9 +104,16 @@ SELECT
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
     ) AS ai_allowed_reasoning_efforts
 FROM projects AS p
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = $1
 LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
-WHERE p.id = $1
+WHERE p.id = $2
 `
+
+type GetOrganizationFeaturesByProjectIDParams struct {
+	UserID    pgtype.UUID
+	ProjectID pgtype.UUID
+}
 
 type GetOrganizationFeaturesByProjectIDRow struct {
 	AutoCrawl                 bool
@@ -72,8 +123,8 @@ type GetOrganizationFeaturesByProjectIDRow struct {
 	AiAllowedReasoningEfforts []string
 }
 
-func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, projectID pgtype.UUID) (GetOrganizationFeaturesByProjectIDRow, error) {
-	row := q.db.QueryRow(ctx, getOrganizationFeaturesByProjectID, projectID)
+func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, arg GetOrganizationFeaturesByProjectIDParams) (GetOrganizationFeaturesByProjectIDRow, error) {
+	row := q.db.QueryRow(ctx, getOrganizationFeaturesByProjectID, arg.UserID, arg.ProjectID)
 	var i GetOrganizationFeaturesByProjectIDRow
 	err := row.Scan(
 		&i.AutoCrawl,

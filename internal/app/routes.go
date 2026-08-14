@@ -59,6 +59,17 @@ func (a *App) Router() http.Handler {
 		protected.Get("/projects/{projectID}/ai-audits", a.handleListAIAudits)
 		protected.Get("/ai-audits/{auditID}", a.handleGetAIAudit)
 
+		protected.Group(func(gated chi.Router) {
+			gated.Use(a.requireFeature(FeatureAIChat, featuresByProjectParam))
+			gated.Post("/projects/{projectID}/ai/conversations", a.handleCreateAIConversation)
+			gated.Get("/projects/{projectID}/ai/conversations", a.handleListAIConversations)
+		})
+		protected.Group(func(gated chi.Router) {
+			gated.Use(a.requireFeature(FeatureAIChat, featuresByConversationParam))
+			gated.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
+			gated.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
+		})
+
 		// Feature-gated route groups. Each group resolves the governing workspace
 		// once in middleware and rejects before reaching a handler, so hiding a
 		// surface in the UI is never the only thing standing in the way.
