@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -20,16 +21,30 @@ const (
 	FeatureAIChat Feature = "ai_chat"
 )
 
+const (
+	defaultAIMonthlyMessageLimit int32 = 50
+)
+
+var canonicalAIReasoningEfforts = []string{"none", "low", "high", "max"}
+
 // OrgFeatures is one workspace's resolved gating state.
 type OrgFeatures struct {
-	AutoCrawl    bool
-	GSCConnector bool
-	AIChat       bool
+	AutoCrawl                 bool
+	GSCConnector              bool
+	AIChat                    bool
+	AIMonthlyMessageLimit     int32
+	AIAllowedReasoningEfforts []string
 }
 
 // allFeaturesEnabled is used for a workspace with no organization_features row.
 func allFeaturesEnabled() OrgFeatures {
-	return OrgFeatures{AutoCrawl: true, GSCConnector: true, AIChat: true}
+	return OrgFeatures{
+		AutoCrawl:                 true,
+		GSCConnector:              true,
+		AIChat:                    true,
+		AIMonthlyMessageLimit:     defaultAIMonthlyMessageLimit,
+		AIAllowedReasoningEfforts: append([]string(nil), canonicalAIReasoningEfforts...),
+	}
 }
 
 // Enabled reports whether one top-level feature is on.
@@ -46,8 +61,57 @@ func (features OrgFeatures) Enabled(feature Feature) bool {
 	}
 }
 
-func featuresFromRow(autoCrawl, gscConnector, aiChat bool) OrgFeatures {
-	return OrgFeatures{AutoCrawl: autoCrawl, GSCConnector: gscConnector, AIChat: aiChat}
+func normalizeAIReasoningEfforts(efforts []string) []string {
+	hasEffort := make(map[string]bool, len(efforts))
+	for _, effort := range efforts {
+		hasEffort[effort] = true
+	}
+	normalized := make([]string, 0, len(efforts))
+	for _, effort := range canonicalAIReasoningEfforts {
+		if hasEffort[effort] {
+			normalized = append(normalized, effort)
+		}
+	}
+	return normalized
+}
+
+func validateAIChatSettings(limit int32, efforts []string) ([]string, error) {
+	if limit < 0 || limit > 1000000 {
+		return nil, fmt.Errorf("ai_monthly_message_limit must be between 0 and 1000000")
+	}
+	if len(efforts) == 0 {
+		return nil, fmt.Errorf("ai_allowed_reasoning_efforts must not be empty")
+	}
+	seen := make(map[string]struct{}, len(efforts))
+	for _, effort := range efforts {
+		if _, ok := seen[effort]; ok {
+			return nil, fmt.Errorf("ai_allowed_reasoning_efforts must not contain duplicates")
+		}
+		seen[effort] = struct{}{}
+		if !containsString(canonicalAIReasoningEfforts, effort) {
+			return nil, fmt.Errorf("invalid ai reasoning effort")
+		}
+	}
+	return normalizeAIReasoningEfforts(efforts), nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func featuresFromRow(autoCrawl, gscConnector, aiChat bool, monthlyLimit int32, efforts []string) OrgFeatures {
+	return OrgFeatures{
+		AutoCrawl:                 autoCrawl,
+		GSCConnector:              gscConnector,
+		AIChat:                    aiChat,
+		AIMonthlyMessageLimit:     monthlyLimit,
+		AIAllowedReasoningEfforts: normalizeAIReasoningEfforts(efforts),
+	}
 }
 
 // OrgFeaturesForOrg resolves one workspace's features.
@@ -59,7 +123,7 @@ func (a *App) OrgFeaturesForOrg(ctx context.Context, orgID pgtype.UUID) (OrgFeat
 		}
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts), nil
 }
 
 type orgFeatureResolver func(*App, *http.Request) (OrgFeatures, error)
@@ -74,7 +138,7 @@ func featuresByProjectParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiMonthlyMessageLimit, row.AiAllowedReasoningEfforts), nil
 }
 
 // requireFeature gates a route group on its governing workspace feature.
@@ -101,11 +165,19 @@ func (a *App) requireFeature(feature Feature, resolve orgFeatureResolver) func(h
 
 // orgFeaturesResponse is the wire shape shared by /me and the admin matrix.
 type orgFeaturesResponse struct {
-	AutoCrawl    bool `json:"auto_crawl"`
-	GSCConnector bool `json:"gsc_connector"`
-	AIChat       bool `json:"ai_chat"`
+	AutoCrawl                 bool     `json:"auto_crawl"`
+	GSCConnector              bool     `json:"gsc_connector"`
+	AIChat                    bool     `json:"ai_chat"`
+	AIMonthlyMessageLimit     int32    `json:"ai_monthly_message_limit"`
+	AIAllowedReasoningEfforts []string `json:"ai_allowed_reasoning_efforts"`
 }
 
 func newOrgFeaturesResponse(features OrgFeatures) orgFeaturesResponse {
-	return orgFeaturesResponse{AutoCrawl: features.AutoCrawl, GSCConnector: features.GSCConnector, AIChat: features.AIChat}
+	return orgFeaturesResponse{
+		AutoCrawl:                 features.AutoCrawl,
+		GSCConnector:              features.GSCConnector,
+		AIChat:                    features.AIChat,
+		AIMonthlyMessageLimit:     features.AIMonthlyMessageLimit,
+		AIAllowedReasoningEfforts: normalizeAIReasoningEfforts(features.AIAllowedReasoningEfforts),
+	}
 }

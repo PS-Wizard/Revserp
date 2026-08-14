@@ -259,14 +259,14 @@ type Organization struct {
 }
 
 type OrganizationFeature struct {
-	OrgID                 pgtype.UUID
-	AutoCrawl             bool
-	GscConnector          bool
-	AiChat                bool
-	UpdatedAt             pgtype.Timestamptz
-	UpdatedByUserID       pgtype.UUID
-	AiMonthlyMessageLimit int32
-	AiMaxReasoningEffort  string
+	OrgID                     pgtype.UUID
+	AutoCrawl                 bool
+	GscConnector              bool
+	AiChat                    bool
+	UpdatedAt                 pgtype.Timestamptz
+	UpdatedByUserID           pgtype.UUID
+	AiMonthlyMessageLimit     int32
+	AiAllowedReasoningEfforts []string
 }
 
 type OrganizationInvite struct {

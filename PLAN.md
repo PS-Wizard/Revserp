@@ -248,17 +248,17 @@ Rules:
 Extend `organization_features` with:
 
 - `ai_chat BOOLEAN NOT NULL DEFAULT TRUE` — preserve the existing top-level gate.
-- `ai_monthly_message_limit INTEGER NOT NULL DEFAULT 50 CHECK (ai_monthly_message_limit >= 0)`.
-- `ai_max_reasoning_effort TEXT NOT NULL DEFAULT 'high' CHECK (ai_max_reasoning_effort IN ('none', 'low', 'high', 'max'))`.
+- `ai_monthly_message_limit INTEGER NOT NULL DEFAULT 50 CHECK (ai_monthly_message_limit BETWEEN 0 AND 1000000)`.
+- `ai_allowed_reasoning_efforts TEXT[] NOT NULL DEFAULT ARRAY['none', 'low', 'high', 'max']` with only the non-empty canonical subset allowed.
 
 Behavior:
 
 - No organization feature row uses the documented application defaults.
 - `0` monthly messages disables new messages without changing access to old conversation history.
 - The API validates the requested effort before reserving quota.
-- Do not silently change an unavailable effort. Return `reasoning_not_allowed`.
-- Admin APIs return the configured limit, current-month usage, and maximum effort.
-- The admin UI replaces old tool checkboxes with the chat switch, monthly message limit, and maximum reasoning effort.
+- The requested effort must be a member of the allowed effort list. Return `reasoning_not_allowed` when it is not.
+- Admin APIs return the configured limit and allowed reasoning efforts.
+- The admin UI replaces old tool checkboxes with the chat switch, monthly message limit, and allowed reasoning efforts.
 
 If individual member overrides become a firm requirement, add a later table keyed by `(organization_id, user_id)`. Do not add override precedence in version one.
 

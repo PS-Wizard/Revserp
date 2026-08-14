@@ -16,23 +16,36 @@ const getOrganizationFeatures = `-- name: GetOrganizationFeatures :one
 SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
-    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat
+    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
+    COALESCE(
+        f.ai_allowed_reasoning_efforts,
+        ARRAY['none', 'low', 'high', 'max']::TEXT[]
+    ) AS ai_allowed_reasoning_efforts
 FROM organizations AS o
 LEFT JOIN organization_features AS f ON f.org_id = o.id
 WHERE o.id = $1
 `
 
 type GetOrganizationFeaturesRow struct {
-	AutoCrawl    bool
-	GscConnector bool
-	AiChat       bool
+	AutoCrawl                 bool
+	GscConnector              bool
+	AiChat                    bool
+	AiMonthlyMessageLimit     int32
+	AiAllowedReasoningEfforts []string
 }
 
 // A workspace with no organization_features row resolves to all features on.
 func (q *Queries) GetOrganizationFeatures(ctx context.Context, orgID pgtype.UUID) (GetOrganizationFeaturesRow, error) {
 	row := q.db.QueryRow(ctx, getOrganizationFeatures, orgID)
 	var i GetOrganizationFeaturesRow
-	err := row.Scan(&i.AutoCrawl, &i.GscConnector, &i.AiChat)
+	err := row.Scan(
+		&i.AutoCrawl,
+		&i.GscConnector,
+		&i.AiChat,
+		&i.AiMonthlyMessageLimit,
+		&i.AiAllowedReasoningEfforts,
+	)
 	return i, err
 }
 
@@ -40,22 +53,35 @@ const getOrganizationFeaturesByProjectID = `-- name: GetOrganizationFeaturesByPr
 SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
-    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat
+    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
+    COALESCE(
+        f.ai_allowed_reasoning_efforts,
+        ARRAY['none', 'low', 'high', 'max']::TEXT[]
+    ) AS ai_allowed_reasoning_efforts
 FROM projects AS p
 LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
 WHERE p.id = $1
 `
 
 type GetOrganizationFeaturesByProjectIDRow struct {
-	AutoCrawl    bool
-	GscConnector bool
-	AiChat       bool
+	AutoCrawl                 bool
+	GscConnector              bool
+	AiChat                    bool
+	AiMonthlyMessageLimit     int32
+	AiAllowedReasoningEfforts []string
 }
 
 func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, projectID pgtype.UUID) (GetOrganizationFeaturesByProjectIDRow, error) {
 	row := q.db.QueryRow(ctx, getOrganizationFeaturesByProjectID, projectID)
 	var i GetOrganizationFeaturesByProjectIDRow
-	err := row.Scan(&i.AutoCrawl, &i.GscConnector, &i.AiChat)
+	err := row.Scan(
+		&i.AutoCrawl,
+		&i.GscConnector,
+		&i.AiChat,
+		&i.AiMonthlyMessageLimit,
+		&i.AiAllowedReasoningEfforts,
+	)
 	return i, err
 }
 
@@ -66,6 +92,11 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
+    COALESCE(
+        f.ai_allowed_reasoning_efforts,
+        ARRAY['none', 'low', 'high', 'max']::TEXT[]
+    ) AS ai_allowed_reasoning_efforts,
     f.updated_at
 FROM organizations AS o
 LEFT JOIN organization_features AS f ON f.org_id = o.id
@@ -73,12 +104,14 @@ ORDER BY o.name ASC
 `
 
 type ListOrganizationFeaturesForAdminRow struct {
-	OrgID        pgtype.UUID
-	OrgName      string
-	AutoCrawl    bool
-	GscConnector bool
-	AiChat       bool
-	UpdatedAt    pgtype.Timestamptz
+	OrgID                     pgtype.UUID
+	OrgName                   string
+	AutoCrawl                 bool
+	GscConnector              bool
+	AiChat                    bool
+	AiMonthlyMessageLimit     int32
+	AiAllowedReasoningEfforts []string
+	UpdatedAt                 pgtype.Timestamptz
 }
 
 func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListOrganizationFeaturesForAdminRow, error) {
@@ -96,6 +129,8 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 			&i.AutoCrawl,
 			&i.GscConnector,
 			&i.AiChat,
+			&i.AiMonthlyMessageLimit,
+			&i.AiAllowedReasoningEfforts,
 			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -110,29 +145,41 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 
 const upsertOrganizationFeatures = `-- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
-    org_id, auto_crawl, gsc_connector, ai_chat, updated_by_user_id, updated_at
+    org_id, auto_crawl, gsc_connector, ai_chat,
+    ai_monthly_message_limit, ai_allowed_reasoning_efforts,
+    updated_by_user_id, updated_at
 ) VALUES (
     $1,
     $2,
     $3,
     $4,
     $5,
+    ARRAY(
+        SELECT effort
+        FROM unnest($6::TEXT[]) AS effort
+        ORDER BY array_position(ARRAY['none', 'low', 'high', 'max']::TEXT[], effort)
+    ),
+    $7,
     now()
 )
 ON CONFLICT (org_id) DO UPDATE SET
     auto_crawl = EXCLUDED.auto_crawl,
     gsc_connector = EXCLUDED.gsc_connector,
     ai_chat = EXCLUDED.ai_chat,
+    ai_monthly_message_limit = EXCLUDED.ai_monthly_message_limit,
+    ai_allowed_reasoning_efforts = EXCLUDED.ai_allowed_reasoning_efforts,
     updated_by_user_id = EXCLUDED.updated_by_user_id,
     updated_at = now()
 `
 
 type UpsertOrganizationFeaturesParams struct {
-	OrgID           pgtype.UUID
-	AutoCrawl       bool
-	GscConnector    bool
-	AiChat          bool
-	UpdatedByUserID pgtype.UUID
+	OrgID                     pgtype.UUID
+	AutoCrawl                 bool
+	GscConnector              bool
+	AiChat                    bool
+	AiMonthlyMessageLimit     int32
+	AiAllowedReasoningEfforts []string
+	UpdatedByUserID           pgtype.UUID
 }
 
 func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrganizationFeaturesParams) error {
@@ -141,6 +188,8 @@ func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrga
 		arg.AutoCrawl,
 		arg.GscConnector,
 		arg.AiChat,
+		arg.AiMonthlyMessageLimit,
+		arg.AiAllowedReasoningEfforts,
 		arg.UpdatedByUserID,
 	)
 	return err

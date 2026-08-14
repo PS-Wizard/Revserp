@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestDefaultIsEverythingEnabled(t *testing.T) {
 	features := allFeaturesEnabled()
@@ -18,11 +21,11 @@ func TestEnabledReadsEachFeatureIndependently(t *testing.T) {
 		feature     Feature
 		wantEnabled bool
 	}{
-		{"autocrawl off", featuresFromRow(false, true, true), FeatureAutoCrawl, false},
-		{"autocrawl off leaves gsc on", featuresFromRow(false, true, true), FeatureGSCConnector, true},
-		{"gsc off", featuresFromRow(true, false, true), FeatureGSCConnector, false},
-		{"gsc off leaves autocrawl on", featuresFromRow(true, false, true), FeatureAutoCrawl, true},
-		{"ai chat off", featuresFromRow(true, true, false), FeatureAIChat, false},
+		{"autocrawl off", featuresFromRow(false, true, true, 50, canonicalAIReasoningEfforts), FeatureAutoCrawl, false},
+		{"autocrawl off leaves gsc on", featuresFromRow(false, true, true, 50, canonicalAIReasoningEfforts), FeatureGSCConnector, true},
+		{"gsc off", featuresFromRow(true, false, true, 50, canonicalAIReasoningEfforts), FeatureGSCConnector, false},
+		{"gsc off leaves autocrawl on", featuresFromRow(true, false, true, 50, canonicalAIReasoningEfforts), FeatureAutoCrawl, true},
+		{"ai chat off", featuresFromRow(true, true, false, 50, canonicalAIReasoningEfforts), FeatureAIChat, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -34,7 +37,50 @@ func TestEnabledReadsEachFeatureIndependently(t *testing.T) {
 }
 
 func TestUnknownFeatureFailsOpen(t *testing.T) {
-	if !featuresFromRow(false, false, false).Enabled(Feature("not_a_real_feature")) {
+	if !featuresFromRow(false, false, false, 50, canonicalAIReasoningEfforts).Enabled(Feature("not_a_real_feature")) {
 		t.Error("an unrecognized feature resolved to disabled")
+	}
+}
+
+func TestValidateAIChatSettings(t *testing.T) {
+	tests := []struct {
+		name        string
+		limit       int32
+		efforts     []string
+		wantEfforts []string
+		wantErr     bool
+	}{
+		{"defaults in canonical order", 50, []string{"max", "none", "high"}, []string{"none", "high", "max"}, false},
+		{"zero limit", 0, []string{"none"}, []string{"none"}, false},
+		{"maximum limit", 1000000, []string{"low"}, []string{"low"}, false},
+		{"negative limit", -1, []string{"none"}, nil, true},
+		{"limit too high", 1000001, []string{"none"}, nil, true},
+		{"empty efforts", 50, []string{}, nil, true},
+		{"duplicate effort", 50, []string{"low", "low"}, nil, true},
+		{"unsupported effort", 50, []string{"medium"}, nil, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			efforts, err := validateAIChatSettings(test.limit, test.efforts)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateAIChatSettings() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if test.wantErr {
+				return
+			}
+			if !slices.Equal(efforts, test.wantEfforts) {
+				t.Errorf("validateAIChatSettings() = %v, want %v", efforts, test.wantEfforts)
+			}
+		})
+	}
+}
+
+func TestDefaultAIChatSettings(t *testing.T) {
+	features := allFeaturesEnabled()
+	if features.AIMonthlyMessageLimit != 50 {
+		t.Fatalf("default monthly limit = %d, want 50", features.AIMonthlyMessageLimit)
+	}
+	if !slices.Equal(features.AIAllowedReasoningEfforts, []string{"none", "low", "high", "max"}) {
+		t.Fatalf("default efforts = %v, want all canonical efforts", features.AIAllowedReasoningEfforts)
 	}
 }
