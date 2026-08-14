@@ -217,7 +217,7 @@ func TestAIConversationHistoryIntegration(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&conversation); err != nil {
 		t.Fatalf("decode conversation: %v", err)
 	}
-	if conversation.ID != fixture.conversationID.String() || conversation.ProjectID != fixture.projectID.String() || conversation.CreatedByUserID != fixture.userID.String() || conversation.Title != "New conversation" || conversation.CreatedAt == "" || conversation.UpdatedAt == "" {
+	if conversation.ID != fixture.conversationID.String() || conversation.ProjectID != fixture.projectID.String() || conversation.CreatedByUserID != fixture.userID.String() || conversation.Title != "first user" || conversation.CreatedAt == "" || conversation.UpdatedAt == "" {
 		t.Fatalf("conversation metadata = %+v", conversation)
 	}
 	wantMessages := []struct {

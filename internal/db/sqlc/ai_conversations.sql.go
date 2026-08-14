@@ -88,7 +88,17 @@ SELECT
     ac.id,
     ac.project_id,
     ac.created_by_user_id,
-    ac.title,
+    COALESCE(
+        (
+            SELECT left(regexp_replace(btrim(m.content), '[[:space:]]+', ' ', 'g'), 120)
+            FROM ai_turns AS t
+            INNER JOIN ai_messages AS m ON m.turn_id = t.id AND m.role = 'user'
+            WHERE t.conversation_id = ac.id
+            ORDER BY t.created_at ASC, t.id ASC, m.created_at ASC, m.id ASC
+            LIMIT 1
+        ),
+        ac.title
+    ) AS title,
     ac.created_at,
     ac.updated_at
 FROM ai_conversations AS ac
@@ -123,7 +133,17 @@ SELECT
     ac.id,
     ac.project_id,
     ac.created_by_user_id,
-    ac.title,
+    COALESCE(
+        (
+            SELECT left(regexp_replace(btrim(m.content), '[[:space:]]+', ' ', 'g'), 120)
+            FROM ai_turns AS t
+            INNER JOIN ai_messages AS m ON m.turn_id = t.id AND m.role = 'user'
+            WHERE t.conversation_id = ac.id
+            ORDER BY t.created_at ASC, t.id ASC, m.created_at ASC, m.id ASC
+            LIMIT 1
+        ),
+        ac.title
+    ) AS title,
     ac.created_at,
     ac.updated_at
 FROM ai_conversations AS ac
