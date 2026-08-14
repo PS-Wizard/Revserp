@@ -1,9 +1,14 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -172,4 +177,99 @@ func TestAIConversationCRUDAuthorizationAndPagination(t *testing.T) {
 	}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("deleted get error = %v, want no rows", err)
 	}
+}
+
+func TestAIConversationHistoryIntegration(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first user", "none", "history-first", nil)
+	if err != nil {
+		t.Fatalf("submit first turn: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status = 'completed', completed_at = now() WHERE id = $1`, first.TurnID); err != nil {
+		t.Fatalf("complete first turn: %v", err)
+	}
+	second, err := fixture.submit(t, fixture.conversationID, "second user", "none", "history-second", nil)
+	if err != nil {
+		t.Fatalf("submit second turn: %v", err)
+	}
+
+	for _, update := range []struct {
+		turnID pgtype.UUID
+		at     string
+	}{
+		{first.TurnID, "2024-01-01T00:00:00Z"},
+		{second.TurnID, "2024-01-01T00:01:00Z"},
+	} {
+		if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET created_at = $2 WHERE id = $1`, update.turnID, update.at); err != nil {
+			t.Fatalf("set turn timestamp: %v", err)
+		}
+		if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_messages SET content = CASE WHEN role = 'assistant' THEN 'assistant reply' ELSE content END, created_at = CASE WHEN role = 'user' THEN $2::timestamptz ELSE $2::timestamptz + interval '1 second' END WHERE turn_id = $1`, update.turnID, update.at); err != nil {
+			t.Fatalf("set message timestamps: %v", err)
+		}
+	}
+
+	response := httptest.NewRecorder()
+	fixture.app.handleGetAIConversation(response, conversationRequest(fixture.userID, fixture.conversationID))
+	if response.Code != http.StatusOK {
+		t.Fatalf("conversation status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var conversation aiConversationDetailResponse
+	if err := json.NewDecoder(response.Body).Decode(&conversation); err != nil {
+		t.Fatalf("decode conversation: %v", err)
+	}
+	if conversation.ID != fixture.conversationID.String() || conversation.ProjectID != fixture.projectID.String() || conversation.CreatedByUserID != fixture.userID.String() || conversation.Title != "New conversation" || conversation.CreatedAt == "" || conversation.UpdatedAt == "" {
+		t.Fatalf("conversation metadata = %+v", conversation)
+	}
+	wantMessages := []struct {
+		id      pgtype.UUID
+		role    string
+		status  string
+		content string
+	}{
+		{first.UserMessageID, "user", "complete", "first user"},
+		{first.AssistantMessageID, "assistant", "pending", "assistant reply"},
+		{second.UserMessageID, "user", "complete", "second user"},
+		{second.AssistantMessageID, "assistant", "pending", "assistant reply"},
+	}
+	if len(conversation.Messages) != len(wantMessages) {
+		t.Fatalf("message count = %d, want %d", len(conversation.Messages), len(wantMessages))
+	}
+	for i, want := range wantMessages {
+		message := conversation.Messages[i]
+		if message.ID != want.id.String() || message.Role != want.role || message.Status != want.status || message.Content != want.content {
+			t.Errorf("message %d = %+v, want %+v", i, message, want)
+		}
+	}
+
+	emptyConversationID := fixture.conversation(t)
+	response = httptest.NewRecorder()
+	fixture.app.handleGetAIConversation(response, conversationRequest(fixture.userID, emptyConversationID))
+	if response.Code != http.StatusOK {
+		t.Fatalf("empty conversation status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var emptyResponse struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&emptyResponse); err != nil {
+		t.Fatalf("decode empty conversation: %v", err)
+	}
+	if string(emptyResponse.Messages) != "[]" {
+		t.Fatalf("empty messages = %s, want []", emptyResponse.Messages)
+	}
+
+	outsiderID := createObserverUser(t, fixture, "conversation")
+	response = httptest.NewRecorder()
+	fixture.app.handleGetAIConversation(response, conversationRequest(outsiderID, fixture.conversationID))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("outsider status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func conversationRequest(userID, conversationID pgtype.UUID) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("conversationID", conversationID.String())
+	ctx := context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)
+	ctx = context.WithValue(ctx, resolvedUserContextKey{}, resolvedUserEntry{user: sqlc.User{ID: userID}})
+	return request.WithContext(ctx)
 }

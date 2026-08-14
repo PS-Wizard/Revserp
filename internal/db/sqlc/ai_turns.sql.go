@@ -278,6 +278,51 @@ func (q *Queries) HasActiveAITurnForConversation(ctx context.Context, conversati
 	return exists, err
 }
 
+const listAIMessagesForConversation = `-- name: ListAIMessagesForConversation :many
+SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+FROM ai_messages AS m
+INNER JOIN ai_turns AS t ON t.id = m.turn_id
+WHERE t.conversation_id = $1
+  AND m.role IN ('user', 'assistant')
+ORDER BY t.created_at ASC, t.id ASC, m.created_at ASC, m.id ASC
+`
+
+type ListAIMessagesForConversationRow struct {
+	ID        pgtype.UUID
+	Role      string
+	Status    string
+	Content   string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListAIMessagesForConversation(ctx context.Context, conversationID pgtype.UUID) ([]ListAIMessagesForConversationRow, error) {
+	rows, err := q.db.Query(ctx, listAIMessagesForConversation, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAIMessagesForConversationRow
+	for rows.Next() {
+		var i ListAIMessagesForConversationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Role,
+			&i.Status,
+			&i.Content,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAIMessagesForUser = `-- name: ListAIMessagesForUser :many
 SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
 FROM ai_messages AS m

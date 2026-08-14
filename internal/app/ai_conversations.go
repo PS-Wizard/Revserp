@@ -19,6 +19,11 @@ type aiConversationResponse struct {
 	UpdatedAt       string `json:"updated_at"`
 }
 
+type aiConversationDetailResponse struct {
+	aiConversationResponse
+	Messages []aiMessageResponse `json:"messages"`
+}
+
 // handleCreateAIConversation creates a conversation for a project member.
 func (a *App) handleCreateAIConversation(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
@@ -137,7 +142,10 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var conversation sqlc.AiConversation
+	var (
+		conversation sqlc.AiConversation
+		messages     []sqlc.ListAIMessagesForConversationRow
+	)
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
 		user, _, err := a.ensureCurrentUser(r, queries)
 		if err != nil {
@@ -156,12 +164,27 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, err)
 			return err
 		}
+		messages, err = queries.ListAIMessagesForConversation(r.Context(), conversationID)
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
 		return nil
 	}) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newAIConversationResponse(conversation))
+	response := aiConversationDetailResponse{
+		aiConversationResponse: newAIConversationResponse(conversation),
+		Messages:               make([]aiMessageResponse, 0, len(messages)),
+	}
+	for _, message := range messages {
+		response.Messages = append(response.Messages, aiMessageResponse{
+			ID: message.ID.String(), Role: message.Role, Status: message.Status, Content: message.Content,
+			CreatedAt: message.CreatedAt.Time, UpdatedAt: message.UpdatedAt.Time,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleDeleteAIConversation hard-deletes a conversation for a member.
