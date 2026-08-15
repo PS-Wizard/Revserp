@@ -11,6 +11,82 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const breakdownCrawlIssuesFilteredForUser = `-- name: BreakdownCrawlIssuesFilteredForUser :many
+SELECT
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type,
+    ci.severity,
+    COUNT(*) AS issue_count
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+  AND ($3 = '' OR ci.pillar = $3)
+  AND ($4 = '' OR ci.bucket = $4)
+  AND ($5 = '' OR ci.issue_type = $5)
+  AND ($6 = '' OR ci.severity = $6)
+  AND ($7 = '' OR ci.url = $7)
+  AND (coalesce(cardinality($8::text[]), 0) = 0 OR ci.url = ANY($8::text[]))
+GROUP BY ci.pillar, ci.bucket, ci.issue_type, ci.severity
+`
+
+type BreakdownCrawlIssuesFilteredForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Column3 interface{}
+	Column4 interface{}
+	Column5 interface{}
+	Column6 interface{}
+	Column7 interface{}
+	Column8 []string
+}
+
+type BreakdownCrawlIssuesFilteredForUserRow struct {
+	Pillar     string
+	Bucket     string
+	IssueType  string
+	Severity   string
+	IssueCount int64
+}
+
+func (q *Queries) BreakdownCrawlIssuesFilteredForUser(ctx context.Context, arg BreakdownCrawlIssuesFilteredForUserParams) ([]BreakdownCrawlIssuesFilteredForUserRow, error) {
+	rows, err := q.db.Query(ctx, breakdownCrawlIssuesFilteredForUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Column3,
+		arg.Column4,
+		arg.Column5,
+		arg.Column6,
+		arg.Column7,
+		arg.Column8,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BreakdownCrawlIssuesFilteredForUserRow
+	for rows.Next() {
+		var i BreakdownCrawlIssuesFilteredForUserRow
+		if err := rows.Scan(
+			&i.Pillar,
+			&i.Bucket,
+			&i.IssueType,
+			&i.Severity,
+			&i.IssueCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countCrawlIssuesFilteredForUser = `-- name: CountCrawlIssuesFilteredForUser :one
 SELECT COUNT(*)
 FROM crawl_issues AS ci
@@ -260,8 +336,14 @@ WHERE ci.crawl_id = $1
   AND ($6 = '' OR ci.severity = $6)
   AND ($7 = '' OR ci.url = $7)
   AND (coalesce(cardinality($8::text[]), 0) = 0 OR ci.url = ANY($8::text[]))
-ORDER BY ci.created_at ASC
+ORDER BY
+    CASE ci.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,
+    ci.bucket,
+    ci.issue_type,
+    ci.url,
+    ci.id
 LIMIT $9
+OFFSET $10
 `
 
 type ListCrawlIssuesFilteredForUserParams struct {
@@ -274,6 +356,7 @@ type ListCrawlIssuesFilteredForUserParams struct {
 	Column7 interface{}
 	Column8 []string
 	Limit   int32
+	Offset  int32
 }
 
 type ListCrawlIssuesFilteredForUserRow struct {
@@ -301,6 +384,7 @@ func (q *Queries) ListCrawlIssuesFilteredForUser(ctx context.Context, arg ListCr
 		arg.Column7,
 		arg.Column8,
 		arg.Limit,
+		arg.Offset,
 	)
 	if err != nil {
 		return nil, err
@@ -468,6 +552,51 @@ func (q *Queries) ListCrawlIssuesForCrawlByUser(ctx context.Context, arg ListCra
 			&i.Details,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDistinctCrawlIssueDimensions = `-- name: ListDistinctCrawlIssueDimensions :many
+SELECT DISTINCT
+    ci.pillar,
+    ci.bucket,
+    ci.issue_type
+FROM crawl_issues AS ci
+INNER JOIN crawls AS c ON c.id = ci.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE ci.crawl_id = $1
+  AND om.user_id = $2
+ORDER BY ci.pillar, ci.bucket, ci.issue_type
+`
+
+type ListDistinctCrawlIssueDimensionsParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+}
+
+type ListDistinctCrawlIssueDimensionsRow struct {
+	Pillar    string
+	Bucket    string
+	IssueType string
+}
+
+func (q *Queries) ListDistinctCrawlIssueDimensions(ctx context.Context, arg ListDistinctCrawlIssueDimensionsParams) ([]ListDistinctCrawlIssueDimensionsRow, error) {
+	rows, err := q.db.Query(ctx, listDistinctCrawlIssueDimensions, arg.CrawlID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDistinctCrawlIssueDimensionsRow
+	for rows.Next() {
+		var i ListDistinctCrawlIssueDimensionsRow
+		if err := rows.Scan(&i.Pillar, &i.Bucket, &i.IssueType); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

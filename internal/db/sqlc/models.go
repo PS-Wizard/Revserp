@@ -68,6 +68,20 @@ type AiPromptConfig struct {
 	ExternalSystemPrompt     string
 }
 
+type AiToolCall struct {
+	ID            pgtype.UUID
+	TurnID        pgtype.UUID
+	Seq           int32
+	CallID        string
+	Name          string
+	Args          []byte
+	Status        string
+	ResultContent string
+	Summary       string
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type AiTurn struct {
 	ID                pgtype.UUID
 	ConversationID    pgtype.UUID
@@ -269,6 +283,7 @@ type OrganizationFeature struct {
 	AiAllowedReasoningEfforts    []string
 	AiConcurrentTurnLimitPerUser int32
 	AiUseInternalPrompt          bool
+	DisabledAiTools              []string
 }
 
 type OrganizationInvite struct {
