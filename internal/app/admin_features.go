@@ -1,11 +1,14 @@
 package app
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/aichattools"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -20,11 +23,64 @@ type adminWorkspaceFeaturesResponse struct {
 	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
 	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
+	DisabledAITools              []string `json:"disabled_ai_tools"`
 	UpdatedAt                    string   `json:"updated_at,omitempty"`
+}
+
+// adminAIToolInfo is one tool in the admin catalog.
+type adminAIToolInfo struct {
+	Name        string `json:"name"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
 }
 
 type adminFeaturesResponse struct {
 	Workspaces []adminWorkspaceFeaturesResponse `json:"workspaces"`
+	AITools    []adminAIToolInfo                `json:"ai_tools"`
+}
+
+// aiToolCatalogNames lists registered AI tool names in catalog order.
+func aiToolCatalogNames() []string {
+	return aichattools.NewRegistry().Names()
+}
+
+// adminAIToolCatalog describes the registered tools for the admin matrix.
+func adminAIToolCatalog() []adminAIToolInfo {
+	defs := aichattools.NewRegistry().Defs()
+	infos := make([]adminAIToolInfo, 0, len(defs))
+	for _, def := range defs {
+		infos = append(infos, adminAIToolInfo{Name: def.Name, Label: def.Label, Description: def.Description})
+	}
+	return infos
+}
+
+// normalizeDisabledAITools drops empty and unknown names, dedupes, and
+// orders the result by catalog order.
+func normalizeDisabledAITools(tools []string) []string {
+	disabled := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if tool != "" {
+			disabled[tool] = true
+		}
+	}
+	normalized := make([]string, 0, len(tools))
+	for _, name := range aiToolCatalogNames() {
+		if disabled[name] {
+			normalized = append(normalized, name)
+		}
+	}
+	return normalized
+}
+
+// validateDisabledAITools rejects names outside the registry catalog and
+// returns the normalized list.
+func validateDisabledAITools(tools []string) ([]string, error) {
+	for _, tool := range tools {
+		if tool != "" && !containsString(aiToolCatalogNames(), tool) {
+			return nil, fmt.Errorf("unknown ai tool %q; valid tools: %s", tool, strings.Join(aiToolCatalogNames(), ", "))
+		}
+	}
+	return normalizeDisabledAITools(tools), nil
 }
 
 // handleAdminListFeatures returns every workspace's gating state.
@@ -47,6 +103,7 @@ func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 			AIMonthlyMessageLimit:        row.AiMonthlyMessageLimit,
 			AIConcurrentTurnLimitPerUser: row.AiConcurrentTurnLimitPerUser,
 			AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(row.AiAllowedReasoningEfforts),
+			DisabledAITools:              normalizeDisabledAITools(row.DisabledAiTools),
 		}
 		if row.UpdatedAt.Valid {
 			workspace.UpdatedAt = row.UpdatedAt.Time.UTC().Format(time.RFC3339)
@@ -55,7 +112,7 @@ func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setNoStore(w)
-	writeJSON(w, http.StatusOK, adminFeaturesResponse{Workspaces: workspaces})
+	writeJSON(w, http.StatusOK, adminFeaturesResponse{Workspaces: workspaces, AITools: adminAIToolCatalog()})
 }
 
 type adminPutFeaturesRequest struct {
@@ -71,6 +128,7 @@ type adminPutWorkspaceFeatures struct {
 	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
 	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
+	DisabledAITools              []string `json:"disabled_ai_tools"`
 }
 
 // handleAdminPutFeatures saves the edited rows in one transaction.
@@ -94,6 +152,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 		aiMonthlyMessageLimit        int32
 		aiConcurrentTurnLimitPerUser int32
 		aiAllowedReasoningEfforts    []string
+		disabledAITools              []string
 	}
 	parsed := make([]parsedWorkspace, 0, len(requestBody.Workspaces))
 	for _, workspace := range requestBody.Workspaces {
@@ -107,6 +166,11 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		normalizedTools, err := validateDisabledAITools(workspace.DisabledAITools)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		parsed = append(parsed, parsedWorkspace{
 			orgID:                        orgID,
 			autoCrawl:                    workspace.AutoCrawl,
@@ -116,6 +180,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			aiMonthlyMessageLimit:        workspace.AIMonthlyMessageLimit,
 			aiConcurrentTurnLimitPerUser: workspace.AIConcurrentTurnLimitPerUser,
 			aiAllowedReasoningEfforts:    normalizedEfforts,
+			disabledAITools:              normalizedTools,
 		})
 	}
 
@@ -142,6 +207,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			AiMonthlyMessageLimit:        workspace.aiMonthlyMessageLimit,
 			AiConcurrentTurnLimitPerUser: workspace.aiConcurrentTurnLimitPerUser,
 			AiAllowedReasoningEfforts:    workspace.aiAllowedReasoningEfforts,
+			DisabledAiTools:              workspace.disabledAITools,
 			UpdatedByUserID:              editorID,
 		}); err != nil {
 			serverError(w, r, err)

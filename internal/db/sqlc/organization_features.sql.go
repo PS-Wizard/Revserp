@@ -168,6 +168,7 @@ SELECT
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
     ) AS ai_allowed_reasoning_efforts,
+    COALESCE(f.disabled_ai_tools, ARRAY[]::TEXT[]) AS disabled_ai_tools,
     f.updated_at
 FROM organizations AS o
 LEFT JOIN organization_features AS f ON f.org_id = o.id
@@ -184,6 +185,7 @@ type ListOrganizationFeaturesForAdminRow struct {
 	AiMonthlyMessageLimit        int32
 	AiConcurrentTurnLimitPerUser int32
 	AiAllowedReasoningEfforts    []string
+	DisabledAiTools              []string
 	UpdatedAt                    pgtype.Timestamptz
 }
 
@@ -206,6 +208,7 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 			&i.AiMonthlyMessageLimit,
 			&i.AiConcurrentTurnLimitPerUser,
 			&i.AiAllowedReasoningEfforts,
+			&i.DisabledAiTools,
 			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -222,7 +225,7 @@ const upsertOrganizationFeatures = `-- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
     org_id, auto_crawl, gsc_connector, ai_chat, ai_use_internal_prompt,
     ai_monthly_message_limit, ai_concurrent_turn_limit_per_user, ai_allowed_reasoning_efforts,
-    updated_by_user_id, updated_at
+    disabled_ai_tools, updated_by_user_id, updated_at
 ) VALUES (
     $1,
     $2,
@@ -236,7 +239,8 @@ INSERT INTO organization_features (
         FROM unnest($8::TEXT[]) AS effort
         ORDER BY array_position(ARRAY['none', 'low', 'high', 'max']::TEXT[], effort)
     ),
-    $9,
+    COALESCE($9::TEXT[], ARRAY[]::TEXT[]),
+    $10,
     now()
 )
 ON CONFLICT (org_id) DO UPDATE SET
@@ -247,6 +251,7 @@ ON CONFLICT (org_id) DO UPDATE SET
     ai_monthly_message_limit = EXCLUDED.ai_monthly_message_limit,
     ai_concurrent_turn_limit_per_user = EXCLUDED.ai_concurrent_turn_limit_per_user,
     ai_allowed_reasoning_efforts = EXCLUDED.ai_allowed_reasoning_efforts,
+    disabled_ai_tools = EXCLUDED.disabled_ai_tools,
     updated_by_user_id = EXCLUDED.updated_by_user_id,
     updated_at = now()
 `
@@ -260,6 +265,7 @@ type UpsertOrganizationFeaturesParams struct {
 	AiMonthlyMessageLimit        int32
 	AiConcurrentTurnLimitPerUser int32
 	AiAllowedReasoningEfforts    []string
+	DisabledAiTools              []string
 	UpdatedByUserID              pgtype.UUID
 }
 
@@ -273,6 +279,7 @@ func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrga
 		arg.AiMonthlyMessageLimit,
 		arg.AiConcurrentTurnLimitPerUser,
 		arg.AiAllowedReasoningEfforts,
+		arg.DisabledAiTools,
 		arg.UpdatedByUserID,
 	)
 	return err
