@@ -12,25 +12,31 @@ import (
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
+	"github.com/openai/openai-go/shared"
 )
 
 const (
 	defaultDeepSeekBaseURL = "https://api.deepseek.com"
 	defaultDeepSeekModel   = "deepseek-v4-flash"
-	defaultChatMaxTokens   = 2048
+	defaultChatMaxTokens   = 4096
 )
 
-// Message is one text-only model input message.
+// Message is one chat message. Reasoning content is intentionally not
+// representable here: it must never be sent back to the model.
 type Message struct {
-	Role    string
-	Content string
+	Role       Role
+	Content    string
+	ToolCalls  []ToolCall // set on assistant messages that invoked tools
+	ToolCallID string     // set on tool messages, references the originating ToolCall.ID
+	Name       string     // tool name, set on tool messages
 }
 
-// Request is one text-only streaming chat request.
+// Request is one streaming chat request, optionally with tools available.
 type Request struct {
 	Model    string
 	Effort   string
 	Messages []Message
+	Tools    []ToolDef
 }
 
 // Usage contains provider token counts when the provider supplies them.
@@ -45,6 +51,7 @@ type Usage struct {
 type Event struct {
 	Thinking bool
 	Text     string
+	ToolCall *ToolCall
 	Usage    *Usage
 }
 
@@ -154,7 +161,7 @@ func (client *DeepSeekClient) GenerateText(ctx context.Context, prompt string) (
 	return strings.TrimSpace(response.Choices[0].Message.Content), nil
 }
 
-// Stream sends a text-only chat and discards all raw reasoning content.
+// Stream sends a streaming chat request, optionally with tools, and discards all raw reasoning content.
 func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit func(Event) error) error {
 	if strings.TrimSpace(client.apiKey) == "" {
 		return &ProviderError{Code: "provider_unavailable"}
@@ -166,10 +173,31 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, len(request.Messages))
 	for _, message := range request.Messages {
 		switch message.Role {
-		case "system":
+		case RoleSystem:
 			messages = append(messages, openai.SystemMessage(message.Content))
-		case "assistant":
-			messages = append(messages, openai.AssistantMessage(message.Content))
+		case RoleAssistant:
+			if len(message.ToolCalls) == 0 {
+				messages = append(messages, openai.AssistantMessage(message.Content))
+				continue
+			}
+			assistant := openai.ChatCompletionAssistantMessageParam{
+				ToolCalls: make([]openai.ChatCompletionMessageToolCallParam, 0, len(message.ToolCalls)),
+			}
+			if message.Content != "" {
+				assistant.Content.OfString = param.NewOpt(message.Content)
+			}
+			for _, toolCall := range message.ToolCalls {
+				assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatCompletionMessageToolCallParam{
+					ID: toolCall.ID,
+					Function: openai.ChatCompletionMessageToolCallFunctionParam{
+						Name:      toolCall.Name,
+						Arguments: toolCall.Args,
+					},
+				})
+			}
+			messages = append(messages, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistant})
+		case RoleTool:
+			messages = append(messages, openai.ToolMessage(message.Content, message.ToolCallID))
 		default:
 			messages = append(messages, openai.UserMessage(message.Content))
 		}
@@ -183,6 +211,25 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 			IncludeUsage: param.NewOpt(true),
 		},
 	}
+	if len(request.Tools) > 0 {
+		tools := make([]openai.ChatCompletionToolParam, 0, len(request.Tools))
+		for _, tool := range request.Tools {
+			var schema shared.FunctionParameters
+			if len(tool.Schema) > 0 {
+				if err := json.Unmarshal(tool.Schema, &schema); err != nil {
+					return fmt.Errorf("invalid schema for tool %q: %w", tool.Name, err)
+				}
+			}
+			tools = append(tools, openai.ChatCompletionToolParam{
+				Function: shared.FunctionDefinitionParam{
+					Name:        tool.Name,
+					Description: param.NewOpt(tool.Description),
+					Parameters:  schema,
+				},
+			})
+		}
+		params.Tools = tools
+	}
 	thinkingType := "disabled"
 	if request.Effort != "none" {
 		thinkingType = "enabled"
@@ -194,8 +241,10 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 
 	stream := client.streamClient.Chat.Completions.NewStreaming(ctx, params)
 	defer stream.Close()
+	accumulator := newToolCallAccumulator()
 	reasoningStarted := false
 	answerStarted := false
+	toolCallsSeen := false
 	for stream.Next() {
 		chunk := stream.Current()
 		for _, choice := range chunk.Choices {
@@ -214,6 +263,22 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 			if choice.Delta.Content != "" {
 				answerStarted = true
 				if err := emit(Event{Text: choice.Delta.Content}); err != nil {
+					return err
+				}
+			}
+			for _, toolCall := range choice.Delta.ToolCalls {
+				accumulator.add(toolCallFragment{
+					Index:     int(toolCall.Index),
+					ID:        toolCall.ID,
+					Name:      toolCall.Function.Name,
+					ArgsDelta: toolCall.Function.Arguments,
+				})
+			}
+		}
+		if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" && !accumulator.empty() {
+			for _, call := range accumulator.drain() {
+				toolCallsSeen = true
+				if err := emit(Event{ToolCall: &call}); err != nil {
 					return err
 				}
 			}
@@ -247,7 +312,15 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 	if err := stream.Err(); err != nil {
 		return ClassifyError(err)
 	}
-	if !answerStarted {
+	// Safety net: the stream may end without an explicit finish reason,
+	// leaving reassembled tool calls unemitted.
+	for _, call := range accumulator.drain() {
+		toolCallsSeen = true
+		if err := emit(Event{ToolCall: &call}); err != nil {
+			return err
+		}
+	}
+	if !answerStarted && !toolCallsSeen {
 		return &ProviderError{Code: "provider_unavailable", Temporary: true}
 	}
 	return nil

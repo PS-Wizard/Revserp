@@ -2,10 +2,35 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 )
+
+// Role identifies who authored a chat message.
+type Role string
+
+const (
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
+)
+
+// ToolCall is a single invocation of a tool requested by the model.
+type ToolCall struct {
+	ID   string
+	Name string
+	Args string // raw JSON arguments
+}
+
+// ToolDef describes a tool the model may call.
+type ToolDef struct {
+	Name        string
+	Description string
+	Schema      json.RawMessage // JSON Schema for the tool's parameters
+}
 
 // Provider generates text using an AI model.
 type Provider interface {
