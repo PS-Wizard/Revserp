@@ -579,3 +579,60 @@ Status: minimal pipeline complete
 - SSE reconnects by durable event ID and is never the source of truth.
 - Old chat tables, tools, artifacts, and frontend state do not linger.
 - The remaining DeepSeek module is small, testable, and contains no tool protocol.
+
+## Tool layer (Phase 8)
+
+### Goal
+
+- Project-scoped tool calling for the durable AI chat, added on top of the text product.
+- Step 1 delivers the pipeline foundations and the first raw tool (`read_issues`) plus
+  workspace gating. No worker wiring, no model access, no chat frontend yet.
+
+### Foundations (inert until the worker loop wires)
+
+- `ai_tool_calls`: the durable tool log. One row per tool call with per-turn `seq`,
+  provider `call_id`, name, args, status, result content, and UI summary. The
+  resumable agent loop will rebuild its in-flight context from this log.
+- `ai_turns.status` gains `waiting`: a turn paused on user input. No worker holds a
+  lease while waiting; the future respond endpoint flips it back to `queued`. The
+  one-active-turn partial index includes it.
+- `ai_turn_events.event_type` gains `tool_call` and `tool_result` as the live view.
+- No question timeout: a waiting turn persists until answered or cancelled.
+
+### Tool catalog and gating
+
+- Package `internal/aichattools`: ordered catalog of `Def{Name, Label, Description,
+  Schema}` + `Execute(ctx, args, Scope)`. `Scope` carries server-derived
+  UserID/ProjectID/CrawlID and the sqlc queries; tool schemas never contain tenant IDs.
+- Gating is a **denylist**: `organization_features.disabled_ai_tools TEXT[]` (default
+  empty = all tools). New tools ship enabled everywhere; admins opt out.
+- Admin API lists the full catalog and accepts a disabled list; unknown names are
+  rejected. The admin workspace drawer gains a nested "AI tools" drawer with
+  checkboxes.
+- Enforcement (wired later): the resolved tool set is snapshotted onto the turn at
+  creation and the worker sends only that set.
+
+### `read_issues` contract
+
+- Reads `crawl_issues` of the turn's crawl. Args (all optional): `pillar`
+  (seo/aeo/pagespeed), `bucket` (id or label), `issue_type`, `severity`
+  (high/medium/low), `urls` (<=25), `limit` (default 25, max 50), `offset` (>=0).
+- Returns `total_matching`, `breakdown` (top buckets and issue types with labels and
+  severity counts), `issues[]` rows with the deterministic recommended fix folded in,
+  `next_offset`, and `has_more`. Stable order: severity desc, bucket, issue_type,
+  url, id.
+- Caps: message/details ~250 chars, breakdown top 20, per-turn row budget 200
+  (enforced by the loop via the shared budget counter).
+- Unknown bucket/issue_type in a filter returns an error listing valid values for
+  that crawl. The breakdown teaches the model the crawl's vocabulary so it never
+  guesses.
+
+### Future (recorded, not built)
+
+- `ask_user`: suspends the turn (`waiting`), frontend renders the question,
+  `POST /ai/turns/{turnID}/respond` resumes it. Answers are tool results, never
+  quota-charged user messages.
+- Write tools require a server-enforced confirmation through `ask_user`; no direct
+  writes.
+- Charts and citations ride the tool log; citations are a prompt + rendering
+  convention, not a tool.
