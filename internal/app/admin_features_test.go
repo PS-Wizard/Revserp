@@ -49,7 +49,7 @@ func TestValidateDisabledAITools(t *testing.T) {
 		{"empty allowed", []string{}, []string{}, ""},
 		{"known tool", []string{"read_issues"}, []string{"read_issues"}, ""},
 		{"dupes normalized", []string{"read_issues", "read_issues"}, []string{"read_issues"}, ""},
-		{"unknown tool rejected", []string{"bogus"}, nil, `unknown ai tool "bogus"; valid tools: read_issues`},
+		{"unknown tool rejected", []string{"bogus"}, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -150,7 +150,7 @@ func TestAdminListFeaturesIncludesAIToolCatalog(t *testing.T) {
 		t.Fatalf("decode list response: %v", err)
 	}
 
-	defs := aichattools.NewRegistry().Defs()
+	defs := aichattools.CatalogDefs()
 	if len(response.AITools) != len(defs) {
 		t.Fatalf("ai_tools has %d entries, want %d", len(response.AITools), len(defs))
 	}

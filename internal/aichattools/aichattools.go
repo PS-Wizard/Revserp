@@ -81,8 +81,19 @@ type Registry struct {
 }
 
 // NewRegistry returns a registry with the currently registered tools.
+// NewRegistry returns the registry of tools currently served to the model.
+// Tools implemented but not yet wired into the agent loop stay out of this
+// registry; see CatalogDefs for the full tool catalog.
 func NewRegistry() *Registry {
 	return &Registry{tools: []Tool{readIssuesTool()}}
+}
+
+// CatalogDefs lists every implemented tool definition in catalog order,
+// including tools not yet served to the model. Admin gating and denylist
+// validation run against the full catalog, so a tool can be gateable (and
+// shown in the admin AI tools drawer) before the model can call it.
+func CatalogDefs() []Def {
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def}
 }
 
 // Names lists registered tool names in registration order.

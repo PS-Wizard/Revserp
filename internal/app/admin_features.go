@@ -39,14 +39,19 @@ type adminFeaturesResponse struct {
 	AITools    []adminAIToolInfo                `json:"ai_tools"`
 }
 
-// aiToolCatalogNames lists registered AI tool names in catalog order.
+// aiToolCatalogNames lists all implemented AI tool names in catalog order.
 func aiToolCatalogNames() []string {
-	return aichattools.NewRegistry().Names()
+	defs := aichattools.CatalogDefs()
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	return names
 }
 
-// adminAIToolCatalog describes the registered tools for the admin matrix.
+// adminAIToolCatalog describes all implemented tools for the admin matrix.
 func adminAIToolCatalog() []adminAIToolInfo {
-	defs := aichattools.NewRegistry().Defs()
+	defs := aichattools.CatalogDefs()
 	infos := make([]adminAIToolInfo, 0, len(defs))
 	for _, def := range defs {
 		infos = append(infos, adminAIToolInfo{Name: def.Name, Label: def.Label, Description: def.Description})

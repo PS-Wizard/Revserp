@@ -377,7 +377,7 @@ func TestReadIssuesIssueTypeAcceptance(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fake := &fakeIssueReader{
-				total:         0,
+				total: 0,
 				dimensionRows: []sqlc.ListDistinctCrawlIssueDimensionsRow{
 					{Pillar: "seo", Bucket: "meta_tags", IssueType: "missing_title"},
 					{Pillar: "aeo", Bucket: "answerability", IssueType: "missing_citations"},
