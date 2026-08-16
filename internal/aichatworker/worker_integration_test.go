@@ -348,7 +348,7 @@ func TestToolRoundPersistsCallsAndFinalAnswer(t *testing.T) {
 	}{
 		{"phase", `{"phase":"working"}`},
 		{"tool_call", `{"id":"call-1","name":"read_issues","args":{"limit": 5}}`},
-		{"tool_result", `{"id":"call-1","name":"read_issues","summary":"0 issues shown (0 matching total)"}`},
+		{"tool_result", `{"id":"call-1","name":"read_issues","summary":"0 issues shown (0 matching total)","status":"completed"}`},
 	} {
 		var events int
 		if err := a.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_turn_events WHERE turn_id = $1 AND event_type = $2 AND payload = $3::jsonb`, id, want.eventType, want.payload).Scan(&events); err != nil {

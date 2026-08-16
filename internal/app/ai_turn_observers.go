@@ -15,6 +15,8 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
+const aiTurnEventPollInterval = 100 * time.Millisecond
+
 type aiTurnResponse struct {
 	ID               string               `json:"id"`
 	ConversationID   string               `json:"conversation_id"`
@@ -304,13 +306,16 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
 	flusher.Flush()
 
-	poll := time.NewTicker(250 * time.Millisecond)
+	poll := time.NewTicker(aiTurnEventPollInterval)
 	defer poll.Stop()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()

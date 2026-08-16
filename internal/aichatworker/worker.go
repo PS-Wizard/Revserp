@@ -513,6 +513,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 			toolStart := time.Now()
 			log.Printf("ai chat tool call started: worker_id=%s turn_id=%s call_id=%s name=%s args=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, truncateToolLog(call.Args))
 			status, result := executeToolCall(ctx, registry, call, toolScope)
+			status, result = normalizeToolCallResult(call.Name, status, result)
 			result.Content = capToolResultContent(result.Content)
 			if err := queries.CompleteAIToolCall(ctx, sqlc.CompleteAIToolCallParams{
 				ID:            rowID,
@@ -528,7 +529,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 					break
 				}
 			}
-			if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary}); err != nil {
+			if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
 				cancel()
 				return
 			}
@@ -980,6 +981,22 @@ func trimLiveToBudget(messages []ai.Message, tools []ai.ToolDef) bool {
 		}
 	}
 	return true
+}
+
+// normalizeToolCallResult maps application-level tool errors to failed status so
+// clients can render them without changing the model-facing tool content.
+func normalizeToolCallResult(name, status string, result aichattools.Result) (string, aichattools.Result) {
+	if status != "completed" {
+		return status, result
+	}
+	prefix := name + " error:"
+	if !strings.HasPrefix(result.Content, prefix) {
+		return status, result
+	}
+	if result.Summary == "" {
+		result.Summary = strings.TrimSpace(strings.TrimPrefix(result.Content, prefix))
+	}
+	return "failed", result
 }
 
 // capToolResultContent caps tool output at the bytes stored and replayed.

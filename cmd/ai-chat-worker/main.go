@@ -30,6 +30,7 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+
 	if strings.TrimSpace(cfg.DeepSeekAPIKey) == "" {
 		return fmt.Errorf("DEEPSEEK_API_KEY is required for ai chat worker")
 	}

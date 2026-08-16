@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -152,6 +153,82 @@ func TestAITurnEventsResumeAndTerminalCloseIntegration(t *testing.T) {
 	if secondPosition < 0 || terminalPosition <= secondPosition {
 		t.Fatalf("events are missing or unordered: %q", body)
 	}
+}
+
+func TestAITurnEventsDeliverDeltaBeforeTerminalIntegration(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	submission := submitObserverTurn(t, fixture, fixture.conversationID, "live", "live")
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status = 'running', started_at = now() WHERE id = $1`, submission.TurnID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		routeContext := chi.NewRouteContext()
+		routeContext.URLParams.Add("turnID", submission.TurnID.String())
+		ctx := context.WithValue(r.Context(), chi.RouteCtxKey, routeContext)
+		ctx = context.WithValue(ctx, resolvedUserContextKey{}, resolvedUserEntry{user: sqlc.User{ID: fixture.userID}})
+		fixture.app.handleGetAITurnEvents(w, r.WithContext(ctx))
+	}))
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("open SSE: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" || response.Header.Get("Cache-Control") != "no-cache, no-transform" || response.Header.Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("SSE response = %d, headers = %v", response.StatusCode, response.Header)
+	}
+
+	reader := bufio.NewReader(response.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil || line != ": connected\n" {
+		t.Fatalf("initial SSE line = %q, err = %v", line, err)
+	}
+	if line, err = reader.ReadString('\n'); err != nil || line != "\n" {
+		t.Fatalf("initial SSE terminator = %q, err = %v", line, err)
+	}
+
+	frame := make(chan struct {
+		body string
+		err  error
+	}, 1)
+	go func() {
+		var body strings.Builder
+		for range 4 {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				frame <- struct {
+					body string
+					err  error
+				}{body: body.String(), err: err}
+				return
+			}
+			body.WriteString(line)
+		}
+		frame <- struct {
+			body string
+			err  error
+		}{body: body.String()}
+	}()
+
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `INSERT INTO ai_turn_events (turn_id, event_type, payload) VALUES ($1, 'text_delta', '{"text":"before terminal"}'::jsonb)`, submission.TurnID); err != nil {
+		t.Fatalf("insert text delta: %v", err)
+	}
+
+	select {
+	case result := <-frame:
+		if result.err != nil || !strings.Contains(result.body, "event: text_delta") || !strings.Contains(result.body, "before terminal") {
+			t.Fatalf("SSE delta = %q, err = %v", result.body, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSE delta was not delivered before terminal completion")
+	}
+
 }
 
 func TestAITurnEventDisconnectDoesNotCancelIntegration(t *testing.T) {

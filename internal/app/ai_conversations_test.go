@@ -265,6 +265,55 @@ func TestAIConversationHistoryIntegration(t *testing.T) {
 	}
 }
 
+func TestAIConversationMessageOrderIntegration(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first user", "none", "message-order-first", nil)
+	if err != nil {
+		t.Fatalf("submit first turn: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status = 'completed', completed_at = now() WHERE id = $1`, first.TurnID); err != nil {
+		t.Fatalf("complete first turn: %v", err)
+	}
+	second, err := fixture.submit(t, fixture.conversationID, "second user", "none", "message-order-second", nil)
+	if err != nil {
+		t.Fatalf("submit second turn: %v", err)
+	}
+
+	for _, update := range []struct {
+		turnID        pgtype.UUID
+		turnCreatedAt string
+		userMessageID string
+		assistantID   string
+	}{
+		{first.TurnID, "2024-01-01T00:00:00Z", "00000000-0000-0000-0000-000000000002", "00000000-0000-0000-0000-000000000001"},
+		{second.TurnID, "2024-01-01T00:01:00Z", "00000000-0000-0000-0000-000000000004", "00000000-0000-0000-0000-000000000003"},
+	} {
+		if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET created_at = $2::timestamptz WHERE id = $1`, update.turnID, update.turnCreatedAt); err != nil {
+			t.Fatalf("set turn timestamp: %v", err)
+		}
+		if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_messages
+			SET id = CASE role WHEN 'user' THEN $2::uuid ELSE $3::uuid END,
+				created_at = '2024-01-01T00:00:00Z'::timestamptz
+			WHERE turn_id = $1`, update.turnID, update.userMessageID, update.assistantID); err != nil {
+			t.Fatalf("set message timestamps and IDs: %v", err)
+		}
+	}
+
+	messages, err := fixture.queries.ListAIMessagesForConversation(fixture.ctx, fixture.conversationID)
+	if err != nil {
+		t.Fatalf("list conversation messages: %v", err)
+	}
+	wantRoles := []string{"user", "assistant", "user", "assistant"}
+	if len(messages) != len(wantRoles) {
+		t.Fatalf("message count = %d, want %d", len(messages), len(wantRoles))
+	}
+	for i, wantRole := range wantRoles {
+		if messages[i].Role != wantRole {
+			t.Errorf("message %d role = %q, want %q", i, messages[i].Role, wantRole)
+		}
+	}
+}
+
 func conversationRequest(userID, conversationID pgtype.UUID) *http.Request {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	routeContext := chi.NewRouteContext()

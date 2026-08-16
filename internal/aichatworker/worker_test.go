@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/ai"
+	"github.com/ps-wizard/revserp/internal/aichattools"
 )
 
 func TestComposeSystemContext(t *testing.T) {
@@ -68,5 +69,25 @@ func TestCapToolResultContent(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "\u2026") {
 		t.Fatalf("cap missing truncation marker: %q", got[len(got)-16:])
+	}
+}
+
+func TestNormalizeToolCallResult(t *testing.T) {
+	status, result := normalizeToolCallResult("read_issues", "completed", aichattools.Result{
+		Content: "read_issues error: argument \"limit\" must be at least 1",
+	})
+	if status != "failed" {
+		t.Fatalf("status = %q, want failed", status)
+	}
+	if result.Summary != "argument \"limit\" must be at least 1" {
+		t.Fatalf("summary = %q", result.Summary)
+	}
+
+	status, result = normalizeToolCallResult("read_issues", "completed", aichattools.Result{
+		Content: `{"issues":[]}`,
+		Summary: "0 issues shown (0 matching total)",
+	})
+	if status != "completed" || result.Summary != "0 issues shown (0 matching total)" {
+		t.Fatalf("success path changed: status=%q summary=%q", status, result.Summary)
 	}
 }

@@ -185,7 +185,7 @@ FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 WHERE t.conversation_id = sqlc.arg(conversation_id)
   AND m.role IN ('user', 'assistant')
-ORDER BY t.created_at ASC, t.id ASC, m.created_at ASC, m.id ASC;
+ORDER BY t.created_at ASC, t.id ASC, CASE m.role WHEN 'user' THEN 0 ELSE 1 END ASC;
 
 -- name: ListAITurnEventsForUser :many
 SELECT e.id, e.event_type, e.payload
