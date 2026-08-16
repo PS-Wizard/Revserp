@@ -360,6 +360,74 @@ func TestReadIssuesBucketLabelResolution(t *testing.T) {
 	}
 }
 
+func TestReadIssuesIssueTypeAcceptance(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		wantType  string
+		wantError bool
+	}{
+		{name: "id exact", raw: `{"issue_type":"missing_title"}`, wantType: "missing_title"},
+		{name: "id case-insensitive", raw: `{"issue_type":"MISSING_TITLE"}`, wantType: "missing_title"},
+		{name: "human label", raw: `{"issue_type":"Missing Title"}`, wantType: "missing_title"},
+		{name: "label case-insensitive", raw: `{"issue_type":"missing title"}`, wantType: "missing_title"},
+		{name: "pillar-scoped id", raw: `{"pillar":"aeo","issue_type":"missing_citations"}`, wantType: "missing_citations"},
+		{name: "unknown", raw: `{"issue_type":"nope"}`, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeIssueReader{
+				total:         0,
+				dimensionRows: []sqlc.ListDistinctCrawlIssueDimensionsRow{
+					{Pillar: "seo", Bucket: "meta_tags", IssueType: "missing_title"},
+					{Pillar: "aeo", Bucket: "answerability", IssueType: "missing_citations"},
+				},
+			}
+			result := runReadIssues(t, fake, test.raw, nil)
+			if test.wantError {
+				if !strings.Contains(result.Content, "unknown issue_type") {
+					t.Fatalf("Content = %q, want unknown issue_type error", result.Content)
+				}
+				return
+			}
+			if got := fake.lastCountParams.Column5; got != test.wantType {
+				t.Fatalf("count filter issue_type = %v, want %q", got, test.wantType)
+			}
+			if got := fake.lastListParams.Column5; got != test.wantType {
+				t.Fatalf("list filter issue_type = %v, want %q", got, test.wantType)
+			}
+		})
+	}
+}
+
+// TestReadIssuesIssueTypeNotConfusedByBucketVocabulary is the regression test for
+// the bug where issue_type validation checked the bucket vocabulary, so every
+// real issue type was rejected while bucket ids were wrongly accepted.
+func TestReadIssuesIssueTypeNotConfusedByBucketVocabulary(t *testing.T) {
+	fake := &fakeIssueReader{
+		total: 0,
+		dimensionRows: []sqlc.ListDistinctCrawlIssueDimensionsRow{
+			{Pillar: "pagespeed", Bucket: "server_responsiveness", IssueType: "slow_response_time"},
+			{Pillar: "pagespeed", Bucket: "page_weight", IssueType: "large_page_size"},
+		},
+	}
+
+	// A real issue type must be accepted even though it is not a bucket id.
+	result := runReadIssues(t, fake, `{"issue_type":"slow_response_time"}`, nil)
+	if strings.Contains(result.Content, "unknown issue_type") {
+		t.Fatalf("Content = %q, want accepted", result.Content)
+	}
+	if got := fake.lastCountParams.Column5; got != "slow_response_time" {
+		t.Fatalf("count filter issue_type = %v, want slow_response_time", got)
+	}
+
+	// A bucket id must not be accepted as an issue type.
+	result = runReadIssues(t, fake, `{"issue_type":"server_responsiveness"}`, nil)
+	if !strings.Contains(result.Content, "unknown issue_type") {
+		t.Fatalf("Content = %q, want unknown issue_type error", result.Content)
+	}
+}
+
 func TestReadIssuesURLsCap(t *testing.T) {
 	fake := &fakeIssueReader{dimensionRows: defaultDimensions()}
 	urls := make([]string, 30)

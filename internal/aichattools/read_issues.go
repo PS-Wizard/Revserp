@@ -194,9 +194,11 @@ func (e *readIssuesExecutor) run(ctx context.Context, raw json.RawMessage, crawl
 		args.Bucket = resolved
 	}
 	if args.IssueType != "" {
-		if err := validateReadIssuesIssueType(args.IssueType, dimensions, args.Pillar); err != nil {
+		resolved, err := resolveReadIssuesIssueType(args.IssueType, dimensions, args.Pillar)
+		if err != nil {
 			return Result{Content: "read_issues error: " + err.Error()}, nil
 		}
+		args.IssueType = resolved
 	}
 
 	total, err := e.counter.CountCrawlIssuesFilteredForUser(ctx, sqlc.CountCrawlIssuesFilteredForUserParams{
@@ -389,21 +391,18 @@ func resolveReadIssuesBucket(raw string, dimensions []sqlc.ListDistinctCrawlIssu
 	return "", fmt.Errorf("unknown bucket %q; valid buckets: %s", raw, strings.Join(valid, ", "))
 }
 
-// validateReadIssuesIssueType rejects an issue type id that the crawl does not have,
-// listing the valid ones.
-func validateReadIssuesIssueType(raw string, dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillar string) error {
-	if slices.Contains(validReadIssuesDimensions(dimensions, pillar), raw) {
-		return nil
-	}
-	validIssueTypes := make([]string, 0)
-	for _, dimension := range dimensions {
-		if pillar != "" && dimension.Pillar != pillar {
-			continue
+// resolveReadIssuesIssueType resolves an issue type id or human label
+// (case-insensitively, like buckets) to the canonical id, or returns an
+// error listing the valid ones.
+func resolveReadIssuesIssueType(raw string, dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillar string) (string, error) {
+	target := strings.ToLower(strings.TrimSpace(raw))
+	valid := validReadIssuesIssueTypes(dimensions, pillar)
+	for _, issueType := range valid {
+		if strings.ToLower(issueType) == target || strings.ToLower(shared.HumanizeIdentifier(issueType)) == target {
+			return issueType, nil
 		}
-		validIssueTypes = append(validIssueTypes, dimension.IssueType)
 	}
-	validIssueTypes = uniqueSorted(validIssueTypes)
-	return fmt.Errorf("unknown issue_type %q; valid issue types: %s", raw, strings.Join(validIssueTypes, ", "))
+	return "", fmt.Errorf("unknown issue_type %q; valid issue types: %s", raw, strings.Join(valid, ", "))
 }
 
 // validReadIssuesDimensions lists the bucket ids for the crawl, optionally scoped
@@ -417,6 +416,19 @@ func validReadIssuesDimensions(dimensions []sqlc.ListDistinctCrawlIssueDimension
 		buckets = append(buckets, dimension.Bucket)
 	}
 	return uniqueSorted(buckets)
+}
+
+// validReadIssuesIssueTypes lists the issue type ids for the crawl, optionally
+// scoped to one pillar, sorted and deduplicated.
+func validReadIssuesIssueTypes(dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillar string) []string {
+	issueTypes := make([]string, 0)
+	for _, dimension := range dimensions {
+		if pillar != "" && dimension.Pillar != pillar {
+			continue
+		}
+		issueTypes = append(issueTypes, dimension.IssueType)
+	}
+	return uniqueSorted(issueTypes)
 }
 
 func uniqueSorted(values []string) []string {

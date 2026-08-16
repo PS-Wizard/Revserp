@@ -24,7 +24,7 @@ import (
 const (
 	defaultLease         = 45 * time.Second
 	defaultHeartbeat     = 10 * time.Second
-	defaultFlush         = 500 * time.Millisecond
+	defaultFlush         = 100 * time.Millisecond
 	defaultRecovery      = time.Minute
 	defaultShutdownGrace = 10 * time.Second
 	defaultAttempts      = 2
@@ -510,6 +510,8 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				cancel()
 				return
 			}
+			toolStart := time.Now()
+			log.Printf("ai chat tool call started: worker_id=%s turn_id=%s call_id=%s name=%s args=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, truncateToolLog(call.Args))
 			status, result := executeToolCall(ctx, registry, call, toolScope)
 			result.Content = capToolResultContent(result.Content)
 			if err := queries.CompleteAIToolCall(ctx, sqlc.CompleteAIToolCallParams{
@@ -530,6 +532,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				cancel()
 				return
 			}
+			log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
 			live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
 		}
 		if toolStop {
@@ -999,4 +1002,13 @@ func executeToolCall(ctx context.Context, registry *aichattools.Registry, call a
 		return "failed", aichattools.Result{Content: err.Error(), Summary: "tool execution failed"}
 	}
 	return "completed", result
+}
+
+// truncateToolLog bounds a tool argument string for log output.
+func truncateToolLog(value string) string {
+	const maxLogArgs = 200
+	if len(value) <= maxLogArgs {
+		return value
+	}
+	return value[:maxLogArgs] + "..."
 }
