@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
 func TestAcceptAITurnRequest(t *testing.T) {
@@ -78,6 +82,23 @@ func TestAITurnUniqueErrorClassification(t *testing.T) {
 	}
 	if isAITurnIdempotencyUniqueError(&pgconn.PgError{Code: "23505", ConstraintName: "idx_ai_turns_one_active_per_conversation"}) {
 		t.Fatal("active-turn constraint was classified as idempotency")
+	}
+}
+
+func TestNewAIToolCallsResponse(t *testing.T) {
+	createdAt := time.Now()
+	calls := newAIToolCallsResponse([]sqlc.ListAIToolCallsForTurnRow{
+		{CallID: "call-1", Name: "read_issues", Args: []byte(`{"limit": 5}`), Status: "completed", Summary: "5 issues shown (7 matching total)", Seq: 0, CreatedAt: pgtype.Timestamptz{Time: createdAt, Valid: true}},
+	})
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	got := calls[0]
+	if got.CallID != "call-1" || got.Name != "read_issues" || string(got.Args) != `{"limit": 5}` || got.Status != "completed" || got.Summary != "5 issues shown (7 matching total)" || got.Seq != 0 || !got.CreatedAt.Equal(createdAt) {
+		t.Fatalf("call = %+v", got)
+	}
+	if empty := newAIToolCallsResponse(nil); empty == nil || len(empty) != 0 {
+		t.Fatalf("empty rows must marshal as []: %v", empty)
 	}
 }
 

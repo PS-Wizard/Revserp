@@ -111,6 +111,7 @@ type AiTurn struct {
 	CompletedAt       pgtype.Timestamptz
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+	DisabledAiTools   []string
 }
 
 type AiTurnEvent struct {

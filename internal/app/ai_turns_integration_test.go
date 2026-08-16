@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -243,5 +245,80 @@ func TestAITurnSubmissionSharedQuotaIsAtomic(t *testing.T) {
 	}
 	if successes != 1 || limited != 1 || fixture.usage(t) != 1 {
 		t.Fatalf("successes=%d limited=%d usage=%d, want 1/1/1", successes, limited, fixture.usage(t))
+	}
+}
+
+func TestAITurnSubmissionSnapshotsDisabledTools(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	if err := fixture.queries.UpsertOrganizationFeatures(fixture.ctx, sqlc.UpsertOrganizationFeaturesParams{
+		OrgID: fixture.organizationID, AutoCrawl: true, GscConnector: true, AiChat: true,
+		AiMonthlyMessageLimit: 10, AiConcurrentTurnLimitPerUser: 2, AiAllowedReasoningEfforts: canonicalAIReasoningEfforts,
+		DisabledAiTools: []string{"read_issues", "unknown", "", "read_issues"},
+	}); err != nil {
+		t.Fatalf("configure disabled tools: %v", err)
+	}
+	submission, err := fixture.submit(t, fixture.conversation(t), "denylist", "low", "denylist-key", nil)
+	if err != nil {
+		t.Fatalf("submit turn: %v", err)
+	}
+	var stored []string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT disabled_ai_tools FROM ai_turns WHERE id = $1`, submission.TurnID).Scan(&stored); err != nil {
+		t.Fatalf("read disabled tools: %v", err)
+	}
+	if len(stored) != 1 || stored[0] != "read_issues" {
+		t.Fatalf("stored disabled tools = %v, want [read_issues]", stored)
+	}
+
+	// the snapshot is frozen at creation: a later workspace change must not mutate it
+	if err := fixture.queries.UpsertOrganizationFeatures(fixture.ctx, sqlc.UpsertOrganizationFeaturesParams{
+		OrgID: fixture.organizationID, AutoCrawl: true, GscConnector: true, AiChat: true,
+		AiMonthlyMessageLimit: 10, AiConcurrentTurnLimitPerUser: 2, AiAllowedReasoningEfforts: canonicalAIReasoningEfforts,
+		DisabledAiTools: []string{},
+	}); err != nil {
+		t.Fatalf("re-enable tools: %v", err)
+	}
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT disabled_ai_tools FROM ai_turns WHERE id = $1`, submission.TurnID).Scan(&stored); err != nil {
+		t.Fatalf("re-read disabled tools: %v", err)
+	}
+	if len(stored) != 1 || stored[0] != "read_issues" {
+		t.Fatalf("snapshot mutated after workspace change: %v", stored)
+	}
+}
+
+func TestAITurnDetailIncludesToolCalls(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	submission := submitObserverTurn(t, fixture, fixture.conversationID, "tools", "tools-detail")
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `INSERT INTO ai_tool_calls (turn_id, seq, call_id, name, args, status, summary) VALUES ($1, 1, 'call-1', 'read_issues', '{"limit":5}'::jsonb, 'completed', '5 issues shown (7 matching total)')`, submission.TurnID); err != nil {
+		t.Fatalf("insert tool call: %v", err)
+	}
+	response := httptest.NewRecorder()
+	fixture.app.handleGetAITurn(response, observerRequest(fixture.userID, http.MethodGet, "/", submission.TurnID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", response.Code, response.Body.String())
+	}
+	turn := decodeAITurnResponse(t, response)
+	if len(turn.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %+v", turn.ToolCalls)
+	}
+	call := turn.ToolCalls[0]
+	if call.CallID != "call-1" || call.Name != "read_issues" || call.Status != "completed" || call.Summary != "5 issues shown (7 matching total)" || call.Seq != 1 || string(call.Args) != `{"limit":5}` {
+		t.Fatalf("tool call = %+v", call)
+	}
+	if call.CreatedAt.IsZero() {
+		t.Fatalf("tool call created_at missing: %+v", call)
+	}
+}
+
+func TestAITurnDetailWithoutToolCallsReturnsEmptyArray(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	submission := submitObserverTurn(t, fixture, fixture.conversationID, "plain", "plain-detail")
+	response := httptest.NewRecorder()
+	fixture.app.handleGetAITurn(response, observerRequest(fixture.userID, http.MethodGet, "/", submission.TurnID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", response.Code, response.Body.String())
+	}
+	turn := decodeAITurnResponse(t, response)
+	if len(turn.ToolCalls) != 0 {
+		t.Fatalf("tool calls = %+v, want []", turn.ToolCalls)
 	}
 }

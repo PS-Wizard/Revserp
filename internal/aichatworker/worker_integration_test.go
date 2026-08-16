@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,5 +278,235 @@ func TestStaleWorkerCannotFlushOrFinalize(t *testing.T) {
 	}
 	if status != "running" || owner != "live" || messageStatus != "pending" || events != 0 {
 		t.Fatalf("status=%q owner=%q message=%q events=%d", status, owner, messageStatus, events)
+	}
+}
+
+// roundProvider serves one provider round per Stream call from a script.
+type roundProvider struct {
+	requests []ai.Request
+	rounds   [][]ai.Event
+	errs     []error
+}
+
+func (p *roundProvider) Stream(_ context.Context, request ai.Request, emit func(ai.Event) error) error {
+	p.requests = append(p.requests, request)
+	if len(p.rounds) > 0 {
+		events := p.rounds[0]
+		p.rounds = p.rounds[1:]
+		for _, event := range events {
+			if err := emit(event); err != nil {
+				return err
+			}
+		}
+	}
+	if len(p.errs) > 0 {
+		err := p.errs[0]
+		p.errs = p.errs[1:]
+		return err
+	}
+	return nil
+}
+
+func toolCallEvent(id string) ai.Event {
+	return ai.Event{ToolCall: &ai.ToolCall{ID: id, Name: "read_issues", Args: `{"limit": 5}`}}
+}
+
+func TestToolRoundPersistsCallsAndFinalAnswer(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	provider := &roundProvider{rounds: [][]ai.Event{
+		{toolCallEvent("call-1")},
+		{{Text: "answer"}},
+	}}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	var status, content string
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || content != "answer" {
+		t.Fatalf("turn=%q content=%q", status, content)
+	}
+
+	var calls int
+	var name, callStatus, summary string
+	if err := a.pool.QueryRow(context.Background(), `SELECT count(*), MIN(name), MIN(status), MIN(summary) FROM ai_tool_calls WHERE turn_id = $1`, id).Scan(&calls, &name, &callStatus, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || name != "read_issues" || callStatus != "completed" || summary == "" {
+		t.Fatalf("tool rows=%d name=%q status=%q summary=%q", calls, name, callStatus, summary)
+	}
+
+	for _, want := range []struct {
+		eventType string
+		payload   string
+	}{
+		{"phase", `{"phase":"working"}`},
+		{"tool_call", `{"id":"call-1","name":"read_issues","args":{"limit": 5}}`},
+		{"tool_result", `{"id":"call-1","name":"read_issues","summary":"0 issues shown (0 matching total)"}`},
+	} {
+		var events int
+		if err := a.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_turn_events WHERE turn_id = $1 AND event_type = $2 AND payload = $3::jsonb`, id, want.eventType, want.payload).Scan(&events); err != nil {
+			t.Fatal(err)
+		}
+		if events != 1 {
+			t.Fatalf("event %s with payload %s count=%d", want.eventType, want.payload, events)
+		}
+	}
+
+	if len(provider.requests) != 2 {
+		t.Fatalf("streams=%d, want 2", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "read_issues" {
+		t.Fatalf("round 1 tools = %+v", provider.requests[0].Tools)
+	}
+	foundCall, foundResult := false, false
+	for _, message := range provider.requests[1].Messages {
+		if message.Role == ai.RoleAssistant && len(message.ToolCalls) == 1 && message.ToolCalls[0].ID == "call-1" {
+			foundCall = true
+		}
+		if message.Role == ai.RoleTool && message.ToolCallID == "call-1" && message.Name == "read_issues" && message.Content != "" {
+			foundResult = true
+		}
+	}
+	if !foundCall || !foundResult {
+		t.Fatalf("round 2 messages = %+v", provider.requests[1].Messages)
+	}
+}
+
+func TestDisabledToolsAreNotSentToProvider(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	provider := &roundProvider{rounds: [][]ai.Event{{{Text: "plain"}}}}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	if _, err := a.pool.Exec(context.Background(), `UPDATE ai_turns SET disabled_ai_tools = '{read_issues}' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.DisabledTools) != 1 || claimed.DisabledTools[0] != "read_issues" {
+		t.Fatalf("claimed disabled tools = %v", claimed.DisabledTools)
+	}
+	a.run(context.Background(), claimed)
+
+	if len(provider.requests) != 1 {
+		t.Fatalf("streams=%d, want 1", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) != 0 {
+		t.Fatalf("round tools = %+v, want none", provider.requests[0].Tools)
+	}
+	var status, content string
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || content != "plain" {
+		t.Fatalf("turn=%q content=%q", status, content)
+	}
+}
+
+func TestToolRoundCapSynthesizesFinalAnswer(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	provider := &roundProvider{}
+	for i := 0; i < maxAgentRounds; i++ {
+		provider.rounds = append(provider.rounds, []ai.Event{toolCallEvent(fmt.Sprintf("call-%d", i))})
+	}
+	provider.rounds = append(provider.rounds, []ai.Event{{Text: "final answer"}})
+	a.provider = provider
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	if len(provider.requests) != maxAgentRounds+1 {
+		t.Fatalf("streams=%d, want %d", len(provider.requests), maxAgentRounds+1)
+	}
+	for i := 0; i < maxAgentRounds; i++ {
+		if len(provider.requests[i].Tools) != 1 {
+			t.Fatalf("round %d tools = %+v, want read_issues", i, provider.requests[i].Tools)
+		}
+	}
+	final := provider.requests[maxAgentRounds]
+	if len(final.Tools) != 0 {
+		t.Fatalf("synthesis round tools = %+v, want none", final.Tools)
+	}
+	found := false
+	for _, message := range final.Messages {
+		if message.Role == ai.RoleUser && strings.Contains(message.Content, "tool-call limit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("synthesis instruction missing from final messages: %+v", final.Messages)
+	}
+	var status, content string
+	var calls int
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, m.content, (SELECT count(*) FROM ai_tool_calls WHERE turn_id = t.id) FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content, &calls); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || content != "final answer" || calls != maxAgentRounds {
+		t.Fatalf("turn=%q content=%q calls=%d", status, content, calls)
+	}
+}
+
+func TestCancelRequestedBeforeToolExecutionStopsTurn(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	a.provider = &roundProvider{rounds: [][]ai.Event{{toolCallEvent("call-1")}}}
+	a.heartbeat = time.Hour
+	a.flushInterval = time.Hour
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.pool.Exec(context.Background(), `UPDATE ai_turns SET cancel_requested_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	var status, code, messageStatus string
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, COALESCE(t.error_code, ''), m.status FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &code, &messageStatus); err != nil {
+		t.Fatal(err)
+	}
+	if status != "stopped" || code != "cancelled" || messageStatus != "partial" {
+		t.Fatalf("turn=%q/%q message=%q", status, code, messageStatus)
+	}
+	var calls, toolEvents int
+	if err := a.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM ai_tool_calls WHERE turn_id = $1), (SELECT count(*) FROM ai_turn_events WHERE turn_id = $1 AND event_type IN ('tool_call', 'tool_result', 'phase'))`, id).Scan(&calls, &toolEvents); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || toolEvents != 0 {
+		t.Fatalf("calls=%d toolEvents=%d, want none", calls, toolEvents)
+	}
+}
+
+func TestProviderFailureAfterToolRoundDoesNotRetry(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	provider := &roundProvider{
+		rounds: [][]ai.Event{{toolCallEvent("call-1")}},
+		errs:   []error{nil, &ai.ProviderError{Code: "provider_timeout", Temporary: true}},
+	}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	var status, code string
+	if err := a.pool.QueryRow(context.Background(), `SELECT status, COALESCE(error_code, '') FROM ai_turns WHERE id = $1`, id).Scan(&status, &code); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || code != "provider_timeout" {
+		t.Fatalf("turn=%q/%q, want failed/provider_timeout (no retry after tools)", status, code)
 	}
 }

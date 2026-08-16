@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -255,6 +257,7 @@ func (a *App) submitAITurnTx(ctx context.Context, tx pgx.Tx, userID, conversatio
 		CrawlID:         resolvedCrawlID,
 		ClientRequestID: request.clientRequestID,
 		RequestHash:     request.requestHash,
+		DisabledAiTools: normalizeDisabledAITools(conversation.DisabledAiTools),
 	})
 	if err != nil {
 		return aiTurnSubmission{}, fmt.Errorf("create ai turn: %w", err)
@@ -297,6 +300,35 @@ func aiTurnModel(model string) string {
 		return defaultAITurnModel
 	}
 	return model
+}
+
+// aiToolCallResponse is one executed tool call in the turn detail response.
+// Args stays a raw JSON object so clients render the model's exact arguments.
+type aiToolCallResponse struct {
+	CallID    string          `json:"call_id"`
+	Name      string          `json:"name"`
+	Args      json.RawMessage `json:"args"`
+	Status    string          `json:"status"`
+	Summary   string          `json:"summary"`
+	Seq       int32           `json:"seq"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+// newAIToolCallsResponse maps the durable tool log to the turn detail shape.
+func newAIToolCallsResponse(rows []sqlc.ListAIToolCallsForTurnRow) []aiToolCallResponse {
+	calls := make([]aiToolCallResponse, 0, len(rows))
+	for _, row := range rows {
+		calls = append(calls, aiToolCallResponse{
+			CallID:    row.CallID,
+			Name:      row.Name,
+			Args:      json.RawMessage(row.Args),
+			Status:    row.Status,
+			Summary:   row.Summary,
+			Seq:       row.Seq,
+			CreatedAt: row.CreatedAt.Time,
+		})
+	}
+	return calls
 }
 
 func isAITurnIdempotencyUniqueError(err error) bool {

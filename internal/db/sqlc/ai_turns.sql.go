@@ -52,7 +52,8 @@ INSERT INTO ai_turns (
     prompt_version,
     crawl_id,
     client_request_id,
-    request_hash
+    request_hash,
+    disabled_ai_tools
 ) VALUES (
     $1,
     $2,
@@ -63,7 +64,8 @@ INSERT INTO ai_turns (
     'chat-v1',
     $6,
     $7,
-    $8
+    $8,
+    COALESCE($9::TEXT[], ARRAY[]::TEXT[])
 )
 RETURNING id
 `
@@ -77,6 +79,7 @@ type CreateAITurnParams struct {
 	CrawlID         pgtype.UUID
 	ClientRequestID string
 	RequestHash     []byte
+	DisabledAiTools []string
 }
 
 func (q *Queries) CreateAITurn(ctx context.Context, arg CreateAITurnParams) (pgtype.UUID, error) {
@@ -89,6 +92,7 @@ func (q *Queries) CreateAITurn(ctx context.Context, arg CreateAITurnParams) (pgt
 		arg.CrawlID,
 		arg.ClientRequestID,
 		arg.RequestHash,
+		arg.DisabledAiTools,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
@@ -431,7 +435,8 @@ SELECT
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
-    ) AS ai_allowed_reasoning_efforts
+    ) AS ai_allowed_reasoning_efforts,
+    COALESCE(f.disabled_ai_tools, ARRAY[]::TEXT[]) AS disabled_ai_tools
 FROM ai_conversations AS ac
 INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -453,6 +458,7 @@ type LockAIConversationForTurnRow struct {
 	AiChat                    bool
 	AiMonthlyMessageLimit     int32
 	AiAllowedReasoningEfforts []string
+	DisabledAiTools           []string
 }
 
 func (q *Queries) LockAIConversationForTurn(ctx context.Context, arg LockAIConversationForTurnParams) (LockAIConversationForTurnRow, error) {
@@ -464,6 +470,7 @@ func (q *Queries) LockAIConversationForTurn(ctx context.Context, arg LockAIConve
 		&i.AiChat,
 		&i.AiMonthlyMessageLimit,
 		&i.AiAllowedReasoningEfforts,
+		&i.DisabledAiTools,
 	)
 	return i, err
 }

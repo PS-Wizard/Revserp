@@ -7,7 +7,8 @@ SELECT
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
-    ) AS ai_allowed_reasoning_efforts
+    ) AS ai_allowed_reasoning_efforts,
+    COALESCE(f.disabled_ai_tools, ARRAY[]::TEXT[]) AS disabled_ai_tools
 FROM ai_conversations AS ac
 INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -79,7 +80,8 @@ INSERT INTO ai_turns (
     prompt_version,
     crawl_id,
     client_request_id,
-    request_hash
+    request_hash,
+    disabled_ai_tools
 ) VALUES (
     sqlc.arg(conversation_id),
     sqlc.arg(user_id),
@@ -90,7 +92,8 @@ INSERT INTO ai_turns (
     'chat-v1',
     sqlc.narg(crawl_id),
     sqlc.arg(client_request_id),
-    sqlc.arg(request_hash)
+    sqlc.arg(request_hash),
+    COALESCE(sqlc.arg(disabled_ai_tools)::TEXT[], ARRAY[]::TEXT[])
 )
 RETURNING id;
 

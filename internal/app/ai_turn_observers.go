@@ -16,25 +16,26 @@ import (
 )
 
 type aiTurnResponse struct {
-	ID               string              `json:"id"`
-	ConversationID   string              `json:"conversation_id"`
-	Status           string              `json:"status"`
-	RequestedEffort  string              `json:"requested_effort"`
-	EffectiveEffort  string              `json:"effective_effort"`
-	Model            string              `json:"model"`
-	AttemptCount     int32               `json:"attempt_count"`
-	CancelRequested  bool                `json:"cancel_requested"`
-	PromptTokens     *int32              `json:"prompt_tokens"`
-	ReasoningTokens  *int32              `json:"reasoning_tokens"`
-	CompletionTokens *int32              `json:"completion_tokens"`
-	TotalTokens      *int32              `json:"total_tokens"`
-	ErrorCode        *string             `json:"error_code"`
-	QueuedAt         time.Time           `json:"queued_at"`
-	StartedAt        *time.Time          `json:"started_at"`
-	CompletedAt      *time.Time          `json:"completed_at"`
-	CreatedAt        time.Time           `json:"created_at"`
-	UpdatedAt        time.Time           `json:"updated_at"`
-	Messages         []aiMessageResponse `json:"messages"`
+	ID               string               `json:"id"`
+	ConversationID   string               `json:"conversation_id"`
+	Status           string               `json:"status"`
+	RequestedEffort  string               `json:"requested_effort"`
+	EffectiveEffort  string               `json:"effective_effort"`
+	Model            string               `json:"model"`
+	AttemptCount     int32                `json:"attempt_count"`
+	CancelRequested  bool                 `json:"cancel_requested"`
+	PromptTokens     *int32               `json:"prompt_tokens"`
+	ReasoningTokens  *int32               `json:"reasoning_tokens"`
+	CompletionTokens *int32               `json:"completion_tokens"`
+	TotalTokens      *int32               `json:"total_tokens"`
+	ErrorCode        *string              `json:"error_code"`
+	QueuedAt         time.Time            `json:"queued_at"`
+	StartedAt        *time.Time           `json:"started_at"`
+	CompletedAt      *time.Time           `json:"completed_at"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+	Messages         []aiMessageResponse  `json:"messages"`
+	ToolCalls        []aiToolCallResponse `json:"tool_calls"`
 }
 
 type aiMessageResponse struct {
@@ -112,6 +113,7 @@ func newAITurnResponse(turn aiTurnSnapshot, messages []sqlc.ListAIMessagesForUse
 		CreatedAt:        turn.CreatedAt.Time,
 		UpdatedAt:        turn.UpdatedAt.Time,
 		Messages:         make([]aiMessageResponse, 0, len(messages)),
+		ToolCalls:        make([]aiToolCallResponse, 0),
 	}
 	for _, message := range messages {
 		response.Messages = append(response.Messages, aiMessageResponse{
@@ -168,7 +170,14 @@ func (a *App) handleGetAITurn(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, fmt.Errorf("get ai turn messages: %w", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, newAITurnResponse(snapshotFromAITurn(turn), messages))
+	toolCalls, err := a.Queries.ListAIToolCallsForTurn(r.Context(), turnID)
+	if err != nil {
+		serverError(w, r, fmt.Errorf("get ai turn tool calls: %w", err))
+		return
+	}
+	response := newAITurnResponse(snapshotFromAITurn(turn), messages)
+	response.ToolCalls = newAIToolCallsResponse(toolCalls)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
