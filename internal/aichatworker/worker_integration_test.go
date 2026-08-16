@@ -362,8 +362,12 @@ func TestToolRoundPersistsCallsAndFinalAnswer(t *testing.T) {
 	if len(provider.requests) != 2 {
 		t.Fatalf("streams=%d, want 2", len(provider.requests))
 	}
-	if len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "read_issues" {
-		t.Fatalf("round 1 tools = %+v", provider.requests[0].Tools)
+	roundTools := map[string]bool{}
+	for _, def := range provider.requests[0].Tools {
+		roundTools[def.Name] = true
+	}
+	if !roundTools["read_issues"] || !roundTools["get_score_summary"] {
+		t.Fatalf("round 1 tools = %+v, want both registered tools", provider.requests[0].Tools)
 	}
 	foundCall, foundResult := false, false
 	for _, message := range provider.requests[1].Messages {
@@ -399,8 +403,8 @@ func TestDisabledToolsAreNotSentToProvider(t *testing.T) {
 	if len(provider.requests) != 1 {
 		t.Fatalf("streams=%d, want 1", len(provider.requests))
 	}
-	if len(provider.requests[0].Tools) != 0 {
-		t.Fatalf("round tools = %+v, want none", provider.requests[0].Tools)
+	if len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "get_score_summary" {
+		t.Fatalf("round tools = %+v, want only get_score_summary", provider.requests[0].Tools)
 	}
 	var status, content string
 	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content); err != nil {
@@ -430,8 +434,8 @@ func TestToolRoundCapSynthesizesFinalAnswer(t *testing.T) {
 		t.Fatalf("streams=%d, want %d", len(provider.requests), maxAgentRounds+1)
 	}
 	for i := 0; i < maxAgentRounds; i++ {
-		if len(provider.requests[i].Tools) != 1 {
-			t.Fatalf("round %d tools = %+v, want read_issues", i, provider.requests[i].Tools)
+		if len(provider.requests[i].Tools) != 2 {
+			t.Fatalf("round %d tools = %+v, want both registered tools", i, provider.requests[i].Tools)
 		}
 	}
 	final := provider.requests[maxAgentRounds]
@@ -508,5 +512,101 @@ func TestProviderFailureAfterToolRoundDoesNotRetry(t *testing.T) {
 	}
 	if status != "failed" || code != "provider_timeout" {
 		t.Fatalf("turn=%q/%q, want failed/provider_timeout (no retry after tools)", status, code)
+	}
+}
+
+// TestToolRoundGetScoreSummaryPersistsCallAndAnswer covers the second
+// registered tool end to end: a real crawl with a breakdown snapshot, a
+// provider round that calls get_score_summary, durable tool rows, and the
+// event stream.
+func TestToolRoundGetScoreSummaryPersistsCallAndAnswer(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	ctx := context.Background()
+
+	var crawlID pgtype.UUID
+	if err := a.pool.QueryRow(ctx, `INSERT INTO crawls(project_id,status,phase,seo_score,aeo_score,pagespeed_score,overall_score,started_at,completed_at) VALUES($1,'completed','done',77,0,0,77,now()-interval '1 hour',now()-interval '30 minutes') RETURNING id`, project).Scan(&crawlID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := `{"crawl_id":"` + crawlID.String() + `","scoring_version":"v3","coverage_scale":0.9,"total_scored_pages":10,"overall_score":77,"pillars":[{"id":"seo","label":"SEO","score":77,"weight":0.5,"weighted_contribution":38.5,"total_penalty":23,"bucket_count":1,"issue_type_count":1,"issue_row_count":3,"affected_url_count":2,"buckets":[{"id":"meta_tags","label":"Meta Tags","score":77,"weight":0.5,"weighted_contribution":38.5,"total_penalty":23,"issue_type_count":1,"issue_row_count":3,"affected_url_count":2,"issues":[]}]}]}`
+	if _, err := a.pool.Exec(ctx, `INSERT INTO crawl_score_breakdowns(crawl_id,scoring_version,breakdown_json) VALUES($1,'v3',$2::jsonb)`, crawlID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: "get_score_summary", Args: `{"pillar":"seo"}`}}},
+		{{Text: "your seo score is 77"}},
+	}}
+	a.provider = provider
+
+	var conversation pgtype.UUID
+	if err := a.pool.QueryRow(ctx, `INSERT INTO ai_conversations(project_id,created_by_user_id,title) VALUES($1,$2,'t') RETURNING id`, project, user).Scan(&conversation); err != nil {
+		t.Fatal(err)
+	}
+	var id pgtype.UUID
+	if err := a.pool.QueryRow(ctx, `INSERT INTO ai_turns(conversation_id,created_by_user_id,status,requested_effort,effective_effort,model,prompt_version,client_request_id,request_hash,crawl_id,queued_at) VALUES($1,$2,'queued','none','none','m','v',$3,decode(repeat('00',32),'hex'),$4,now()-interval '100 years') RETURNING id`, conversation, user, fmt.Sprint(time.Now().UnixNano()), crawlID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.pool.Exec(ctx, `INSERT INTO ai_messages(turn_id,role,status,content) VALUES($1,'user','complete','x'),($1,'assistant','pending','')`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	var status, content string
+	if err := a.pool.QueryRow(ctx, `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || content != "your seo score is 77" {
+		t.Fatalf("turn=%q content=%q", status, content)
+	}
+
+	var calls int
+	var name, callStatus, summary string
+	if err := a.pool.QueryRow(ctx, `SELECT count(*), MIN(name), MIN(status), MIN(summary) FROM ai_tool_calls WHERE turn_id = $1`, id).Scan(&calls, &name, &callStatus, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || name != "get_score_summary" || callStatus != "completed" || summary != "overall 77/100 — seo 77" {
+		t.Fatalf("tool rows=%d name=%q status=%q summary=%q", calls, name, callStatus, summary)
+	}
+
+	for _, want := range []struct {
+		eventType string
+		payload   string
+	}{
+		{"phase", `{"phase":"working"}`},
+		{"tool_call", `{"id":"call-1","name":"get_score_summary","args":{"pillar":"seo"}}`},
+		{"tool_result", `{"id":"call-1","name":"get_score_summary","summary":"overall 77/100 — seo 77","status":"completed"}`},
+	} {
+		var events int
+		if err := a.pool.QueryRow(ctx, `SELECT count(*) FROM ai_turn_events WHERE turn_id = $1 AND event_type = $2 AND payload = $3::jsonb`, id, want.eventType, want.payload).Scan(&events); err != nil {
+			t.Fatal(err)
+		}
+		if events != 1 {
+			t.Fatalf("event %s with payload %s count=%d", want.eventType, want.payload, events)
+		}
+	}
+
+	if len(provider.requests) != 2 {
+		t.Fatalf("streams=%d, want 2", len(provider.requests))
+	}
+	toolNames := map[string]bool{}
+	for _, def := range provider.requests[0].Tools {
+		toolNames[def.Name] = true
+	}
+	if !toolNames["get_score_summary"] || !toolNames["read_issues"] {
+		t.Fatalf("round 1 tools = %+v, want both get_score_summary and read_issues", provider.requests[0].Tools)
+	}
+	foundResult := false
+	for _, message := range provider.requests[1].Messages {
+		if message.Role == ai.RoleTool && message.ToolCallID == "call-1" && message.Name == "get_score_summary" && message.Content != "" {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Fatalf("round 2 messages = %+v, want get_score_summary result", provider.requests[1].Messages)
 	}
 }

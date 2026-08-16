@@ -80,12 +80,9 @@ type Registry struct {
 	tools []Tool
 }
 
-// NewRegistry returns a registry with the currently registered tools.
 // NewRegistry returns the registry of tools currently served to the model.
-// Tools implemented but not yet wired into the agent loop stay out of this
-// registry; see CatalogDefs for the full tool catalog.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool()}}
 }
 
 // CatalogDefs lists every implemented tool definition in catalog order,

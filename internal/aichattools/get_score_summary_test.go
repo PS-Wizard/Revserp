@@ -489,14 +489,11 @@ func TestExecuteGetScoreSummaryRequiresQueries(t *testing.T) {
 	}
 }
 
-// TestCatalogAndRegistrySplit guards the step-1 contract: the admin catalog
-// lists every implemented tool (so gating works), while the registry the
-// worker serves only exposes tools wired to the model.
+// TestCatalogAndRegistrySplit guards the contract: the admin catalog lists
+// every implemented tool (so gating works), and the registry the worker
+// serves is exactly the wired tool set — never more than the catalog.
 func TestCatalogAndRegistrySplit(t *testing.T) {
 	registryNames := NewRegistry().Names()
-	if len(registryNames) != 1 || registryNames[0] != "read_issues" {
-		t.Fatalf("registry names = %v, want [read_issues] only", registryNames)
-	}
 
 	catalogNames := make([]string, 0, len(CatalogDefs()))
 	for _, def := range CatalogDefs() {

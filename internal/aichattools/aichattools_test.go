@@ -10,19 +10,21 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if names := registry.Names(); !slices.Equal(names, []string{"read_issues"}) {
-		t.Fatalf("Names() = %v, want [read_issues]", names)
+	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary"}) {
+		t.Fatalf("Names() = %v, want [read_issues get_score_summary]", names)
 	}
 	defs := registry.Defs()
-	if len(defs) != 1 {
-		t.Fatalf("Defs() = %d defs, want 1", len(defs))
+	if len(defs) != 2 {
+		t.Fatalf("Defs() = %d defs, want 2", len(defs))
 	}
-	if defs[0].Name != "read_issues" || defs[0].Label == "" || defs[0].Description == "" {
-		t.Fatalf("Defs()[0] = %+v, want fully populated read_issues def", defs[0])
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(defs[0].Schema, &schema); err != nil {
-		t.Fatalf("read_issues schema is not valid JSON: %v", err)
+	for _, def := range defs {
+		if def.Name == "" || def.Label == "" || def.Description == "" || len(def.Schema) == 0 {
+			t.Fatalf("Defs() = %+v, want fully populated defs", def)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(def.Schema, &schema); err != nil {
+			t.Fatalf("%s schema is not valid JSON: %v", def.Name, err)
+		}
 	}
 
 	tool, ok := registry.Get("read_issues")
