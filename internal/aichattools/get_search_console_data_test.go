@@ -68,8 +68,11 @@ type fakeGSCConnections struct {
 	featureErr        error
 	project           sqlc.ProjectGscConnection
 	projectErr        error
+	projectRow        sqlc.Project
+	projectRowErr     error
 	connection        sqlc.GoogleConnection
 	connectionErr     error
+	lastOrgID         pgtype.UUID
 	updateTokensCalls int
 	updateStatusCalls int
 }
@@ -78,11 +81,16 @@ func (f *fakeGSCConnections) GetOrganizationFeaturesByProjectID(_ context.Contex
 	return f.feature, f.featureErr
 }
 
+func (f *fakeGSCConnections) GetProjectByIDForUser(_ context.Context, _ sqlc.GetProjectByIDForUserParams) (sqlc.Project, error) {
+	return f.projectRow, f.projectRowErr
+}
+
 func (f *fakeGSCConnections) GetProjectGSCConnectionByProjectID(_ context.Context, _ pgtype.UUID) (sqlc.ProjectGscConnection, error) {
 	return f.project, f.projectErr
 }
 
-func (f *fakeGSCConnections) GetGoogleConnectionByOrganizationID(_ context.Context, _ pgtype.UUID) (sqlc.GoogleConnection, error) {
+func (f *fakeGSCConnections) GetGoogleConnectionByOrganizationID(_ context.Context, organizationID pgtype.UUID) (sqlc.GoogleConnection, error) {
+	f.lastOrgID = organizationID
 	return f.connection, f.connectionErr
 }
 
@@ -98,8 +106,9 @@ func (f *fakeGSCConnections) UpdateGoogleConnectionStatus(_ context.Context, _ s
 
 func connectedFake(fetcher *fakeGSCFetcher) *fakeGSCConnections {
 	return &fakeGSCConnections{
-		feature: sqlc.GetOrganizationFeaturesByProjectIDRow{GscConnector: true},
-		project: sqlc.ProjectGscConnection{SiteUrl: "sc-domain:x.test", GoogleConnectionID: testProjectID},
+		feature:    sqlc.GetOrganizationFeaturesByProjectIDRow{GscConnector: true},
+		projectRow: sqlc.Project{OrganizationID: testProjectID},
+		project:    sqlc.ProjectGscConnection{SiteUrl: "sc-domain:x.test", GoogleConnectionID: pgtype.UUID{Bytes: [16]byte{8}, Valid: true}},
 		connection: sqlc.GoogleConnection{
 			ID:                    testProjectID,
 			Status:                "active",
@@ -112,7 +121,7 @@ func connectedFake(fetcher *fakeGSCFetcher) *fakeGSCConnections {
 
 func runGSC(t *testing.T, connections *fakeGSCConnections, fetcher *fakeGSCFetcher, raw string) Result {
 	t.Helper()
-	exec := gscExecutor{features: connections, connections: connections, fetcher: fetcher}
+	exec := gscExecutor{features: connections, projects: connections, connections: connections, fetcher: fetcher}
 	result, err := exec.run(context.Background(), json.RawMessage(raw), testProjectID, testUserID)
 	if err != nil {
 		t.Fatalf("run(%s) returned error: %v", raw, err)
@@ -476,5 +485,19 @@ func TestToolFeaturesCoupling(t *testing.T) {
 	}
 	if _, ok := ToolFeatures()["read_issues"]; ok {
 		t.Fatal("read_issues must not be feature-coupled")
+	}
+}
+
+// TestGSCGoogleConnectionLookupUsesOrganizationID is the regression test for
+// the bug where the tool passed the project-connection id as the organization
+// id, so every connected workspace reported "Search Console is not connected".
+func TestGSCGoogleConnectionLookupUsesOrganizationID(t *testing.T) {
+	fetcher := &fakeGSCFetcher{pages: map[string]gsc.QueryPage{"query|false|": fakeQueryPage("a")}}
+	connections := connectedFake(fetcher)
+	orgID := pgtype.UUID{Bytes: [16]byte{42}, Valid: true}
+	connections.projectRow.OrganizationID = orgID
+	runGSC(t, connections, fetcher, `{"report":"top_queries"}`)
+	if !connections.lastOrgID.Valid || connections.lastOrgID != orgID {
+		t.Fatalf("google connection looked up by %v, want the project's organization id %v", connections.lastOrgID, orgID)
 	}
 }

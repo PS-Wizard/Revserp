@@ -65,6 +65,11 @@ type gscFeatureReader interface {
 	GetOrganizationFeaturesByProjectID(ctx context.Context, arg sqlc.GetOrganizationFeaturesByProjectIDParams) (sqlc.GetOrganizationFeaturesByProjectIDRow, error)
 }
 
+// gscProjectReader reads the project row that carries the organization id.
+type gscProjectReader interface {
+	GetProjectByIDForUser(ctx context.Context, arg sqlc.GetProjectByIDForUserParams) (sqlc.Project, error)
+}
+
 // gscConnectionReader reads and refreshes the Google connection rows.
 type gscConnectionReader interface {
 	GetProjectGSCConnectionByProjectID(ctx context.Context, projectID pgtype.UUID) (sqlc.ProjectGscConnection, error)
@@ -77,6 +82,7 @@ type gscConnectionReader interface {
 // interfaces so tests can substitute fakes without a database or Google.
 type gscExecutor struct {
 	features    gscFeatureReader
+	projects    gscProjectReader
 	connections gscConnectionReader
 	fetcher     GSCFetcher
 }
@@ -100,6 +106,7 @@ func executeGetSearchConsoleData(ctx context.Context, args json.RawMessage, s Sc
 	}
 	exec := gscExecutor{
 		features:    s.Queries,
+		projects:    s.Queries,
 		connections: s.Queries,
 		fetcher:     s.GSC,
 	}
@@ -188,7 +195,15 @@ func (e *gscExecutor) run(ctx context.Context, raw json.RawMessage, projectID, u
 		return Result{}, fmt.Errorf("%s: project connection: %w", gscToolName, err)
 	}
 
-	orgConnection, err := e.connections.GetGoogleConnectionByOrganizationID(ctx, projectConnection.GoogleConnectionID)
+	project, err := e.projects.GetProjectByIDForUser(ctx, sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: userID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return unavailableGSC("This project is not accessible."), nil
+		}
+		return Result{}, fmt.Errorf("%s: project: %w", gscToolName, err)
+	}
+
+	orgConnection, err := e.connections.GetGoogleConnectionByOrganizationID(ctx, project.OrganizationID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return unavailableGSC("Search Console is not connected. Connect a Google account in the workspace settings."), nil

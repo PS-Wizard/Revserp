@@ -185,7 +185,7 @@ func TestAIConversationHistoryIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit first turn: %v", err)
 	}
-	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status = 'completed', completed_at = now() WHERE id = $1`, first.TurnID); err != nil {
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status = 'completed', started_at = now() - interval '10 seconds', completed_at = now() WHERE id = $1`, first.TurnID); err != nil {
 		t.Fatalf("complete first turn: %v", err)
 	}
 	second, err := fixture.submit(t, fixture.conversationID, "second user", "none", "history-second", nil)
@@ -207,6 +207,14 @@ func TestAIConversationHistoryIntegration(t *testing.T) {
 			t.Fatalf("set message timestamps: %v", err)
 		}
 	}
+
+	// Give the first turn one completed tool call so the detail response can
+	// replay it onto the assistant message.
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `INSERT INTO ai_tool_calls (turn_id, seq, call_id, name, args, status, summary)
+		VALUES ($1, 0, 'history-call-1', 'read_issues', '{"limit":25}'::jsonb, 'completed', '25 issues shown (312 matching total)')`, first.TurnID); err != nil {
+		t.Fatalf("insert tool call: %v", err)
+	}
+
 
 	response := httptest.NewRecorder()
 	fixture.app.handleGetAIConversation(response, conversationRequest(fixture.userID, fixture.conversationID))
@@ -240,6 +248,26 @@ func TestAIConversationHistoryIntegration(t *testing.T) {
 			t.Errorf("message %d = %+v, want %+v", i, message, want)
 		}
 	}
+
+	firstAssistant := conversation.Messages[1]
+	if len(firstAssistant.ToolCalls) != 1 {
+		t.Fatalf("first assistant tool calls = %+v, want 1", firstAssistant.ToolCalls)
+	}
+	call := firstAssistant.ToolCalls[0]
+	if call.CallID != "history-call-1" || call.Name != "read_issues" || call.Status != "completed" || call.Seq != 0 || call.Summary == "" {
+		t.Fatalf("first assistant tool call = %+v", call)
+	}
+	if string(call.Args) != `{"limit":25}` {
+		t.Fatalf("first assistant tool call args = %s", call.Args)
+	}
+	if firstAssistant.ActivityStartedAt == nil || firstAssistant.ActivityEndedAt == nil || firstAssistant.ActivityEndedAt.Before(*firstAssistant.ActivityStartedAt) {
+		t.Fatalf("first assistant activity = %v..%v, want a valid run window", firstAssistant.ActivityStartedAt, firstAssistant.ActivityEndedAt)
+	}
+	secondAssistant := conversation.Messages[3]
+	if len(secondAssistant.ToolCalls) != 0 || secondAssistant.ActivityStartedAt != nil || secondAssistant.ActivityEndedAt != nil {
+		t.Fatalf("second assistant activity = toolCalls %+v, %v..%v; want none", secondAssistant.ToolCalls, secondAssistant.ActivityStartedAt, secondAssistant.ActivityEndedAt)
+	}
+
 
 	emptyConversationID := fixture.conversation(t)
 	response = httptest.NewRecorder()

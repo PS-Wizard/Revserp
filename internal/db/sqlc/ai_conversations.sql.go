@@ -195,13 +195,14 @@ func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg 
 }
 
 const listActiveTurnsForConversations = `-- name: ListActiveTurnsForConversations :many
-SELECT conversation_id, status
-FROM ai_turns
+SELECT t.id AS turn_id, t.conversation_id, t.status
+FROM ai_turns AS t
 WHERE conversation_id = ANY($1::uuid[])
   AND status IN ('queued', 'running', 'waiting')
 `
 
 type ListActiveTurnsForConversationsRow struct {
+	TurnID         pgtype.UUID
 	ConversationID pgtype.UUID
 	Status         string
 }
@@ -215,7 +216,7 @@ func (q *Queries) ListActiveTurnsForConversations(ctx context.Context, conversat
 	var items []ListActiveTurnsForConversationsRow
 	for rows.Next() {
 		var i ListActiveTurnsForConversationsRow
-		if err := rows.Scan(&i.ConversationID, &i.Status); err != nil {
+		if err := rows.Scan(&i.TurnID, &i.ConversationID, &i.Status); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

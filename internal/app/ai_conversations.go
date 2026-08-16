@@ -19,6 +19,7 @@ type aiConversationResponse struct {
 	Title           string  `json:"title"`
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
+	TurnID          *string `json:"turn_id"`
 	TurnStatus      *string `json:"turn_status"`
 }
 
@@ -60,7 +61,7 @@ func (a *App) handleCreateAIConversation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, newAIConversationResponse(conversation, nil))
+	writeJSON(w, http.StatusCreated, newAIConversationResponse(conversation, nil, nil))
 }
 
 // handleListAIConversations lists a project's conversations for a member.
@@ -129,18 +130,23 @@ func (a *App) handleListAIConversations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	activeStatusByConversation := make(map[string]string, len(activeTurns))
+	activeTurnByConversation := make(map[string]struct{ id, status string }, len(activeTurns))
 	for _, turn := range activeTurns {
-		activeStatusByConversation[turn.ConversationID.String()] = turn.Status
+		activeTurnByConversation[turn.ConversationID.String()] = struct{ id, status string }{
+			id:     turn.TurnID.String(),
+			status: turn.Status,
+		}
 	}
 
 	responses := make([]aiConversationResponse, 0, len(conversations))
 	for _, conversation := range conversations {
-		var status *string
-		if value, ok := activeStatusByConversation[conversation.ID.String()]; ok {
-			status = &value
+		var turnID, status *string
+		if active, ok := activeTurnByConversation[conversation.ID.String()]; ok {
+			active := active
+			turnID = &active.id
+			status = &active.status
 		}
-		responses = append(responses, newAIConversationResponse(conversation, status))
+		responses = append(responses, newAIConversationResponse(conversation, turnID, status))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -205,13 +211,15 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	var turnStatus *string
+	var turnID, turnStatus *string
 	activeTurns, err := a.Queries.ListActiveTurnsForConversations(r.Context(), conversationUUIDs([]sqlc.AiConversation{{ID: conversationID}}))
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 	if len(activeTurns) > 0 {
+		turnIDValue := activeTurns[0].TurnID.String()
+		turnID = &turnIDValue
 		turnStatus = &activeTurns[0].Status
 	}
 
@@ -236,7 +244,7 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := aiConversationDetailResponse{
-		aiConversationResponse: newAIConversationResponse(conversation, turnStatus),
+		aiConversationResponse: newAIConversationResponse(conversation, turnID, turnStatus),
 		Messages:               make([]aiMessageResponse, 0, len(messages)),
 	}
 	for _, message := range messages {
@@ -300,6 +308,7 @@ func (a *App) handleDeleteAIConversation(w http.ResponseWriter, r *http.Request)
 
 func newAIConversationResponse(
 	conversation sqlc.AiConversation,
+	turnID *string,
 	turnStatus *string,
 ) aiConversationResponse {
 	return aiConversationResponse{
@@ -309,6 +318,7 @@ func newAIConversationResponse(
 		Title:           conversation.Title,
 		CreatedAt:       formatTimestamp(conversation.CreatedAt),
 		UpdatedAt:       formatTimestamp(conversation.UpdatedAt),
+		TurnID:          turnID,
 		TurnStatus:      turnStatus,
 	}
 }
