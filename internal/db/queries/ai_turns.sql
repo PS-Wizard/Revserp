@@ -3,6 +3,7 @@ SELECT
     ac.project_id,
     p.organization_id,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
@@ -180,12 +181,18 @@ WHERE m.turn_id = sqlc.arg(turn_id)
 ORDER BY CASE m.role WHEN 'user' THEN 0 ELSE 1 END;
 
 -- name: ListAIMessagesForConversation :many
-SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.turn_id, m.role, m.status, m.content, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 WHERE t.conversation_id = sqlc.arg(conversation_id)
   AND m.role IN ('user', 'assistant')
 ORDER BY t.created_at ASC, t.id ASC, CASE m.role WHEN 'user' THEN 0 ELSE 1 END ASC;
+
+-- name: ListAITurnsForConversation :many
+SELECT id, started_at, completed_at
+FROM ai_turns
+WHERE conversation_id = sqlc.arg(conversation_id)
+ORDER BY created_at ASC, id ASC;
 
 -- name: ListAITurnEventsForUser :many
 SELECT e.id, e.event_type, e.payload

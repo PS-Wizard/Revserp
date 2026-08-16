@@ -19,6 +19,10 @@ type Def struct {
 	Label       string
 	Description string
 	Schema      json.RawMessage
+	// Feature names an organization feature flag the tool depends on (for
+	// example gsc_connector). Empty means no feature dependency. Only the
+	// admin catalog uses it — the model never sees it.
+	Feature string
 }
 
 // Scope carries server-derived identity and data access for one tool call.
@@ -28,6 +32,8 @@ type Scope struct {
 	ProjectID pgtype.UUID
 	CrawlID   pgtype.UUID
 	Queries   *sqlc.Queries
+	// GSC is the search console data fetcher, nil when the worker has none.
+	GSC GSCFetcher
 	// RowBudget caps how many database rows one turn may fetch through tools.
 	// Nil means no per-turn cap (raw tool-call mode); the agent loop sets it later.
 	RowBudget *Budget
@@ -82,7 +88,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool()}}
 }
 
 // CatalogDefs lists every implemented tool definition in catalog order,
@@ -90,7 +96,19 @@ func NewRegistry() *Registry {
 // validation run against the full catalog, so a tool can be gateable (and
 // shown in the admin AI tools drawer) before the model can call it.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def}
+}
+
+// ToolFeatures maps every tool with a feature dependency to its feature flag
+// name. Admin gating force-disables those tools when the flag is off.
+func ToolFeatures() map[string]string {
+	features := make(map[string]string)
+	for _, def := range CatalogDefs() {
+		if def.Feature != "" {
+			features[def.Name] = def.Feature
+		}
+	}
+	return features
 }
 
 // Names lists registered tool names in registration order.

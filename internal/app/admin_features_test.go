@@ -19,21 +19,25 @@ import (
 
 func TestNormalizeDisabledAITools(t *testing.T) {
 	tests := []struct {
-		name  string
-		tools []string
-		want  []string
+		name        string
+		tools       []string
+		gscConnector bool
+		want        []string
 	}{
-		{"nil", nil, []string{}},
-		{"only empties", []string{"", ""}, []string{}},
-		{"dupes and empties", []string{"read_issues", "", "read_issues"}, []string{"read_issues"}},
-		{"unknown names dropped", []string{"bogus"}, []string{}},
-		{"known and unknown", []string{"bogus", "read_issues"}, []string{"read_issues"}},
+		{"nil", nil, true, []string{}},
+		{"only empties", []string{"", ""}, true, []string{}},
+		{"dupes and empties", []string{"read_issues", "", "read_issues"}, true, []string{"read_issues"}},
+		{"unknown names dropped", []string{"bogus"}, true, []string{}},
+		{"known and unknown", []string{"bogus", "read_issues"}, true, []string{"read_issues"}},
+		{"gsc flag off force-disables gsc tool", []string{}, false, []string{"get_search_console_data"}},
+		{"gsc flag off with other tools", []string{"read_issues"}, false, []string{"read_issues", "get_search_console_data"}},
+		{"gsc flag on keeps user choice", []string{"get_search_console_data"}, true, []string{"get_search_console_data"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := normalizeDisabledAITools(test.tools)
+			got := normalizeDisabledAITools(test.tools, test.gscConnector)
 			if !slices.Equal(got, test.want) {
-				t.Errorf("normalizeDisabledAITools(%v) = %v, want %v", test.tools, got, test.want)
+				t.Errorf("normalizeDisabledAITools(%v, %v) = %v, want %v", test.tools, test.gscConnector, got, test.want)
 			}
 		})
 	}
@@ -41,19 +45,21 @@ func TestNormalizeDisabledAITools(t *testing.T) {
 
 func TestValidateDisabledAITools(t *testing.T) {
 	tests := []struct {
-		name    string
-		tools   []string
-		want    []string
-		wantErr string
+		name         string
+		tools        []string
+		gscConnector bool
+		want         []string
+		wantErr      string
 	}{
-		{"empty allowed", []string{}, []string{}, ""},
-		{"known tool", []string{"read_issues"}, []string{"read_issues"}, ""},
-		{"dupes normalized", []string{"read_issues", "read_issues"}, []string{"read_issues"}, ""},
-		{"unknown tool rejected", []string{"bogus"}, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary`},
+		{"empty allowed", []string{}, true, []string{}, ""},
+		{"known tool", []string{"read_issues"}, true, []string{"read_issues"}, ""},
+		{"dupes normalized", []string{"read_issues", "read_issues"}, true, []string{"read_issues"}, ""},
+		{"gsc flag off force-disables", []string{}, false, []string{"get_search_console_data"}, ""},
+		{"unknown tool rejected", []string{"bogus"}, true, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary, get_search_console_data`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := validateDisabledAITools(test.tools)
+			got, err := validateDisabledAITools(test.tools, test.gscConnector)
 			if test.wantErr != "" {
 				if err == nil || err.Error() != test.wantErr {
 					t.Fatalf("validateDisabledAITools(%v) error = %v, want %q", test.tools, err, test.wantErr)

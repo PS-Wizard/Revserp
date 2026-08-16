@@ -73,6 +73,54 @@ func (q *Queries) InsertAIToolCall(ctx context.Context, arg InsertAIToolCallPara
 	return id, err
 }
 
+const listAIToolCallsForConversation = `-- name: ListAIToolCallsForConversation :many
+SELECT tc.turn_id, tc.call_id, tc.name, tc.args, tc.status, tc.summary, tc.seq, tc.created_at
+FROM ai_tool_calls AS tc
+INNER JOIN ai_turns AS t ON t.id = tc.turn_id
+WHERE t.conversation_id = $1
+ORDER BY tc.turn_id, tc.seq ASC
+`
+
+type ListAIToolCallsForConversationRow struct {
+	TurnID    pgtype.UUID
+	CallID    string
+	Name      string
+	Args      []byte
+	Status    string
+	Summary   string
+	Seq       int32
+	CreatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListAIToolCallsForConversation(ctx context.Context, conversationID pgtype.UUID) ([]ListAIToolCallsForConversationRow, error) {
+	rows, err := q.db.Query(ctx, listAIToolCallsForConversation, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAIToolCallsForConversationRow
+	for rows.Next() {
+		var i ListAIToolCallsForConversationRow
+		if err := rows.Scan(
+			&i.TurnID,
+			&i.CallID,
+			&i.Name,
+			&i.Args,
+			&i.Status,
+			&i.Summary,
+			&i.Seq,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAIToolCallsForTurn = `-- name: ListAIToolCallsForTurn :many
 SELECT call_id, name, args, status, summary, seq, created_at
 FROM ai_tool_calls

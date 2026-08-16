@@ -29,11 +29,14 @@ const (
 	queryPageMaxSearch    = 100
 )
 
-// QueryPageOptions selects one page of Search Console query rows.
+// QueryPageOptions selects one page of Search Console rows.
 type QueryPageOptions struct {
 	Days   int
 	Limit  int
 	Offset int
+	// Dimension groups the rows: query, page, country, or device. Empty means
+	// query, which keeps legacy callers unchanged.
+	Dimension string
 	// Search is a case-insensitive substring match applied by Google.
 	Search string
 	// QuestionsOnly restricts rows to questionQueryPattern.

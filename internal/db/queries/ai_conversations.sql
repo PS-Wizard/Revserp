@@ -73,3 +73,9 @@ WHERE ac.id = sqlc.arg(conversation_id)
   AND ac.project_id = p.id
   AND om.org_id = p.organization_id
   AND om.user_id = sqlc.arg(user_id);
+
+-- name: ListActiveTurnsForConversations :many
+SELECT conversation_id, status
+FROM ai_turns
+WHERE conversation_id = ANY(sqlc.arg(conversation_ids)::uuid[])
+  AND status IN ('queued', 'running', 'waiting');

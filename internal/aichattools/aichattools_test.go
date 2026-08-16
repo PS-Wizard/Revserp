@@ -10,12 +10,12 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary"}) {
-		t.Fatalf("Names() = %v, want [read_issues get_score_summary]", names)
+	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data"}) {
+		t.Fatalf("Names() = %v, want the three served tools", names)
 	}
 	defs := registry.Defs()
-	if len(defs) != 2 {
-		t.Fatalf("Defs() = %d defs, want 2", len(defs))
+	if len(defs) != 3 {
+		t.Fatalf("Defs() = %d defs, want 3", len(defs))
 	}
 	for _, def := range defs {
 		if def.Name == "" || def.Label == "" || def.Description == "" || len(def.Schema) == 0 {

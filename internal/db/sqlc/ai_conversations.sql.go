@@ -193,3 +193,35 @@ func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg 
 	}
 	return items, nil
 }
+
+const listActiveTurnsForConversations = `-- name: ListActiveTurnsForConversations :many
+SELECT conversation_id, status
+FROM ai_turns
+WHERE conversation_id = ANY($1::uuid[])
+  AND status IN ('queued', 'running', 'waiting')
+`
+
+type ListActiveTurnsForConversationsRow struct {
+	ConversationID pgtype.UUID
+	Status         string
+}
+
+func (q *Queries) ListActiveTurnsForConversations(ctx context.Context, conversationIds []pgtype.UUID) ([]ListActiveTurnsForConversationsRow, error) {
+	rows, err := q.db.Query(ctx, listActiveTurnsForConversations, conversationIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveTurnsForConversationsRow
+	for rows.Next() {
+		var i ListActiveTurnsForConversationsRow
+		if err := rows.Scan(&i.ConversationID, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

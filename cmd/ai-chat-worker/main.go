@@ -13,6 +13,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/aichatworker"
 	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
+	"github.com/ps-wizard/revserp/internal/gsc"
 )
 
 func main() {
@@ -48,6 +49,7 @@ func run() error {
 		PollInterval: cfg.AIChatWorkerPollInterval,
 		TurnTimeout:  cfg.AITurnTimeout,
 	})
+	worker.GSC = gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes)
 	log.Printf("ai chat worker starting: worker_id=%s concurrency=%d poll=%s turn_timeout=%s model=%s", workerID, cfg.AIChatWorkerConcurrency, cfg.AIChatWorkerPollInterval, cfg.AITurnTimeout, cfg.DeepSeekModel)
 	if err := worker.Run(ctx); err != nil {
 		return fmt.Errorf("run ai chat worker: %w", err)

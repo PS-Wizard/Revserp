@@ -23,3 +23,9 @@ SELECT call_id, name, args, status, summary, seq, created_at
 FROM ai_tool_calls
 WHERE turn_id = sqlc.arg(turn_id)
 ORDER BY seq ASC;
+-- name: ListAIToolCallsForConversation :many
+SELECT tc.turn_id, tc.call_id, tc.name, tc.args, tc.status, tc.summary, tc.seq, tc.created_at
+FROM ai_tool_calls AS tc
+INNER JOIN ai_turns AS t ON t.id = tc.turn_id
+WHERE t.conversation_id = sqlc.arg(conversation_id)
+ORDER BY tc.turn_id, tc.seq ASC;

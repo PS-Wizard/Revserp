@@ -52,6 +52,11 @@ type Worker struct {
 	provider ai.Streamer
 	cfg      Config
 
+	// GSC is the search console data fetcher for tool calls; nil when the
+	// worker has no search console access configured (tools report it as an
+	// ordinary unavailable state).
+	GSC aichattools.GSCFetcher
+
 	lease         time.Duration
 	heartbeat     time.Duration
 	flushInterval time.Duration
@@ -246,6 +251,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		ProjectID: scope.ProjectID,
 		CrawlID:   scope.CrawlID,
 		Queries:   queries,
+		GSC:       w.GSC,
 		RowBudget: aichattools.NewBudget(toolRowBudget),
 	}
 

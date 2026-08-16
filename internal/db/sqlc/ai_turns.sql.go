@@ -283,7 +283,7 @@ func (q *Queries) HasActiveAITurnForConversation(ctx context.Context, conversati
 }
 
 const listAIMessagesForConversation = `-- name: ListAIMessagesForConversation :many
-SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.turn_id, m.role, m.status, m.content, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 WHERE t.conversation_id = $1
@@ -291,26 +291,18 @@ WHERE t.conversation_id = $1
 ORDER BY t.created_at ASC, t.id ASC, CASE m.role WHEN 'user' THEN 0 ELSE 1 END ASC
 `
 
-type ListAIMessagesForConversationRow struct {
-	ID        pgtype.UUID
-	Role      string
-	Status    string
-	Content   string
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
-}
-
-func (q *Queries) ListAIMessagesForConversation(ctx context.Context, conversationID pgtype.UUID) ([]ListAIMessagesForConversationRow, error) {
+func (q *Queries) ListAIMessagesForConversation(ctx context.Context, conversationID pgtype.UUID) ([]AiMessage, error) {
 	rows, err := q.db.Query(ctx, listAIMessagesForConversation, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListAIMessagesForConversationRow
+	var items []AiMessage
 	for rows.Next() {
-		var i ListAIMessagesForConversationRow
+		var i AiMessage
 		if err := rows.Scan(
 			&i.ID,
+			&i.TurnID,
 			&i.Role,
 			&i.Status,
 			&i.Content,
@@ -426,11 +418,45 @@ func (q *Queries) ListAITurnEventsForUser(ctx context.Context, arg ListAITurnEve
 	return items, nil
 }
 
+const listAITurnsForConversation = `-- name: ListAITurnsForConversation :many
+SELECT id, started_at, completed_at
+FROM ai_turns
+WHERE conversation_id = $1
+ORDER BY created_at ASC, id ASC
+`
+
+type ListAITurnsForConversationRow struct {
+	ID          pgtype.UUID
+	StartedAt   pgtype.Timestamptz
+	CompletedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListAITurnsForConversation(ctx context.Context, conversationID pgtype.UUID) ([]ListAITurnsForConversationRow, error) {
+	rows, err := q.db.Query(ctx, listAITurnsForConversation, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAITurnsForConversationRow
+	for rows.Next() {
+		var i ListAITurnsForConversationRow
+		if err := rows.Scan(&i.ID, &i.StartedAt, &i.CompletedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAIConversationForTurn = `-- name: LockAIConversationForTurn :one
 SELECT
     ac.project_id,
     p.organization_id,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
@@ -456,6 +482,7 @@ type LockAIConversationForTurnRow struct {
 	ProjectID                 pgtype.UUID
 	OrganizationID            pgtype.UUID
 	AiChat                    bool
+	GscConnector              bool
 	AiMonthlyMessageLimit     int32
 	AiAllowedReasoningEfforts []string
 	DisabledAiTools           []string
@@ -468,6 +495,7 @@ func (q *Queries) LockAIConversationForTurn(ctx context.Context, arg LockAIConve
 		&i.ProjectID,
 		&i.OrganizationID,
 		&i.AiChat,
+		&i.GscConnector,
 		&i.AiMonthlyMessageLimit,
 		&i.AiAllowedReasoningEfforts,
 		&i.DisabledAiTools,

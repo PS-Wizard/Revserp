@@ -41,12 +41,15 @@ type aiTurnResponse struct {
 }
 
 type aiMessageResponse struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Status    string    `json:"status"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                 string               `json:"id"`
+	Role               string               `json:"role"`
+	Status             string               `json:"status"`
+	Content            string               `json:"content"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+	ToolCalls          []aiToolCallResponse `json:"tool_calls,omitempty"`
+	ActivityStartedAt  *time.Time           `json:"activity_started_at,omitempty"`
+	ActivityEndedAt    *time.Time           `json:"activity_ended_at,omitempty"`
 }
 
 type aiTurnSnapshot struct {

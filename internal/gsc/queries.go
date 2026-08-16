@@ -18,7 +18,7 @@ func (service *Service) FetchQueries(ctx context.Context, accessToken, siteURL s
 	payload := map[string]any{
 		"startDate":  startDate,
 		"endDate":    endDate,
-		"dimensions": []string{"query"},
+		"dimensions": []string{options.dimension()},
 		"dataState":  "final",
 		// One row past the page tells us whether another page exists without
 		// spending a second request on a count.
@@ -83,7 +83,18 @@ func (options QueryPageOptions) normalized() QueryPageOptions {
 	if len(options.Search) > queryPageMaxSearch {
 		options.Search = strings.TrimSpace(options.Search[:queryPageMaxSearch])
 	}
+	if options.Dimension == "" {
+		options.Dimension = "query"
+	}
 	return options
+}
+func (options QueryPageOptions) dimension() string {
+	switch options.Dimension {
+	case "page", "country", "device", "query":
+		return options.Dimension
+	default:
+		return "query"
+	}
 }
 
 // dimensionFilters builds Google's dimension filters for this page. "contains"
@@ -116,6 +127,7 @@ func (options QueryPageOptions) cacheKey(organizationID, siteURL string) string 
 		strconv.Itoa(options.Days),
 		strconv.Itoa(options.Limit),
 		strconv.Itoa(options.Offset),
+		options.dimension(),
 		strconv.FormatBool(options.QuestionsOnly),
 		strings.ToLower(options.Search),
 	}, "|")

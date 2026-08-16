@@ -32,6 +32,10 @@ type adminAIToolInfo struct {
 	Name        string `json:"name"`
 	Label       string `json:"label"`
 	Description string `json:"description"`
+	// GatedByFeature names an organization feature flag the tool depends on
+	// (e.g. gsc_connector). Empty means standalone. The frontend uses it to
+	// disable the toggle while the feature is off.
+	GatedByFeature string `json:"gated_by_feature,omitempty"`
 }
 
 type adminFeaturesResponse struct {
@@ -54,18 +58,23 @@ func adminAIToolCatalog() []adminAIToolInfo {
 	defs := aichattools.CatalogDefs()
 	infos := make([]adminAIToolInfo, 0, len(defs))
 	for _, def := range defs {
-		infos = append(infos, adminAIToolInfo{Name: def.Name, Label: def.Label, Description: def.Description})
+		infos = append(infos, adminAIToolInfo{Name: def.Name, Label: def.Label, Description: def.Description, GatedByFeature: def.Feature})
 	}
 	return infos
 }
 
-// normalizeDisabledAITools drops empty and unknown names, dedupes, and
-// orders the result by catalog order.
-func normalizeDisabledAITools(tools []string) []string {
+// normalizeDisabledAITools drops empty and unknown names, dedupes, orders the
+// result by catalog order, and force-disables tools whose feature flag is off.
+func normalizeDisabledAITools(tools []string, gscConnector bool) []string {
 	disabled := make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		if tool != "" {
 			disabled[tool] = true
+		}
+	}
+	for name, feature := range aichattools.ToolFeatures() {
+		if feature == "gsc_connector" && !gscConnector {
+			disabled[name] = true
 		}
 	}
 	normalized := make([]string, 0, len(tools))
@@ -78,14 +87,14 @@ func normalizeDisabledAITools(tools []string) []string {
 }
 
 // validateDisabledAITools rejects names outside the registry catalog and
-// returns the normalized list.
-func validateDisabledAITools(tools []string) ([]string, error) {
+// returns the normalized list (feature-off tools force-disabled).
+func validateDisabledAITools(tools []string, gscConnector bool) ([]string, error) {
 	for _, tool := range tools {
 		if tool != "" && !containsString(aiToolCatalogNames(), tool) {
 			return nil, fmt.Errorf("unknown ai tool %q; valid tools: %s", tool, strings.Join(aiToolCatalogNames(), ", "))
 		}
 	}
-	return normalizeDisabledAITools(tools), nil
+	return normalizeDisabledAITools(tools, gscConnector), nil
 }
 
 // handleAdminListFeatures returns every workspace's gating state.
@@ -108,7 +117,7 @@ func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 			AIMonthlyMessageLimit:        row.AiMonthlyMessageLimit,
 			AIConcurrentTurnLimitPerUser: row.AiConcurrentTurnLimitPerUser,
 			AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(row.AiAllowedReasoningEfforts),
-			DisabledAITools:              normalizeDisabledAITools(row.DisabledAiTools),
+			DisabledAITools:              normalizeDisabledAITools(row.DisabledAiTools, row.GscConnector),
 		}
 		if row.UpdatedAt.Valid {
 			workspace.UpdatedAt = row.UpdatedAt.Time.UTC().Format(time.RFC3339)
@@ -171,7 +180,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		normalizedTools, err := validateDisabledAITools(workspace.DisabledAITools)
+		normalizedTools, err := validateDisabledAITools(workspace.DisabledAITools, workspace.GSCConnector)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return

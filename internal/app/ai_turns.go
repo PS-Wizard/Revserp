@@ -257,7 +257,7 @@ func (a *App) submitAITurnTx(ctx context.Context, tx pgx.Tx, userID, conversatio
 		CrawlID:         resolvedCrawlID,
 		ClientRequestID: request.clientRequestID,
 		RequestHash:     request.requestHash,
-		DisabledAiTools: normalizeDisabledAITools(conversation.DisabledAiTools),
+		DisabledAiTools: normalizeDisabledAITools(conversation.DisabledAiTools, conversation.GscConnector),
 	})
 	if err != nil {
 		return aiTurnSubmission{}, fmt.Errorf("create ai turn: %w", err)

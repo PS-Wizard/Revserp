@@ -403,8 +403,13 @@ func TestDisabledToolsAreNotSentToProvider(t *testing.T) {
 	if len(provider.requests) != 1 {
 		t.Fatalf("streams=%d, want 1", len(provider.requests))
 	}
-	if len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "get_score_summary" {
-		t.Fatalf("round tools = %+v, want only get_score_summary", provider.requests[0].Tools)
+	if len(provider.requests[0].Tools) != 2 {
+		t.Fatalf("round tools = %+v, want the two non-disabled tools", provider.requests[0].Tools)
+	}
+	for _, def := range provider.requests[0].Tools {
+		if def.Name == "read_issues" {
+			t.Fatalf("round tools = %+v, read_issues must be disabled", provider.requests[0].Tools)
+		}
 	}
 	var status, content string
 	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content); err != nil {
@@ -434,8 +439,8 @@ func TestToolRoundCapSynthesizesFinalAnswer(t *testing.T) {
 		t.Fatalf("streams=%d, want %d", len(provider.requests), maxAgentRounds+1)
 	}
 	for i := 0; i < maxAgentRounds; i++ {
-		if len(provider.requests[i].Tools) != 2 {
-			t.Fatalf("round %d tools = %+v, want both registered tools", i, provider.requests[i].Tools)
+		if len(provider.requests[i].Tools) != 3 {
+			t.Fatalf("round %d tools = %+v, want the three registered tools", i, provider.requests[i].Tools)
 		}
 	}
 	final := provider.requests[maxAgentRounds]
@@ -608,5 +613,49 @@ func TestToolRoundGetScoreSummaryPersistsCallAndAnswer(t *testing.T) {
 	}
 	if !foundResult {
 		t.Fatalf("round 2 messages = %+v, want get_score_summary result", provider.requests[1].Messages)
+	}
+}
+
+// TestToolRoundSearchConsoleUnavailable completes a turn that calls
+// get_search_console_data without any search console access configured: the
+// tool answers with explanatory content, the durable tool row is written, and
+// the loop moves on.
+func TestToolRoundSearchConsoleUnavailable(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	provider := &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: "get_search_console_data", Args: `{"report":"summary"}`}}},
+		{{Text: "search console is not connected here"}},
+	}}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	var status, content string
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || content != "search console is not connected here" {
+		t.Fatalf("turn=%q content=%q", status, content)
+	}
+
+	var calls int
+	var name, callStatus string
+	if err := a.pool.QueryRow(context.Background(), `SELECT count(*), MIN(name), MIN(status) FROM ai_tool_calls WHERE turn_id = $1`, id).Scan(&calls, &name, &callStatus); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || name != "get_search_console_data" || callStatus != "completed" {
+		t.Fatalf("tool rows=%d name=%q status=%q", calls, name, callStatus)
+	}
+
+	var toolEvents int
+	if err := a.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_turn_events WHERE turn_id = $1 AND event_type IN ('tool_call', 'tool_result')`, id).Scan(&toolEvents); err != nil {
+		t.Fatal(err)
+	}
+	if toolEvents != 2 {
+		t.Fatalf("tool events = %d, want 2", toolEvents)
 	}
 }

@@ -121,10 +121,11 @@ func TestQueryPageOptionsNormalizedClampsBounds(t *testing.T) {
 		given QueryPageOptions
 		want  QueryPageOptions
 	}{
-		{"defaults", QueryPageOptions{}, QueryPageOptions{Days: queryPageDefaultDays, Limit: queryPageDefaultLimit}},
-		{"over max", QueryPageOptions{Days: 9999, Limit: 9999, Offset: 999999}, QueryPageOptions{Days: queryPageMaxDays, Limit: queryPageMaxLimit, Offset: queryPageMaxOffset}},
-		{"under min", QueryPageOptions{Days: 1, Limit: 1, Offset: -5}, QueryPageOptions{Days: queryPageMinDays, Limit: 1}},
-		{"trims search", QueryPageOptions{Search: "  seo  "}, QueryPageOptions{Days: queryPageDefaultDays, Limit: queryPageDefaultLimit, Search: "seo"}},
+		{"defaults", QueryPageOptions{}, QueryPageOptions{Days: queryPageDefaultDays, Limit: queryPageDefaultLimit, Dimension: "query"}},
+		{"over max", QueryPageOptions{Days: 9999, Limit: 9999, Offset: 999999}, QueryPageOptions{Days: queryPageMaxDays, Limit: queryPageMaxLimit, Offset: queryPageMaxOffset, Dimension: "query"}},
+		{"under min", QueryPageOptions{Days: 1, Limit: 1, Offset: -5}, QueryPageOptions{Days: queryPageMinDays, Limit: 1, Dimension: "query"}},
+		{"trims search", QueryPageOptions{Search: "  seo  "}, QueryPageOptions{Days: queryPageDefaultDays, Limit: queryPageDefaultLimit, Search: "seo", Dimension: "query"}},
+		{"keeps dimension", QueryPageOptions{Dimension: "page"}, QueryPageOptions{Days: queryPageDefaultDays, Limit: queryPageDefaultLimit, Dimension: "page"}},
 	}
 
 	for _, test := range tests {
