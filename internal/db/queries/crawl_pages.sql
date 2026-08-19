@@ -436,3 +436,15 @@ SELECT
 FROM page_issue_counts
 GROUP BY 1
 ORDER BY 1;
+
+-- name: ListCrawlPageSignalsForCrawl :many
+SELECT
+    url,
+    status_code,
+    content_type,
+    word_count,
+    response_time_ms,
+    size_bytes
+FROM crawl_pages
+WHERE crawl_id = $1
+ORDER BY created_at ASC;

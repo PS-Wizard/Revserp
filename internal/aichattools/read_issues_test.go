@@ -117,19 +117,22 @@ func TestParseReadIssuesArgs(t *testing.T) {
 	}{
 		{name: "empty object defaults", raw: `{}`, want: readIssuesArgs{Limit: 25}},
 		{name: "empty input defaults", raw: ``, want: readIssuesArgs{Limit: 25}},
-		{name: "full args normalized", raw: `{"pillar":"SEO","bucket":"meta_tags","issue_type":"missing_title","severity":"HIGH","urls":["https://a.test"],"limit":40,"offset":10}`,
-			want: readIssuesArgs{Pillar: "seo", Bucket: "meta_tags", IssueType: "missing_title", Severity: "high", URLs: []string{"https://a.test"}, Limit: 40, Offset: 10}},
+		{name: "full args normalized", raw: `{"pillars":["SEO","aeo"],"bucket":"meta_tags","issue_type":"missing_title","severity":"HIGH","urls":["https://a.test"],"limit":40,"offset":10}`,
+			want: readIssuesArgs{Pillars: []string{"seo", "aeo"}, Bucket: "meta_tags", IssueType: "missing_title", Severity: "high", URLs: []string{"https://a.test"}, Limit: 40, Offset: 10}},
 		{name: "limit clamped to max", raw: `{"limit":100}`, want: readIssuesArgs{Limit: 50}},
 		{name: "limit zero rejected", raw: `{"limit":0}`, wantErr: "at least 1"},
 		{name: "limit negative rejected", raw: `{"limit":-3}`, wantErr: "at least 1"},
 		{name: "limit float rejected", raw: `{"limit":1.5}`, wantErr: "must be an integer"},
 		{name: "offset negative rejected", raw: `{"offset":-1}`, wantErr: "offset must be >= 0"},
-		{name: "unknown key rejected", raw: `{"pillar":"seo","bogus":1}`, wantErr: `unknown argument "bogus"`},
+		{name: "unknown key rejected", raw: `{"pillars":["seo"],"bogus":1}`, wantErr: `unknown argument "bogus"`},
 		{name: "duplicate key rejected", raw: `{"limit":1,"limit":2}`, wantErr: `duplicate argument "limit"`},
 		{name: "trailing data rejected", raw: `{"limit":1} {"limit":2}`, wantErr: "trailing data"},
 		{name: "non-object rejected", raw: `[1,2]`, wantErr: "must be a JSON object"},
 		{name: "null rejected", raw: `null`, wantErr: "must be a JSON object"},
-		{name: "pillar non-string rejected", raw: `{"pillar":1}`, wantErr: "must be a string"},
+		{name: "pillars non-array rejected", raw: `{"pillars":1}`, wantErr: "array of strings"},
+		{name: "pillars empty rejected", raw: `{"pillars":[]}`, wantErr: "must not be empty"},
+		{name: "pillars invalid value rejected", raw: `{"pillars":["social"]}`, wantErr: "valid pillars: seo, aeo, pagespeed"},
+		{name: "pillars deduplicated", raw: `{"pillars":["seo","SEO","aeo"]}`, want: readIssuesArgs{Pillars: []string{"seo", "aeo"}, Limit: 25}},
 		{name: "urls non-array rejected", raw: `{"urls":"https://a.test"}`, wantErr: "array of strings"},
 	}
 	for _, test := range tests {
@@ -312,7 +315,7 @@ func TestReadIssuesFilterValidation(t *testing.T) {
 		wantErr  string
 		wantNoDB bool
 	}{
-		{name: "invalid pillar", raw: `{"pillar":"social"}`, wantErr: "valid pillars: seo, aeo, pagespeed", wantNoDB: true},
+		{name: "invalid pillar", raw: `{"pillars":["social"]}`, wantErr: "valid pillars: seo, aeo, pagespeed", wantNoDB: true},
 		{name: "invalid severity", raw: `{"severity":"critical"}`, wantErr: "valid severities: high, medium, low", wantNoDB: true},
 		{name: "negative offset", raw: `{"offset":-1}`, wantErr: "offset must be >= 0", wantNoDB: true},
 		{name: "unknown bucket", raw: `{"bucket":"nope"}`, wantErr: "unknown bucket \"nope\"; valid buckets: content, meta_tags"},
@@ -371,7 +374,7 @@ func TestReadIssuesIssueTypeAcceptance(t *testing.T) {
 		{name: "id case-insensitive", raw: `{"issue_type":"MISSING_TITLE"}`, wantType: "missing_title"},
 		{name: "human label", raw: `{"issue_type":"Missing Title"}`, wantType: "missing_title"},
 		{name: "label case-insensitive", raw: `{"issue_type":"missing title"}`, wantType: "missing_title"},
-		{name: "pillar-scoped id", raw: `{"pillar":"aeo","issue_type":"missing_citations"}`, wantType: "missing_citations"},
+		{name: "pillar-scoped id", raw: `{"pillars":["aeo"],"issue_type":"missing_citations"}`, wantType: "missing_citations"},
 		{name: "unknown", raw: `{"issue_type":"nope"}`, wantError: true},
 	}
 	for _, test := range tests {
@@ -449,6 +452,56 @@ func TestReadIssuesLimitOffsetForwarded(t *testing.T) {
 	runReadIssues(t, fake, `{"limit":40,"offset":10}`, nil)
 	if fake.lastListParams.Limit != 40 || fake.lastListParams.Offset != 10 {
 		t.Fatalf("list params = limit %d offset %d, want 40/10", fake.lastListParams.Limit, fake.lastListParams.Offset)
+	}
+}
+func TestReadIssuesPillarsForwarded(t *testing.T) {
+	fake := &fakeIssueReader{dimensionRows: defaultDimensions()}
+	runReadIssues(t, fake, `{"pillars":["aeo","SEO"]}`, nil)
+	want := []string{"aeo", "seo"}
+	if !reflect.DeepEqual(fake.lastCountParams.Column3, want) {
+		t.Fatalf("count pillar filter = %v, want %v", fake.lastCountParams.Column3, want)
+	}
+	if !reflect.DeepEqual(fake.lastListParams.Column3, want) {
+		t.Fatalf("list pillar filter = %v, want %v", fake.lastListParams.Column3, want)
+	}
+	if fake.lastListParams.Limit != 25 {
+		t.Fatalf("limit = %d, want 25 (single-element default)", fake.lastListParams.Limit)
+	}
+}
+
+func TestReadIssuesCombinedLimitClamp(t *testing.T) {
+	fake := &fakeIssueReader{dimensionRows: defaultDimensions()}
+	runReadIssues(t, fake, `{"pillars":["seo","aeo"],"limit":50}`, nil)
+	if fake.lastListParams.Limit != readIssuesCombinedMaxRows {
+		t.Fatalf("combined limit = %d, want clamped to %d", fake.lastListParams.Limit, readIssuesCombinedMaxRows)
+	}
+}
+
+func TestReadIssuesSinglePillarLimitUnclamped(t *testing.T) {
+	fake := &fakeIssueReader{dimensionRows: defaultDimensions()}
+	runReadIssues(t, fake, `{"pillars":["aeo"],"limit":50}`, nil)
+	if fake.lastListParams.Limit != 50 {
+		t.Fatalf("single-pillar limit = %d, want 50 (no clamp)", fake.lastListParams.Limit)
+	}
+}
+
+func TestReadIssuesBucketValidUnderAnyRequestedPillar(t *testing.T) {
+	fake := &fakeIssueReader{
+		total: 0,
+		dimensionRows: []sqlc.ListDistinctCrawlIssueDimensionsRow{
+			{Pillar: "seo", Bucket: "meta_tags", IssueType: "missing_title"},
+			{Pillar: "aeo", Bucket: "answerability", IssueType: "missing_citations"},
+		},
+	}
+	// The bucket exists under aeo; requesting seo alone must reject it.
+	result := runReadIssues(t, fake, `{"pillars":["seo"],"bucket":"answerability"}`, nil)
+	if !strings.Contains(result.Content, "unknown bucket") {
+		t.Fatalf("Content = %q, want unknown bucket error", result.Content)
+	}
+	// Requesting seo+aeo together accepts the bucket.
+	result = runReadIssues(t, fake, `{"pillars":["seo","aeo"],"bucket":"answerability"}`, nil)
+	if strings.Contains(result.Content, "unknown bucket") {
+		t.Fatalf("Content = %q, want accepted under seo+aeo", result.Content)
 	}
 }
 

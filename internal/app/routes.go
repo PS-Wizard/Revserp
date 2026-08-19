@@ -96,6 +96,7 @@ func (a *App) Router() http.Handler {
 		protected.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 		protected.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 		protected.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)
+		protected.Get("/projects/{projectID}/score-potential", a.handleGetProjectScorePotential)
 		protected.Get("/crawls/{crawlID}", a.handleGetCrawl)
 		protected.Delete("/crawls/{crawlID}", a.handleDeleteCrawl)
 		protected.Post("/crawls/{crawlID}/cancel", a.handleCancelCrawl)

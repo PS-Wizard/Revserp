@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	readIssuesDefaultLimit = 25
-	readIssuesMaxLimit     = 50
-	readIssuesMaxURLs      = 25
-	readIssuesMaxTextLen   = 250
-	readIssuesTopN         = 20
+	readIssuesDefaultLimit    = 25
+	readIssuesMaxLimit        = 50
+	readIssuesMaxURLs         = 25
+	readIssuesMaxTextLen      = 250
+	readIssuesTopN            = 20
+	readIssuesCombinedMaxRows = 30
 )
 
 var (
@@ -35,12 +36,12 @@ var (
 const readIssuesSchema = `{
   "type": "object",
   "properties": {
-    "pillar": {"type": "string", "enum": ["seo", "aeo", "pagespeed"]},
+    "pillars": {"type": "array", "items": {"type": "string", "enum": ["seo", "aeo", "pagespeed"]}, "maxItems": 3, "description": "One or more pillars to include. With several pillars the rows interleave into one stream: one row from each pillar in turn, ordered by severity within each pillar. Omit for all pillars."},
     "bucket": {"type": "string", "description": "Bucket id or human label, e.g. \"meta_tags\" or \"Meta Tags\""},
     "issue_type": {"type": "string", "description": "Issue type id, e.g. \"missing_title\""},
     "severity": {"type": "string", "enum": ["high", "medium", "low"]},
     "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 25},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 25},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 25, "description": "Max rows from the combined stream, NOT per pillar. Capped at 30 total when several pillars are requested (limit 50 with three pillars returns 30 mixed rows)."},
     "offset": {"type": "integer", "minimum": 0, "default": 0}
   },
   "additionalProperties": false
@@ -80,7 +81,7 @@ func readIssuesTool() Tool {
 		Def: Def{
 			Name:        "read_issues",
 			Label:       "Read issues",
-			Description: "Read crawl issues of the current crawl with optional filters and paging. Returns matching totals, a breakdown of top buckets and issue types, and issue rows with deterministic recommended fixes.",
+			Description: "Read crawl issues of the current crawl with optional filters and paging. Returns matching totals, a breakdown of top buckets and issue types, and issue rows with deterministic recommended fixes. You can filter by one or several pillars at once (for example [\"seo\",\"aeo\"]): with several pillars the rows come back as one interleaved stream — one row from each pillar in turn, ordered by severity within each pillar, every row carrying its pillar — so a seo+aeo+pagespeed request returns a fair mix, never one pillar only. The limit applies to that combined stream, NOT per pillar, and is capped at 30 total rows when several pillars are requested: requesting limit 50 with seo+aeo+pagespeed returns 30 mixed rows, while total_matching and the breakdown still show the full matching set. Follow the returned next_offset to page. Use one pillar alone when you want to page deep with offset.",
 			Schema:      json.RawMessage(readIssuesSchema),
 		},
 		Execute: executeReadIssues,
@@ -103,7 +104,7 @@ func executeReadIssues(ctx context.Context, args json.RawMessage, s Scope) (Resu
 
 // readIssuesArgs is the raw, unvalidated argument set.
 type readIssuesArgs struct {
-	Pillar    string
+	Pillars   []string
 	Bucket    string
 	IssueType string
 	Severity  string
@@ -169,8 +170,8 @@ func (e *readIssuesExecutor) run(ctx context.Context, raw json.RawMessage, crawl
 	if err != nil {
 		return Result{Content: "read_issues error: " + err.Error()}, nil
 	}
-	if args.Pillar != "" && !slices.Contains(validReadIssuesPillars, args.Pillar) {
-		return Result{Content: fmt.Sprintf("read_issues error: unknown pillar %q; valid pillars: %s", args.Pillar, strings.Join(validReadIssuesPillars, ", "))}, nil
+	if len(args.Pillars) > 1 && args.Limit > readIssuesCombinedMaxRows {
+		args.Limit = readIssuesCombinedMaxRows
 	}
 	if args.Severity != "" && !slices.Contains(validReadIssuesSeverities, args.Severity) {
 		return Result{Content: fmt.Sprintf("read_issues error: unknown severity %q; valid severities: %s", args.Severity, strings.Join(validReadIssuesSeverities, ", "))}, nil
@@ -187,14 +188,14 @@ func (e *readIssuesExecutor) run(ctx context.Context, raw json.RawMessage, crawl
 		return Result{}, fmt.Errorf("read_issues: list dimensions: %w", err)
 	}
 	if args.Bucket != "" {
-		resolved, err := resolveReadIssuesBucket(args.Bucket, dimensions, args.Pillar)
+		resolved, err := resolveReadIssuesBucket(args.Bucket, dimensions, args.Pillars)
 		if err != nil {
 			return Result{Content: "read_issues error: " + err.Error()}, nil
 		}
 		args.Bucket = resolved
 	}
 	if args.IssueType != "" {
-		resolved, err := resolveReadIssuesIssueType(args.IssueType, dimensions, args.Pillar)
+		resolved, err := resolveReadIssuesIssueType(args.IssueType, dimensions, args.Pillars)
 		if err != nil {
 			return Result{Content: "read_issues error: " + err.Error()}, nil
 		}
@@ -204,7 +205,7 @@ func (e *readIssuesExecutor) run(ctx context.Context, raw json.RawMessage, crawl
 	total, err := e.counter.CountCrawlIssuesFilteredForUser(ctx, sqlc.CountCrawlIssuesFilteredForUserParams{
 		CrawlID: crawlID,
 		UserID:  userID,
-		Column3: args.Pillar,
+		Column3: args.Pillars,
 		Column4: args.Bucket,
 		Column5: args.IssueType,
 		Column6: args.Severity,
@@ -217,7 +218,7 @@ func (e *readIssuesExecutor) run(ctx context.Context, raw json.RawMessage, crawl
 	breakdownRows, err := e.breakdown.BreakdownCrawlIssuesFilteredForUser(ctx, sqlc.BreakdownCrawlIssuesFilteredForUserParams{
 		CrawlID: crawlID,
 		UserID:  userID,
-		Column3: args.Pillar,
+		Column3: args.Pillars,
 		Column4: args.Bucket,
 		Column5: args.IssueType,
 		Column6: args.Severity,
@@ -231,7 +232,7 @@ func (e *readIssuesExecutor) run(ctx context.Context, raw json.RawMessage, crawl
 	rows, err := e.lister.ListCrawlIssuesFilteredForUser(ctx, sqlc.ListCrawlIssuesFilteredForUserParams{
 		CrawlID: crawlID,
 		UserID:  userID,
-		Column3: args.Pillar,
+		Column3: args.Pillars,
 		Column4: args.Bucket,
 		Column5: args.IssueType,
 		Column6: args.Severity,
@@ -284,11 +285,26 @@ func parseReadIssuesArgs(raw json.RawMessage) (readIssuesArgs, error) {
 	}
 	for key, value := range fields {
 		switch key {
-		case "pillar":
-			if err := json.Unmarshal(value, &args.Pillar); err != nil {
-				return args, fmt.Errorf("argument %q must be a string", key)
+		case "pillars":
+			if err := json.Unmarshal(value, &args.Pillars); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
 			}
-			args.Pillar = strings.ToLower(strings.TrimSpace(args.Pillar))
+			if len(args.Pillars) == 0 {
+				return args, errors.New("argument \"pillars\" must not be empty")
+			}
+			seen := map[string]bool{}
+			normalized := make([]string, 0, len(args.Pillars))
+			for _, pillar := range args.Pillars {
+				pillar = strings.ToLower(strings.TrimSpace(pillar))
+				if !slices.Contains(validReadIssuesPillars, pillar) {
+					return args, fmt.Errorf("invalid pillar %q; valid pillars: %s", pillar, strings.Join(validReadIssuesPillars, ", "))
+				}
+				if !seen[pillar] {
+					seen[pillar] = true
+					normalized = append(normalized, pillar)
+				}
+			}
+			args.Pillars = normalized
 		case "bucket":
 			if err := json.Unmarshal(value, &args.Bucket); err != nil {
 				return args, fmt.Errorf("argument %q must be a string", key)
@@ -379,10 +395,11 @@ func strictJSONFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
 }
 
 // resolveReadIssuesBucket resolves a bucket id or human label (case-insensitively)
-// to the canonical id, or returns an error listing the valid buckets.
-func resolveReadIssuesBucket(raw string, dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillar string) (string, error) {
+// to the canonical id, or returns an error listing the valid buckets. A bucket
+// is valid when it exists under any of the requested pillars.
+func resolveReadIssuesBucket(raw string, dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillars []string) (string, error) {
 	target := strings.ToLower(strings.TrimSpace(raw))
-	valid := validReadIssuesDimensions(dimensions, pillar)
+	valid := validReadIssuesDimensions(dimensions, pillars)
 	for _, bucket := range valid {
 		if strings.ToLower(bucket) == target || strings.ToLower(shared.HumanizeIdentifier(bucket)) == target {
 			return bucket, nil
@@ -393,10 +410,11 @@ func resolveReadIssuesBucket(raw string, dimensions []sqlc.ListDistinctCrawlIssu
 
 // resolveReadIssuesIssueType resolves an issue type id or human label
 // (case-insensitively, like buckets) to the canonical id, or returns an
-// error listing the valid ones.
-func resolveReadIssuesIssueType(raw string, dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillar string) (string, error) {
+// error listing the valid ones. An issue type is valid when it exists under
+// any of the requested pillars.
+func resolveReadIssuesIssueType(raw string, dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillars []string) (string, error) {
 	target := strings.ToLower(strings.TrimSpace(raw))
-	valid := validReadIssuesIssueTypes(dimensions, pillar)
+	valid := validReadIssuesIssueTypes(dimensions, pillars)
 	for _, issueType := range valid {
 		if strings.ToLower(issueType) == target || strings.ToLower(shared.HumanizeIdentifier(issueType)) == target {
 			return issueType, nil
@@ -406,11 +424,11 @@ func resolveReadIssuesIssueType(raw string, dimensions []sqlc.ListDistinctCrawlI
 }
 
 // validReadIssuesDimensions lists the bucket ids for the crawl, optionally scoped
-// to one pillar, sorted and deduplicated.
-func validReadIssuesDimensions(dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillar string) []string {
+// to the requested pillars (empty means all), sorted and deduplicated.
+func validReadIssuesDimensions(dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillars []string) []string {
 	buckets := make([]string, 0)
 	for _, dimension := range dimensions {
-		if pillar != "" && dimension.Pillar != pillar {
+		if len(pillars) > 0 && !slices.Contains(pillars, dimension.Pillar) {
 			continue
 		}
 		buckets = append(buckets, dimension.Bucket)
@@ -419,11 +437,11 @@ func validReadIssuesDimensions(dimensions []sqlc.ListDistinctCrawlIssueDimension
 }
 
 // validReadIssuesIssueTypes lists the issue type ids for the crawl, optionally
-// scoped to one pillar, sorted and deduplicated.
-func validReadIssuesIssueTypes(dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillar string) []string {
+// scoped to the requested pillars (empty means all), sorted and deduplicated.
+func validReadIssuesIssueTypes(dimensions []sqlc.ListDistinctCrawlIssueDimensionsRow, pillars []string) []string {
 	issueTypes := make([]string, 0)
 	for _, dimension := range dimensions {
-		if pillar != "" && dimension.Pillar != pillar {
+		if len(pillars) > 0 && !slices.Contains(pillars, dimension.Pillar) {
 			continue
 		}
 		issueTypes = append(issueTypes, dimension.IssueType)

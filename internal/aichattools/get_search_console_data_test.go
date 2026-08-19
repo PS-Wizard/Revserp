@@ -19,17 +19,18 @@ import (
 
 // fakeGSCFetcher implements GSCFetcher without Google.
 type fakeGSCFetcher struct {
-	overview     gsc.OverviewPayload
-	overviewErr  error
-	pages        map[string]gsc.QueryPage
-	queryErr     error
-	refreshToken gsc.TokenResponse
-	refreshErr   error
-	decryptToken string
-	decryptErr   error
-	fetchCalls   int
-	lastOptions  gsc.QueryPageOptions
-	lastSiteURL  string
+	overview      gsc.OverviewPayload
+	overviewErr   error
+	pages         map[string]gsc.QueryPage
+	queryErr      error
+	refreshToken  gsc.TokenResponse
+	refreshErr    error
+	decryptToken  string
+	decryptErr    error
+	fetchCalls    int
+	overviewCalls int
+	lastOptions   gsc.QueryPageOptions
+	lastSiteURL   string
 }
 
 func (f *fakeGSCFetcher) DecryptSecret(string) (string, error) { return f.decryptToken, f.decryptErr }
@@ -59,6 +60,7 @@ func (f *fakeGSCFetcher) FetchQueriesCached(_ context.Context, _, _, siteURL str
 }
 
 func (f *fakeGSCFetcher) FetchOverviewCached(context.Context, string, string, string) (gsc.OverviewPayload, error) {
+	f.overviewCalls++
 	return f.overview, f.overviewErr
 }
 
@@ -165,23 +167,27 @@ func TestParseGSCArgs(t *testing.T) {
 		want    gscArgs
 		wantErr string
 	}{
-		{name: "summary only", raw: `{"report":"summary"}`, want: gscArgs{Report: "summary", Days: 180, Limit: 25}},
-		{name: "full args", raw: `{"report":"top_queries","days":90,"search":"seo","limit":50,"offset":100}`,
-			want: gscArgs{Report: "top_queries", Days: 90, Search: "seo", Limit: 50, Offset: 100}},
-		{name: "report case-insensitive", raw: `{"report":"TOP_PAGES"}`, want: gscArgs{Report: "top_pages", Days: 180, Limit: 25}},
-		{name: "days clamped to max", raw: `{"report":"top_queries","days":9999}`, want: gscArgs{Report: "top_queries", Days: 480, Limit: 25}},
-		{name: "days below minimum rejected", raw: `{"report":"top_queries","days":3}`, wantErr: "at least 7"},
-		{name: "limit clamped to max", raw: `{"report":"top_queries","limit":500}`, want: gscArgs{Report: "top_queries", Days: 180, Limit: 100}},
-		{name: "limit zero rejected", raw: `{"report":"top_queries","limit":0}`, wantErr: "at least 1"},
-		{name: "offset clamped to max", raw: `{"report":"top_queries","offset":999999}`, want: gscArgs{Report: "top_queries", Days: 180, Limit: 25, Offset: 25000}},
-		{name: "offset negative rejected", raw: `{"report":"top_queries","offset":-1}`, wantErr: ">= 0"},
-		{name: "missing report rejected", raw: `{}`, wantErr: "missing required argument"},
-		{name: "invalid report rejected", raw: `{"report":"bogus"}`, wantErr: "invalid report"},
-		{name: "unknown key rejected", raw: `{"report":"summary","bogus":1}`, wantErr: `unknown argument "bogus"`},
-		{name: "duplicate key rejected", raw: `{"report":"summary","report":"top_queries"}`, wantErr: `duplicate argument "report"`},
-		{name: "trailing data rejected", raw: `{"report":"summary"} {"x":1}`, wantErr: "trailing data"},
+		{name: "one report", raw: `{"reports":["summary"]}`, want: gscArgs{Reports: []string{"summary"}, Days: 180, Limit: 25}},
+		{name: "full args", raw: `{"reports":["top_queries"],"days":90,"search":"seo","limit":50,"offset":100}`,
+			want: gscArgs{Reports: []string{"top_queries"}, Days: 90, Search: "seo", Limit: 50, Offset: 100}},
+		{name: "report case-insensitive", raw: `{"reports":["TOP_PAGES"]}`, want: gscArgs{Reports: []string{"top_pages"}, Days: 180, Limit: 25}},
+		{name: "reports deduplicated", raw: `{"reports":["summary","summary","top_queries"]}`, want: gscArgs{Reports: []string{"summary", "top_queries"}, Days: 180, Limit: 25}},
+		{name: "reports order preserved", raw: `{"reports":["top_pages","summary"]}`, want: gscArgs{Reports: []string{"top_pages", "summary"}, Days: 180, Limit: 25}},
+		{name: "days clamped to max", raw: `{"reports":["top_queries"],"days":9999}`, want: gscArgs{Reports: []string{"top_queries"}, Days: 480, Limit: 25}},
+		{name: "days below minimum rejected", raw: `{"reports":["top_queries"],"days":3}`, wantErr: "at least 7"},
+		{name: "limit clamped to max", raw: `{"reports":["top_queries"],"limit":500}`, want: gscArgs{Reports: []string{"top_queries"}, Days: 180, Limit: 100}},
+		{name: "limit zero rejected", raw: `{"reports":["top_queries"],"limit":0}`, wantErr: "at least 1"},
+		{name: "offset clamped to max", raw: `{"reports":["top_queries"],"offset":999999}`, want: gscArgs{Reports: []string{"top_queries"}, Days: 180, Limit: 25, Offset: 25000}},
+		{name: "offset negative rejected", raw: `{"reports":["top_queries"],"offset":-1}`, wantErr: ">= 0"},
+		{name: "missing reports rejected", raw: `{}`, wantErr: "missing required argument"},
+		{name: "empty reports rejected", raw: `{"reports":[]}`, wantErr: "must not be empty"},
+		{name: "invalid report rejected", raw: `{"reports":["bogus"]}`, wantErr: "invalid report"},
+		{name: "unknown key rejected", raw: `{"reports":["summary"],"bogus":1}`, wantErr: `unknown argument "bogus"`},
+		{name: "duplicate key rejected", raw: `{"reports":["summary"],"reports":["top_queries"]}`, wantErr: `duplicate argument "reports"`},
+		{name: "trailing data rejected", raw: `{"reports":["summary"]} {"x":1}`, wantErr: "trailing data"},
 		{name: "non-object rejected", raw: `[1]`, wantErr: "must be a JSON object"},
 	}
+
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := parseGSCArgs(json.RawMessage(test.raw))
@@ -248,7 +254,7 @@ func TestGSCUnavailableStates(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := runGSC(t, test.connections(), test.fetcher(), `{"report":"summary"}`)
+			result := runGSC(t, test.connections(), test.fetcher(), `{"reports":["summary"]}`)
 			if !strings.Contains(result.Content, test.wantContent) {
 				t.Fatalf("Content = %q, want containing %q", result.Content, test.wantContent)
 			}
@@ -277,19 +283,20 @@ func TestGSCQueryReportForwarding(t *testing.T) {
 		wantDim    string
 		wantSearch string
 	}{
-		{raw: `{"report":"top_queries"}`, wantReport: "top_queries", wantKey: "seo audit guide", wantDim: "query", wantSearch: ""},
-		{raw: `{"report":"top_queries","search":"seo"}`, wantReport: "top_queries", wantKey: "seo tutorial", wantDim: "query", wantSearch: "seo"},
-		{raw: `{"report":"question_queries"}`, wantReport: "question_queries", wantKey: "who is x", wantDim: "query", wantSearch: ""},
-		{raw: `{"report":"top_pages"}`, wantReport: "top_pages", wantKey: "/blog/seo-guide", wantDim: "page", wantSearch: ""},
-		{raw: `{"report":"countries"}`, wantReport: "countries", wantKey: "US", wantDim: "country", wantSearch: ""},
-		{raw: `{"report":"devices"}`, wantReport: "devices", wantKey: "MOBILE", wantDim: "device", wantSearch: ""},
+		{raw: `{"reports":["top_queries"]}`, wantReport: "top_queries", wantKey: "seo audit guide", wantDim: "query", wantSearch: ""},
+		{raw: `{"reports":["top_queries"],"search":"seo"}`, wantReport: "top_queries", wantKey: "seo tutorial", wantDim: "query", wantSearch: "seo"},
+		{raw: `{"reports":["question_queries"]}`, wantReport: "question_queries", wantKey: "who is x", wantDim: "query", wantSearch: ""},
+		{raw: `{"reports":["top_pages"]}`, wantReport: "top_pages", wantKey: "/blog/seo-guide", wantDim: "page", wantSearch: ""},
+		{raw: `{"reports":["countries"]}`, wantReport: "countries", wantKey: "US", wantDim: "country", wantSearch: ""},
+		{raw: `{"reports":["devices"]}`, wantReport: "devices", wantKey: "MOBILE", wantDim: "device", wantSearch: ""},
 	}
+
 	for _, test := range tests {
 		t.Run(test.raw, func(t *testing.T) {
 			result := runGSC(t, connections, fetcher, test.raw)
 			var response gscReportResponse
-			if err := json.Unmarshal([]byte(result.Content), &response); err != nil {
-				t.Fatalf("content not response JSON: %v\n%s", err, result.Content)
+			if err := json.Unmarshal(firstGSCSection(t, result), &response); err != nil {
+				t.Fatalf("section not response JSON: %v\n%s", err, result.Content)
 			}
 			if len(response.Rows) != 1 || response.Rows[0].Key != test.wantKey {
 				t.Fatalf("Rows = %+v, want key %q", response.Rows, test.wantKey)
@@ -325,9 +332,9 @@ func TestGSCQueryPaging(t *testing.T) {
 		queryErr: nil,
 	}
 	connections := connectedFake(fetcher)
-	result := runGSC(t, connections, fetcher, `{"report":"top_queries","offset":0,"limit":2}`)
+	result := runGSC(t, connections, fetcher, `{"reports":["top_queries"],"offset":0,"limit":2}`)
 	var response gscReportResponse
-	if err := json.Unmarshal([]byte(result.Content), &response); err != nil {
+	if err := json.Unmarshal(firstGSCSection(t, result), &response); err != nil {
 		t.Fatal(err)
 	}
 	if !response.HasMore || response.NextOffset != 2 {
@@ -341,10 +348,10 @@ func TestGSCQueryPaging(t *testing.T) {
 func TestGSCSummaryReport(t *testing.T) {
 	fetcher := &fakeGSCFetcher{overview: fakeOverview()}
 	connections := connectedFake(fetcher)
-	result := runGSC(t, connections, fetcher, `{"report":"summary"}`)
+	result := runGSC(t, connections, fetcher, `{"reports":["summary"]}`)
 	var response gscSummaryResponse
-	if err := json.Unmarshal([]byte(result.Content), &response); err != nil {
-		t.Fatalf("content not summary JSON: %v\n%s", err, result.Content)
+	if err := json.Unmarshal(firstGSCSection(t, result), &response); err != nil {
+		t.Fatalf("section not summary JSON: %v\n%s", err, result.Content)
 	}
 	if response.Clicks.Current != 180 || response.Clicks.Previous != 150 {
 		t.Fatalf("clicks = %+v, want 180/150", response.Clicks)
@@ -363,10 +370,10 @@ func TestGSCSummaryReport(t *testing.T) {
 func TestGSCOpportunitiesReport(t *testing.T) {
 	fetcher := &fakeGSCFetcher{overview: fakeOverview()}
 	connections := connectedFake(fetcher)
-	result := runGSC(t, connections, fetcher, `{"report":"opportunities"}`)
+	result := runGSC(t, connections, fetcher, `{"reports":["opportunities"]}`)
 	var response gscOpportunitiesResponse
-	if err := json.Unmarshal([]byte(result.Content), &response); err != nil {
-		t.Fatalf("content not opportunities JSON: %v\n%s", err, result.Content)
+	if err := json.Unmarshal(firstGSCSection(t, result), &response); err != nil {
+		t.Fatalf("section not opportunities JSON: %v\n%s", err, result.Content)
 	}
 	if len(response.LowCTRQueries) != 1 || response.LowCTRQueries[0].Key != "low ctr query" {
 		t.Fatalf("LowCTRQueries = %+v", response.LowCTRQueries)
@@ -378,6 +385,99 @@ func TestGSCOpportunitiesReport(t *testing.T) {
 		t.Fatalf("Summary = %q", result.Summary)
 	}
 }
+func firstGSCSection(t *testing.T, result Result) json.RawMessage {
+	t.Helper()
+	var multi gscMultiReportResponse
+	if err := json.Unmarshal([]byte(result.Content), &multi); err != nil {
+		t.Fatalf("content not multi-report JSON: %v\n%s", err, result.Content)
+	}
+	if len(multi.Reports) != 1 {
+		t.Fatalf("Reports = %d sections, want 1\n%s", len(multi.Reports), result.Content)
+	}
+	return multi.Reports[0]
+}
+
+func TestGSCCombinedReports(t *testing.T) {
+	fetcher := &fakeGSCFetcher{
+		overview: fakeOverview(),
+		pages: map[string]gsc.QueryPage{
+			"query|false|": fakeQueryPage("seo audit guide"),
+			"page|false|":  fakeQueryPage("/blog/seo-guide"),
+		},
+	}
+	connections := connectedFake(fetcher)
+	result := runGSC(t, connections, fetcher, `{"reports":["top_queries","summary","opportunities","top_pages"],"limit":50}`)
+
+	var multi gscMultiReportResponse
+	if err := json.Unmarshal([]byte(result.Content), &multi); err != nil {
+		t.Fatalf("content not multi-report JSON: %v\n%s", err, result.Content)
+	}
+	if len(multi.Reports) != 4 {
+		t.Fatalf("Reports = %d sections, want 4", len(multi.Reports))
+	}
+
+	var querySection gscReportResponse
+	if err := json.Unmarshal(multi.Reports[0], &querySection); err != nil {
+		t.Fatal(err)
+	}
+	if querySection.Report != "top_queries" || len(querySection.Rows) != 1 || querySection.Rows[0].Key != "seo audit guide" {
+		t.Fatalf("section[0] = %+v, want top_queries with seo audit guide", querySection)
+	}
+
+	var summarySection gscSummaryResponse
+	if err := json.Unmarshal(multi.Reports[1], &summarySection); err != nil {
+		t.Fatal(err)
+	}
+	if summarySection.Report != "summary" || summarySection.Clicks.Current != 180 {
+		t.Fatalf("section[1] = %+v, want summary with 180 clicks", summarySection)
+	}
+
+	var oppSection gscOpportunitiesResponse
+	if err := json.Unmarshal(multi.Reports[2], &oppSection); err != nil {
+		t.Fatal(err)
+	}
+	if oppSection.Report != "opportunities" || len(oppSection.StrikingDistanceQueries) != 1 {
+		t.Fatalf("section[2] = %+v, want opportunities", oppSection)
+	}
+
+	var pageSection gscReportResponse
+	if err := json.Unmarshal(multi.Reports[3], &pageSection); err != nil {
+		t.Fatal(err)
+	}
+	if pageSection.Report != "top_pages" || len(pageSection.Rows) != 1 || pageSection.Rows[0].Key != "/blog/seo-guide" {
+		t.Fatalf("section[3] = %+v, want top_pages with /blog/seo-guide", pageSection)
+	}
+
+	if fetcher.fetchCalls != 2 {
+		t.Fatalf("query fetches = %d, want 2 (top_queries + top_pages)", fetcher.fetchCalls)
+	}
+	if fetcher.overviewCalls != 1 {
+		t.Fatalf("overview fetches = %d, want 1 (shared by summary + opportunities)", fetcher.overviewCalls)
+	}
+	// The combined limit is shared across reports: 150/4 = 37 rows per section.
+	if fetcher.lastOptions.Limit != 37 {
+		t.Fatalf("forwarded limit = %d, want 37", fetcher.lastOptions.Limit)
+	}
+	if want := "4 reports returned (top_queries, summary, opportunities, top_pages)"; result.Summary != want {
+		t.Fatalf("Summary = %q, want %q", result.Summary, want)
+	}
+}
+
+func TestGSCSingleReportKeepsRichSummary(t *testing.T) {
+	fetcher := &fakeGSCFetcher{pages: map[string]gsc.QueryPage{"query|false|": fakeQueryPage("seo audit guide")}}
+	result := runGSC(t, connectedFake(fetcher), fetcher, `{"reports":["top_queries"]}`)
+	if want := "top_queries: 1 rows (last 180 days, 10 clicks)"; result.Summary != want {
+		t.Fatalf("Summary = %q, want %q", result.Summary, want)
+	}
+}
+
+func TestGSCCombinedLimitUnclampedForSingleReport(t *testing.T) {
+	fetcher := &fakeGSCFetcher{pages: map[string]gsc.QueryPage{"query|false|": fakeQueryPage("a")}}
+	runGSC(t, connectedFake(fetcher), fetcher, `{"reports":["top_queries"],"limit":100}`)
+	if fetcher.lastOptions.Limit != 100 {
+		t.Fatalf("forwarded limit = %d, want 100 (no clamp for one report)", fetcher.lastOptions.Limit)
+	}
+}
 
 func TestGSCTokenRefreshPath(t *testing.T) {
 	t.Run("refresh on expiry persists", func(t *testing.T) {
@@ -387,7 +487,7 @@ func TestGSCTokenRefreshPath(t *testing.T) {
 			pages:        map[string]gsc.QueryPage{"query|false|": fakeQueryPage("a")},
 		}
 		connections := connectedFake(fetcher)
-		result := runGSC(t, connections, fetcher, `{"report":"top_queries"}`)
+		result := runGSC(t, connections, fetcher, `{"reports":["top_queries"]}`)
 		if connections.updateTokensCalls != 1 {
 			t.Fatalf("update tokens calls = %d, want 1", connections.updateTokensCalls)
 		}
@@ -399,7 +499,7 @@ func TestGSCTokenRefreshPath(t *testing.T) {
 	t.Run("refresh failure marks reauth", func(t *testing.T) {
 		fetcher := &fakeGSCFetcher{decryptToken: "", refreshErr: errors.New("invalid_grant")}
 		connections := connectedFake(fetcher)
-		result := runGSC(t, connections, fetcher, `{"report":"top_queries"}`)
+		result := runGSC(t, connections, fetcher, `{"reports":["top_queries"]}`)
 		if connections.updateStatusCalls != 1 {
 			t.Fatalf("update status calls = %d, want 1", connections.updateStatusCalls)
 		}
@@ -413,9 +513,9 @@ func TestGSCRowTextCap(t *testing.T) {
 	fetcher := &fakeGSCFetcher{pages: map[string]gsc.QueryPage{
 		"query|false|": fakeQueryPage(strings.Repeat("x", 200)),
 	}}
-	result := runGSC(t, connectedFake(fetcher), fetcher, `{"report":"top_queries"}`)
+	result := runGSC(t, connectedFake(fetcher), fetcher, `{"reports":["top_queries"]}`)
 	var response gscReportResponse
-	if err := json.Unmarshal([]byte(result.Content), &response); err != nil {
+	if err := json.Unmarshal(firstGSCSection(t, result), &response); err != nil {
 		t.Fatal(err)
 	}
 	if utf8.RuneCountInString(response.Rows[0].Key) != gscMaxRowTextRune+1 {
@@ -427,7 +527,7 @@ func TestGSCDatabaseErrorsPropagate(t *testing.T) {
 	t.Run("features error", func(t *testing.T) {
 		connections := &fakeGSCConnections{featureErr: errors.New("boom")}
 		exec := gscExecutor{features: connections, connections: connections, fetcher: &fakeGSCFetcher{}}
-		_, err := exec.run(context.Background(), json.RawMessage(`{"report":"summary"}`), testProjectID, testUserID)
+		_, err := exec.run(context.Background(), json.RawMessage(`{"reports":["summary"]}`), testProjectID, testUserID)
 		if err == nil || !strings.Contains(err.Error(), "features") {
 			t.Fatalf("run() error = %v, want wrapped features error", err)
 		}
@@ -436,7 +536,7 @@ func TestGSCDatabaseErrorsPropagate(t *testing.T) {
 	t.Run("unavailable fetcher", func(t *testing.T) {
 		connections := connectedFake(&fakeGSCFetcher{})
 		exec := gscExecutor{features: connections, connections: connections, fetcher: nil}
-		result, err := exec.run(context.Background(), json.RawMessage(`{"report":"summary"}`), testProjectID, testUserID)
+		result, err := exec.run(context.Background(), json.RawMessage(`{"reports":["summary"]}`), testProjectID, testUserID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -447,7 +547,7 @@ func TestGSCDatabaseErrorsPropagate(t *testing.T) {
 }
 
 func TestExecuteGetSearchConsoleDataRequiresQueries(t *testing.T) {
-	_, err := executeGetSearchConsoleData(context.Background(), json.RawMessage(`{"report":"summary"}`), Scope{})
+	_, err := executeGetSearchConsoleData(context.Background(), json.RawMessage(`{"reports":["summary"]}`), Scope{})
 	if err == nil || !strings.Contains(err.Error(), "no queries") {
 		t.Fatalf("executeGetSearchConsoleData error = %v, want no-queries error", err)
 	}
@@ -472,7 +572,7 @@ func TestSearchConsoleToolDef(t *testing.T) {
 	}
 	for name := range properties {
 		switch name {
-		case "report", "days", "search", "limit", "offset":
+		case "reports", "days", "search", "limit", "offset":
 		default:
 			t.Fatalf("schema property %q must not exist", name)
 		}
@@ -496,7 +596,7 @@ func TestGSCGoogleConnectionLookupUsesOrganizationID(t *testing.T) {
 	connections := connectedFake(fetcher)
 	orgID := pgtype.UUID{Bytes: [16]byte{42}, Valid: true}
 	connections.projectRow.OrganizationID = orgID
-	runGSC(t, connections, fetcher, `{"report":"top_queries"}`)
+	runGSC(t, connections, fetcher, `{"reports":["top_queries"]}`)
 	if !connections.lastOrgID.Valid || connections.lastOrgID != orgID {
 		t.Fatalf("google connection looked up by %v, want the project's organization id %v", connections.lastOrgID, orgID)
 	}

@@ -138,18 +138,22 @@ INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ci.crawl_id = $1
   AND om.user_id = $2
-  AND ($3 = '' OR ci.pillar = $3)
+  AND (coalesce(cardinality($3::text[]), 0) = 0 OR ci.pillar = ANY($3::text[]))
   AND ($4 = '' OR ci.bucket = $4)
   AND ($5 = '' OR ci.issue_type = $5)
   AND ($6 = '' OR ci.severity = $6)
   AND ($7 = '' OR ci.url = $7)
   AND (coalesce(cardinality($8::text[]), 0) = 0 OR ci.url = ANY($8::text[]))
 ORDER BY
-    CASE ci.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,
-    ci.bucket,
-    ci.issue_type,
-    ci.url,
-    ci.id
+    row_number() OVER (
+        PARTITION BY ci.pillar
+        ORDER BY CASE ci.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,
+                 ci.bucket,
+                 ci.issue_type,
+                 ci.url,
+                 ci.id
+    ),
+    ci.pillar
 LIMIT $9
 OFFSET $10;
 
@@ -166,7 +170,7 @@ INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ci.crawl_id = $1
   AND om.user_id = $2
-  AND ($3 = '' OR ci.pillar = $3)
+  AND (coalesce(cardinality($3::text[]), 0) = 0 OR ci.pillar = ANY($3::text[]))
   AND ($4 = '' OR ci.bucket = $4)
   AND ($5 = '' OR ci.issue_type = $5)
   AND ($6 = '' OR ci.severity = $6)
@@ -194,7 +198,7 @@ INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ci.crawl_id = $1
   AND om.user_id = $2
-  AND ($3 = '' OR ci.pillar = $3)
+  AND (coalesce(cardinality($3::text[]), 0) = 0 OR ci.pillar = ANY($3::text[]))
   AND ($4 = '' OR ci.bucket = $4)
   AND ($5 = '' OR ci.issue_type = $5)
   AND ($6 = '' OR ci.severity = $6)

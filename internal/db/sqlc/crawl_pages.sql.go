@@ -778,6 +778,55 @@ func (q *Queries) GetLatestCompletedCrawlIDForProject(ctx context.Context, arg G
 	return id, err
 }
 
+const listCrawlPageSignalsForCrawl = `-- name: ListCrawlPageSignalsForCrawl :many
+SELECT
+    url,
+    status_code,
+    content_type,
+    word_count,
+    response_time_ms,
+    size_bytes
+FROM crawl_pages
+WHERE crawl_id = $1
+ORDER BY created_at ASC
+`
+
+type ListCrawlPageSignalsForCrawlRow struct {
+	Url            string
+	StatusCode     pgtype.Int4
+	ContentType    pgtype.Text
+	WordCount      pgtype.Int4
+	ResponseTimeMs pgtype.Int4
+	SizeBytes      pgtype.Int4
+}
+
+func (q *Queries) ListCrawlPageSignalsForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListCrawlPageSignalsForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlPageSignalsForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCrawlPageSignalsForCrawlRow
+	for rows.Next() {
+		var i ListCrawlPageSignalsForCrawlRow
+		if err := rows.Scan(
+			&i.Url,
+			&i.StatusCode,
+			&i.ContentType,
+			&i.WordCount,
+			&i.ResponseTimeMs,
+			&i.SizeBytes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCrawlPagesFilteredForUser = `-- name: ListCrawlPagesFilteredForUser :many
 SELECT
     cp.url,

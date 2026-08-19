@@ -33,7 +33,7 @@ const (
 	maxAgentRounds       = 8
 	toolRowBudget        = 200
 	liveBudgetBytes      = 192 << 10
-	toolResultContentCap = 4000
+	toolResultContentCap = 32 << 10
 	stubbedToolContent   = "[earlier tool output omitted to fit context]"
 	toolLimitPrompt      = "You have reached the tool-call limit for this turn. Do not request any more tools. Answer now with concrete recommendations based only on what you have already gathered, citing the specific issues you found where relevant."
 )

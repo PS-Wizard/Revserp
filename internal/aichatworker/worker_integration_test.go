@@ -403,8 +403,8 @@ func TestDisabledToolsAreNotSentToProvider(t *testing.T) {
 	if len(provider.requests) != 1 {
 		t.Fatalf("streams=%d, want 1", len(provider.requests))
 	}
-	if len(provider.requests[0].Tools) != 2 {
-		t.Fatalf("round tools = %+v, want the two non-disabled tools", provider.requests[0].Tools)
+	if len(provider.requests[0].Tools) != 3 {
+		t.Fatalf("round tools = %+v, want the three non-disabled tools", provider.requests[0].Tools)
 	}
 	for _, def := range provider.requests[0].Tools {
 		if def.Name == "read_issues" {
@@ -439,8 +439,8 @@ func TestToolRoundCapSynthesizesFinalAnswer(t *testing.T) {
 		t.Fatalf("streams=%d, want %d", len(provider.requests), maxAgentRounds+1)
 	}
 	for i := 0; i < maxAgentRounds; i++ {
-		if len(provider.requests[i].Tools) != 3 {
-			t.Fatalf("round %d tools = %+v, want the three registered tools", i, provider.requests[i].Tools)
+		if len(provider.requests[i].Tools) != 4 {
+			t.Fatalf("round %d tools = %+v, want the four registered tools", i, provider.requests[i].Tools)
 		}
 	}
 	final := provider.requests[maxAgentRounds]
@@ -623,7 +623,7 @@ func TestToolRoundGetScoreSummaryPersistsCallAndAnswer(t *testing.T) {
 func TestToolRoundSearchConsoleUnavailable(t *testing.T) {
 	a, _, user, project := testWorker(t)
 	provider := &roundProvider{rounds: [][]ai.Event{
-		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: "get_search_console_data", Args: `{"report":"summary"}`}}},
+		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: "get_search_console_data", Args: `{"reports":["summary"]}`}}},
 		{{Text: "search console is not connected here"}},
 	}}
 	a.provider = provider

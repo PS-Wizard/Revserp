@@ -27,6 +27,7 @@ const (
 	gscMaxDays        = 480
 	gscDefaultDays    = 180
 	gscMaxRowTextRune = 120
+	gscMaxTotalRows   = 150
 
 	// gscToolName is the registered tool name; gating couples it to the
 	// gsc_connector feature flag.
@@ -38,13 +39,13 @@ var validGSCReports = []string{"summary", "top_queries", "question_queries", "to
 const getSearchConsoleDataSchema = `{
   "type": "object",
   "properties": {
-    "report": {"type": "string", "enum": ["summary", "top_queries", "question_queries", "top_pages", "countries", "devices", "opportunities"], "description": "summary: headline clicks/impressions/CTR/position vs the previous period. top_queries: highest-traffic search queries. question_queries: queries phrased as questions or comparisons. top_pages: highest-traffic landing pages. countries: traffic split by country. devices: traffic split by desktop/mobile/tablet. opportunities: low-CTR and striking-distance queries plus question queries worth optimizing."},
+    "reports": {"type": "array", "items": {"type": "string", "enum": ["summary", "top_queries", "question_queries", "top_pages", "countries", "devices", "opportunities"]}, "minItems": 1, "maxItems": 7, "description": "The report or reports to return, in order. summary: headline clicks/impressions/CTR/position vs the previous period. top_queries: highest-traffic search queries. question_queries: queries phrased as questions or comparisons. top_pages: highest-traffic landing pages. countries: traffic split by country. devices: traffic split by desktop/mobile/tablet. opportunities: low-CTR and striking-distance queries plus question queries worth optimizing. Several reports come back as one result with one labeled section per report; request one report at a time to page deep with offset."},
     "days": {"type": "integer", "minimum": 7, "maximum": 480, "description": "Reporting window in days (default 180). Applies to top_queries, question_queries, top_pages, countries, and devices. Search Console data lags roughly 3 days."},
     "search": {"type": "string", "description": "Case-insensitive substring filter on the query text. Only applies to top_queries and question_queries."},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Max rows to return (default 25, max 100)."},
-    "offset": {"type": "integer", "minimum": 0, "maximum": 25000, "description": "Page position for top_queries, question_queries, and top_pages (default 0)."}
+    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Max rows per report section (default 25, max 100). When several reports are requested, the limit is reduced so the combined response stays bounded (150 rows total)."},
+    "offset": {"type": "integer", "minimum": 0, "maximum": 25000, "description": "Page position applied to each report section (default 0)."}
   },
-  "required": ["report"],
+  "required": ["reports"],
   "additionalProperties": false
 }`
 
@@ -92,7 +93,7 @@ func getSearchConsoleDataTool() Tool {
 		Def: Def{
 			Name:        gscToolName,
 			Label:       "Get search console data",
-			Description: "Read Google Search Console performance for the current project: headline clicks/impressions/CTR/position, the real queries people find the site through, question-style queries, top landing pages, country and device breakdowns, and ranking opportunities. This is actual search demand, not crawl data — use it for keyword research, query intent, audience geography, mobile-vs-desktop questions, and traffic questions. Returns a plain explanation when Search Console is not connected.",
+			Description: "Read Google Search Console performance for the current project: headline clicks/impressions/CTR/position, the real queries people find the site through, question-style queries, top landing pages, country and device breakdowns, and ranking opportunities. This is actual search demand, not crawl data — use it for keyword research, query intent, audience geography, mobile-vs-desktop questions, and traffic questions. You can request several reports in one call (for example [\"top_queries\",\"top_pages\",\"opportunities\"]); each report comes back as its own labeled section and the row limit is shared across the sections so the response stays bounded. Request one report at a time when you want to page deep through many rows with offset. Returns a plain explanation when Search Console is not connected.",
 			Schema:      json.RawMessage(getSearchConsoleDataSchema),
 			Feature:     "gsc_connector",
 		},
@@ -115,11 +116,11 @@ func executeGetSearchConsoleData(ctx context.Context, args json.RawMessage, s Sc
 
 // gscArgs is the raw, unvalidated argument set.
 type gscArgs struct {
-	Report string
-	Days   int
-	Search string
-	Limit  int
-	Offset int
+	Reports []string
+	Days    int
+	Search  string
+	Limit   int
+	Offset  int
 }
 
 // gscReportResponse is the JSON the model sees for query-style reports.
@@ -164,6 +165,12 @@ type gscOpportunitiesResponse struct {
 	LowCTRQueries           []gscRow `json:"low_ctr_queries"`
 	StrikingDistanceQueries []gscRow `json:"striking_distance_queries"`
 	QuestionQueries         []gscRow `json:"question_queries"`
+}
+
+// gscMultiReportResponse wraps one section per requested report. Each section
+// is the same JSON the single-report calls used, carrying its report name.
+type gscMultiReportResponse struct {
+	Reports []json.RawMessage `json:"reports"`
 }
 
 // run executes one get_search_console_data call. Search Console rows are live
@@ -220,24 +227,55 @@ func (e *gscExecutor) run(ctx context.Context, raw json.RawMessage, projectID, u
 		return Result{}, err
 	}
 
-	switch args.Report {
-	case "summary":
-		return e.summary(ctx, projectID, projectConnection, accessToken)
-	case "opportunities":
-		return e.opportunities(ctx, projectID, projectConnection, accessToken)
-	case "top_queries":
-		return e.page(ctx, projectID, projectConnection, accessToken, args, gsc.QueryPageOptions{QuestionsOnly: false, Search: args.Search})
-	case "question_queries":
-		return e.page(ctx, projectID, projectConnection, accessToken, args, gsc.QueryPageOptions{QuestionsOnly: true, Search: args.Search})
-	case "top_pages":
-		return e.page(ctx, projectID, projectConnection, accessToken, args, gsc.QueryPageOptions{Dimension: "page"})
-	case "countries":
-		return e.page(ctx, projectID, projectConnection, accessToken, args, gsc.QueryPageOptions{Dimension: "country"})
-	case "devices":
-		return e.page(ctx, projectID, projectConnection, accessToken, args, gsc.QueryPageOptions{Dimension: "device"})
-	default:
-		return Result{Content: fmt.Sprintf("%s error: invalid report %q; valid reports: %s", gscToolName, args.Report, strings.Join(validGSCReports, ", "))}, nil
+	// Fan out: one section per requested report. summary and opportunities
+	// share a single overview fetch; query-style reports fetch their own page.
+	// The row limit is shared across reports so the combined response stays
+	// bounded.
+	effectiveLimit := args.Limit
+	if len(args.Reports) > 1 {
+		effectiveLimit = min(args.Limit, gscMaxTotalRows/len(args.Reports))
+		if effectiveLimit < 1 {
+			effectiveLimit = 1
+		}
 	}
+
+	var overview *gsc.OverviewPayload
+	sections := make([]json.RawMessage, 0, len(args.Reports))
+	summaries := make([]string, 0, len(args.Reports))
+	for _, report := range args.Reports {
+		var section json.RawMessage
+		var summary string
+		var err error
+		switch report {
+		case "summary":
+			section, summary, err = e.summarySection(ctx, &overview, projectID, projectConnection, accessToken)
+		case "opportunities":
+			section, summary, err = e.opportunitiesSection(ctx, &overview, projectID, projectConnection, accessToken)
+		case "top_queries", "question_queries", "top_pages", "countries", "devices":
+			section, summary, err = e.pageSection(ctx, projectID, projectConnection, accessToken, report, args, effectiveLimit)
+		default:
+			return Result{}, fmt.Errorf("%s: unhandled report %q", gscToolName, report)
+		}
+		if err != nil {
+			var unavailable *gscUnavailableError
+			if errors.As(err, &unavailable) {
+				return unavailableGSC(unavailable.reason), nil
+			}
+			return Result{}, err
+		}
+		sections = append(sections, section)
+		summaries = append(summaries, summary)
+	}
+
+	content, err := json.Marshal(gscMultiReportResponse{Reports: sections})
+	if err != nil {
+		return Result{}, fmt.Errorf("%s: marshal reports: %w", gscToolName, err)
+	}
+	resultSummary := fmt.Sprintf("%d reports returned (%s)", len(sections), strings.Join(args.Reports, ", "))
+	if len(sections) == 1 {
+		resultSummary = summaries[0]
+	}
+	return Result{Content: string(content), Summary: resultSummary}, nil
 }
 
 // gscUnavailableError marks an ordinary, expected state (reconnect needed,
@@ -316,18 +354,32 @@ func coalesceGSC(primaryValue, fallbackValue string) string {
 	return fallbackValue
 }
 
-// summary returns headline metrics for the current window vs the previous one.
-func (e *gscExecutor) summary(ctx context.Context, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string) (Result, error) {
+// cachedOverview fetches the overview payload once per call, sharing it
+// between the summary and opportunities sections.
+func (e *gscExecutor) cachedOverview(ctx context.Context, cache **gsc.OverviewPayload, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string) (*gsc.OverviewPayload, error) {
+	if *cache != nil {
+		return *cache, nil
+	}
 	overview, err := e.fetcher.FetchOverviewCached(ctx, accessToken, projectID.String(), projectConnection.SiteUrl)
 	if err != nil {
 		if gscReauthError(err) {
-			return unavailableGSC("Search Console needs reauthorization. Reconnect the Google account in the workspace settings."), nil
+			return nil, &gscUnavailableError{reason: "Search Console needs reauthorization. Reconnect the Google account in the workspace settings."}
 		}
-		return Result{}, fmt.Errorf("%s: overview: %w", gscToolName, err)
+		return nil, fmt.Errorf("%s: overview: %w", gscToolName, err)
+	}
+	*cache = &overview
+	return *cache, nil
+}
+
+// summarySection returns the summary report section JSON and its chip summary.
+func (e *gscExecutor) summarySection(ctx context.Context, overviewCache **gsc.OverviewPayload, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string) (json.RawMessage, string, error) {
+	overview, err := e.cachedOverview(ctx, overviewCache, projectID, projectConnection, accessToken)
+	if err != nil {
+		return nil, "", err
 	}
 	window, ok := overview.Windows[strconv.Itoa(gscOverviewWindowDays)]
 	if !ok {
-		return Result{}, fmt.Errorf("%s: overview window %d missing", gscToolName, gscOverviewWindowDays)
+		return nil, "", fmt.Errorf("%s: overview window %d missing", gscToolName, gscOverviewWindowDays)
 	}
 	response := gscSummaryResponse{
 		Report:      "summary",
@@ -340,26 +392,21 @@ func (e *gscExecutor) summary(ctx context.Context, projectID pgtype.UUID, projec
 	}
 	content, err := json.Marshal(response)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal summary: %w", gscToolName, err)
+		return nil, "", fmt.Errorf("%s: marshal summary: %w", gscToolName, err)
 	}
-	return Result{
-		Content: string(content),
-		Summary: fmt.Sprintf("summary: %s clicks vs %s previous (position %s)", formatGSCPercent(response.Clicks.Current), formatGSCPercent(response.Clicks.Previous), formatGSCPercent(response.Position.Current)),
-	}, nil
+	return content, fmt.Sprintf("summary: %s clicks vs %s previous (position %s)", formatGSCPercent(response.Clicks.Current), formatGSCPercent(response.Clicks.Previous), formatGSCPercent(response.Position.Current)), nil
 }
 
-// opportunities returns the three suggestion lists from the overview window.
-func (e *gscExecutor) opportunities(ctx context.Context, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string) (Result, error) {
-	overview, err := e.fetcher.FetchOverviewCached(ctx, accessToken, projectID.String(), projectConnection.SiteUrl)
+// opportunitiesSection returns the three suggestion lists from the overview
+// window as one section, plus its chip summary.
+func (e *gscExecutor) opportunitiesSection(ctx context.Context, overviewCache **gsc.OverviewPayload, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string) (json.RawMessage, string, error) {
+	overview, err := e.cachedOverview(ctx, overviewCache, projectID, projectConnection, accessToken)
 	if err != nil {
-		if gscReauthError(err) {
-			return unavailableGSC("Search Console needs reauthorization. Reconnect the Google account in the workspace settings."), nil
-		}
-		return Result{}, fmt.Errorf("%s: overview: %w", gscToolName, err)
+		return nil, "", err
 	}
 	window, ok := overview.Windows[strconv.Itoa(gscOverviewWindowDays)]
 	if !ok {
-		return Result{}, fmt.Errorf("%s: overview window %d missing", gscToolName, gscOverviewWindowDays)
+		return nil, "", fmt.Errorf("%s: overview window %d missing", gscToolName, gscOverviewWindowDays)
 	}
 	response := gscOpportunitiesResponse{
 		Report:                  "opportunities",
@@ -369,26 +416,37 @@ func (e *gscExecutor) opportunities(ctx context.Context, projectID pgtype.UUID, 
 	}
 	content, err := json.Marshal(response)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal opportunities: %w", gscToolName, err)
+		return nil, "", fmt.Errorf("%s: marshal opportunities: %w", gscToolName, err)
 	}
-	return Result{
-		Content: string(content),
-		Summary: fmt.Sprintf("opportunities: %d striking-distance queries, %d low-CTR, %d question queries",
-			len(response.StrikingDistanceQueries), len(response.LowCTRQueries), len(response.QuestionQueries)),
-	}, nil
+	return content, fmt.Sprintf("opportunities: %d striking-distance queries, %d low-CTR, %d question queries",
+		len(response.StrikingDistanceQueries), len(response.LowCTRQueries), len(response.QuestionQueries)), nil
 }
 
-// page returns one paged search console report.
-func (e *gscExecutor) page(ctx context.Context, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string, args gscArgs, options gsc.QueryPageOptions) (Result, error) {
+// pageSection returns one paged search console report section JSON plus its
+// chip summary.
+func (e *gscExecutor) pageSection(ctx context.Context, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string, report string, args gscArgs, limit int) (json.RawMessage, string, error) {
+	var options gsc.QueryPageOptions
+	switch report {
+	case "question_queries":
+		options = gsc.QueryPageOptions{QuestionsOnly: true, Search: args.Search}
+	case "top_pages":
+		options = gsc.QueryPageOptions{Dimension: "page"}
+	case "countries":
+		options = gsc.QueryPageOptions{Dimension: "country"}
+	case "devices":
+		options = gsc.QueryPageOptions{Dimension: "device"}
+	default:
+		options = gsc.QueryPageOptions{Search: args.Search}
+	}
 	options.Days = args.Days
-	options.Limit = args.Limit
+	options.Limit = limit
 	options.Offset = args.Offset
 	page, err := e.fetcher.FetchQueriesCached(ctx, accessToken, projectID.String(), projectConnection.SiteUrl, options)
 	if err != nil {
 		if gscReauthError(err) {
-			return unavailableGSC("Search Console needs reauthorization. Reconnect the Google account in the workspace settings."), nil
+			return nil, "", &gscUnavailableError{reason: "Search Console needs reauthorization. Reconnect the Google account in the workspace settings."}
 		}
-		return Result{}, fmt.Errorf("%s: %s: %w", gscToolName, args.Report, err)
+		return nil, "", fmt.Errorf("%s: %s: %w", gscToolName, report, err)
 	}
 
 	rows := shapeGSCRows(page.Rows)
@@ -398,7 +456,7 @@ func (e *gscExecutor) page(ctx context.Context, projectID pgtype.UUID, projectCo
 		totalImpressions += row.Impressions
 	}
 	response := gscReportResponse{
-		Report:           args.Report,
+		Report:           report,
 		StartDate:        page.StartDate,
 		EndDate:          page.EndDate,
 		Rows:             rows,
@@ -409,12 +467,9 @@ func (e *gscExecutor) page(ctx context.Context, projectID pgtype.UUID, projectCo
 	}
 	content, err := json.Marshal(response)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal page: %w", gscToolName, err)
+		return nil, "", fmt.Errorf("%s: marshal page: %w", gscToolName, err)
 	}
-	return Result{
-		Content: string(content),
-		Summary: fmt.Sprintf("%s: %d rows (last %d days, %.0f clicks)", args.Report, len(rows), page.Days, totalClicks),
-	}, nil
+	return content, fmt.Sprintf("%s: %d rows (last %d days, %.0f clicks)", report, len(rows), page.Days, totalClicks), nil
 }
 
 func shapeGSCRows(rows []gsc.SearchAnalyticsRow) []gscRow {
@@ -483,14 +538,26 @@ func parseGSCArgs(raw json.RawMessage) (gscArgs, error) {
 	}
 	for key, value := range fields {
 		switch key {
-		case "report":
-			if err := json.Unmarshal(value, &args.Report); err != nil {
-				return args, fmt.Errorf("argument %q must be a string", key)
+		case "reports":
+			if err := json.Unmarshal(value, &args.Reports); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
 			}
-			args.Report = strings.ToLower(strings.TrimSpace(args.Report))
-			if !slices.Contains(validGSCReports, args.Report) {
-				return args, fmt.Errorf("invalid report %q; valid reports: %s", args.Report, strings.Join(validGSCReports, ", "))
+			if len(args.Reports) == 0 {
+				return args, errors.New("argument \"reports\" must not be empty")
 			}
+			seen := map[string]bool{}
+			normalized := make([]string, 0, len(args.Reports))
+			for _, report := range args.Reports {
+				report = strings.ToLower(strings.TrimSpace(report))
+				if !slices.Contains(validGSCReports, report) {
+					return args, fmt.Errorf("invalid report %q; valid reports: %s", report, strings.Join(validGSCReports, ", "))
+				}
+				if !seen[report] {
+					seen[report] = true
+					normalized = append(normalized, report)
+				}
+			}
+			args.Reports = normalized
 		case "days":
 			if err := json.Unmarshal(value, &args.Days); err != nil {
 				return args, fmt.Errorf("argument %q must be an integer", key)
@@ -533,8 +600,8 @@ func parseGSCArgs(raw json.RawMessage) (gscArgs, error) {
 			return args, fmt.Errorf("unknown argument %q", key)
 		}
 	}
-	if args.Report == "" {
-		return args, errors.New("missing required argument \"report\"")
+	if len(args.Reports) == 0 {
+		return args, errors.New("missing required argument \"reports\"")
 	}
 	return args, nil
 }
