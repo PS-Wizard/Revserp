@@ -230,6 +230,7 @@ type CrawlPage struct {
 	LastModified            pgtype.Text
 	Soft404                 bool
 	FetchError              pgtype.Text
+	ContentBlocks           []byte
 }
 
 type CrawlScoreBreakdown struct {

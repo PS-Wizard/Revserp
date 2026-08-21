@@ -25,6 +25,13 @@ type ParsedHeading struct {
 	Text  string `json:"text"`
 }
 
+// ParsedBlock holds one block of main content in document order.
+type ParsedBlock struct {
+	Tag  string `json:"tag"`
+	Text string `json:"text"`
+	Html string `json:"html,omitempty"`
+}
+
 // ParsedPage holds the basic extracted facts from one HTML page.
 type ParsedPage struct {
 	URL                     string
@@ -36,6 +43,7 @@ type ParsedPage struct {
 	Viewport                string
 	Robots                  string
 	VisibleText             string
+	ContentBlocks           []ParsedBlock
 	ImageCount              int
 	ImagesWithoutAltCount   int
 	ImagesWithoutDimensions int
@@ -74,6 +82,7 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 	}
 
 	imageCount, imagesWithoutAltCount, imagesWithoutDimensions := extractImageCounts(document)
+	contentBlocks, visibleText := extractContentBlocks(document)
 	parsedPage := ParsedPage{
 		URL:                     parsedPageURL.String(),
 		Title:                   strings.TrimSpace(document.Find("title").First().Text()),
@@ -82,7 +91,8 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 		Lang:                    strings.TrimSpace(document.Find("html").First().AttrOr("lang", "")),
 		Viewport:                strings.TrimSpace(document.Find(`meta[name="viewport"]`).First().AttrOr("content", "")),
 		Robots:                  strings.TrimSpace(document.Find(`meta[name="robots"]`).First().AttrOr("content", "")),
-		VisibleText:             extractVisibleText(document),
+		VisibleText:             visibleText,
+		ContentBlocks:           contentBlocks,
 		ImageCount:              imageCount,
 		ImagesWithoutAltCount:   imagesWithoutAltCount,
 		ImagesWithoutDimensions: imagesWithoutDimensions,
@@ -371,17 +381,82 @@ func extractImageCounts(document *goquery.Document) (int, int, int) {
 	return imageCount, imagesWithoutAltCount, imagesWithoutDimensions
 }
 
-// extractVisibleText returns normalized body text with obvious non-content nodes removed.
-func extractVisibleText(document *goquery.Document) string {
-	bodySelection := document.Find("body").First()
-	if bodySelection.Length() == 0 {
-		return ""
+// extractContentBlocks returns structured main-content blocks and cleaned visible text.
+// It picks the main container (main/article/[role=main] else body), removes
+// boilerplate (header/nav/footer/aside and scripts), then walks block elements
+// in document order. Visible text is the blocks joined with paragraph breaks.
+func extractContentBlocks(document *goquery.Document) ([]ParsedBlock, string) {
+	container := document.Find("main, article, [role=main]").First()
+	if container.Length() == 0 {
+		container = document.Find("body").First()
+		if container.Length() == 0 {
+			return nil, ""
+		}
 	}
 
-	bodyClone := bodySelection.Clone()
-	bodyClone.Find("script, style, noscript").Remove()
+	clone := container.Clone()
+	clone.Find("header, nav, footer, aside, [role=navigation], [role=banner], [role=contentinfo], script, style, noscript, iframe, form").Remove()
+	clone.Find(".cookie, .nav, .navbar, .footer, .sidebar, .cookie-banner, .site-header, .site-footer, .site-nav").Remove()
 
-	return normalizeWhitespace(bodyClone.Text())
+	var blocks []ParsedBlock
+	var texts []string
+	clone.Find("h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, img, pre").Each(func(_ int, selection *goquery.Selection) {
+		tag := goquery.NodeName(selection)
+		if tag == "img" {
+			src := strings.TrimSpace(selection.AttrOr("src", ""))
+			alt := normalizeWhitespace(selection.AttrOr("alt", ""))
+			if src == "" && alt == "" {
+				return
+			}
+			text := alt
+			if text == "" {
+				text = src
+			}
+			html, _ := goquery.OuterHtml(selection)
+			if html == "" {
+				html = "<img src=\"" + src + "\" alt=\"" + alt + "\">"
+			}
+			blocks = append(blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
+			return
+		}
+		if tag == "ul" || tag == "ol" {
+			var items []string
+			selection.Find("li").Each(func(_ int, li *goquery.Selection) {
+				ttt := normalizeWhitespace(li.Text())
+				if ttt != "" {
+					items = append(items, ttt)
+				}
+			})
+			if len(items) == 0 {
+				return
+			}
+			text := strings.Join(items, " ")
+			html, _ := selection.Html()
+			blocks = append(blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
+			texts = append(texts, text)
+			return
+		}
+		text := normalizeWhitespace(selection.Text())
+		if text == "" {
+			return
+		}
+		html, _ := selection.Html()
+		blocks = append(blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
+		texts = append(texts, text)
+	})
+
+	if len(blocks) == 0 {
+		return nil, ""
+	}
+
+	return blocks, strings.Join(texts, "\n\n")
+}
+
+// extractVisibleText returns normalized visible text for backward compat.
+// It delegates to extractContentBlocks and returns only the visible text.
+func extractVisibleText(document *goquery.Document) string {
+	_, visibleText := extractContentBlocks(document)
+	return visibleText
 }
 
 // extractLinks returns normalized anchor links from a document.

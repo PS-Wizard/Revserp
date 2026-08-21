@@ -111,6 +111,7 @@ func (a *App) Router() http.Handler {
 		protected.Post("/crawls/{crawlID}/ai/fix", a.handleAIFix)
 		protected.Post("/crawls/{crawlID}/pages", a.handleCreateCrawlPage)
 		protected.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)
+		protected.Get("/crawls/{crawlID}/pages/by-url", a.handleGetCrawlPageByURL)
 		protected.Get("/crawl-pages/{pageID}", a.handleGetCrawlPage)
 		protected.Post("/crawls/{crawlID}/links", a.handleCreateCrawlLink)
 		protected.Get("/crawls/{crawlID}/links", a.handleListCrawlLinks)

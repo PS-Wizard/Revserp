@@ -65,6 +65,7 @@ INSERT INTO crawl_pages (
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     etag,
     last_modified,
     soft_404,
@@ -104,6 +105,7 @@ SELECT
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     COALESCE($3::text, crawl_pages.etag),
     last_modified,
     -- A 304 means the body is unchanged, so a soft 404 stays a soft 404. The
@@ -219,6 +221,7 @@ INSERT INTO crawl_pages (
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     etag,
     last_modified,
     soft_404,
@@ -260,9 +263,10 @@ INSERT INTO crawl_pages (
     $34,
     $35,
     $36,
-    $37
+    $37,
+    $38
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, etag, last_modified, soft_404, fetch_error, created_at
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, content_blocks, etag, last_modified, soft_404, fetch_error, created_at
 `
 
 type CreateCrawlPageParams struct {
@@ -299,6 +303,7 @@ type CreateCrawlPageParams struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	ContentBlocks           []byte
 	Etag                    pgtype.Text
 	LastModified            pgtype.Text
 	Soft404                 bool
@@ -340,6 +345,7 @@ type CreateCrawlPageRow struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	ContentBlocks           []byte
 	Etag                    pgtype.Text
 	LastModified            pgtype.Text
 	Soft404                 bool
@@ -382,6 +388,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.HeadingOutline,
 		arg.OgTags,
 		arg.JsonLd,
+		arg.ContentBlocks,
 		arg.Etag,
 		arg.LastModified,
 		arg.Soft404,
@@ -423,6 +430,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		&i.HeadingOutline,
 		&i.OgTags,
 		&i.JsonLd,
+		&i.ContentBlocks,
 		&i.Etag,
 		&i.LastModified,
 		&i.Soft404,
@@ -468,6 +476,7 @@ SELECT
     cp.heading_outline,
     cp.og_tags,
     cp.json_ld,
+    cp.content_blocks,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -518,6 +527,7 @@ type GetCrawlPageByIDForUserRow struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	ContentBlocks           []byte
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -559,6 +569,7 @@ func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageB
 		&i.HeadingOutline,
 		&i.OgTags,
 		&i.JsonLd,
+		&i.ContentBlocks,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -600,6 +611,7 @@ SELECT
     cp.heading_outline,
     cp.og_tags,
     cp.json_ld,
+    cp.content_blocks,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -652,6 +664,7 @@ type GetCrawlPageByURLForUserRow struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	ContentBlocks           []byte
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -693,6 +706,7 @@ func (q *Queries) GetCrawlPageByURLForUser(ctx context.Context, arg GetCrawlPage
 		&i.HeadingOutline,
 		&i.OgTags,
 		&i.JsonLd,
+		&i.ContentBlocks,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -919,6 +933,7 @@ SELECT
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     created_at
 FROM crawl_pages
 WHERE crawl_id = $1
@@ -962,6 +977,7 @@ type ListCrawlPagesForCrawlRow struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	ContentBlocks           []byte
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -1011,6 +1027,7 @@ func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUI
 			&i.HeadingOutline,
 			&i.OgTags,
 			&i.JsonLd,
+			&i.ContentBlocks,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1061,6 +1078,7 @@ SELECT
     cp.heading_outline,
     cp.og_tags,
     cp.json_ld,
+    cp.content_blocks,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -1117,6 +1135,7 @@ type ListCrawlPagesForCrawlByUserRow struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	ContentBlocks           []byte
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -1171,6 +1190,7 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 			&i.HeadingOutline,
 			&i.OgTags,
 			&i.JsonLd,
+			&i.ContentBlocks,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

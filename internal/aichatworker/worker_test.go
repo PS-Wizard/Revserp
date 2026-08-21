@@ -13,7 +13,7 @@ import (
 func TestComposeSystemContext(t *testing.T) {
 	completedAt := pgtype.Timestamptz{Valid: true}
 	context := composeSystemContext("selected prompt", "Example", "https://example.com", completedAt)
-	for _, want := range []string{"selected prompt", "--- Project context ---", "Name: Example", "URL: https://example.com", "--- Crawl context ---"} {
+	for _, want := range []string{"selected prompt", "--- Editor links ---", `"revserp-editor"`, "--- Project context ---", "Name: Example", "URL: https://example.com", "--- Crawl context ---"} {
 		if !strings.Contains(context, want) {
 			t.Errorf("system context missing %q: %q", want, context)
 		}

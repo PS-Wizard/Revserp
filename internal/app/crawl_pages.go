@@ -83,6 +83,7 @@ type crawlPageResponse struct {
 	HeadingOutline          json.RawMessage `json:"heading_outline,omitempty"`
 	OGTags                  json.RawMessage `json:"og_tags,omitempty"`
 	JSONLD                  json.RawMessage `json:"json_ld,omitempty"`
+	ContentBlocks           json.RawMessage `json:"content_blocks,omitempty"`
 	CreatedAt               string          `json:"created_at"`
 }
 
@@ -121,6 +122,7 @@ type crawlPageRowData struct {
 	HeadingOutline          []byte
 	OgTags                  []byte
 	JsonLd                  []byte
+	ContentBlocks           []byte
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -336,6 +338,48 @@ func (a *App) handleGetCrawlPage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newCrawlPageResponseFromGetRow(page))
 }
 
+// handleGetCrawlPageByURL returns a page by crawl and URL for the editor.
+func (a *App) handleGetCrawlPageByURL(w http.ResponseWriter, r *http.Request) {
+	crawlID, err := parseUUIDParam(chi.URLParam(r, "crawlID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
+		return
+	}
+	pageURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if pageURL == "" {
+		writeJSONError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	queries := a.Queries.WithTx(tx)
+	user, _, err := a.ensureCurrentUser(r, queries)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	page, err := queries.GetCrawlPageByURLForUser(r.Context(), sqlc.GetCrawlPageByURLForUserParams{CrawlID: crawlID, Url: pageURL, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl page not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, buildCrawlPageResponse(crawlPageRowData{
+		ID: page.ID, CrawlID: page.CrawlID, Url: page.Url, StatusCode: page.StatusCode, ContentType: page.ContentType, SizeBytes: page.SizeBytes, IsInternal: page.IsInternal, Depth: page.Depth, Title: page.Title, MetaDescription: page.MetaDescription, H1: page.H1, H1Count: page.H1Count, H2Count: page.H2Count, H3Count: page.H3Count, WordCount: page.WordCount, VisibleText: page.VisibleText, Author: page.Author, CanonicalUrl: page.CanonicalUrl, Lang: page.Lang, Viewport: page.Viewport, Robots: page.Robots, ImageCount: page.ImageCount, ImagesWithoutAltCount: page.ImagesWithoutAltCount, ImagesWithoutDimensions: page.ImagesWithoutDimensions, ExternalLinks: page.ExternalLinks, InternalLinks: page.InternalLinks, ResponseTimeMs: page.ResponseTimeMs, JavascriptRendered: page.JavascriptRendered, H2Headings: page.H2Headings, H3Headings: page.H3Headings, HeadingOutline: page.HeadingOutline, OgTags: page.OgTags, JsonLd: page.JsonLd, ContentBlocks: page.ContentBlocks, CreatedAt: page.CreatedAt,
+	}))
+}
+
 // newCrawlPageResponseFromCreateRow converts a created crawl page row into an API response.
 func newCrawlPageResponseFromCreateRow(page sqlc.CreateCrawlPageRow) crawlPageResponse {
 	return buildCrawlPageResponse(crawlPageRowData{
@@ -412,6 +456,7 @@ func newCrawlPageResponseFromListRow(page sqlc.ListCrawlPagesForCrawlByUserRow) 
 		HeadingOutline:          page.HeadingOutline,
 		OgTags:                  page.OgTags,
 		JsonLd:                  page.JsonLd,
+		ContentBlocks:           page.ContentBlocks,
 		CreatedAt:               page.CreatedAt,
 	})
 }
@@ -452,6 +497,7 @@ func newCrawlPageResponseFromGetRow(page sqlc.GetCrawlPageByIDForUserRow) crawlP
 		HeadingOutline:          page.HeadingOutline,
 		OgTags:                  page.OgTags,
 		JsonLd:                  page.JsonLd,
+		ContentBlocks:           page.ContentBlocks,
 		CreatedAt:               page.CreatedAt,
 	})
 }
@@ -523,6 +569,9 @@ func buildCrawlPageResponse(row crawlPageRowData) crawlPageResponse {
 	}
 	if len(row.JsonLd) > 0 {
 		response.JSONLD = json.RawMessage(row.JsonLd)
+	}
+	if len(row.ContentBlocks) > 0 {
+		response.ContentBlocks = json.RawMessage(row.ContentBlocks)
 	}
 
 	return response

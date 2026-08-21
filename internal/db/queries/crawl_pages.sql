@@ -33,6 +33,7 @@ INSERT INTO crawl_pages (
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     etag,
     last_modified,
     soft_404,
@@ -74,9 +75,10 @@ INSERT INTO crawl_pages (
     $34,
     $35,
     $36,
-    $37
+    $37,
+    $38
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, etag, last_modified, soft_404, fetch_error, created_at;
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, content_blocks, etag, last_modified, soft_404, fetch_error, created_at;
 
 -- name: GetCrawlPageByIDForUser :one
 SELECT
@@ -114,6 +116,7 @@ SELECT
     cp.heading_outline,
     cp.og_tags,
     cp.json_ld,
+    cp.content_blocks,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -170,6 +173,7 @@ SELECT
     cp.heading_outline,
     cp.og_tags,
     cp.json_ld,
+    cp.content_blocks,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -220,6 +224,7 @@ SELECT
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     created_at
 FROM crawl_pages
 WHERE crawl_id = $1
@@ -274,6 +279,7 @@ SELECT
     cp.heading_outline,
     cp.og_tags,
     cp.json_ld,
+    cp.content_blocks,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -360,6 +366,7 @@ INSERT INTO crawl_pages (
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     etag,
     last_modified,
     soft_404,
@@ -399,6 +406,7 @@ SELECT
     heading_outline,
     og_tags,
     json_ld,
+    content_blocks,
     COALESCE(sqlc.narg(fresh_etag)::text, crawl_pages.etag),
     last_modified,
     -- A 304 means the body is unchanged, so a soft 404 stays a soft 404. The

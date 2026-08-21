@@ -202,6 +202,7 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		HeadingOutline:          mustMarshalJSON(headingOutline),
 		OgTags:                  mustMarshalJSON(extractPageOGTags(parsedPage)),
 		JsonLd:                  mustMarshalJSON(extractPageJSONLDBlocks(parsedPage)),
+		ContentBlocks:           mustMarshalJSON(extractPageContentBlocks(parsedPage)),
 		// Stored verbatim so the next crawl can echo them back unchanged.
 		Etag:         nullableText(result.Fetch.ETag),
 		LastModified: nullableText(result.Fetch.LastModified),

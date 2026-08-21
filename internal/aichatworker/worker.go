@@ -682,6 +682,8 @@ ORDER BY historical_turn.created_at DESC, historical_turn.id DESC`, claimed.Conv
 func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtype.Timestamptz) string {
 	var builder strings.Builder
 	builder.WriteString(prompt)
+	builder.WriteString("\n\n--- Editor links ---\n")
+	builder.WriteString("When opening a page would help the user and its exact URL is known from the user or tool data, add an editor link after the answer. Put each editor link on its own final line. Use [Open in editor: Page name](https://example.com/page \"revserp-editor\") as the format, replacing the label and URL. Only use pages from the selected crawl. Never invent or alter a URL.\n")
 	builder.WriteString("\n\n--- Project context ---\n")
 	fmt.Fprintf(&builder, "Name: %s\nURL: %s\n", projectName, baseURL)
 	if completedAt.Valid {

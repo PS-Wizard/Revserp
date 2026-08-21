@@ -91,8 +91,24 @@ func TestParserParseHTML(t *testing.T) {
 		t.Fatalf("got json-ld block %q", parsedPage.JSONLDBlocks[0])
 	}
 
-	if parsedPage.VisibleText != "Main Heading This is a useful paragraph with real body text. Overview Features Fast Reliable About Us Vercel" {
+	if parsedPage.VisibleText != "Main Heading\n\nThis is a useful paragraph with real body text.\n\nOverview\n\nFeatures\n\nFast\n\nReliable" {
 		t.Fatalf("got visible text %q", parsedPage.VisibleText)
+	}
+
+	if len(parsedPage.ContentBlocks) != 9 {
+		t.Fatalf("got %d content blocks", len(parsedPage.ContentBlocks))
+	}
+
+	if parsedPage.ContentBlocks[0].Tag != "h1" || parsedPage.ContentBlocks[0].Text != "Main Heading" {
+		t.Fatalf("got first block %#v", parsedPage.ContentBlocks[0])
+	}
+
+	if parsedPage.ContentBlocks[1].Tag != "p" || parsedPage.ContentBlocks[1].Text != "This is a useful paragraph with real body text." {
+		t.Fatalf("got second block %#v", parsedPage.ContentBlocks[1])
+	}
+
+	if parsedPage.ContentBlocks[6].Tag != "img" || parsedPage.ContentBlocks[6].Text != "Hero image" {
+		t.Fatalf("got img block %#v", parsedPage.ContentBlocks[6])
 	}
 
 	if parsedPage.ImageCount != 3 {

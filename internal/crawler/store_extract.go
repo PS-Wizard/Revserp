@@ -166,6 +166,15 @@ func extractParsedHeadingOutline(parsedPage *ParsedPage) []ParsedHeading {
 	return parsedPage.HeadingOutline
 }
 
+// extractPageContentBlocks returns parsed content blocks when available.
+func extractPageContentBlocks(parsedPage *ParsedPage) []ParsedBlock {
+	if parsedPage == nil {
+		return nil
+	}
+
+	return parsedPage.ContentBlocks
+}
+
 // extractPageVisibleText returns parsed visible body text when available.
 func extractPageVisibleText(parsedPage *ParsedPage) string {
 	if parsedPage == nil {
