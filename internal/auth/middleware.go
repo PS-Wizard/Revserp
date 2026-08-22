@@ -1,9 +1,9 @@
 package auth
 
 import (
-"errors"
-"log"
-"net/http"
+	"errors"
+	"log"
+	"net/http"
 
 	"github.com/jackc/pgx/v5"
 )

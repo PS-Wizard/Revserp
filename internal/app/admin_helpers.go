@@ -84,6 +84,10 @@ func (a *App) requireActiveUser(next http.Handler) http.Handler {
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				if _, apiKeyRequest := internalauth.APIKeyFromContext(r.Context()); apiKeyRequest {
+					writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+					return
+				}
 				next.ServeHTTP(w, r)
 				return
 			}

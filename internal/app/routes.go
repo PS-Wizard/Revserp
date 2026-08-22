@@ -33,6 +33,7 @@ func (a *App) Router() http.Handler {
 	r.Post("/auth/logout", a.handleLogout)
 	r.Get("/auth/google/callback", a.handleGoogleOAuthCallback)
 	r.Get("/invites/{token}", a.handleGetInvite)
+	r.Post("/agent/setup", a.handleRedeemAgentSetup)
 
 	r.Group(func(protected chi.Router) {
 		protected.Use(internalauth.RequireSession(a.SessionManager))
@@ -40,6 +41,9 @@ func (a *App) Router() http.Handler {
 		protected.Get("/me", a.handleMe)
 		protected.Get("/app-bootstrap", a.handleAppBootstrap)
 		protected.Post("/me/active-organization", a.handleSetActiveOrganization)
+		protected.Get("/api-keys", a.handleListAPIKeys)
+		protected.Post("/api-keys/{apiKeyID}/revoke", a.handleRevokeAPIKey)
+		protected.Post("/agent/setup-codes", a.handleCreateAgentSetupCode)
 		protected.Get("/internal/scoring-config", a.platformAdminOnly(a.handleGetScoringConfig))
 		protected.Put("/internal/scoring-config", a.platformAdminOnly(a.handlePutScoringConfig))
 		protected.Post("/internal/scoring-config/preview", a.platformAdminOnly(a.handlePreviewScoringConfig))
@@ -142,6 +146,37 @@ func (a *App) Router() http.Handler {
 			admin.Get("/admin/projects/{projectID}/crawls", a.handleAdminListProjectCrawls)
 			admin.Get("/admin/crawls/{crawlID}/score-breakdown", a.handleAdminGetCrawlScoreBreakdown)
 		})
+	})
+
+	r.Route("/v1", func(v1 chi.Router) {
+		v1.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					w.Header().Set("Allow", http.MethodGet)
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				next.ServeHTTP(w, r)
+			})
+		})
+		v1.Use(internalauth.RequireAPIKey(a.APIKeyManager))
+		v1.Use(a.requireActiveUser)
+		v1.Get("/me", a.handleV1Me)
+		v1.Get("/organizations/{organizationID}/projects", a.handleListProjects)
+		v1.Get("/projects/{projectID}", a.handleGetProject)
+		v1.Get("/projects/{projectID}/crawls", a.handleListCrawls)
+		v1.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)
+		v1.Get("/projects/{projectID}/score-potential", a.handleGetProjectScorePotential)
+		v1.Get("/crawls/{crawlID}", a.handleGetCrawl)
+		v1.Get("/crawls/{crawlID}/score-breakdown", a.handleGetCrawlScoreBreakdown)
+		v1.Get("/crawls/{crawlID}/page-health", a.handleGetCrawlPageHealth)
+		v1.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)
+		v1.Get("/crawls/{crawlID}/issues", a.handleListCrawlIssues)
+		v1.Get("/crawls/{crawlID}/links", a.handleListCrawlLinks)
+		v1.Get("/crawls/{crawlID}/site-graph", a.handleGetCrawlSiteGraph)
+		v1.Get("/crawl-pages/{pageID}", a.handleGetCrawlPage)
+		v1.Get("/crawl-issues/{issueID}", a.handleGetCrawlIssue)
+		v1.Get("/crawl-links/{linkID}", a.handleGetCrawlLink)
 	})
 
 	return r
