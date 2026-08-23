@@ -55,7 +55,7 @@ func TestValidateDisabledAITools(t *testing.T) {
 		{"known tool", []string{"read_issues"}, true, []string{"read_issues"}, ""},
 		{"dupes normalized", []string{"read_issues", "read_issues"}, true, []string{"read_issues"}, ""},
 		{"gsc flag off force-disables", []string{}, false, []string{"get_search_console_data"}, ""},
-		{"unknown tool rejected", []string{"bogus"}, true, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary, get_search_console_data, get_business_profile, read_issue_work`},
+		{"unknown tool rejected", []string{"bogus"}, true, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary, get_search_console_data, get_business_profile, read_issue_work, render_chart`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

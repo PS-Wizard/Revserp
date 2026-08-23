@@ -88,7 +88,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), renderChartTool()}}
 }
 
 // CatalogDefs lists every implemented tool definition in catalog order,
@@ -96,7 +96,7 @@ func NewRegistry() *Registry {
 // validation run against the full catalog, so a tool can be gateable (and
 // shown in the admin AI tools drawer) before the model can call it.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, renderChartTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag

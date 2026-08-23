@@ -1,6 +1,9 @@
 package aiprompt
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSelectSystemPrompt(t *testing.T) {
 	tests := []struct {
@@ -23,5 +26,21 @@ func TestSelectSystemPrompt(t *testing.T) {
 				t.Errorf("SelectSystemPrompt() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDefaultSystemPromptIncludesCurrentTools(t *testing.T) {
+	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "render_chart"} {
+		if !strings.Contains(DefaultSystemPrompt, name) {
+			t.Errorf("default prompt missing %q", name)
+		}
+	}
+	for _, guidance := range []string{"five tools that read real data", "render_chart does not retrieve facts", "projected_points"} {
+		if !strings.Contains(DefaultSystemPrompt, guidance) {
+			t.Errorf("default prompt missing %q", guidance)
+		}
+	}
+	if strings.Contains(DefaultSystemPrompt, "four tools") {
+		t.Error("default prompt still claims four tools")
 	}
 }
