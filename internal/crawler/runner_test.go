@@ -314,6 +314,7 @@ type testResultStore struct {
 	completedDiscovered int
 	completedCrawled    int
 	completedMaxDepth   int
+	completedHasLlmsTxt pgtype.Bool
 }
 
 func (store *testResultStore) MarkCrawlRunning(_ context.Context, _ pgtype.UUID) error {
@@ -321,11 +322,12 @@ func (store *testResultStore) MarkCrawlRunning(_ context.Context, _ pgtype.UUID)
 	return nil
 }
 
-func (store *testResultStore) MarkCrawlCompleted(_ context.Context, _ pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+func (store *testResultStore) MarkCrawlCompleted(_ context.Context, _ pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, hasLlmsTxt pgtype.Bool) error {
 	store.markedCompleted = true
 	store.completedDiscovered = urlsDiscovered
 	store.completedCrawled = urlsCrawled
 	store.completedMaxDepth = maxDepthReached
+	store.completedHasLlmsTxt = hasLlmsTxt
 	return nil
 }
 

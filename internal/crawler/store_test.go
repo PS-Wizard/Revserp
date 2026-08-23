@@ -286,7 +286,7 @@ func TestStoreMarksCrawlProgress(t *testing.T) {
 		t.Fatalf("mark crawl running: %v", err)
 	}
 
-	if err := store.MarkCrawlCompleted(ctx, crawlID, 12, 10, 3); err != nil {
+	if err := store.MarkCrawlCompleted(ctx, crawlID, 12, 10, 3, pgtype.Bool{Bool: true, Valid: true}); err != nil {
 		t.Fatalf("mark crawl completed: %v", err)
 	}
 
@@ -367,7 +367,7 @@ func TestMarkCrawlCompletedVerifiesRecordedWork(t *testing.T) {
 	if err := store.MarkCrawlRunning(ctx, currentCrawlID); err != nil {
 		t.Fatalf("mark crawl running: %v", err)
 	}
-	if err := store.MarkCrawlCompleted(ctx, currentCrawlID, 1, 1, 0); err != nil {
+	if err := store.MarkCrawlCompleted(ctx, currentCrawlID, 1, 1, 0, pgtype.Bool{Bool: false, Valid: true}); err != nil {
 		t.Fatalf("mark crawl completed: %v", err)
 	}
 	var status string

@@ -133,6 +133,8 @@ func HumanizeIdentifier(value string) string {
 			parts[partIndex] = "OG"
 		case "psi":
 			parts[partIndex] = "PSI"
+		case "llms":
+			parts[partIndex] = "LLMs"
 		case "h1", "h2", "h3":
 			parts[partIndex] = strings.ToUpper(part)
 		default:

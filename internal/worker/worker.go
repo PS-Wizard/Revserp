@@ -549,7 +549,7 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	}
 
 	deriveStartedAt := time.Now()
-	derivedIssueCount, crawlPages, err := issueStore.DeriveIssuesWithPages(crawlCtx, claimed.ID)
+	derivedIssueCount, crawlPages, err := issueStore.DeriveIssuesWithPagesAndSiteFacts(crawlCtx, claimed.ID, shared.SiteFacts{HasLlmsTxt: hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)})
 	log.Printf("phase timing: crawl_id=%s derive_issues=%s", claimed.ID.String(), time.Since(deriveStartedAt).Round(time.Millisecond))
 
 	psi := <-psiChan
@@ -585,7 +585,7 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	log.Printf("calculated crawl scores: crawl_id=%s seo=%d aeo=%d pagespeed=%d overall=%d", claimed.ID.String(), crawlScores.SEOScore, crawlScores.AEOScore, crawlScores.PageSpeedScore, crawlScores.OverallScore)
 
 	finalCtx := context.WithoutCancel(ctx)
-	if err := crawlStore.MarkCrawlCompleted(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); err != nil {
+	if err := crawlStore.MarkCrawlCompleted(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)); err != nil {
 		log.Printf("crawl succeeded but mark-completed status write failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 		return fmt.Errorf("mark crawl completed: %w", err)
 	}
@@ -611,6 +611,13 @@ func toSharedPSIScoreInput(result *googlePSIStoredResult) *shared.GooglePSIScore
 	}
 	return &shared.GooglePSIScoreInput{MobilePerformanceScore: result.Mobile.PerformanceScore}
 
+}
+
+func hasLlmsTxtToPGBool(hasLlmsTxt *bool) pgtype.Bool {
+	if hasLlmsTxt == nil {
+		return pgtype.Bool{Valid: false}
+	}
+	return pgtype.Bool{Bool: *hasLlmsTxt, Valid: true}
 }
 
 // isRunningCrawlConflict reports whether the one-running-crawl-per-user index rejected a claim.

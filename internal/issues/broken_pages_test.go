@@ -68,7 +68,7 @@ func TestDeriveIssuesGivesBrokenPagesOnlyTheirStatusIssue(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			derivedIssues := DeriveIssues([]shared.PageFact{test.pageFact}, nil)
+			derivedIssues := DeriveIssues([]shared.PageFact{test.pageFact}, nil, shared.SiteFacts{})
 			gotTypes := issueTypesFor(derivedIssues, test.pageFact.URL)
 
 			if len(gotTypes) != 1 || gotTypes[0] != test.wantIssue {
@@ -82,7 +82,7 @@ func TestDeriveIssuesGivesBrokenPagesOnlyTheirStatusIssue(t *testing.T) {
 // would say nothing at all.
 func TestSoftNotFoundOutranksSuccessStatus(t *testing.T) {
 	pageFact := shared.PageFact{URL: "https://example.com/soft", ContentType: "text/html", StatusCode: 200, Soft404: true}
-	derivedIssues := DeriveIssues([]shared.PageFact{pageFact}, nil)
+	derivedIssues := DeriveIssues([]shared.PageFact{pageFact}, nil, shared.SiteFacts{})
 
 	if types := issueTypesFor(derivedIssues, pageFact.URL); len(types) != 1 || types[0] != "soft_404" {
 		t.Errorf("issues = %v, want [soft_404]", types)
@@ -94,7 +94,7 @@ func TestSoftNotFoundOutranksSuccessStatus(t *testing.T) {
 // missing_meta_description, and missing_h1.
 func TestFetchFailureDoesNotDeriveMissingContentIssues(t *testing.T) {
 	pageFact := shared.PageFact{URL: "https://example.com/timeout", ContentType: "text/html", FetchError: "dial tcp: i/o timeout"}
-	derivedIssues := DeriveIssues([]shared.PageFact{pageFact}, nil)
+	derivedIssues := DeriveIssues([]shared.PageFact{pageFact}, nil, shared.SiteFacts{})
 
 	for _, issueType := range issueTypesFor(derivedIssues, pageFact.URL) {
 		switch issueType {
@@ -107,7 +107,7 @@ func TestFetchFailureDoesNotDeriveMissingContentIssues(t *testing.T) {
 func TestHealthyPagesStillDeriveContentIssues(t *testing.T) {
 	// A page with no title/H1 is a real content problem and must still be caught.
 	pageFact := shared.PageFact{URL: "https://example.com/thin", ContentType: "text/html", StatusCode: 200}
-	derivedIssues := DeriveIssues([]shared.PageFact{pageFact}, nil)
+	derivedIssues := DeriveIssues([]shared.PageFact{pageFact}, nil, shared.SiteFacts{})
 
 	gotTypes := issueTypesFor(derivedIssues, pageFact.URL)
 	for _, want := range []string{"missing_title", "missing_h1"} {
@@ -128,7 +128,7 @@ func TestBrokenPageDoesNotSuppressHealthyPageDerivation(t *testing.T) {
 	healthy := healthyPageFact("https://example.com/good")
 	broken := shared.PageFact{URL: "https://example.com/gone", ContentType: "text/html", StatusCode: 404}
 
-	derivedIssues := DeriveIssues([]shared.PageFact{broken, healthy}, nil)
+	derivedIssues := DeriveIssues([]shared.PageFact{broken, healthy}, nil, shared.SiteFacts{})
 
 	if types := issueTypesFor(derivedIssues, broken.URL); len(types) != 1 {
 		t.Errorf("broken page issues = %v, want exactly one", types)

@@ -25,6 +25,7 @@ var BucketWeights = map[string]float64{
 }
 
 var IssuePenaltyByType = map[string]float64{
+	"missing_llms_txt":                           12,
 	"missing_author_signal":                      12,
 	"weak_author_signal":                         6,
 	"article_missing_publisher_identity":         12,

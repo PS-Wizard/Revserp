@@ -13,7 +13,7 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 	pageFacts := []shared.PageFact{{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/one", Depth: 0, Title: "", MetaDescription: "", WordCount: 120, ImageCount: 2, ImagesWithoutAltCount: 1, ImagesWithoutDimensions: 2, ResponseTimeMs: 1500}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/short-title", Depth: 1, Title: "Short title", MetaDescription: "Too short", CanonicalURL: "https://example.com/short-title"}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/two", Depth: 2, Title: "Useful Page", MetaDescription: "Summary", H1: "Heading", H1Count: 2, WordCount: 400, CanonicalURL: "https://example.com/elsewhere", Robots: "noindex,nofollow", ResponseTimeMs: 200, OGTags: []byte(`{"og:title":"Useful Page"}`)}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/three", Depth: 1, Title: "This is a very long page title that definitely exceeds sixty characters total", MetaDescription: "This meta description is intentionally made much longer than one hundred and sixty characters so that the backend issue derivation logic can flag it as too long for search engine snippet guidance.", H1: "Heading", H1Count: 1, H2Count: 0, WordCount: 350, CanonicalURL: "https://example.com/three", Viewport: "width=device-width, initial-scale=1", Lang: "en", SizeBytes: 2 * 1024 * 1024, JSONLD: []byte(`[{"@type":"WebPage"}]`)}, {ID: pgtype.UUID{Valid: true}, URL: "http://example.com/four", Depth: 1, Title: "This title is comfortably sized for search display", MetaDescription: "This meta description is intentionally written to land within the recommended range for search snippets and avoid any length warnings.", H1: "Heading", H1Count: 1, H2Count: 2, WordCount: 420, CanonicalURL: "http://example.com/four", Viewport: "width=device-width, initial-scale=1", Lang: "en", SizeBytes: 4 * 1024 * 1024, JSONLD: []byte(`[{"@type":"Article"}]`), OGTags: []byte(`{"og:title":"Example"}`)}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/missing", Depth: 2, Title: "Missing page title example for client error test", MetaDescription: "This description is comfortably within the recommended range for testing client error issue derivation.", H1: "Missing Page", H1Count: 1, H2Count: 1, WordCount: 350, CanonicalURL: "https://example.com/missing", Viewport: "width=device-width, initial-scale=1", Lang: "en", StatusCode: 404, JSONLD: []byte(`[{"@type":"WebPage"}]`), OGTags: []byte(`{"og:title":"Example"}`)}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/error", Depth: 1, Title: "Server error page title example for backend issue testing", MetaDescription: "This description is comfortably within the recommended range for testing server error issue derivation.", H1: "Server Error", H1Count: 1, H2Count: 1, WordCount: 350, CanonicalURL: "https://example.com/error", Viewport: "width=device-width, initial-scale=1", Lang: "en", StatusCode: 503, JSONLD: []byte(`[{"@type":"WebPage"}]`), OGTags: []byte(`{"og:title":"Example"}`)}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/image-heavy", Depth: 1, Title: "Image heavy content page example for media optimization checks", MetaDescription: "This description is comfortably within the recommended range for testing image density issue derivation.", H1: "Image Heavy Content", H1Count: 1, H2Count: 1, WordCount: 400, ImageCount: 10, CanonicalURL: "https://example.com/image-heavy", Viewport: "width=device-width, initial-scale=1", Lang: "en", JSONLD: []byte(`[{"@type":"WebPage"}]`), OGTags: []byte(`{"og:title":"Example"}`)}}
 	linkFacts := []shared.LinkFact{{SourceURL: "https://example.com/one", TargetURL: "https://example.com/short-title"}, {SourceURL: "https://example.com/one", TargetURL: "https://example.com/two"}, {SourceURL: "https://example.com/short-title", TargetURL: "https://example.com/two"}, {SourceURL: "https://example.com/four", TargetURL: "https://example.com/one"}}
 
-	derivedIssues := DeriveIssues(pageFacts, linkFacts)
+	derivedIssues := DeriveIssues(pageFacts, linkFacts, shared.SiteFacts{})
 	assertIssueType(t, derivedIssues, "missing_title")
 	assertIssueType(t, derivedIssues, "title_too_short")
 	assertIssueType(t, derivedIssues, "title_too_long")
@@ -53,14 +53,14 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 
 func TestDeriveIssuesBuildsDuplicateContentIssues(t *testing.T) {
 	pageFacts := []shared.PageFact{{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: "We provide enterprise technical SEO audits, issue monitoring, crawl analysis, and monthly reporting for growing software companies."}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-copy", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: "We provide enterprise technical SEO audits, issue monitoring, crawl analysis, and monthly reporting for growing software companies."}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-variant", Title: "Enterprise technical SEO auditing services", MetaDescription: "Technical SEO audits, crawl monitoring, and reporting for software teams.", H1: "Enterprise technical SEO auditing services", VisibleText: "We help software companies with crawl analysis, technical SEO monitoring, enterprise audits, and monthly reporting to surface search performance issues."}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/different", Title: "Brand strategy workshop", MetaDescription: "Messaging workshops for product teams.", H1: "Brand strategy workshop", VisibleText: "We run positioning workshops, customer interviews, homepage messaging sessions, and brand narrative reviews for internal product marketing teams."}}
-	derivedIssues := DeriveIssues(pageFacts, nil)
+	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
 	assertIssueType(t, derivedIssues, "exact_duplicate_content")
 	assertIssueType(t, derivedIssues, "near_duplicate_content")
 }
 
 func TestDeriveIssuesBuildsSkippedHeadingLevelsIssue(t *testing.T) {
 	pageFacts := []shared.PageFact{{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/heading-outline", Title: "Heading outline example page title for structure testing", MetaDescription: "This meta description is comfortably within the recommended range for structure issue testing.", H1: "Heading outline example", H1Count: 1, H2Count: 2, WordCount: 350, CanonicalURL: "https://example.com/heading-outline", Viewport: "width=device-width, initial-scale=1", Lang: "en", OGTags: []byte(`{"og:title":"Example"}`), JSONLD: []byte(`[{"@type":"WebPage"}]`), HeadingOutline: []byte(`[{"level":1,"text":"Overview"},{"level":3,"text":"Deep dive"},{"level":2,"text":"Details"},{"level":4,"text":"Implementation"}]`)}}
-	derivedIssues := DeriveIssues(pageFacts, nil)
+	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
 	assertIssueType(t, derivedIssues, "skipped_heading_levels")
 	assertIssueDetailContains(t, derivedIssues, "skipped_heading_levels", `H1 "Overview" jumps to H3 "Deep dive".`)
 	assertIssueDetailContains(t, derivedIssues, "skipped_heading_levels", `H2 "Details" jumps to H4 "Implementation".`)
@@ -139,7 +139,7 @@ func TestDeriveIssuesSkipsNonHTMLPages(t *testing.T) {
 		{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/page", ContentType: "text/html", Title: "", MetaDescription: "", WordCount: 120},
 	}
 
-	derivedIssues := DeriveIssues(pageFacts, nil)
+	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
 	for _, derivedIssue := range derivedIssues {
 		if derivedIssue.URL == "https://example.com/report.pdf" {
 			t.Fatalf("expected non-html page to be skipped, but got issue %q", derivedIssue.IssueType)
@@ -259,7 +259,7 @@ func TestDeriveIssuesBuildsAdditionalAEOIssues(t *testing.T) {
 		{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/faq", Title: "FAQ", MetaDescription: "FAQ description long enough for the fixture to avoid metadata warnings.", H1: "FAQ", H1Count: 1, VisibleText: "What is this? How does it work? Where can I start?", WordCount: 220, CanonicalURL: "https://example.com/faq", Viewport: "width=device-width, initial-scale=1", Lang: "en", HeadingOutline: []byte(`[{"level":2,"text":"What is this?"},{"level":2,"text":"How does it work?"}]`)},
 	}
 
-	derivedIssues := DeriveIssues(pageFacts, nil)
+	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
 	assertIssueType(t, derivedIssues, "weak_author_signal")
 	assertIssueType(t, derivedIssues, "generic_structured_data_only")
 	assertIssueType(t, derivedIssues, "schema_missing_core_fields")
@@ -315,7 +315,7 @@ func TestDeriveIssuesBuildsAdditionalHighValueSEOIssues(t *testing.T) {
 		{SourceURL: "https://example.com/b", TargetURL: "https://example.com/source", TargetStatus: 200},
 	}
 
-	derivedIssues := DeriveIssues(pageFacts, linkFacts)
+	derivedIssues := DeriveIssues(pageFacts, linkFacts, shared.SiteFacts{})
 	assertIssueType(t, derivedIssues, "duplicate_title")
 	assertIssueType(t, derivedIssues, "duplicate_meta_description")
 	assertIssueType(t, derivedIssues, "near_empty_visible_content")
@@ -334,7 +334,7 @@ func TestDeriveIssuesSkipsPurePaginationDuplicateMetadataGroups(t *testing.T) {
 		{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/blog?page=3", Title: "Blog archive", MetaDescription: "Browse the blog archive.", H1: "Blog archive", H1Count: 1, VisibleText: "Archive page three content.", WordCount: 120, CanonicalURL: "https://example.com/blog?page=3", Viewport: "width=device-width, initial-scale=1", Lang: "en"},
 	}
 
-	derivedIssues := DeriveIssues(pageFacts, nil)
+	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
 	assertIssueTypeMissing(t, derivedIssues, "duplicate_title")
 	assertIssueTypeMissing(t, derivedIssues, "duplicate_meta_description")
 }
@@ -386,5 +386,54 @@ func assertIssueTypeMissing(t *testing.T, derivedIssues []shared.DerivedIssue, i
 		if derivedIssue.IssueType == issueType {
 			t.Fatalf("unexpected issue type %q", issueType)
 		}
+	}
+}
+
+func TestDeriveIssuesHandlesMissingLlmsTxt(t *testing.T) {
+	pageFacts := []shared.PageFact{
+		{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/", Depth: 0, Title: "Home", MetaDescription: "desc", H1: "Home", H1Count: 1, WordCount: 200, CanonicalURL: "https://example.com/", Viewport: "width=device-width", Lang: "en", OGTags: []byte(`{"og:title":"Home"}`), JSONLD: []byte(`[{"@type":"WebSite","name":"x","url":"https://example.com/"}]`)},
+	}
+	// NULL -> no issue (old crawls not penalized)
+	nullIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{HasLlmsTxt: pgtype.Bool{Valid: false}})
+	assertIssueTypeMissing(t, nullIssues, "missing_llms_txt")
+	// true -> no issue
+	trueIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{HasLlmsTxt: pgtype.Bool{Bool: true, Valid: true}})
+	assertIssueTypeMissing(t, trueIssues, "missing_llms_txt")
+	// false -> issue emitted, high severity, trust bucket, aeo pillar
+	falseIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{HasLlmsTxt: pgtype.Bool{Bool: false, Valid: true}})
+	assertIssueType(t, falseIssues, "missing_llms_txt")
+	assertIssueBucket(t, falseIssues, "missing_llms_txt", "trust")
+	for _, iss := range falseIssues {
+		if iss.IssueType == "missing_llms_txt" {
+			if iss.Pillar != "aeo" {
+				t.Fatalf("expected pillar aeo, got %q", iss.Pillar)
+			}
+			if iss.Severity != "high" {
+				t.Fatalf("expected severity high, got %q", iss.Severity)
+			}
+			if iss.Message != "Site is missing an /llms.txt file" {
+				t.Fatalf("unexpected message %q", iss.Message)
+			}
+			if !strings.Contains(iss.Details, "llmstxt.org") {
+				t.Fatalf("expected details to mention llmstxt.org, got %q", iss.Details)
+			}
+		}
+	}
+}
+
+func TestCalculateScoresAppliesMissingLlmsTxtPenalty(t *testing.T) {
+	crawlPages := []shared.CrawlPageSignal{
+		{URL: "https://example.com/", ContentType: "text/html"},
+		{URL: "https://example.com/about", ContentType: "text/html"},
+	}
+	scoresNoIssue := CalculateScores(crawlPages, nil)
+	scoresWithLlms := CalculateScores(crawlPages, []shared.CrawlIssueSignal{
+		{URL: "https://example.com/", Pillar: "aeo", Bucket: "trust", Severity: "high", IssueType: "missing_llms_txt"},
+	})
+	if scoresWithLlms.AEOScore >= scoresNoIssue.AEOScore {
+		t.Fatalf("expected missing_llms_txt to reduce AEO score, got without %d with %d", scoresNoIssue.AEOScore, scoresWithLlms.AEOScore)
+	}
+	if RecommendedFix("aeo", "trust", "missing_llms_txt", "", "") == "" {
+		t.Fatalf("expected curated fix for missing_llms_txt")
 	}
 }

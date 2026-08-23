@@ -2,6 +2,11 @@ package shared
 
 import "github.com/jackc/pgx/v5/pgtype"
 
+// SiteFacts holds lightweight site-level signals for issue derivation.
+type SiteFacts struct {
+	HasLlmsTxt pgtype.Bool
+}
+
 // PageFact holds the persisted page fields used for issue derivation.
 type PageFact struct {
 	ID                      pgtype.UUID

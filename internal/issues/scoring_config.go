@@ -51,10 +51,34 @@ func ParseScoringConfig(rawConfig []byte) (shared.ScoringConfig, error) {
 	if err := json.Unmarshal(rawConfig, &config); err != nil {
 		return shared.ScoringConfig{}, err
 	}
+	mergeMissingIssuePenalties(&config)
 	if err := ValidateScoringConfig(config); err != nil {
 		return shared.ScoringConfig{}, err
 	}
 	return config, nil
+}
+
+// mergeMissingIssuePenalties deep-merges default issue penalties that older persisted
+// configs predate: JSON unmarshaling replaces each persisted pillar's penalty map, so a
+// newly added issue type would otherwise fall back to the generic default at scoring time.
+// Explicitly configured values are preserved; only missing keys are filled in.
+func mergeMissingIssuePenalties(config *shared.ScoringConfig) {
+	defaults := DefaultScoringConfig()
+	for pillarID, defaultPillar := range defaults.Pillars {
+		pillar, exists := config.Pillars[pillarID]
+		if !exists {
+			continue
+		}
+		if pillar.IssuePenaltyByType == nil {
+			pillar.IssuePenaltyByType = map[string]float64{}
+		}
+		for issueType, penalty := range defaultPillar.IssuePenaltyByType {
+			if _, exists := pillar.IssuePenaltyByType[issueType]; !exists {
+				pillar.IssuePenaltyByType[issueType] = penalty
+			}
+		}
+		config.Pillars[pillarID] = pillar
+	}
 }
 
 // MustMarshalScoringConfig marshals a validated scoring config for persistence.

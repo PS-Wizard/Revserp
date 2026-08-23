@@ -330,6 +330,17 @@ func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUs
 	return i, err
 }
 
+const getCrawlHasLlmsTxt = `-- name: GetCrawlHasLlmsTxt :one
+SELECT has_llms_txt FROM crawls WHERE id = $1
+`
+
+func (q *Queries) GetCrawlHasLlmsTxt(ctx context.Context, id pgtype.UUID) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, getCrawlHasLlmsTxt, id)
+	var has_llms_txt pgtype.Bool
+	err := row.Scan(&has_llms_txt)
+	return has_llms_txt, err
+}
+
 const getPreviousCompletedCrawlID = `-- name: GetPreviousCompletedCrawlID :one
 SELECT previous.id
 FROM crawls AS current
@@ -505,6 +516,7 @@ SET status = 'completed',
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
+    has_llms_txt = $5,
     completed_at = now()
 WHERE id = $1
   AND status = 'running'
@@ -515,6 +527,7 @@ type MarkCrawlCompletedParams struct {
 	UrlsDiscovered  int32
 	UrlsCrawled     int32
 	MaxDepthReached int32
+	HasLlmsTxt      pgtype.Bool
 }
 
 func (q *Queries) MarkCrawlCompleted(ctx context.Context, arg MarkCrawlCompletedParams) error {
@@ -523,6 +536,7 @@ func (q *Queries) MarkCrawlCompleted(ctx context.Context, arg MarkCrawlCompleted
 		arg.UrlsDiscovered,
 		arg.UrlsCrawled,
 		arg.MaxDepthReached,
+		arg.HasLlmsTxt,
 	)
 	return err
 }

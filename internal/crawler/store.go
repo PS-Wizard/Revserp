@@ -54,7 +54,7 @@ func (store *Store) MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) e
 }
 
 // MarkCrawlCompleted writes final crawl counters and completion status.
-func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, hasLlmsTxt pgtype.Bool) error {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin crawl completion: %w", err)
@@ -62,7 +62,7 @@ func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID,
 	defer func() { _ = tx.Rollback(ctx) }()
 	queries := store.queries.WithTx(tx)
 	if err := queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{
-		ID: crawlID, UrlsDiscovered: int32(urlsDiscovered), UrlsCrawled: int32(urlsCrawled), MaxDepthReached: int32(maxDepthReached),
+		ID: crawlID, UrlsDiscovered: int32(urlsDiscovered), UrlsCrawled: int32(urlsCrawled), MaxDepthReached: int32(maxDepthReached), HasLlmsTxt: hasLlmsTxt,
 	}); err != nil {
 		return fmt.Errorf("mark crawl completed: %w", err)
 	}

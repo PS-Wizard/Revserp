@@ -89,7 +89,7 @@ diff_urls AS (
                     ELSE 'unchanged'
                 END
             WHEN current_crawl_evidence.psi_observed IS FALSE AND $5 = 'psi_cwv' THEN 'not_verified'
-            WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
+            WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
 			 SELECT 1 FROM crawl_pages AS baseline_coverage
 			 WHERE baseline_coverage.crawl_id = $1 AND baseline_coverage.fetch_error IS NULL AND baseline_coverage.soft_404 = FALSE AND baseline_coverage.status_code BETWEEN 200 AND 299
 			   AND NOT EXISTS (SELECT 1 FROM crawl_pages AS current_coverage WHERE current_coverage.crawl_id = $2 AND current_coverage.url = baseline_coverage.url AND current_coverage.fetch_error IS NULL AND current_coverage.soft_404 = FALSE AND current_coverage.status_code BETWEEN 200 AND 299)
@@ -335,7 +335,7 @@ diff_urls AS (
                     ELSE 'unchanged'
                 END
             WHEN current_crawl_evidence.psi_observed IS FALSE AND $5 = 'psi_cwv' THEN 'not_verified'
-            WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
+            WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
 			 SELECT 1 FROM crawl_pages AS baseline_coverage
 			 WHERE baseline_coverage.crawl_id = $1 AND baseline_coverage.fetch_error IS NULL AND baseline_coverage.soft_404 = FALSE AND baseline_coverage.status_code BETWEEN 200 AND 299
 			   AND NOT EXISTS (SELECT 1 FROM crawl_pages AS current_coverage WHERE current_coverage.crawl_id = $2 AND current_coverage.url = baseline_coverage.url AND current_coverage.fetch_error IS NULL AND current_coverage.soft_404 = FALSE AND current_coverage.status_code BETWEEN 200 AND 299)

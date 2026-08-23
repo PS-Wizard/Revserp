@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -14,12 +15,13 @@ type CrawlRunSummary struct {
 	URLsDiscovered  int
 	URLsCrawled     int
 	MaxDepthReached int
+	HasLlmsTxt      *bool
 }
 
 // resultPersister defines the crawl status and persistence hooks used by the runner.
 type resultPersister interface {
 	MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) error
-	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
+	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, hasLlmsTxt pgtype.Bool) error
 	MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
 	PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error
 	UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) (bool, error)
@@ -135,6 +137,11 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	seenURLs := map[string]struct{}{
 		normalizedRootURL.String(): {},
 	}
+	// The root /llms.txt is reserved for the explicit probe below: it is never
+	// scheduled as a crawl page, but sitemap entries and discovered links must not
+	// re-add it either, so it is marked seen before either runs.
+	llmsURL := normalizedRootURL.Scheme + "://" + normalizedRootURL.Host + "/llms.txt"
+	seenURLs[llmsURL] = struct{}{}
 	processedPageURLs := make(map[string]struct{})
 
 	scheduledPages := 1
@@ -166,6 +173,13 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	}
 	if sitemapSeeded > 0 {
 		log.Printf("sitemap discovery: seeded %d urls (root=%q)", sitemapSeeded, normalizedRootURL.String())
+	}
+
+	var hasLlmsTxt *bool
+	if runner.fetcher != nil {
+		llmsResult := runner.fetcher.Fetch(runContext, llmsURL)
+		has := llmsResult.FetchError == nil && llmsResult.StatusCode == 200 && len(bytes.TrimSpace(llmsResult.Body)) > 0
+		hasLlmsTxt = &has
 	}
 
 	// One probe for a URL that cannot exist. If the origin answers 2xx instead of
@@ -413,7 +427,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	for range results {
 	}
 
-	summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+	summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached, HasLlmsTxt: hasLlmsTxt}
 	elapsed := time.Since(crawlStartedAt)
 	pagesPerSec := 0.0
 	if elapsed.Seconds() > 0 {
@@ -423,10 +437,17 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
 
 	if shouldPersist && !runner.deferFinalStatus {
-		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); err != nil {
+		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, hasLlmsTxtToPGBool(summary.HasLlmsTxt)); err != nil {
 			return crawlResults, summary, fmt.Errorf("mark crawl completed: %w", err)
 		}
 	}
 
 	return crawlResults, summary, nil
+}
+
+func hasLlmsTxtToPGBool(hasLlmsTxt *bool) pgtype.Bool {
+	if hasLlmsTxt == nil {
+		return pgtype.Bool{Valid: false}
+	}
+	return pgtype.Bool{Bool: *hasLlmsTxt, Valid: true}
 }

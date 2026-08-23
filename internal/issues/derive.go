@@ -14,14 +14,14 @@ import (
 )
 
 // DeriveIssues builds backend issue rows from persisted crawl facts.
-func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []shared.DerivedIssue {
-	derivedIssues, _ := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
+func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact, siteFacts shared.SiteFacts) []shared.DerivedIssue {
+	derivedIssues, _ := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts, siteFacts)
 	return derivedIssues
 }
 
 // DeriveIssuesWithDuplicateEvidence derives all issues and returns duplicate
 // evidence from the same SEO pass.
-func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) ([]shared.DerivedIssue, seo.DuplicateEvidence) {
+func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []shared.LinkFact, siteFacts shared.SiteFacts) ([]shared.DerivedIssue, seo.DuplicateEvidence) {
 	var derivedIssues []shared.DerivedIssue
 	scoreablePageFacts := make([]shared.PageFact, 0, len(pageFacts))
 	brokenPageFacts := make([]shared.PageFact, 0)
@@ -44,7 +44,7 @@ func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []
 	derivedIssues = append(derivedIssues, seoIssues...)
 	seoElapsed := time.Since(seoStartedAt)
 	aeoStartedAt := time.Now()
-	derivedIssues = append(derivedIssues, aeo.DeriveIssues(scoreablePageFacts, linkFacts)...)
+	derivedIssues = append(derivedIssues, aeo.DeriveIssues(scoreablePageFacts, linkFacts, siteFacts)...)
 	aeoElapsed := time.Since(aeoStartedAt)
 	pagespeedStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, pagespeed.DeriveIssues(scoreablePageFacts, linkFacts)...)
@@ -115,6 +115,7 @@ var recommendedFixes = map[string]string{
 	"missing_contact_page":                       "Add a Contact page with a clear contact destination for users and systems.",
 	"missing_policy_page":                        "Add core policy pages such as privacy and terms to strengthen trust signals.",
 	"homepage_missing_org_contact_trust_signals": "Strengthen homepage trust signals with organization identity, clear about/contact coverage, and supporting schema markup.",
+	"missing_llms_txt":                           "Add an /llms.txt file at the site root (see llmstxt.org) that lists key pages in Markdown to help AI answer engines discover and cite your content.",
 	"slow_response_time":                         "Reduce server response time by improving backend performance, caching, and origin latency.",
 	"large_page_size":                            "Reduce page weight by compressing assets, removing unnecessary payloads, and loading fewer heavy resources.",
 	"moderate_page_size":                         "Trim page weight where possible so the page loads with less asset overhead.",

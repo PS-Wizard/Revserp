@@ -8,7 +8,7 @@ import (
 )
 
 // DeriveIssues builds AEO issues from persisted crawl facts.
-func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact) []shared.DerivedIssue {
+func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact, siteFacts shared.SiteFacts) []shared.DerivedIssue {
 	var derivedIssues []shared.DerivedIssue
 	siteIssuePageFact, hasSiteIssuePageFact := selectSiteIssuePageFact(pageFacts)
 	homepagePageFact, hasHomepagePageFact := selectHomepagePageFact(pageFacts)
@@ -116,6 +116,9 @@ func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact) []shared.Der
 		}
 		if !hasPolicyPage {
 			derivedIssues = append(derivedIssues, newIssue(siteIssuePageFact, "experience", "missing_policy_page", "low", "Site is missing policy pages", "Add privacy, terms, or similar policy pages to strengthen trust signals."))
+		}
+		if siteFacts.HasLlmsTxt.Valid && !siteFacts.HasLlmsTxt.Bool {
+			derivedIssues = append(derivedIssues, newIssue(siteIssuePageFact, "trust", "missing_llms_txt", "high", "Site is missing an /llms.txt file", "The /llms.txt convention (llmstxt.org) helps AI answer engines discover and cite site content. Add an /llms.txt file at the site root listing key pages in Markdown."))
 		}
 	}
 

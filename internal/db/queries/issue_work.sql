@@ -353,7 +353,7 @@ SELECT
         WHEN cur.id IS NOT NULL THEN 'still_open'
         WHEN cp.id IS NULL OR cp.fetch_error IS NOT NULL OR cp.soft_404 OR cp.status_code NOT BETWEEN 200 AND 299 THEN 'not_verified'
         WHEN i.bucket = 'psi_cwv' AND NOT EXISTS (SELECT 1 FROM crawls evidence_crawl WHERE evidence_crawl.id = sqlc.arg(current_id) AND COALESCE(evidence_crawl.google_psi_results #>> '{0,mobile,success}', 'false') = 'true') THEN 'not_verified'
-        WHEN i.issue_type IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
+        WHEN i.issue_type IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
             SELECT 1 FROM crawl_pages baseline_coverage
             WHERE baseline_coverage.crawl_id = sqlc.arg(baseline_id) AND baseline_coverage.fetch_error IS NULL AND baseline_coverage.soft_404 = FALSE AND baseline_coverage.status_code BETWEEN 200 AND 299
               AND NOT EXISTS (SELECT 1 FROM crawl_pages current_coverage WHERE current_coverage.crawl_id = sqlc.arg(current_id) AND current_coverage.url = baseline_coverage.url AND current_coverage.fetch_error IS NULL AND current_coverage.soft_404 = FALSE AND current_coverage.status_code BETWEEN 200 AND 299)

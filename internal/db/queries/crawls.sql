@@ -109,6 +109,7 @@ SET status = 'completed',
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
+    has_llms_txt = $5,
     completed_at = now()
 WHERE id = $1
   AND status = 'running';
@@ -238,3 +239,6 @@ WHERE current.id = sqlc.arg(current_crawl_id)
   AND previous.completed_at < current.completed_at
 ORDER BY previous.completed_at DESC, previous.created_at DESC, previous.id DESC
 LIMIT 1;
+
+-- name: GetCrawlHasLlmsTxt :one
+SELECT has_llms_txt FROM crawls WHERE id = $1;

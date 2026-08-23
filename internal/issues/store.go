@@ -43,6 +43,29 @@ func (store *Store) DeriveIssuesWithPages(ctx context.Context, crawlID pgtype.UU
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	txQueries := store.queries.WithTx(tx)
+	hasLlmsTxt, err := txQueries.GetCrawlHasLlmsTxt(ctx, crawlID)
+	if err != nil {
+		return 0, nil, fmt.Errorf("get crawl has_llms_txt: %w", err)
+	}
+	return store.deriveIssuesWithPagesTx(ctx, tx, txQueries, crawlID, shared.SiteFacts{HasLlmsTxt: hasLlmsTxt})
+}
+
+// DeriveIssuesWithPagesAndSiteFacts behaves like DeriveIssuesWithPages but takes site facts
+// explicitly instead of loading them from the crawl row, for flows that derive before the
+// final status write persists them (e.g. the worker's deferred crawl completion).
+func (store *Store) DeriveIssuesWithPagesAndSiteFacts(ctx context.Context, crawlID pgtype.UUID, siteFacts shared.SiteFacts) (int, []sqlc.ListCrawlPagesForCrawlRow, error) {
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, nil, fmt.Errorf("begin derive issues transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	return store.deriveIssuesWithPagesTx(ctx, tx, store.queries.WithTx(tx), crawlID, siteFacts)
+}
+
+// deriveIssuesWithPagesTx loads one crawl's facts, derives issues with the given site facts,
+// and replaces persisted issue rows inside the caller's transaction.
+func (store *Store) deriveIssuesWithPagesTx(ctx context.Context, tx pgx.Tx, txQueries *sqlc.Queries, crawlID pgtype.UUID, siteFacts shared.SiteFacts) (int, []sqlc.ListCrawlPagesForCrawlRow, error) {
 	loadStartedAt := time.Now()
 	crawlPages, pageFacts, linkFacts, err := loadFactsWithPages(ctx, txQueries, crawlID)
 	if err != nil {
@@ -55,7 +78,7 @@ func (store *Store) DeriveIssuesWithPages(ctx context.Context, crawlID pgtype.UU
 	loadElapsed := time.Since(loadStartedAt)
 
 	computeStartedAt := time.Now()
-	derivedIssues, duplicateEvidence := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
+	derivedIssues, duplicateEvidence := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts, siteFacts)
 	computeElapsed := time.Since(computeStartedAt)
 	log.Printf("derive timing: crawl_id=%s pages=%d load+fingerprint=%s compute=%s issues=%d", crawlID.String(), len(pageFacts), loadElapsed.Round(time.Millisecond), computeElapsed.Round(time.Millisecond), len(derivedIssues))
 	if err := txQueries.DeleteCrawlIssuesForCrawl(ctx, crawlID); err != nil {
