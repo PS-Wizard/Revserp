@@ -38,12 +38,14 @@ func (a *App) handleCreateAIConversation(w http.ResponseWriter, r *http.Request)
 
 	var conversation sqlc.AiConversation
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
 		conversation, err = queries.CreateAIConversationForUser(r.Context(), sqlc.CreateAIConversationForUserParams{
 			ProjectID: projectID,
 			UserID:    user.ID,
@@ -83,12 +85,14 @@ func (a *App) handleListAIConversations(w http.ResponseWriter, r *http.Request) 
 		activeTurns   []sqlc.ListActiveTurnsForConversationsRow
 	)
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
 		if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
 			ID:     projectID,
 			UserID: user.ID,
@@ -175,11 +179,14 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 		toolCalls    []sqlc.ListAIToolCallsForConversationRow
 	)
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
+		principal, ok := a.getPrincipal(w, r)
+
+		if !ok {
+
+			return errors.New("missing principal")
+
 		}
+		user := principal.User
 		conversation, err = queries.GetAIConversationByIDForUser(r.Context(), sqlc.GetAIConversationByIDForUserParams{
 			ConversationID: conversationID,
 			UserID:         user.ID,
@@ -281,11 +288,14 @@ func (a *App) handleDeleteAIConversation(w http.ResponseWriter, r *http.Request)
 	}
 
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
+		principal, ok := a.getPrincipal(w, r)
+
+		if !ok {
+
+			return errors.New("missing principal")
+
 		}
+		user := principal.User
 		deletedRows, err := queries.DeleteAIConversationByIDForUser(r.Context(), sqlc.DeleteAIConversationByIDForUserParams{
 			ConversationID: conversationID,
 			UserID:         user.ID,

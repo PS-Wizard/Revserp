@@ -167,11 +167,11 @@ func (a *App) previewScoringConfig(w http.ResponseWriter, r *http.Request, userI
 
 // ensureInternalScoringUser currently requires only an authenticated user.
 func (a *App) ensureInternalScoringUser(w http.ResponseWriter, r *http.Request) (sqlc.User, bool) {
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
 		return sqlc.User{}, false
 	}
+	user := principal.User
 	return user, true
 }
 

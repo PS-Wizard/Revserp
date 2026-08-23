@@ -45,10 +45,12 @@ type organizationResponse struct {
 
 // handleMe returns the current local user, organizations, and active organization for one backend session.
 func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
-	identity, ok := internalauth.IdentityFromContext(r.Context())
+	principal, ok := a.getPrincipal(w, r)
+
 	if !ok {
-		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+
 		return
+
 	}
 	session, ok := internalauth.SessionFromContext(r.Context())
 	if !ok {
@@ -56,29 +58,14 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var (
-		user          sqlc.User
-		organizations []sqlc.ListOrganizationsForUserRow
-		activeOrgID   pgtype.UUID
-	)
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		var err error
-		user, organizations, err = a.ensureUserAndOrganizations(r, queries, identity)
-		if err != nil {
+	user := principal.User
+	organizations := principal.Organizations
+	activeOrgID := resolveActiveOrganizationID(session.ActiveOrgID, organizations)
+	if activeOrgID.Valid && activeOrgID != session.ActiveOrgID {
+		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrgID); err != nil {
 			serverError(w, r, err)
-			return err
+			return
 		}
-
-		activeOrgID = resolveActiveOrganizationID(session.ActiveOrgID, organizations)
-		if activeOrgID.Valid && activeOrgID != session.ActiveOrgID {
-			if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrgID); err != nil {
-				serverError(w, r, err)
-				return err
-			}
-		}
-		return nil
-	}) {
-		return
 	}
 
 	meBody := newMeResponse(user, organizations, activeOrgID)
@@ -90,7 +77,7 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 
 // ensureUserAndOrganizations maps the auth identity to a local user and default organization.
 func (a *App) ensureUserAndOrganizations(r *http.Request, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, []sqlc.ListOrganizationsForUserRow, error) {
-	user, needsOrg := resolveUser(r.Context(), queries, identity)
+	user, _ := resolveUser(r.Context(), queries, identity)
 	if !user.ID.Valid {
 		return sqlc.User{}, nil, fmt.Errorf("failed to resolve user")
 	}
@@ -100,28 +87,63 @@ func (a *App) ensureUserAndOrganizations(r *http.Request, queries *sqlc.Queries,
 		return sqlc.User{}, nil, err
 	}
 
-	if needsOrg && len(organizations) == 0 {
+	if len(organizations) == 0 {
 		workspaceOwnerName := strings.TrimSpace(identity.Name)
 		if workspaceOwnerName == "" {
 			workspaceOwnerName = strings.TrimSpace(identity.Email)
 		}
-
-		organization, err := queries.CreateOrganization(r.Context(), fmt.Sprintf("%s's Workspace", workspaceOwnerName))
-		if err != nil {
-			return sqlc.User{}, nil, err
-		}
-
-		if _, err = queries.AddOrganizationMember(r.Context(), sqlc.AddOrganizationMemberParams{
-			OrgID:  organization.ID,
-			UserID: user.ID,
-			Role:   "owner",
-		}); err != nil {
-			return sqlc.User{}, nil, err
-		}
-
-		organizations, err = queries.ListOrganizationsForUser(r.Context(), user.ID)
-		if err != nil {
-			return sqlc.User{}, nil, err
+		if a.DB != nil {
+			tx, err := a.DB.Begin(r.Context())
+			if err != nil {
+				return sqlc.User{}, nil, err
+			}
+			// Ensure rollback if commit fails.
+			defer func() { _ = tx.Rollback(r.Context()) }()
+			qtx := a.Queries.WithTx(tx)
+			if _, err := qtx.LockUserByID(r.Context(), user.ID); err != nil {
+				return sqlc.User{}, nil, err
+			}
+			orgs2, err := qtx.ListOrganizationsForUser(r.Context(), user.ID)
+			if err != nil {
+				return sqlc.User{}, nil, err
+			}
+			if len(orgs2) == 0 {
+				organization, err := qtx.CreateOrganization(r.Context(), fmt.Sprintf("%s's Workspace", workspaceOwnerName))
+				if err != nil {
+					return sqlc.User{}, nil, err
+				}
+				if _, err = qtx.AddOrganizationMember(r.Context(), sqlc.AddOrganizationMemberParams{
+					OrgID:  organization.ID,
+					UserID: user.ID,
+					Role:   "owner",
+				}); err != nil {
+					return sqlc.User{}, nil, err
+				}
+				orgs2, err = qtx.ListOrganizationsForUser(r.Context(), user.ID)
+				if err != nil {
+					return sqlc.User{}, nil, err
+				}
+			}
+			if err := tx.Commit(r.Context()); err != nil {
+				return sqlc.User{}, nil, err
+			}
+			organizations = orgs2
+		} else {
+			organization, err := queries.CreateOrganization(r.Context(), fmt.Sprintf("%s's Workspace", workspaceOwnerName))
+			if err != nil {
+				return sqlc.User{}, nil, err
+			}
+			if _, err = queries.AddOrganizationMember(r.Context(), sqlc.AddOrganizationMemberParams{
+				OrgID:  organization.ID,
+				UserID: user.ID,
+				Role:   "owner",
+			}); err != nil {
+				return sqlc.User{}, nil, err
+			}
+			organizations, err = queries.ListOrganizationsForUser(r.Context(), user.ID)
+			if err != nil {
+				return sqlc.User{}, nil, err
+			}
 		}
 	}
 
@@ -240,12 +262,14 @@ func (a *App) handleSetActiveOrganization(w http.ResponseWriter, r *http.Request
 	}
 
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
 		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				writeJSONError(w, http.StatusForbidden, "forbidden")
@@ -285,12 +309,15 @@ func (a *App) handleLeaveOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, organizations, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
+		organizations := principal.Organizations
 		membership, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

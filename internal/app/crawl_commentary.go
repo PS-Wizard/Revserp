@@ -35,12 +35,15 @@ func (a *App) handleGetCrawlCommentary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	ctx := r.Context()
 
 	_, err = a.Queries.GetCrawlByIDForUser(ctx, sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})

@@ -79,12 +79,14 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
@@ -134,12 +136,15 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	if _, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
@@ -190,12 +195,15 @@ func (a *App) handleGetCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	crawl, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -231,12 +239,14 @@ func (a *App) handleDeleteCrawl(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "crawl not found")
@@ -282,12 +292,14 @@ func (a *App) handleCancelCrawl(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "crawl not found")
@@ -467,12 +479,15 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	if _, err := a.Queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")

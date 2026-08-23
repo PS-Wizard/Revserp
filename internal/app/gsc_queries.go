@@ -23,11 +23,14 @@ func (a *App) handleProjectGSCQueries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// All DB work happens on a.Queries directly — no transaction held across Google API calls.
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

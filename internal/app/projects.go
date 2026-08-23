@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -60,12 +59,14 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 
 	var project sqlc.Project
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
 		if _, err := queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				writeJSONError(w, http.StatusForbidden, "forbidden")
@@ -100,12 +101,15 @@ func (a *App) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	if _, err := a.Queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: organizationID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
@@ -137,12 +141,15 @@ func (a *App) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
 		ID:     projectID,
 		UserID: user.ID,
@@ -168,12 +175,14 @@ func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
 		hasActiveCrawl, err := queries.HasActiveCrawlForProject(r.Context(), sqlc.HasActiveCrawlForProjectParams{
 			ProjectID: projectID,
 			UserID:    user.ID,
@@ -207,42 +216,17 @@ func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// resolvedUserContextKey is a private context key for per-request caching of the resolved user.
-type resolvedUserContextKey struct{}
-
-// resolvedUserEntry holds the bootstrapped user and organizations for one request.
-type resolvedUserEntry struct {
-	user          sqlc.User
-	organizations []sqlc.ListOrganizationsForUserRow
-}
-
 // cachedUserContextKey is a private context key for storing just the user row early in the
 // middleware chain (before organizations are loaded).
 type cachedUserContextKey struct{}
 
 // ensureCurrentUser ensures the authenticated identity has a local user and default organization.
-// Results are cached on the request context so the bootstrap cost is paid at most once per request.
 func (a *App) ensureCurrentUser(r *http.Request, queries *sqlc.Queries) (sqlc.User, []sqlc.ListOrganizationsForUserRow, error) {
-	// Check per-request cache first.
-	if entry, ok := r.Context().Value(resolvedUserContextKey{}).(resolvedUserEntry); ok {
-		return entry.user, entry.organizations, nil
-	}
-
 	identity, ok := internalauth.IdentityFromContext(r.Context())
 	if !ok {
 		return sqlc.User{}, nil, errors.New("missing identity")
 	}
-
-	user, orgs, err := a.ensureUserAndOrganizations(r, queries, identity)
-	if err != nil {
-		return sqlc.User{}, nil, err
-	}
-
-	// Cache the resolved user on the request context for the remainder of this request.
-	// Update the request in-place so callers who hold the same *http.Request benefit.
-	*r = *r.WithContext(context.WithValue(r.Context(), resolvedUserContextKey{}, resolvedUserEntry{user: user, organizations: orgs}))
-
-	return user, orgs, nil
+	return a.ensureUserAndOrganizations(r, queries, identity)
 }
 
 // newProjectResponse converts a DB project into an API response.

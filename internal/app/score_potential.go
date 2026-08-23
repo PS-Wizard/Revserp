@@ -62,12 +62,15 @@ func (a *App) handleGetProjectScorePotential(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	if _, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "project not found")

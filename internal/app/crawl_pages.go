@@ -154,12 +154,14 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
@@ -244,12 +246,14 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
@@ -313,12 +317,14 @@ func (a *App) handleGetCrawlPage(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	page, err := queries.GetCrawlPageByIDForUser(r.Context(), sqlc.GetCrawlPageByIDForUserParams{ID: pageID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -357,11 +363,14 @@ func (a *App) handleGetCrawlPageByURL(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	page, err := queries.GetCrawlPageByURLForUser(r.Context(), sqlc.GetCrawlPageByURLForUserParams{CrawlID: crawlID, Url: pageURL, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

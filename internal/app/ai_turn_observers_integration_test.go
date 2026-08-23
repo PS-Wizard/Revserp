@@ -166,7 +166,7 @@ func TestAITurnEventsDeliverDeltaBeforeTerminalIntegration(t *testing.T) {
 		routeContext := chi.NewRouteContext()
 		routeContext.URLParams.Add("turnID", submission.TurnID.String())
 		ctx := context.WithValue(r.Context(), chi.RouteCtxKey, routeContext)
-		ctx = context.WithValue(ctx, resolvedUserContextKey{}, resolvedUserEntry{user: sqlc.User{ID: fixture.userID}})
+		ctx = withPrincipal(ctx, Principal{User: sqlc.User{ID: fixture.userID}})
 		fixture.app.handleGetAITurnEvents(w, r.WithContext(ctx))
 	}))
 	defer server.Close()
@@ -352,7 +352,7 @@ func observerRequest(userID pgtype.UUID, method, target string, turnID pgtype.UU
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("turnID", turnID.String())
 	ctx := context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)
-	ctx = context.WithValue(ctx, resolvedUserContextKey{}, resolvedUserEntry{user: sqlc.User{ID: userID}})
+	ctx = withPrincipal(ctx, Principal{User: sqlc.User{ID: userID}})
 	return request.WithContext(ctx)
 }
 

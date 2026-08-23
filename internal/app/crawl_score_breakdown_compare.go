@@ -96,12 +96,15 @@ func (a *App) handleGetCrawlScoreBreakdownCompare(w http.ResponseWriter, r *http
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	// Fetch both crawls and both snapshots in parallel — all are independent reads.
 	var (
 		baselineCrawl    sqlc.GetCrawlByIDForUserRow
@@ -201,12 +204,15 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	baselineCrawl, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: baselineCrawlID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

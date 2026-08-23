@@ -345,6 +345,6 @@ func conversationRequest(userID, conversationID pgtype.UUID) *http.Request {
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("conversationID", conversationID.String())
 	ctx := context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)
-	ctx = context.WithValue(ctx, resolvedUserContextKey{}, resolvedUserEntry{user: sqlc.User{ID: userID}})
+	ctx = withPrincipal(ctx, Principal{User: sqlc.User{ID: userID}})
 	return request.WithContext(ctx)
 }

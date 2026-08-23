@@ -150,13 +150,21 @@ func featuresByProjectParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), featureParamError("invalid project id")
 	}
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		return allFeaturesEnabled(), err
+	var userID pgtype.UUID
+	if p, ok := principalFromContext(r.Context()); ok && p.User.ID.Valid {
+		userID = p.User.ID
+	} else if cached, ok := r.Context().Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
+		userID = cached.ID
+	} else {
+		user, _, err := a.ensureCurrentUser(r, a.Queries)
+		if err != nil {
+			return allFeaturesEnabled(), err
+		}
+		userID = user.ID
 	}
 	row, err := a.Queries.GetOrganizationFeaturesByProjectID(r.Context(), sqlc.GetOrganizationFeaturesByProjectIDParams{
 		ProjectID: projectID,
-		UserID:    user.ID,
+		UserID:    userID,
 	})
 	if err != nil {
 		return allFeaturesEnabled(), err
@@ -170,13 +178,21 @@ func featuresByConversationParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), featureParamError("invalid conversation id")
 	}
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		return allFeaturesEnabled(), err
+	var userID pgtype.UUID
+	if p, ok := principalFromContext(r.Context()); ok && p.User.ID.Valid {
+		userID = p.User.ID
+	} else if cached, ok := r.Context().Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
+		userID = cached.ID
+	} else {
+		user, _, err := a.ensureCurrentUser(r, a.Queries)
+		if err != nil {
+			return allFeaturesEnabled(), err
+		}
+		userID = user.ID
 	}
 	row, err := a.Queries.GetOrganizationFeaturesByConversationID(r.Context(), sqlc.GetOrganizationFeaturesByConversationIDParams{
 		ConversationID: conversationID,
-		UserID:         user.ID,
+		UserID:         userID,
 	})
 	if err != nil {
 		return allFeaturesEnabled(), err

@@ -100,12 +100,14 @@ func (a *App) handleGetAutoCrawlSettings(w http.ResponseWriter, r *http.Request)
 
 	var settings sqlc.ProjectAutoCrawlSetting
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
 		if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
 			ID:     projectID,
 			UserID: user.ID,
@@ -163,12 +165,14 @@ func (a *App) handlePutAutoCrawlSettings(w http.ResponseWriter, r *http.Request)
 
 	var settings sqlc.ProjectAutoCrawlSetting
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		user, _, err := a.ensureCurrentUser(r, queries)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
+		principal, ok := a.getPrincipal(w, r)
 
+		if !ok {
+
+			return errors.New("missing principal")
+
+		}
+		user := principal.User
 		settings, err = a.applyAutoCrawlSettings(r.Context(), queries, projectID, user.ID, autoCrawlSettingsInput{
 			Enabled:        *req.Enabled,
 			FrequencyDays:  req.FrequencyDays,

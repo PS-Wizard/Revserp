@@ -106,11 +106,11 @@ func (a *App) handleExportCrawlScoreBreakdownXLSX(w http.ResponseWriter, r *http
 }
 
 func (a *App) loadCrawlIssueExportRows(w http.ResponseWriter, r *http.Request, crawlID pgtype.UUID, filters exportFilters) ([]crawlIssueExportRow, bool) {
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
 		return nil, false
 	}
+	user := principal.User
 
 	if _, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

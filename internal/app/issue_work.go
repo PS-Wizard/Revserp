@@ -27,12 +27,15 @@ func (a *App) handleMarkCrawlIssueWorkDone(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	issue, err := a.Queries.GetWorkableCrawlIssueByIDForUser(r.Context(), sqlc.GetWorkableCrawlIssueByIDForUserParams{
 		IssueID: issueID,
 		UserID:  user.ID,
@@ -153,12 +156,14 @@ func (a *App) handleRemoveOwnIssueWorkContribution(w http.ResponseWriter, r *htt
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	row, err := queries.GetIssueWorkAttemptByIDForUser(r.Context(), sqlc.GetIssueWorkAttemptByIDForUserParams{ID: attemptID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -219,12 +224,15 @@ func (a *App) handleGetProjectWorkReport(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
 
+	user := principal.User
 	if _, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
 		ID:     projectID,
 		UserID: user.ID,

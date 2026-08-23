@@ -166,11 +166,14 @@ func (a *App) handleGetAITurn(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid turn id")
 		return
 	}
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	turn, err := a.Queries.GetAITurnForUser(r.Context(), sqlc.GetAITurnForUserParams{UserID: user.ID, TurnID: turnID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSONError(w, http.StatusNotFound, "turn not found")
@@ -210,11 +213,14 @@ func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	locked, err := queries.LockAITurnForUser(r.Context(), sqlc.LockAITurnForUserParams{UserID: user.ID, TurnID: turnID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSONError(w, http.StatusNotFound, "turn not found")
@@ -295,11 +301,14 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid turn id")
 		return
 	}
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	_, err = a.Queries.GetAITurnForUser(r.Context(), sqlc.GetAITurnForUserParams{UserID: user.ID, TurnID: turnID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSONError(w, http.StatusNotFound, "turn not found")

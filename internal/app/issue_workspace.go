@@ -21,9 +21,13 @@ func (a *App) workspaceCrawls(r *http.Request) (sqlc.GetCrawlByIDForUserRow, sql
 	if err != nil {
 		return sqlc.GetCrawlByIDForUserRow{}, sqlc.GetCrawlByIDForUserRow{}, pgtype.UUID{}, err
 	}
-	user, _, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		return sqlc.GetCrawlByIDForUserRow{}, sqlc.GetCrawlByIDForUserRow{}, pgtype.UUID{}, err
+	var user sqlc.User
+	if p, ok := principalFromContext(r.Context()); ok && p.User.ID.Valid {
+		user = p.User
+	} else if u, _, err := a.ensureCurrentUser(r, a.Queries); err == nil && u.ID.Valid {
+		user = u
+	} else {
+		return sqlc.GetCrawlByIDForUserRow{}, sqlc.GetCrawlByIDForUserRow{}, pgtype.UUID{}, errors.New("missing principal")
 	}
 	current, err := a.Queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: currentID, UserID: user.ID})
 	if err != nil {

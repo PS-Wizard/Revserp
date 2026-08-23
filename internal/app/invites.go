@@ -85,11 +85,14 @@ func (a *App) handleCreateOrganizationInvite(w http.ResponseWriter, r *http.Requ
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	if err := requireOrganizationOwner(r.Context(), queries, organizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
@@ -140,11 +143,14 @@ func (a *App) handleListOrganizationInvites(w http.ResponseWriter, r *http.Reque
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	if err := requireOrganizationOwner(r.Context(), queries, organizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
@@ -189,11 +195,14 @@ func (a *App) handleRevokeOrganizationInvite(w http.ResponseWriter, r *http.Requ
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
 	if err := requireOrganizationOwner(r.Context(), queries, organizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
@@ -280,12 +289,14 @@ func (a *App) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	invite, err := queries.GetOrganizationInviteByTokenHashForUpdate(r.Context(), tokenHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

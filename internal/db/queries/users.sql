@@ -39,3 +39,6 @@ UPDATE users SET
     suspended_at = CASE WHEN $2 = 'suspended' THEN NOW() ELSE NULL END,
     suspension_reason = CASE WHEN $2 = 'suspended' THEN $3 ELSE NULL END
 WHERE id = $1;
+
+-- name: LockUserByID :one
+SELECT id FROM users WHERE id = $1 FOR UPDATE;

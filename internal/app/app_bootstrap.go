@@ -29,10 +29,12 @@ type appBootstrapResponse struct {
 // /organizations/{org}/projects, /projects/{id}/crawls, /crawls/{id}/score-breakdown)
 // into a single authenticated request executed inside one transaction.
 func (a *App) handleAppBootstrap(w http.ResponseWriter, r *http.Request) {
-	identity, ok := internalauth.IdentityFromContext(r.Context())
+	principal, ok := a.getPrincipal(w, r)
+
 	if !ok {
-		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+
 		return
+
 	}
 	session, ok := internalauth.SessionFromContext(r.Context())
 	if !ok {
@@ -48,26 +50,24 @@ func (a *App) handleAppBootstrap(w http.ResponseWriter, r *http.Request) {
 		SessionRenewAfter: a.SessionManager.RenewalStartsAt(session.ExpiresAt).Format(time.RFC3339),
 	}
 
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		// Step 1: resolve user + orgs; persist active org if it changed.
-		user, orgs, err := a.ensureUserAndOrganizations(r, queries, identity)
-		if err != nil {
+	user := principal.User
+	orgs := principal.Organizations
+	activeOrgID := resolveActiveOrganizationID(session.ActiveOrgID, orgs)
+	if activeOrgID.Valid && activeOrgID != session.ActiveOrgID {
+		if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrgID); err != nil {
 			serverError(w, r, err)
-			return err
+			return
 		}
+	}
+	resp.Me = newMeResponse(user, orgs, activeOrgID)
+	resp.Me.SessionExpiresAt = resp.SessionExpiresAt
+	resp.Me.SessionRenewAfter = resp.SessionRenewAfter
+	a.attachActiveOrgFeatures(r.Context(), &resp.Me, activeOrgID)
 
-		activeOrgID := resolveActiveOrganizationID(session.ActiveOrgID, orgs)
-		if activeOrgID.Valid && activeOrgID != session.ActiveOrgID {
-			if err := a.SessionManager.UpdateActiveOrganization(r.Context(), session.SessionID, activeOrgID); err != nil {
-				serverError(w, r, err)
-				return err
-			}
-		}
+	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
+		var err error
 
-		resp.Me = newMeResponse(user, orgs, activeOrgID)
-		resp.Me.SessionExpiresAt = resp.SessionExpiresAt
-		resp.Me.SessionRenewAfter = resp.SessionRenewAfter
-		a.attachActiveOrgFeatures(r.Context(), &resp.Me, activeOrgID)
+		// resp.Me already populated from principal
 
 		// Step 2: list projects for the active org (membership implied by org ownership).
 		var projects []sqlc.Project

@@ -42,12 +42,14 @@ func (a *App) handleStartProjectGSCConnect(w http.ResponseWriter, r *http.Reques
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	queries := a.Queries.WithTx(tx)
-	user, _, err := a.ensureCurrentUser(r, queries)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
+	principal, ok := a.getPrincipal(w, r)
 
+	if !ok {
+
+		return
+
+	}
+	user := principal.User
 	project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
 		ID:     projectID,
 		UserID: user.ID,

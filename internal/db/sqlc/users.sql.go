@@ -193,6 +193,17 @@ func (q *Queries) ListAllUsers(ctx context.Context) ([]ListAllUsersRow, error) {
 	return items, nil
 }
 
+const lockUserByID = `-- name: LockUserByID :one
+SELECT id FROM users WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockUserByID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockUserByID, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const updateUserPlatformAdmin = `-- name: UpdateUserPlatformAdmin :exec
 UPDATE users SET is_platform_admin = $2 WHERE id = $1
 `

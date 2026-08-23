@@ -189,11 +189,15 @@ func (a *App) handleRedeemAgentSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleV1Me(w http.ResponseWriter, r *http.Request) {
-	user, organizations, err := a.ensureCurrentUser(r, a.Queries)
-	if err != nil {
-		serverError(w, r, err)
+	principal, ok := a.getPrincipal(w, r)
+
+	if !ok {
+
 		return
+
 	}
+	user := principal.User
+	organizations := principal.Organizations
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":          newUserResponse(user),
 		"organizations": newOrganizationResponses(organizations),

@@ -25,13 +25,19 @@ func isPlatformAdmin(email string, dbFlag bool) bool {
 // requirePlatformAdmin is middleware that returns 403 if the authenticated user is not a platform admin.
 func (a *App) requirePlatformAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p, ok := principalFromContext(r.Context()); ok && p.User.ID.Valid {
+			if !isPlatformAdmin(p.User.Email, p.User.IsPlatformAdmin) {
+				writeJSONError(w, http.StatusForbidden, "forbidden")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
 		identity, ok := internalauth.IdentityFromContext(r.Context())
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-
-		// Use the user already fetched by requireActiveUser if available.
 		var user sqlc.User
 		if cached, ok := r.Context().Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
 			user = cached
@@ -50,12 +56,10 @@ func (a *App) requirePlatformAdmin(next http.Handler) http.Handler {
 			}
 			user = userRowToUser(row)
 		}
-
 		if !isPlatformAdmin(user.Email, user.IsPlatformAdmin) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
@@ -108,16 +112,16 @@ func (a *App) requireActiveUser(next http.Handler) http.Handler {
 
 // currentUserID returns the authenticated user's UUID from the request context.
 func (a *App) currentUserID(r *http.Request) (pgtype.UUID, error) {
-	// Use the user already fetched by requireActiveUser if available.
+	if p, ok := principalFromContext(r.Context()); ok && p.User.ID.Valid {
+		return p.User.ID, nil
+	}
 	if cached, ok := r.Context().Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
 		return cached.ID, nil
 	}
-
 	identity, ok := internalauth.IdentityFromContext(r.Context())
 	if !ok {
 		return pgtype.UUID{}, errors.New("missing identity")
 	}
-
 	row, err := a.Queries.GetUserByAuthSubject(r.Context(), sqlc.GetUserByAuthSubjectParams{
 		AuthProvider: identity.Provider,
 		AuthSubject:  identity.Subject,
@@ -125,6 +129,5 @@ func (a *App) currentUserID(r *http.Request) (pgtype.UUID, error) {
 	if err != nil {
 		return pgtype.UUID{}, err
 	}
-
 	return row.ID, nil
 }
