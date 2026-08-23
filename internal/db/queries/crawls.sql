@@ -203,11 +203,16 @@ SET google_psi_results = $2
 WHERE id = $1;
 
 -- name: ReclaimStaleRunningCrawls :exec
-UPDATE crawls
-SET status = 'failed',
-    completed_at = now()
-WHERE status = 'running'
-  AND started_at < $1;
+WITH stale AS (
+	UPDATE crawls
+	SET status = 'failed', completed_at = now()
+	WHERE status = 'running' AND started_at < $1
+	RETURNING id
+)
+UPDATE issue_work_attempts
+	SET locked_at = NULL, verification_crawl_id = NULL
+	WHERE verification_crawl_id IN (SELECT id FROM stale)
+	  AND status IN ('awaiting_verification', 'not_verified');
 
 -- name: ListActiveCrawlsForOrganization :many
 SELECT
@@ -223,3 +228,13 @@ INNER JOIN projects AS p ON p.id = c.project_id
 WHERE p.organization_id = $1
   AND c.status IN ('queued', 'running')
 ORDER BY c.created_at DESC;
+
+-- name: GetPreviousCompletedCrawlID :one
+SELECT previous.id
+FROM crawls AS current
+INNER JOIN crawls AS previous ON previous.project_id = current.project_id
+WHERE current.id = sqlc.arg(current_crawl_id)
+  AND previous.status = 'completed'
+  AND previous.completed_at < current.completed_at
+ORDER BY previous.completed_at DESC, previous.created_at DESC, previous.id DESC
+LIMIT 1;

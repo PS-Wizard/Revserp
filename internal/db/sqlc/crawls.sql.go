@@ -330,6 +330,24 @@ func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUs
 	return i, err
 }
 
+const getPreviousCompletedCrawlID = `-- name: GetPreviousCompletedCrawlID :one
+SELECT previous.id
+FROM crawls AS current
+INNER JOIN crawls AS previous ON previous.project_id = current.project_id
+WHERE current.id = $1
+  AND previous.status = 'completed'
+  AND previous.completed_at < current.completed_at
+ORDER BY previous.completed_at DESC, previous.created_at DESC, previous.id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetPreviousCompletedCrawlID(ctx context.Context, currentCrawlID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getPreviousCompletedCrawlID, currentCrawlID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listActiveCrawlsForOrganization = `-- name: ListActiveCrawlsForOrganization :many
 SELECT
     c.id,
@@ -551,11 +569,16 @@ func (q *Queries) MarkCrawlRunning(ctx context.Context, id pgtype.UUID) error {
 }
 
 const reclaimStaleRunningCrawls = `-- name: ReclaimStaleRunningCrawls :exec
-UPDATE crawls
-SET status = 'failed',
-    completed_at = now()
-WHERE status = 'running'
-  AND started_at < $1
+WITH stale AS (
+	UPDATE crawls
+	SET status = 'failed', completed_at = now()
+	WHERE status = 'running' AND started_at < $1
+	RETURNING id
+)
+UPDATE issue_work_attempts
+	SET locked_at = NULL, verification_crawl_id = NULL
+	WHERE verification_crawl_id IN (SELECT id FROM stale)
+	  AND status IN ('awaiting_verification', 'not_verified')
 `
 
 func (q *Queries) ReclaimStaleRunningCrawls(ctx context.Context, startedAt pgtype.Timestamptz) error {

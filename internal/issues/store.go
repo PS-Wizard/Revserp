@@ -55,7 +55,7 @@ func (store *Store) DeriveIssuesWithPages(ctx context.Context, crawlID pgtype.UU
 	loadElapsed := time.Since(loadStartedAt)
 
 	computeStartedAt := time.Now()
-	derivedIssues := DeriveIssues(pageFacts, linkFacts)
+	derivedIssues, duplicateEvidence := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
 	computeElapsed := time.Since(computeStartedAt)
 	log.Printf("derive timing: crawl_id=%s pages=%d load+fingerprint=%s compute=%s issues=%d", crawlID.String(), len(pageFacts), loadElapsed.Round(time.Millisecond), computeElapsed.Round(time.Millisecond), len(derivedIssues))
 	if err := txQueries.DeleteCrawlIssuesForCrawl(ctx, crawlID); err != nil {
@@ -77,6 +77,9 @@ func (store *Store) DeriveIssuesWithPages(ctx context.Context, crawlID pgtype.UU
 	}
 	if _, err := txQueries.CreateCrawlIssues(ctx, issueRows); err != nil {
 		return 0, nil, fmt.Errorf("bulk create crawl issues: %w", err)
+	}
+	if err := persistDuplicateEvidence(ctx, txQueries, crawlID, duplicateEvidence); err != nil {
+		return 0, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, nil, fmt.Errorf("commit derive issues transaction: %w", err)

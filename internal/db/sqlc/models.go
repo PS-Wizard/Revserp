@@ -186,17 +186,41 @@ type Crawl struct {
 }
 
 type CrawlIssue struct {
-	ID          pgtype.UUID
-	CrawlID     pgtype.UUID
+	ID           pgtype.UUID
+	CrawlID      pgtype.UUID
+	CrawlPageID  pgtype.UUID
+	Url          string
+	Severity     string
+	Message      string
+	Details      string
+	CreatedAt    pgtype.Timestamptz
+	Pillar       string
+	Bucket       string
+	IssueType    string
+	IssueGroupID pgtype.UUID
+}
+
+type CrawlIssueGroup struct {
+	ID        pgtype.UUID
+	CrawlID   pgtype.UUID
+	IssueType string
+	CreatedAt pgtype.Timestamptz
+}
+
+type CrawlIssueGroupMember struct {
+	GroupID     pgtype.UUID
 	CrawlPageID pgtype.UUID
 	Url         string
-	Severity    string
-	Message     string
-	Details     string
-	CreatedAt   pgtype.Timestamptz
-	Pillar      string
-	Bucket      string
-	IssueType   string
+}
+
+type CrawlIssueRelation struct {
+	ID               pgtype.UUID
+	CrawlID          pgtype.UUID
+	IssueType        string
+	LeftCrawlPageID  pgtype.UUID
+	RightCrawlPageID pgtype.UUID
+	Similarity       pgtype.Float8
+	CreatedAt        pgtype.Timestamptz
 }
 
 type CrawlLink struct {
@@ -287,6 +311,38 @@ type GoogleOauthState struct {
 	ReturnPath     string
 	ExpiresAt      pgtype.Timestamptz
 	CreatedAt      pgtype.Timestamptz
+}
+
+type IssueWorkAttempt struct {
+	ID                  pgtype.UUID
+	WorkItemID          pgtype.UUID
+	SourceCrawlID       pgtype.UUID
+	Status              string
+	VerificationCrawlID pgtype.UUID
+	CreatedAt           pgtype.Timestamptz
+	LockedAt            pgtype.Timestamptz
+	VerifiedAt          pgtype.Timestamptz
+}
+
+type IssueWorkAttemptContributor struct {
+	AttemptID    pgtype.UUID
+	UserID       pgtype.UUID
+	MarkedDoneAt pgtype.Timestamptz
+}
+
+type IssueWorkItem struct {
+	ID                 pgtype.UUID
+	ProjectID          pgtype.UUID
+	SubjectKind        string
+	SubjectKey         string
+	Pillar             string
+	Bucket             string
+	IssueType          string
+	SourceCrawlIssueID pgtype.UUID
+	Status             string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	SourceIssueGroupID pgtype.UUID
 }
 
 type Organization struct {

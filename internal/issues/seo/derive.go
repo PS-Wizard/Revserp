@@ -9,6 +9,13 @@ import (
 
 // DeriveIssues builds SEO issues from persisted crawl facts.
 func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []shared.DerivedIssue {
+	derivedIssues, _ := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
+	return derivedIssues
+}
+
+// DeriveIssuesWithDuplicateEvidence also returns structured duplicate groups
+// and relations produced during the same derivation pass.
+func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) ([]shared.DerivedIssue, DuplicateEvidence) {
 	var derivedIssues []shared.DerivedIssue
 	inboundInternalLinkCounts, outboundInternalLinkCounts := countInternalLinksByPage(linkFacts)
 	brokenInternalLinkTargetsBySourceURL, redirectingInternalLinkTargetsBySourceURL := collectInternalLinkTargetIssues(linkFacts)
@@ -137,8 +144,16 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 	}
 
 	EnrichPageFactsWithContentFingerprints(pageFacts)
-	derivedIssues = append(derivedIssues, deriveDuplicateTitleIssues(pageFacts)...)
-	derivedIssues = append(derivedIssues, deriveDuplicateMetaDescriptionIssues(pageFacts)...)
-	derivedIssues = append(derivedIssues, deriveDuplicateContentIssues(pageFacts)...)
-	return derivedIssues
+	titleIssues, titleGroups := deriveDuplicateTitleIssuesWithEvidence(pageFacts)
+	metaIssues, metaGroups := deriveDuplicateMetaDescriptionIssuesWithEvidence(pageFacts)
+	contentIssues, evidence := deriveDuplicateContentIssuesWithEvidence(pageFacts)
+	derivedIssues = append(derivedIssues, titleIssues...)
+	derivedIssues = append(derivedIssues, metaIssues...)
+	derivedIssues = append(derivedIssues, contentIssues...)
+	groups := make([]DuplicateGroup, 0, len(titleGroups)+len(metaGroups)+len(evidence.Groups))
+	groups = append(groups, titleGroups...)
+	groups = append(groups, metaGroups...)
+	groups = append(groups, evidence.Groups...)
+	evidence.Groups = groups
+	return derivedIssues, evidence
 }

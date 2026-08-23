@@ -499,7 +499,7 @@ func TestCatalogAndRegistrySplit(t *testing.T) {
 	for _, def := range CatalogDefs() {
 		catalogNames = append(catalogNames, def.Name)
 	}
-	wantCatalog := []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile"}
+	wantCatalog := []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work"}
 	if !reflect.DeepEqual(catalogNames, wantCatalog) {
 		t.Fatalf("catalog names = %v, want %v", catalogNames, wantCatalog)
 	}

@@ -317,6 +317,89 @@ func TestStoreMarksCrawlProgress(t *testing.T) {
 	}
 }
 
+func TestMarkCrawlCompletedVerifiesRecordedWork(t *testing.T) {
+	loadCrawlerTestEnv(t)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	currentCrawlID, cleanup := createTestCrawl(t, ctx, pool)
+	defer cleanup()
+	var projectID pgtype.UUID
+	if err := pool.QueryRow(ctx, `SELECT project_id FROM crawls WHERE id = $1`, currentCrawlID).Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+
+	var sourceCrawlID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO crawls (project_id, status, started_at, completed_at) VALUES ($1, 'completed', now() - interval '2 hours', now() - interval '1 hour') RETURNING id`, projectID).Scan(&sourceCrawlID); err != nil {
+		t.Fatal(err)
+	}
+	var sourcePageID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO crawl_pages (crawl_id, url, status_code) VALUES ($1, 'https://example.com/a', 200) RETURNING id`, sourceCrawlID).Scan(&sourcePageID); err != nil {
+		t.Fatal(err)
+	}
+	var sourceIssueID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO crawl_issues (crawl_id, crawl_page_id, url, pillar, bucket, issue_type, severity, message, details) VALUES ($1, $2, 'https://example.com/a', 'seo', 'serp_metadata', 'missing_title', 'high', 'missing title', 'add title') RETURNING id`, sourceCrawlID, sourcePageID).Scan(&sourceIssueID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO crawl_pages (crawl_id, url, status_code) VALUES ($1, 'https://example.com/a', 200)`, currentCrawlID); err != nil {
+		t.Fatal(err)
+	}
+
+	var workItemID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO issue_work_items (project_id, subject_kind, subject_key, pillar, bucket, issue_type, source_crawl_issue_id, status) VALUES ($1, 'page', 'https://example.com/a', 'seo', 'serp_metadata', 'missing_title', $2, 'awaiting_verification') RETURNING id`, projectID, sourceIssueID).Scan(&workItemID); err != nil {
+		t.Fatal(err)
+	}
+	var attemptID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO issue_work_attempts (work_item_id, source_crawl_id, status) VALUES ($1, $2, 'awaiting_verification') RETURNING id`, workItemID, sourceCrawlID).Scan(&attemptID); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(pool)
+	if err := store.MarkCrawlRunning(ctx, currentCrawlID); err != nil {
+		t.Fatalf("mark crawl running: %v", err)
+	}
+	if err := store.MarkCrawlCompleted(ctx, currentCrawlID, 1, 1, 0); err != nil {
+		t.Fatalf("mark crawl completed: %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM issue_work_attempts WHERE id = $1`, attemptID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "fixed" {
+		t.Fatalf("got status %q, want fixed", status)
+	}
+
+	var failedCrawlID, nextAttemptID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO crawls (project_id, status) VALUES ($1, 'running') RETURNING id`, projectID).Scan(&failedCrawlID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO issue_work_attempts (work_item_id, source_crawl_id, status) VALUES ($1, $2, 'awaiting_verification') RETURNING id`, workItemID, currentCrawlID).Scan(&nextAttemptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCrawlRunning(ctx, failedCrawlID); err != nil {
+		t.Fatalf("mark second crawl running: %v", err)
+	}
+	if err := store.MarkCrawlFailed(ctx, failedCrawlID, 0, 0, 0); err != nil {
+		t.Fatalf("mark crawl failed: %v", err)
+	}
+	var lockedAt pgtype.Timestamptz
+	var verificationCrawlID pgtype.UUID
+	if err := pool.QueryRow(ctx, `SELECT locked_at, verification_crawl_id FROM issue_work_attempts WHERE id = $1`, nextAttemptID).Scan(&lockedAt, &verificationCrawlID); err != nil {
+		t.Fatal(err)
+	}
+	if lockedAt.Valid || verificationCrawlID.Valid {
+		t.Fatalf("failed crawl left attempt locked: locked=%v crawl=%v", lockedAt.Valid, verificationCrawlID.Valid)
+	}
+}
+
 func createTestCrawl(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (pgtype.UUID, func()) {
 	t.Helper()
 

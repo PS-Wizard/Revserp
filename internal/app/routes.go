@@ -112,6 +112,10 @@ func (a *App) Router() http.Handler {
 		protected.Get("/crawls/{crawlID}/score-breakdown/{pillar}/{bucket}/{issueType}/urls", a.handleListScoreBreakdownIssueURLs)
 		protected.Get("/crawls/{baselineCrawlID}/compare/{currentCrawlID}/score-breakdown", a.handleGetCrawlScoreBreakdownCompare)
 		protected.Get("/crawls/{baselineCrawlID}/compare/{currentCrawlID}/score-breakdown/{pillar}/{bucket}/{issueType}/urls", a.handleListScoreBreakdownCompareIssueURLs)
+		protected.Get("/crawls/{crawlID}/issue-workspace/summary", a.handleGetIssueWorkspaceSummary)
+		protected.Get("/crawls/{crawlID}/issue-workspace/changes", a.handleListIssueWorkspaceChanges)
+		protected.Get("/crawls/{crawlID}/issue-workspace/pages/search", a.handleSearchIssueWorkspacePages)
+		protected.Get("/crawls/{crawlID}/issue-workspace/page", a.handleGetIssueWorkspacePage)
 		protected.Post("/crawls/{crawlID}/ai/fix", a.handleAIFix)
 		protected.Post("/crawls/{crawlID}/pages", a.handleCreateCrawlPage)
 		protected.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)
@@ -124,6 +128,9 @@ func (a *App) Router() http.Handler {
 		protected.Post("/crawls/{crawlID}/issues", a.handleCreateCrawlIssue)
 		protected.Get("/crawls/{crawlID}/issues", a.handleListCrawlIssues)
 		protected.Get("/crawl-issues/{issueID}", a.handleGetCrawlIssue)
+		protected.Post("/crawl-issues/{issueID}/work-done", a.handleMarkCrawlIssueWorkDone)
+		protected.Delete("/issue-work-attempts/{attemptID}/contributors/me", a.handleRemoveOwnIssueWorkContribution)
+		protected.Get("/projects/{projectID}/work-report", a.handleGetProjectWorkReport)
 		protected.Post("/invites/{token}/accept", a.handleAcceptInvite)
 
 		// Admin routes — platform admin only

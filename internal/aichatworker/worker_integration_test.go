@@ -403,8 +403,8 @@ func TestDisabledToolsAreNotSentToProvider(t *testing.T) {
 	if len(provider.requests) != 1 {
 		t.Fatalf("streams=%d, want 1", len(provider.requests))
 	}
-	if len(provider.requests[0].Tools) != 3 {
-		t.Fatalf("round tools = %+v, want the three non-disabled tools", provider.requests[0].Tools)
+	if len(provider.requests[0].Tools) != 4 {
+		t.Fatalf("round tools = %+v, want the four non-disabled tools", provider.requests[0].Tools)
 	}
 	for _, def := range provider.requests[0].Tools {
 		if def.Name == "read_issues" {
@@ -439,8 +439,8 @@ func TestToolRoundCapSynthesizesFinalAnswer(t *testing.T) {
 		t.Fatalf("streams=%d, want %d", len(provider.requests), maxAgentRounds+1)
 	}
 	for i := 0; i < maxAgentRounds; i++ {
-		if len(provider.requests[i].Tools) != 4 {
-			t.Fatalf("round %d tools = %+v, want the four registered tools", i, provider.requests[i].Tools)
+		if len(provider.requests[i].Tools) != 5 {
+			t.Fatalf("round %d tools = %+v, want the five registered tools", i, provider.requests[i].Tools)
 		}
 	}
 	final := provider.requests[maxAgentRounds]

@@ -44,35 +44,68 @@ func (store *Store) MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) e
 	if err := store.queries.MarkCrawlRunning(ctx, crawlID); err != nil {
 		return fmt.Errorf("mark crawl running: %w", err)
 	}
-
+	if _, err := store.queries.LockIssueWorkAttemptsForCrawlStart(ctx, crawlID); err != nil {
+		var pgError *pgconn.PgError
+		if !errors.As(err, &pgError) || pgError.Code != "42P01" {
+			return fmt.Errorf("lock issue work attempts: %w", err)
+		}
+	}
 	return nil
 }
 
 // MarkCrawlCompleted writes final crawl counters and completion status.
 func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
-	if err := store.queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{
-		ID:              crawlID,
-		UrlsDiscovered:  int32(urlsDiscovered),
-		UrlsCrawled:     int32(urlsCrawled),
-		MaxDepthReached: int32(maxDepthReached),
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin crawl completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	queries := store.queries.WithTx(tx)
+	if err := queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{
+		ID: crawlID, UrlsDiscovered: int32(urlsDiscovered), UrlsCrawled: int32(urlsCrawled), MaxDepthReached: int32(maxDepthReached),
 	}); err != nil {
 		return fmt.Errorf("mark crawl completed: %w", err)
 	}
-
+	var issueWorkSchemaExists bool
+	if err := tx.QueryRow(ctx, "SELECT to_regclass('issue_work_attempts') IS NOT NULL").Scan(&issueWorkSchemaExists); err != nil {
+		return fmt.Errorf("check issue work schema: %w", err)
+	}
+	if issueWorkSchemaExists {
+		if err := reconcileIssueWorkAttempts(ctx, queries, crawlID); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit crawl completion: %w", err)
+	}
 	return nil
 }
 
 // MarkCrawlFailed writes final crawl counters and failed status.
 func (store *Store) MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
-	if err := store.queries.MarkCrawlFailed(ctx, sqlc.MarkCrawlFailedParams{
-		ID:              crawlID,
-		UrlsDiscovered:  int32(urlsDiscovered),
-		UrlsCrawled:     int32(urlsCrawled),
-		MaxDepthReached: int32(maxDepthReached),
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin crawl failure: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	queries := store.queries.WithTx(tx)
+	if err := queries.MarkCrawlFailed(ctx, sqlc.MarkCrawlFailedParams{
+		ID: crawlID, UrlsDiscovered: int32(urlsDiscovered), UrlsCrawled: int32(urlsCrawled), MaxDepthReached: int32(maxDepthReached),
 	}); err != nil {
 		return fmt.Errorf("mark crawl failed: %w", err)
 	}
-
+	var issueWorkSchemaExists bool
+	if err := tx.QueryRow(ctx, "SELECT to_regclass('issue_work_attempts') IS NOT NULL").Scan(&issueWorkSchemaExists); err != nil {
+		return fmt.Errorf("check issue work schema: %w", err)
+	}
+	if issueWorkSchemaExists {
+		if err := queries.ReleaseIssueWorkAttemptsForFailedCrawl(ctx, crawlID); err != nil {
+			return fmt.Errorf("release issue work attempts: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit crawl failure: %w", err)
+	}
 	return nil
 }
 

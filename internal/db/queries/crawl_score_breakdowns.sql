@@ -92,7 +92,8 @@ WITH baseline_urls AS (
             ELSE 0
         END AS severity_rank,
         ci.message,
-        ci.details
+        ci.details,
+        ci.issue_group_id
     FROM crawl_issues AS ci
     INNER JOIN crawls AS c ON c.id = ci.crawl_id
     INNER JOIN projects AS p ON p.id = c.project_id
@@ -128,19 +129,56 @@ current_urls AS (
       AND ci.issue_type = $6
     ORDER BY ci.url ASC, ci.created_at ASC
 ),
+observed_current_pages AS (
+    -- Pages the current crawl actually observed with usable evidence.
+    -- A baseline URL without such a page cannot be classified as resolved.
+    SELECT DISTINCT cp.url
+    FROM crawl_pages AS cp
+    WHERE cp.crawl_id = $2
+      AND cp.soft_404 = FALSE
+      AND (cp.fetch_error IS NULL OR cp.fetch_error = '')
+      AND cp.status_code BETWEEN 200 AND 299
+),
+current_crawl_evidence AS (
+    SELECT COALESCE(c.google_psi_results #>> '{0,mobile,success}', 'false') = 'true' AS psi_observed
+    FROM crawls AS c
+    WHERE c.id = $2
+),
 diff_urls AS (
     SELECT
         CASE
             WHEN baseline_urls.url IS NULL THEN 'new'
-            WHEN current_urls.url IS NULL THEN 'resolved'
-            WHEN current_urls.severity_rank < baseline_urls.severity_rank THEN 'improved'
-            WHEN current_urls.severity_rank > baseline_urls.severity_rank THEN 'regressed'
-            WHEN baseline_urls.message <> current_urls.message
-              OR baseline_urls.details <> current_urls.details THEN 'changed'
-            ELSE 'unchanged'
+            WHEN current_urls.url IS NOT NULL THEN
+                CASE
+                    WHEN current_urls.severity_rank < baseline_urls.severity_rank THEN 'improved'
+                    WHEN current_urls.severity_rank > baseline_urls.severity_rank THEN 'regressed'
+                    WHEN baseline_urls.message <> current_urls.message
+                      OR baseline_urls.details <> current_urls.details THEN 'changed'
+                    ELSE 'unchanged'
+                END
+            WHEN current_crawl_evidence.psi_observed IS FALSE AND $5 = 'psi_cwv' THEN 'not_verified'
+            WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
+			 SELECT 1 FROM crawl_pages AS baseline_coverage
+			 WHERE baseline_coverage.crawl_id = $1 AND baseline_coverage.fetch_error IS NULL AND baseline_coverage.soft_404 = FALSE AND baseline_coverage.status_code BETWEEN 200 AND 299
+			   AND NOT EXISTS (SELECT 1 FROM crawl_pages AS current_coverage WHERE current_coverage.crawl_id = $2 AND current_coverage.url = baseline_coverage.url AND current_coverage.fetch_error IS NULL AND current_coverage.soft_404 = FALSE AND current_coverage.status_code BETWEEN 200 AND 299)
+			 ) THEN 'not_verified'
+            WHEN observed_current_pages.url IS NULL THEN 'not_verified'
+            WHEN baseline_urls.issue_group_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM crawl_issue_group_members AS member
+                WHERE member.group_id = baseline_urls.issue_group_id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM crawl_pages AS member_page
+                      WHERE member_page.crawl_id = $2 AND member_page.url = member.url
+                        AND member_page.fetch_error IS NULL AND member_page.soft_404 = FALSE
+                        AND member_page.status_code BETWEEN 200 AND 299
+                  )
+            ) THEN 'not_verified'
+            ELSE 'no_longer_detected'
         END AS change_type
     FROM baseline_urls
     FULL OUTER JOIN current_urls ON current_urls.url = baseline_urls.url
+    LEFT JOIN observed_current_pages ON observed_current_pages.url = baseline_urls.url
+    CROSS JOIN current_crawl_evidence
 ),
 ranked_urls AS (
     SELECT
@@ -154,7 +192,8 @@ ranked_urls AS (
 )
 SELECT COUNT(*)
 FROM ranked_urls
-WHERE $7 = '' OR change_type = $7 OR contribution_type = $7;
+WHERE $7 = '' OR change_type = $7 OR contribution_type = $7
+   OR ($7 = 'resolved' AND change_type = 'no_longer_detected');
 
 -- name: ListCompareCrawlIssueURLsByTypeForCrawlByUser :many
 WITH baseline_urls AS (
@@ -170,7 +209,8 @@ WITH baseline_urls AS (
             ELSE 0
         END AS severity_rank,
         ci.message,
-        ci.details
+        ci.details,
+        ci.issue_group_id
     FROM crawl_issues AS ci
     INNER JOIN crawls AS c ON c.id = ci.crawl_id
     INNER JOIN projects AS p ON p.id = c.project_id
@@ -207,6 +247,21 @@ current_urls AS (
       AND ci.issue_type = $6
     ORDER BY ci.url ASC, ci.created_at ASC
 ),
+observed_current_pages AS (
+    -- Pages the current crawl actually observed with usable evidence.
+    -- A baseline URL without such a page cannot be classified as resolved.
+    SELECT DISTINCT cp.url
+    FROM crawl_pages AS cp
+    WHERE cp.crawl_id = $2
+      AND cp.soft_404 = FALSE
+      AND (cp.fetch_error IS NULL OR cp.fetch_error = '')
+      AND cp.status_code BETWEEN 200 AND 299
+),
+current_crawl_evidence AS (
+    SELECT COALESCE(c.google_psi_results #>> '{0,mobile,success}', 'false') = 'true' AS psi_observed
+    FROM crawls AS c
+    WHERE c.id = $2
+),
 diff_urls AS (
     SELECT
         COALESCE(baseline_urls.url, current_urls.url) AS url,
@@ -220,15 +275,37 @@ diff_urls AS (
         current_urls.details AS current_details,
         CASE
             WHEN baseline_urls.url IS NULL THEN 'new'
-            WHEN current_urls.url IS NULL THEN 'resolved'
-            WHEN current_urls.severity_rank < baseline_urls.severity_rank THEN 'improved'
-            WHEN current_urls.severity_rank > baseline_urls.severity_rank THEN 'regressed'
-            WHEN baseline_urls.message <> current_urls.message
-              OR baseline_urls.details <> current_urls.details THEN 'changed'
-            ELSE 'unchanged'
+            WHEN current_urls.url IS NOT NULL THEN
+                CASE
+                    WHEN current_urls.severity_rank < baseline_urls.severity_rank THEN 'improved'
+                    WHEN current_urls.severity_rank > baseline_urls.severity_rank THEN 'regressed'
+                    WHEN baseline_urls.message <> current_urls.message
+                      OR baseline_urls.details <> current_urls.details THEN 'changed'
+                    ELSE 'unchanged'
+                END
+            WHEN current_crawl_evidence.psi_observed IS FALSE AND $5 = 'psi_cwv' THEN 'not_verified'
+            WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
+			 SELECT 1 FROM crawl_pages AS baseline_coverage
+			 WHERE baseline_coverage.crawl_id = $1 AND baseline_coverage.fetch_error IS NULL AND baseline_coverage.soft_404 = FALSE AND baseline_coverage.status_code BETWEEN 200 AND 299
+			   AND NOT EXISTS (SELECT 1 FROM crawl_pages AS current_coverage WHERE current_coverage.crawl_id = $2 AND current_coverage.url = baseline_coverage.url AND current_coverage.fetch_error IS NULL AND current_coverage.soft_404 = FALSE AND current_coverage.status_code BETWEEN 200 AND 299)
+			 ) THEN 'not_verified'
+            WHEN observed_current_pages.url IS NULL THEN 'not_verified'
+            WHEN baseline_urls.issue_group_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM crawl_issue_group_members AS member
+                WHERE member.group_id = baseline_urls.issue_group_id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM crawl_pages AS member_page
+                      WHERE member_page.crawl_id = $2 AND member_page.url = member.url
+                        AND member_page.fetch_error IS NULL AND member_page.soft_404 = FALSE
+                        AND member_page.status_code BETWEEN 200 AND 299
+                  )
+            ) THEN 'not_verified'
+            ELSE 'no_longer_detected'
         END AS change_type
     FROM baseline_urls
     FULL OUTER JOIN current_urls ON current_urls.url = baseline_urls.url
+    LEFT JOIN observed_current_pages ON observed_current_pages.url = baseline_urls.url
+    CROSS JOIN current_crawl_evidence
 ),
 ranked_urls AS (
     SELECT
@@ -253,6 +330,7 @@ SELECT
     change_type
 FROM ranked_urls
 WHERE $7 = '' OR change_type = $7 OR contribution_type = $7
+   OR ($7 = 'resolved' AND change_type = 'no_longer_detected')
 ORDER BY url ASC
 LIMIT $8
 OFFSET $9;

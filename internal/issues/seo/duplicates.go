@@ -37,12 +37,38 @@ func EnrichPageFactsWithContentFingerprints(pageFacts []shared.PageFact) {
 	}
 }
 
-func deriveDuplicateContentIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
+// deriveDuplicateContentIssuesWithEvidence behaves like deriveDuplicateContentIssues but also returns the structured evidence behind the issues.
+func deriveDuplicateContentIssuesWithEvidence(pageFacts []shared.PageFact) ([]shared.DerivedIssue, DuplicateEvidence) {
 	var derivedIssues []shared.DerivedIssue
+	var evidence DuplicateEvidence
 	exactDuplicateGroupsByHash := groupExactDuplicatePagesByHash(pageFacts)
-	derivedIssues = append(derivedIssues, buildExactDuplicateIssues(pageFacts, exactDuplicateGroupsByHash)...)
-	derivedIssues = append(derivedIssues, buildNearDuplicateIssues(pageFacts)...)
-	return derivedIssues
+	contentHashes := make([]string, 0, len(exactDuplicateGroupsByHash))
+	for contentHash := range exactDuplicateGroupsByHash {
+		contentHashes = append(contentHashes, contentHash)
+	}
+	sort.Strings(contentHashes)
+	for _, contentHash := range contentHashes {
+		pageIndexes := exactDuplicateGroupsByHash[contentHash]
+		if len(pageIndexes) < 2 {
+			continue
+		}
+		evidence.Groups = append(evidence.Groups, DuplicateGroup{IssueType: DuplicateIssueTypeExactDuplicateContent, Members: duplicatePages(pageFacts, pageIndexes)})
+		for _, pageIndex := range pageIndexes {
+			matchingURLs := collectOtherDuplicateURLs(pageFacts, pageIndexes, pageIndex)
+			derivedIssues = append(derivedIssues, newIssue(
+				pageFacts[pageIndex],
+				"content_quality",
+				"exact_duplicate_content",
+				"high",
+				"Page has exact duplicate content",
+				fmt.Sprintf("Normalized page content exactly matches %d other page(s): %s.", len(matchingURLs), strings.Join(matchingURLs, ", ")),
+			))
+		}
+	}
+	nearDuplicateIssues, nearDuplicateEvidence := deriveNearDuplicateIssuesWithEvidence(pageFacts)
+	derivedIssues = append(derivedIssues, nearDuplicateIssues...)
+	evidence.Relations = append(evidence.Relations, nearDuplicateEvidence.Relations...)
+	return derivedIssues, evidence
 }
 
 func normalizeDuplicateContent(pageFact shared.PageFact) string {
@@ -82,28 +108,8 @@ func groupExactDuplicatePagesByHash(pageFacts []shared.PageFact) map[string][]in
 	return exactDuplicateGroupsByHash
 }
 
-func buildExactDuplicateIssues(pageFacts []shared.PageFact, exactDuplicateGroupsByHash map[string][]int) []shared.DerivedIssue {
-	var derivedIssues []shared.DerivedIssue
-	for _, pageIndexes := range exactDuplicateGroupsByHash {
-		if len(pageIndexes) < 2 {
-			continue
-		}
-		for _, pageIndex := range pageIndexes {
-			matchingURLs := collectOtherDuplicateURLs(pageFacts, pageIndexes, pageIndex)
-			derivedIssues = append(derivedIssues, newIssue(
-				pageFacts[pageIndex],
-				"content_quality",
-				"exact_duplicate_content",
-				"high",
-				"Page has exact duplicate content",
-				fmt.Sprintf("Normalized page content exactly matches %d other page(s): %s.", len(matchingURLs), strings.Join(matchingURLs, ", ")),
-			))
-		}
-	}
-	return derivedIssues
-}
-
-func buildNearDuplicateIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
+// deriveNearDuplicateIssuesWithEvidence builds near-duplicate issues and records each matching pair as structured relation evidence.
+func deriveNearDuplicateIssuesWithEvidence(pageFacts []shared.PageFact) ([]shared.DerivedIssue, DuplicateEvidence) {
 	candidatePagePairs := buildNearDuplicateCandidatePairs(pageFacts)
 
 	// Precompute each page's normalized fields and character-trigram sets once.
@@ -119,11 +125,19 @@ func buildNearDuplicateIssues(pageFacts []shared.PageFact) []shared.DerivedIssue
 
 	matchingPairs := verifyNearDuplicatePairs(pageFacts, profiles, candidatePairList)
 
+	var evidence DuplicateEvidence
 	nearDuplicateNeighborsByPageIndex := make(map[int]map[int]struct{})
 	for _, matchingPair := range matchingPairs {
+		evidence.Relations = append(evidence.Relations, DuplicateRelation{
+			IssueType:  DuplicateIssueTypeNearDuplicateContent,
+			LeftPage:   DuplicatePage{CrawlPageID: pageFacts[matchingPair[0]].ID, URL: pageFacts[matchingPair[0]].URL},
+			RightPage:  DuplicatePage{CrawlPageID: pageFacts[matchingPair[1]].ID, URL: pageFacts[matchingPair[1]].URL},
+			Similarity: similarityFromProfiles(profiles[matchingPair[0]], profiles[matchingPair[1]]),
+		})
 		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair[0], matchingPair[1])
 		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair[1], matchingPair[0])
 	}
+	evidence.Groups = append(evidence.Groups, buildNearDuplicateGroups(pageFacts, nearDuplicateNeighborsByPageIndex)...)
 
 	var derivedIssues []shared.DerivedIssue
 	for pageIndex := range pageFacts {
@@ -146,7 +160,7 @@ func buildNearDuplicateIssues(pageFacts []shared.PageFact) []shared.DerivedIssue
 			fmt.Sprintf("Normalized page content closely matches %d other page(s): %s.", len(matchingURLs), strings.Join(matchingURLs, ", ")),
 		))
 	}
-	return derivedIssues
+	return derivedIssues, evidence
 }
 
 // nearDuplicateProfile holds a page's precomputed normalized fields and their

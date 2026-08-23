@@ -155,6 +155,10 @@ func (a *App) handleGetCrawlScoreBreakdownCompare(w http.ResponseWriter, r *http
 		writeJSONError(w, http.StatusBadRequest, "crawls must belong to the same project")
 		return
 	}
+	if baselineCrawl.Status != string(CrawlStatusCompleted) || currentCrawl.Status != string(CrawlStatusCompleted) {
+		writeJSONError(w, http.StatusConflict, "both crawls must be completed to compare")
+		return
+	}
 
 	if isCrawlStatusTerminal(baselineCrawl.Status) && isCrawlStatusTerminal(currentCrawl.Status) {
 		setImmutableCache(w)
@@ -188,7 +192,7 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 	}
 	changeType, ok := normalizeCompareURLChangeType(r.URL.Query().Get("change_type"))
 	if !ok {
-		writeJSONError(w, http.StatusBadRequest, "change_type must be new, resolved, changed, unchanged, improved, regressed, or all")
+		writeJSONError(w, http.StatusBadRequest, "change_type must be new, resolved, no_longer_detected, not_verified, changed, unchanged, improved, regressed, or all")
 		return
 	}
 	limit, offset, err := parsePaginationParams(r)
@@ -223,6 +227,10 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 	}
 	if baselineCrawl.ProjectID != currentCrawl.ProjectID {
 		writeJSONError(w, http.StatusBadRequest, "crawls must belong to the same project")
+		return
+	}
+	if baselineCrawl.Status != string(CrawlStatusCompleted) || currentCrawl.Status != string(CrawlStatusCompleted) {
+		writeJSONError(w, http.StatusConflict, "both crawls must be completed to compare")
 		return
 	}
 
@@ -507,7 +515,7 @@ func normalizeCompareURLChangeType(value string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "all":
 		return "", true
-	case "new", "resolved", "changed", "unchanged", "improved", "regressed":
+	case "new", "resolved", "no_longer_detected", "not_verified", "changed", "unchanged", "improved", "regressed":
 		return strings.ToLower(strings.TrimSpace(value)), true
 	default:
 		return "", false

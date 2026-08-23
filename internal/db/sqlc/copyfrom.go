@@ -9,6 +9,76 @@ import (
 	"context"
 )
 
+// iteratorForCreateCrawlIssueGroupMembers implements pgx.CopyFromSource.
+type iteratorForCreateCrawlIssueGroupMembers struct {
+	rows                 []CreateCrawlIssueGroupMembersParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateCrawlIssueGroupMembers) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateCrawlIssueGroupMembers) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].GroupID,
+		r.rows[0].CrawlPageID,
+		r.rows[0].Url,
+	}, nil
+}
+
+func (r iteratorForCreateCrawlIssueGroupMembers) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateCrawlIssueGroupMembers(ctx context.Context, arg []CreateCrawlIssueGroupMembersParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"crawl_issue_group_members"}, []string{"group_id", "crawl_page_id", "url"}, &iteratorForCreateCrawlIssueGroupMembers{rows: arg})
+}
+
+// iteratorForCreateCrawlIssueRelations implements pgx.CopyFromSource.
+type iteratorForCreateCrawlIssueRelations struct {
+	rows                 []CreateCrawlIssueRelationsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateCrawlIssueRelations) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateCrawlIssueRelations) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].CrawlID,
+		r.rows[0].IssueType,
+		r.rows[0].LeftCrawlPageID,
+		r.rows[0].RightCrawlPageID,
+		r.rows[0].Similarity,
+	}, nil
+}
+
+func (r iteratorForCreateCrawlIssueRelations) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateCrawlIssueRelations(ctx context.Context, arg []CreateCrawlIssueRelationsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"crawl_issue_relations"}, []string{"crawl_id", "issue_type", "left_crawl_page_id", "right_crawl_page_id", "similarity"}, &iteratorForCreateCrawlIssueRelations{rows: arg})
+}
+
 // iteratorForCreateCrawlIssues implements pgx.CopyFromSource.
 type iteratorForCreateCrawlIssues struct {
 	rows                 []CreateCrawlIssuesParams

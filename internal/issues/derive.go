@@ -15,6 +15,13 @@ import (
 
 // DeriveIssues builds backend issue rows from persisted crawl facts.
 func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []shared.DerivedIssue {
+	derivedIssues, _ := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
+	return derivedIssues
+}
+
+// DeriveIssuesWithDuplicateEvidence derives all issues and returns duplicate
+// evidence from the same SEO pass.
+func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) ([]shared.DerivedIssue, seo.DuplicateEvidence) {
 	var derivedIssues []shared.DerivedIssue
 	scoreablePageFacts := make([]shared.PageFact, 0, len(pageFacts))
 	brokenPageFacts := make([]shared.PageFact, 0)
@@ -33,7 +40,8 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 	}
 	derivedIssues = append(derivedIssues, seo.DeriveBrokenPageIssues(brokenPageFacts)...)
 	seoStartedAt := time.Now()
-	derivedIssues = append(derivedIssues, seo.DeriveIssues(slices.Clone(scoreablePageFacts), linkFacts)...)
+	seoIssues, duplicateEvidence := seo.DeriveIssuesWithDuplicateEvidence(slices.Clone(scoreablePageFacts), linkFacts)
+	derivedIssues = append(derivedIssues, seoIssues...)
 	seoElapsed := time.Since(seoStartedAt)
 	aeoStartedAt := time.Now()
 	derivedIssues = append(derivedIssues, aeo.DeriveIssues(scoreablePageFacts, linkFacts)...)
@@ -42,7 +50,7 @@ func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []sh
 	derivedIssues = append(derivedIssues, pagespeed.DeriveIssues(scoreablePageFacts, linkFacts)...)
 	pagespeedElapsed := time.Since(pagespeedStartedAt)
 	log.Printf("derive breakdown: scoreable_pages=%d broken_pages=%d seo=%s aeo=%s pagespeed=%s", len(scoreablePageFacts), len(brokenPageFacts), seoElapsed.Round(time.Millisecond), aeoElapsed.Round(time.Millisecond), pagespeedElapsed.Round(time.Millisecond))
-	return derivedIssues
+	return derivedIssues, duplicateEvidence
 }
 
 var recommendedFixes = map[string]string{

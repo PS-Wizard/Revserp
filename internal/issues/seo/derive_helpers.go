@@ -184,46 +184,49 @@ func limitURLsForIssueDetails(urls []string) []string {
 	return append(urls[:3], fmt.Sprintf("and %d more", len(urls)-3))
 }
 
-func deriveDuplicateTitleIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
-	return deriveDuplicateFieldIssues(pageFacts, func(pageFact shared.PageFact) string {
+func deriveDuplicateTitleIssuesWithEvidence(pageFacts []shared.PageFact) ([]shared.DerivedIssue, []DuplicateGroup) {
+	return deriveDuplicateFieldIssuesWithEvidence(pageFacts, func(pageFact shared.PageFact) string {
 		return pageFact.Title
-	}, "duplicate_title", "high", "Page shares a duplicate title", "Title matches %d other page(s): %s.")
+	}, DuplicateIssueTypeDuplicateTitle, "high", "Page shares a duplicate title", "Title matches %d other page(s): %s.")
 }
 
-func deriveDuplicateMetaDescriptionIssues(pageFacts []shared.PageFact) []shared.DerivedIssue {
-	return deriveDuplicateFieldIssues(pageFacts, func(pageFact shared.PageFact) string {
+func deriveDuplicateMetaDescriptionIssuesWithEvidence(pageFacts []shared.PageFact) ([]shared.DerivedIssue, []DuplicateGroup) {
+	return deriveDuplicateFieldIssuesWithEvidence(pageFacts, func(pageFact shared.PageFact) string {
 		return pageFact.MetaDescription
-	}, "duplicate_meta_description", "medium", "Page shares a duplicate meta description", "Meta description matches %d other page(s): %s.")
+	}, DuplicateIssueTypeDuplicateMetaDescription, "medium", "Page shares a duplicate meta description", "Meta description matches %d other page(s): %s.")
 }
 
-func deriveDuplicateFieldIssues(pageFacts []shared.PageFact, fieldValue func(shared.PageFact) string, issueType string, severity string, message string, detailsTemplate string) []shared.DerivedIssue {
+func deriveDuplicateFieldIssuesWithEvidence(pageFacts []shared.PageFact, fieldValue func(shared.PageFact) string, issueType string, severity string, message string, detailsTemplate string) ([]shared.DerivedIssue, []DuplicateGroup) {
 	pageIndexesByNormalizedField := make(map[string][]int)
 	for pageIndex, pageFact := range pageFacts {
 		normalizedFieldValue := normalizeDuplicateContentField(fieldValue(pageFact))
-		if normalizedFieldValue == "" {
-			continue
+		if normalizedFieldValue != "" {
+			pageIndexesByNormalizedField[normalizedFieldValue] = append(pageIndexesByNormalizedField[normalizedFieldValue], pageIndex)
 		}
-		pageIndexesByNormalizedField[normalizedFieldValue] = append(pageIndexesByNormalizedField[normalizedFieldValue], pageIndex)
 	}
+	keys := make([]string, 0, len(pageIndexesByNormalizedField))
+	for key := range pageIndexesByNormalizedField {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 
 	var derivedIssues []shared.DerivedIssue
-	for _, pageIndexes := range pageIndexesByNormalizedField {
+	var groups []DuplicateGroup
+	for _, key := range keys {
+		pageIndexes := pageIndexesByNormalizedField[key]
 		if len(pageIndexes) < 2 || duplicateGroupLooksLikePurePagination(pageFacts, pageIndexes) {
 			continue
 		}
+		groups = append(groups, DuplicateGroup{IssueType: issueType, Members: duplicatePages(pageFacts, pageIndexes)})
 		for _, pageIndex := range pageIndexes {
 			matchingURLs := collectOtherDuplicateURLs(pageFacts, pageIndexes, pageIndex)
 			derivedIssues = append(derivedIssues, newIssue(
-				pageFacts[pageIndex],
-				"serp_metadata",
-				issueType,
-				severity,
-				message,
+				pageFacts[pageIndex], "serp_metadata", issueType, severity, message,
 				fmt.Sprintf(detailsTemplate, len(matchingURLs), strings.Join(limitURLsForIssueDetails(matchingURLs), ", ")),
 			))
 		}
 	}
-	return derivedIssues
+	return derivedIssues, groups
 }
 
 func duplicateGroupLooksLikePurePagination(pageFacts []shared.PageFact, pageIndexes []int) bool {
