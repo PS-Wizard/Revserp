@@ -15,7 +15,17 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-const aiTurnEventPollInterval = 100 * time.Millisecond
+const (
+	// aiTurnEventPollInterval is how often committed events are re-read while
+	// an SSE stream is idle; events are always delivered immediately after a
+	// non-empty read without waiting for the next tick.
+	aiTurnEventPollInterval = 500 * time.Millisecond
+
+	// aiTurnStatusFallbackInterval is a low-frequency safety net that re-reads
+	// the full turn so a terminal turn whose terminal event was never written
+	// (legacy rows) cannot hold the stream open forever.
+	aiTurnStatusFallbackInterval = 2 * time.Second
+)
 
 type aiTurnResponse struct {
 	ID               string               `json:"id"`
@@ -320,15 +330,14 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 
 	poll := time.NewTicker(aiTurnEventPollInterval)
 	defer poll.Stop()
+	statusFallback := time.NewTicker(aiTurnStatusFallbackInterval)
+	defer statusFallback.Stop()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
+	// Set once a terminal signal is seen; the stream closes on the first
+	// event query that then comes back empty, so the final drain is complete.
+	draining := false
 	for {
-		// Observe status before every event query so a terminal commit cannot hide its event.
-		latest, err := a.Queries.GetAITurnForUser(r.Context(), sqlc.GetAITurnForUserParams{UserID: user.ID, TurnID: turnID})
-		if err != nil {
-			return
-		}
-		terminal := latest.Status == "completed" || latest.Status == "stopped" || latest.Status == "failed"
 		events, err := a.listAITurnEvents(r.Context(), user.ID, turnID, cursor)
 		if err != nil {
 			return
@@ -336,8 +345,16 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 		if len(events) > 0 && !writeAITurnSSEBatch(w, flusher, events, &cursor) {
 			return
 		}
-		if terminal {
-			// Drain once more after the observed terminal status and event batch.
+		// A terminal event anywhere in the ordered batch triggers the close path;
+		// already-committed trailing events after it are still delivered in order.
+		hasTerminalEvent := false
+		for _, event := range events {
+			if aiTurnEventIsTerminal(event.EventType) {
+				hasTerminalEvent = true
+				break
+			}
+		}
+		if hasTerminalEvent {
 			tail, err := a.listAITurnEvents(r.Context(), user.ID, turnID, cursor)
 			if err != nil || len(tail) == 0 {
 				return
@@ -345,7 +362,11 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 			if !writeAITurnSSEBatch(w, flusher, tail, &cursor) {
 				return
 			}
+			draining = true
 			continue
+		}
+		if draining && len(events) == 0 {
+			return
 		}
 		if len(events) > 0 {
 			continue
@@ -354,6 +375,22 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-poll.C:
+		case <-statusFallback.C:
+			latest, err := a.Queries.GetAITurnForUser(r.Context(), sqlc.GetAITurnForUserParams{UserID: user.ID, TurnID: turnID})
+			if err != nil {
+				return
+			}
+			if aiTurnStatusIsTerminal(latest.Status) {
+				// Preserve the final drain before closing on terminal status.
+				tail, err := a.listAITurnEvents(r.Context(), user.ID, turnID, cursor)
+				if err != nil || len(tail) == 0 {
+					return
+				}
+				if !writeAITurnSSEBatch(w, flusher, tail, &cursor) {
+					return
+				}
+				draining = true
+			}
 		case <-heartbeat.C:
 			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
 				return
@@ -361,6 +398,14 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func aiTurnEventIsTerminal(eventType string) bool {
+	return eventType == "completed" || eventType == "stopped" || eventType == "failed"
+}
+
+func aiTurnStatusIsTerminal(status string) bool {
+	return status == "completed" || status == "stopped" || status == "failed"
 }
 
 func (a *App) listAITurnEvents(ctx context.Context, userID, turnID pgtype.UUID, cursor int64) ([]sqlc.ListAITurnEventsForUserRow, error) {

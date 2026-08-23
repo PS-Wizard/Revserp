@@ -267,6 +267,76 @@ func TestAITurnEventDisconnectDoesNotCancelIntegration(t *testing.T) {
 	}
 }
 
+// The turn stays running in the database, so only recognizing the terminal
+// event itself can close the stream; the status fallback reads "running".
+// A committed trailing event after the terminal one must still be delivered,
+// in ID order, exactly once.
+func TestAITurnEventsTerminalEventClosesWhileRunningIntegration(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	submission := submitObserverTurn(t, fixture, fixture.conversationID, "terminal-event", "terminal-event")
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status = 'running', started_at = now() WHERE id = $1`, submission.TurnID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	var deltaID, terminalID, trailingID int64
+	for _, event := range []struct {
+		typeName string
+		payload  string
+		id       *int64
+	}{
+		{typeName: "text_delta", payload: `{"text":"partial"}`, id: &deltaID},
+		{typeName: "completed", payload: `{"error_code":""}`, id: &terminalID},
+		{typeName: "text_delta", payload: `{"text":"trailing"}`, id: &trailingID},
+	} {
+		if err := fixture.app.DB.QueryRow(fixture.ctx, `INSERT INTO ai_turn_events (turn_id, event_type, payload) VALUES ($1, $2, $3::jsonb) RETURNING id`, submission.TurnID, event.typeName, event.payload).Scan(event.id); err != nil {
+			t.Fatalf("insert %s event: %v", event.typeName, err)
+		}
+	}
+
+	writer := newFlushNotifyWriter()
+	done := make(chan struct{})
+	go func() {
+		fixture.app.handleGetAITurnEvents(writer, observerRequest(fixture.userID, http.MethodGet, "/", submission.TurnID, nil))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not close after terminal event while turn stayed running")
+	}
+	body := writer.Body.String()
+	deltaPosition := strings.Index(body, fmt.Sprintf("id: %d\n", deltaID))
+	terminalPosition := strings.Index(body, fmt.Sprintf("id: %d\n", terminalID))
+	trailingPosition := strings.Index(body, fmt.Sprintf("id: %d\n", trailingID))
+	if deltaPosition < 0 || terminalPosition <= deltaPosition || trailingPosition <= terminalPosition {
+		t.Fatalf("events are missing or unordered: %q", body)
+	}
+}
+
+// A terminal turn with no terminal event (legacy rows) must still close via
+// the low-frequency status fallback instead of holding the stream open.
+func TestAITurnEventsLegacyTerminalStatusClosesIntegration(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	submission := submitObserverTurn(t, fixture, fixture.conversationID, "legacy-terminal", "legacy-terminal")
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status = 'completed', completed_at = now() WHERE id = $1`, submission.TurnID); err != nil {
+		t.Fatalf("complete turn: %v", err)
+	}
+
+	writer := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		fixture.app.handleGetAITurnEvents(writer, observerRequest(fixture.userID, http.MethodGet, "/", submission.TurnID, nil))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream did not close for terminal turn without a terminal event")
+	}
+	if strings.Contains(writer.Body.String(), "event:") {
+		t.Fatalf("unexpected events for eventless turn: %q", writer.Body.String())
+	}
+}
+
 func submitObserverTurn(t *testing.T, fixture aiTurnFixture, conversationID pgtype.UUID, content, requestID string) aiTurnSubmission {
 	t.Helper()
 	submission, err := fixture.submit(t, conversationID, content, "low", requestID, nil)
