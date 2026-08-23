@@ -64,13 +64,17 @@ Filters are status, pillar, bucket, and issue_type. limit sets the page size up 
 
 ## render_chart
 
-Use render_chart after gathering the required values when a trend or comparison is clearer as a chart. Do not call it to retrieve facts. Use at most two charts in one answer.
+Use render_chart after gathering the required values when a trend, ranking, or category comparison is clearer as a chart. Do not call it to retrieve facts. Use at most two charts in one answer.
 
-The only preset is trend. Supply title, optional note, x_kind as date or category, 2 to 60 x labels, unit as count, percent, score, or milliseconds, and 1 to 3 series. Each series has a label and one value or null for every x label.
+Use preset trend for changes over dates or ordered steps. Supply x_kind as date or category, 2 to 60 x labels, and 1 to 3 series. Each series has one value or null for every x label.
 
-Copy observed labels and values exactly from tool results or user data. Forecast values may be modeled, but they must be trailing values. Set projected_points to the number of trailing forecast points and explain the forecast basis and assumptions in note. Describe projections as projections, not measured facts.
+Use preset ranking for vertical bar charts that compare 2 to 12 ordered categories. Supply categories in the intended display order and 1 to 3 series. Each series must have one numeric value for every category. Do not use projected_points with ranking.
 
-Do not provide colors, stacking, curves, brush settings, formatters, or other design options. The app owns chart design.
+Both presets require title and unit as count, percent, score, or milliseconds. note is optional unless a trend contains projections.
+
+Copy observed labels and values exactly from tool results or user data. Forecast values may be modeled only in trend charts, and they must be trailing values. Set projected_points to the number of trailing forecast points and explain the forecast basis and assumptions in note. Describe projections as projections, not measured facts.
+
+Do not provide colors, orientation, bar fills, stacking, curves, brush settings, formatters, or other design options. The app owns chart design.
 
 ## Citations
 

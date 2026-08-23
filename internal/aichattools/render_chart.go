@@ -16,11 +16,12 @@ const renderChartToolName = "render_chart"
 const renderChartSchema = `{
   "type": "object",
   "properties": {
-    "preset": {"type": "string", "enum": ["trend"]},
+    "preset": {"type": "string", "enum": ["trend", "ranking"]},
     "title": {"type": "string", "minLength": 1, "maxLength": 120},
     "note": {"type": "string", "maxLength": 300},
     "x_kind": {"type": "string", "enum": ["date", "category"]},
     "x": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "minItems": 2, "maxItems": 60},
+    "categories": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "minItems": 2, "maxItems": 12},
     "unit": {"type": "string", "enum": ["count", "percent", "score", "milliseconds"]},
     "series": {
       "type": "array",
@@ -38,7 +39,7 @@ const renderChartSchema = `{
       "maxItems": 3
     }
   },
-  "required": ["preset", "title", "x_kind", "x", "unit", "series"],
+  "required": ["preset", "title", "unit", "series"],
   "additionalProperties": false
 }`
 
@@ -47,8 +48,8 @@ func renderChartTool() Tool {
 		Def: Def{
 			Name:  renderChartToolName,
 			Label: "Render chart",
-			Description: "Render a trend chart when a trend or comparison is clearer visually. Use at most two charts per answer. " +
-				"Copy observed x labels and values exactly from prior tool outputs. Forecast values may be modeled, but projected_points must mark the trailing forecast points and note must explain the assumptions.",
+			Description: "Render a trend or vertical ranking bar chart when data is clearer visually. Use at most two charts per answer. " +
+				"Use trend with x_kind and x. Use ranking with 2 to 12 ordered categories. Copy observed labels and values exactly from prior tool outputs. Only trend supports projected_points, and note must explain forecast assumptions.",
 			Schema: json.RawMessage(renderChartSchema),
 		},
 		Execute: executeRenderChart,
@@ -56,13 +57,14 @@ func renderChartTool() Tool {
 }
 
 type renderChartArgs struct {
-	Preset string
-	Title  string
-	Note   string
-	XKind  string
-	X      []string
-	Unit   string
-	Series []renderChartSeries
+	Preset     string
+	Title      string
+	Note       string
+	XKind      string
+	X          []string
+	Categories []string
+	Unit       string
+	Series     []renderChartSeries
 }
 
 type renderChartSeries struct {
@@ -76,9 +78,13 @@ func executeRenderChart(_ context.Context, raw json.RawMessage, _ Scope) (Result
 	if err != nil {
 		return Result{Content: renderChartToolName + " error: " + err.Error()}, nil
 	}
+	pointCount := len(args.X)
+	if args.Preset == "ranking" {
+		pointCount = len(args.Categories)
+	}
 	return Result{
-		Content: fmt.Sprintf("Chart %q rendered with %d points across %d series.", args.Title, len(args.X), len(args.Series)),
-		Summary: fmt.Sprintf("Chart ready: %q · %d points · %d series", args.Title, len(args.X), len(args.Series)),
+		Content: fmt.Sprintf("Chart %q rendered with %d points across %d series.", args.Title, pointCount, len(args.Series)),
+		Summary: fmt.Sprintf("Chart ready: %q · %d points · %d series", args.Title, pointCount, len(args.Series)),
 	}, nil
 }
 
@@ -88,7 +94,7 @@ func parseRenderChartArgs(raw json.RawMessage) (renderChartArgs, error) {
 	if err != nil {
 		return args, err
 	}
-	for _, key := range []string{"preset", "title", "x_kind", "x", "unit", "series"} {
+	for _, key := range []string{"preset", "title", "unit", "series"} {
 		if _, ok := fields[key]; !ok {
 			return args, fmt.Errorf("missing required argument %q", key)
 		}
@@ -100,8 +106,8 @@ func parseRenderChartArgs(raw json.RawMessage) (renderChartArgs, error) {
 			if err := json.Unmarshal(value, &args.Preset); err != nil {
 				return args, fmt.Errorf("argument %q must be a string", key)
 			}
-			if args.Preset != "trend" {
-				return args, fmt.Errorf("invalid preset %q; valid presets: trend", args.Preset)
+			if args.Preset != "trend" && args.Preset != "ranking" {
+				return args, fmt.Errorf("invalid preset %q; valid presets: trend, ranking", args.Preset)
 			}
 		case "title":
 			if err := json.Unmarshal(value, &args.Title); err != nil {
@@ -142,6 +148,22 @@ func parseRenderChartArgs(raw json.RawMessage) (renderChartArgs, error) {
 					return args, fmt.Errorf("x[%d] must be at most 80 characters after trimming", i)
 				}
 			}
+		case "categories":
+			if err := json.Unmarshal(value, &args.Categories); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			}
+			if len(args.Categories) < 2 || len(args.Categories) > 12 {
+				return args, fmt.Errorf("argument %q must have between 2 and 12 entries", key)
+			}
+			for i := range args.Categories {
+				args.Categories[i] = strings.TrimSpace(args.Categories[i])
+				if args.Categories[i] == "" {
+					return args, fmt.Errorf("categories[%d] must be nonempty after trimming", i)
+				}
+				if utf8.RuneCountInString(args.Categories[i]) > 80 {
+					return args, fmt.Errorf("categories[%d] must be at most 80 characters after trimming", i)
+				}
+			}
 		case "unit":
 			if err := json.Unmarshal(value, &args.Unit); err != nil {
 				return args, fmt.Errorf("argument %q must be a string", key)
@@ -170,21 +192,59 @@ func parseRenderChartArgs(raw json.RawMessage) (renderChartArgs, error) {
 		}
 	}
 
+	var labels []string
+	switch args.Preset {
+	case "trend":
+		for _, key := range []string{"x_kind", "x"} {
+			if _, ok := fields[key]; !ok {
+				return args, fmt.Errorf("missing required argument %q for preset %q", key, args.Preset)
+			}
+		}
+		if _, ok := fields["categories"]; ok {
+			return args, errors.New("argument \"categories\" is not allowed for preset \"trend\"")
+		}
+		labels = args.X
+		if err := validateRenderChartX(args.XKind, args.X); err != nil {
+			return args, err
+		}
+	case "ranking":
+		if _, ok := fields["categories"]; !ok {
+			return args, fmt.Errorf("missing required argument %q for preset %q", "categories", args.Preset)
+		}
+		for _, key := range []string{"x_kind", "x"} {
+			if _, ok := fields[key]; ok {
+				return args, fmt.Errorf("argument %q is not allowed for preset %q", key, args.Preset)
+			}
+		}
+		labels = args.Categories
+		if err := validateUniqueChartLabels("categories", args.Categories); err != nil {
+			return args, err
+		}
+	}
+
 	for i, series := range args.Series {
-		if len(series.Values) != len(args.X) {
-			return args, fmt.Errorf("series[%d].values length %d must equal x length %d", i, len(series.Values), len(args.X))
+		if len(series.Values) != len(labels) {
+			return args, fmt.Errorf("series[%d].values length %d must equal %s length %d", i, len(series.Values), chartLabelField(args.Preset), len(labels))
+		}
+		if args.Preset == "ranking" {
+			if series.ProjectedPoints != nil {
+				return args, fmt.Errorf("series[%d].projected_points is not allowed for preset \"ranking\"", i)
+			}
+			for j, value := range series.Values {
+				if value == nil {
+					return args, fmt.Errorf("series[%d].values[%d] must be a number for preset \"ranking\"", i, j)
+				}
+			}
+			continue
 		}
 		if series.ProjectedPoints != nil {
-			if *series.ProjectedPoints < 1 || *series.ProjectedPoints > len(args.X)-1 {
-				return args, fmt.Errorf("series[%d].projected_points must be between 1 and %d", i, len(args.X)-1)
+			if *series.ProjectedPoints < 1 || *series.ProjectedPoints > len(labels)-1 {
+				return args, fmt.Errorf("series[%d].projected_points must be between 1 and %d", i, len(labels)-1)
 			}
 			if args.Note == "" {
 				return args, errors.New("note is required when any series has projected_points")
 			}
 		}
-	}
-	if err := validateRenderChartX(args.XKind, args.X); err != nil {
-		return args, err
 	}
 	return args, nil
 }
@@ -240,16 +300,27 @@ func parseRenderChartSeries(raw json.RawMessage, index int) (renderChartSeries, 
 	return series, nil
 }
 
+func chartLabelField(preset string) string {
+	if preset == "ranking" {
+		return "categories"
+	}
+	return "x"
+}
+
+func validateUniqueChartLabels(field string, values []string) error {
+	seen := make(map[string]bool, len(values))
+	for i, value := range values {
+		if seen[value] {
+			return fmt.Errorf("%s[%d] %q is duplicated; labels must be unique", field, i, value)
+		}
+		seen[value] = true
+	}
+	return nil
+}
+
 func validateRenderChartX(kind string, values []string) error {
 	if kind == "category" {
-		seen := make(map[string]bool, len(values))
-		for i, value := range values {
-			if seen[value] {
-				return fmt.Errorf("x[%d] %q is duplicated; category x labels must be unique", i, value)
-			}
-			seen[value] = true
-		}
-		return nil
+		return validateUniqueChartLabels("x", values)
 	}
 
 	var previous time.Time

@@ -35,7 +35,7 @@ func TestDefaultSystemPromptIncludesCurrentTools(t *testing.T) {
 			t.Errorf("default prompt missing %q", name)
 		}
 	}
-	for _, guidance := range []string{"five tools that read real data", "render_chart does not retrieve facts", "projected_points"} {
+	for _, guidance := range []string{"five tools that read real data", "render_chart does not retrieve facts", "preset ranking", "categories", "projected_points"} {
 		if !strings.Contains(DefaultSystemPrompt, guidance) {
 			t.Errorf("default prompt missing %q", guidance)
 		}
