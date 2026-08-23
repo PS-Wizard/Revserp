@@ -35,7 +35,7 @@ func run() error {
 	if strings.TrimSpace(cfg.DeepSeekAPIKey) == "" {
 		return fmt.Errorf("DEEPSEEK_API_KEY is required for ai chat worker")
 	}
-	pool, err := internaldb.Connect(ctx, cfg.DatabaseURL)
+	pool, err := internaldb.Connect(ctx, cfg.DatabaseURL, cfg.DBStatementTimeout, cfg.DBLockTimeout)
 	if err != nil {
 		return fmt.Errorf("connect database: %w", err)
 	}

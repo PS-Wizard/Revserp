@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
+	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
@@ -32,7 +33,7 @@ func newFeaturesTestQueries(t *testing.T) (*sqlc.Queries, *pgxpool.Pool, context
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}

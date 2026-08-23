@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
+	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 )
 
@@ -24,7 +25,7 @@ func TestStorePersistResult(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestStorePersistResultWithProcessErrorStillStoresPage(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -271,7 +272,7 @@ func TestStoreMarksCrawlProgress(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -324,7 +325,7 @@ func TestMarkCrawlCompletedVerifiesRecordedWork(t *testing.T) {
 		t.Skip("DATABASE_URL is not set")
 	}
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}

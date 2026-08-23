@@ -29,7 +29,7 @@ func run() error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	dbPool, err := internaldb.Connect(ctx, cfg.DatabaseURL)
+	dbPool, err := internaldb.Connect(ctx, cfg.DatabaseURL, cfg.DBStatementTimeout, cfg.DBLockTimeout)
 	if err != nil {
 		return fmt.Errorf("connect database: %w", err)
 	}

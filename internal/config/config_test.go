@@ -71,3 +71,103 @@ func TestLoadAutoCrawlCustom(t *testing.T) {
 		t.Errorf("AutoCrawlSchedulerInterval: got %s, want 10m", cfg.AutoCrawlSchedulerInterval)
 	}
 }
+
+func TestLoadDBTimeoutDefaults(t *testing.T) {
+	for _, k := range []string{"DB_STATEMENT_TIMEOUT", "DB_LOCK_TIMEOUT", "DATABASE_URL"} {
+		unsetEnv(t, k)
+	}
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+
+	cfg := Load()
+	if cfg.DBStatementTimeout != 90*time.Second {
+		t.Errorf("DBStatementTimeout default: got %s, want 90s", cfg.DBStatementTimeout)
+	}
+	if cfg.DBLockTimeout != 10*time.Second {
+		t.Errorf("DBLockTimeout default: got %s, want 10s", cfg.DBLockTimeout)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate defaults: unexpected error %v", err)
+	}
+}
+
+func TestLoadDBTimeoutCustom(t *testing.T) {
+	for _, k := range []string{"DB_STATEMENT_TIMEOUT", "DB_LOCK_TIMEOUT", "DATABASE_URL"} {
+		unsetEnv(t, k)
+	}
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+	setEnv(t, "DB_STATEMENT_TIMEOUT", "45s")
+	setEnv(t, "DB_LOCK_TIMEOUT", "7s")
+
+	cfg := Load()
+	if cfg.DBStatementTimeout != 45*time.Second {
+		t.Errorf("DBStatementTimeout: got %s, want 45s", cfg.DBStatementTimeout)
+	}
+	if cfg.DBLockTimeout != 7*time.Second {
+		t.Errorf("DBLockTimeout: got %s, want 7s", cfg.DBLockTimeout)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate custom: unexpected error %v", err)
+	}
+}
+
+func TestValidateDBTimeoutInvalidDuration(t *testing.T) {
+	for _, k := range []string{"DB_STATEMENT_TIMEOUT", "DB_LOCK_TIMEOUT", "DATABASE_URL"} {
+		unsetEnv(t, k)
+	}
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+	setEnv(t, "DB_STATEMENT_TIMEOUT", "bogus")
+
+	cfg := Load()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should fail for invalid DB_STATEMENT_TIMEOUT")
+	}
+}
+
+func TestValidateDBTimeoutZero(t *testing.T) {
+	for _, k := range []string{"DB_STATEMENT_TIMEOUT", "DB_LOCK_TIMEOUT", "DATABASE_URL"} {
+		unsetEnv(t, k)
+	}
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+	setEnv(t, "DB_STATEMENT_TIMEOUT", "0s")
+
+	cfg := Load()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should fail for zero DB_STATEMENT_TIMEOUT")
+	}
+}
+
+func TestValidateDBTimeoutNegative(t *testing.T) {
+	for _, k := range []string{"DB_STATEMENT_TIMEOUT", "DB_LOCK_TIMEOUT", "DATABASE_URL"} {
+		unsetEnv(t, k)
+	}
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+	setEnv(t, "DB_LOCK_TIMEOUT", "-5s")
+
+	cfg := Load()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should fail for negative DB_LOCK_TIMEOUT")
+	}
+}
+
+func TestValidateDBTimeoutDirectZeroField(t *testing.T) {
+	// Direct field validation without env, ensures programmatic misuse is caught.
+	for _, k := range []string{"DB_STATEMENT_TIMEOUT", "DB_LOCK_TIMEOUT"} {
+		unsetEnv(t, k)
+	}
+	cfg := Config{
+		DatabaseURL:        "postgres://test:test@localhost/test",
+		DBStatementTimeout: 0,
+		DBLockTimeout:      10 * time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should fail for zero DBStatementTimeout field")
+	}
+	cfg = Config{
+		DatabaseURL:        "postgres://test:test@localhost/test",
+		DBStatementTimeout: 90 * time.Second,
+		DBLockTimeout:      -1 * time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should fail for negative DBLockTimeout field")
+	}
+}

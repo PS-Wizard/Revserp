@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/joho/godotenv"
 	"github.com/ps-wizard/revserp/internal/ai"
+	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 )
 
@@ -25,7 +26,7 @@ func testWorker(t *testing.T) (*Worker, *Worker, pgtype.UUID, pgtype.UUID) {
 	if url == "" {
 		t.Skip("DATABASE_URL is not set")
 	}
-	pool, err := internaldb.Connect(context.Background(), url)
+	pool, err := internaldb.Connect(context.Background(), url, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skip(err)
 	}

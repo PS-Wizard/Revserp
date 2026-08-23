@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -10,11 +11,18 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	DefaultDBStatementTimeout = 90 * time.Second
+	DefaultDBLockTimeout      = 10 * time.Second
+)
+
 // Config holds runtime configuration.
 type Config struct {
 	AppEnv                      string
 	HTTPAddr                    string
 	DatabaseURL                 string
+	DBStatementTimeout          time.Duration
+	DBLockTimeout               time.Duration
 	AuthProvider                string
 	SupabaseJWTIssuer           string
 	SupabaseJWKSURL             string
@@ -67,6 +75,8 @@ func Load() Config {
 		AppEnv:                      getEnv("APP_ENV", "development"),
 		HTTPAddr:                    getEnv("HTTP_ADDR", ":8080"),
 		DatabaseURL:                 getEnv("DATABASE_URL", ""),
+		DBStatementTimeout:          getEnvDuration("DB_STATEMENT_TIMEOUT", DefaultDBStatementTimeout),
+		DBLockTimeout:               getEnvDuration("DB_LOCK_TIMEOUT", DefaultDBLockTimeout),
 		AuthProvider:                getEnv("AUTH_PROVIDER", "supabase"),
 		SupabaseJWTIssuer:           getEnv("SUPABASE_JWT_ISSUER", ""),
 		SupabaseJWKSURL:             getEnv("SUPABASE_JWKS_URL", ""),
@@ -116,6 +126,30 @@ func Load() Config {
 func (cfg *Config) Validate() error {
 	if cfg.DatabaseURL == "" {
 		return errors.New("DATABASE_URL is required")
+	}
+	if raw, ok := os.LookupEnv("DB_STATEMENT_TIMEOUT"); ok && raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("DB_STATEMENT_TIMEOUT: invalid duration %q: %w", raw, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("DB_STATEMENT_TIMEOUT must be > 0, got %s", d)
+		}
+	}
+	if cfg.DBStatementTimeout <= 0 {
+		return fmt.Errorf("DB_STATEMENT_TIMEOUT must be > 0, got %s", cfg.DBStatementTimeout)
+	}
+	if raw, ok := os.LookupEnv("DB_LOCK_TIMEOUT"); ok && raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("DB_LOCK_TIMEOUT: invalid duration %q: %w", raw, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("DB_LOCK_TIMEOUT must be > 0, got %s", d)
+		}
+	}
+	if cfg.DBLockTimeout <= 0 {
+		return fmt.Errorf("DB_LOCK_TIMEOUT must be > 0, got %s", cfg.DBLockTimeout)
 	}
 	return nil
 }

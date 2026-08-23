@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 )
 
@@ -21,7 +22,7 @@ func TestLoadBaselineReturnsNilWithoutPreviousCrawl(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestLoadBaselineSkipsPagesWithoutValidators(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestLoadBaselineIndexesPagesByNormalizedURL(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestPersistReusedResultCopiesPageAndLinksForward(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -290,7 +291,7 @@ func TestPersistReusedResultAppliesFreshETag(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -345,7 +346,7 @@ func TestPersistReusedResultIsIdempotent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
@@ -403,7 +404,7 @@ func TestListBaselineInternalTargetsReturnsInternalLinksOnly(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	pool, err := internaldb.Connect(ctx, databaseURL)
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
 	if err != nil {
 		t.Skipf("database is not available: %v", err)
 	}
