@@ -127,9 +127,9 @@ func BuildBucketBreakdownWithOptions(bucketID string, bucketWeight float64, issu
 		IssueRowCount:        issueRowCount,
 		AffectedURLCount:     int32(len(bucketAffectedURLs)),
 		Issues:               issues,
-		}
-
 	}
+
+}
 
 // IssueCoverage converts the affected page count into a shared saturating proportional coverage score.
 func IssueCoverage(affectedPages int, totalScoredPages int) float64 {

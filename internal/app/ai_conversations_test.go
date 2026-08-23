@@ -215,7 +215,6 @@ func TestAIConversationHistoryIntegration(t *testing.T) {
 		t.Fatalf("insert tool call: %v", err)
 	}
 
-
 	response := httptest.NewRecorder()
 	fixture.app.handleGetAIConversation(response, conversationRequest(fixture.userID, fixture.conversationID))
 	if response.Code != http.StatusOK {
@@ -267,7 +266,6 @@ func TestAIConversationHistoryIntegration(t *testing.T) {
 	if len(secondAssistant.ToolCalls) != 0 || secondAssistant.ActivityStartedAt != nil || secondAssistant.ActivityEndedAt != nil {
 		t.Fatalf("second assistant activity = toolCalls %+v, %v..%v; want none", secondAssistant.ToolCalls, secondAssistant.ActivityStartedAt, secondAssistant.ActivityEndedAt)
 	}
-
 
 	emptyConversationID := fixture.conversation(t)
 	response = httptest.NewRecorder()

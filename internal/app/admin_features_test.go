@@ -19,10 +19,10 @@ import (
 
 func TestNormalizeDisabledAITools(t *testing.T) {
 	tests := []struct {
-		name        string
-		tools       []string
+		name         string
+		tools        []string
 		gscConnector bool
-		want        []string
+		want         []string
 	}{
 		{"nil", nil, true, []string{}},
 		{"only empties", []string{"", ""}, true, []string{}},

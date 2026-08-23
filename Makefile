@@ -1,4 +1,4 @@
-.PHONY: up down sqlc migrate api worker ai-audit-worker ai-chat-worker migen
+.PHONY: up down sqlc migrate api worker ai-audit-worker ai-chat-worker migen check
 
 up:
 	podman-compose up -d
@@ -27,3 +27,9 @@ ai-chat-worker:
 	go run ./cmd/ai-chat-worker
 
 migen: migrate sqlc
+
+check:
+	@test -z "$$(gofmt -l .)" || (echo "formatting check failed:"; gofmt -l .; exit 1)
+	go vet ./...
+	go build ./...
+	go test ./...
