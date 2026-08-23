@@ -32,17 +32,18 @@ const (
 )
 
 type sessionFixture struct {
-	app       *App
-	ctx       context.Context
-	pool      *pgxpool.Pool
-	userID    pgtype.UUID
-	email     string
-	rawCookie string // raw backend session cookie token
+	app        *App
+	ctx        context.Context
+	pool       *pgxpool.Pool
+	userID     pgtype.UUID
+	email      string
+	rawCookie  string // raw backend session cookie token
+	privateKey *ecdsa.PrivateKey
+	verifier   *internalauth.Verifier
 }
 
-// newSessionFixture creates a user plus a real backend session whose Supabase
-// access token is signed by a locally hosted JWKS, so AuthenticateRequest can
-// verify it without touching Supabase.
+// newSessionFixture creates a user plus a real backend session. Normal request
+// authentication uses the local session and user rows, not the stored Supabase token.
 func newSessionFixture(t *testing.T) sessionFixture {
 	t.Helper()
 	queries, pool, ctx := newFeaturesTestQueries(t)
@@ -94,7 +95,7 @@ func newSessionFixture(t *testing.T) sessionFixture {
 	rawCookie, err := sessionManager.CreateSession(ctx, userID, pgtype.UUID{}, internalauth.SupabaseSession{
 		AccessToken:  minted,
 		RefreshToken: "unused-test-refresh-token",
-		ExpiresAt:    time.Now().UTC().Add(30 * time.Minute), // fresh: skips the refresh path (supabaseClient is nil)
+		ExpiresAt:    time.Now().UTC().Add(-time.Minute), // expired provider token must not affect local authentication
 	})
 	if err != nil {
 		t.Fatalf("create backend session: %v", err)
@@ -106,7 +107,16 @@ func newSessionFixture(t *testing.T) sessionFixture {
 		SessionManager: sessionManager,
 		APIKeyManager:  internalauth.NewAPIKeyManager(queries),
 	}
-	return sessionFixture{app: app, ctx: ctx, pool: pool, userID: userID, email: email, rawCookie: rawCookie}
+	return sessionFixture{
+		app:        app,
+		ctx:        ctx,
+		pool:       pool,
+		userID:     userID,
+		email:      email,
+		rawCookie:  rawCookie,
+		privateKey: privateKey,
+		verifier:   verifier,
+	}
 }
 
 func mintTestAccessToken(t *testing.T, key *ecdsa.PrivateKey, subject, email string) string {

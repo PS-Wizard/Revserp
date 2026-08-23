@@ -2,10 +2,12 @@ package app
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
@@ -28,6 +30,14 @@ type authOAuthExchangeRequest struct {
 	ExpiresAt    string `json:"expires_at"`
 }
 
+type sessionRenewalResponse struct {
+	Renewed    bool   `json:"renewed"`
+	ExpiresAt  string `json:"expires_at"`
+	RenewAfter string `json:"renew_after"`
+	RetryAfter string `json:"retry_after,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // handleSignUp creates one Supabase account, bootstraps local data, and starts a backend session when possible.
 func (a *App) handleSignUp(w http.ResponseWriter, r *http.Request) {
 	var requestBody authCredentialsRequest
@@ -46,7 +56,7 @@ func (a *App) handleSignUp(w http.ResponseWriter, r *http.Request) {
 
 	signUpResult, err := a.SupabaseClient.SignUp(r.Context(), email, password, name)
 	if err != nil {
-		a.writeSupabaseAuthError(w, err, http.StatusBadRequest)
+		a.writeSupabaseAuthError(w, err)
 		return
 	}
 	if signUpResult.Session == nil {
@@ -79,7 +89,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	supabaseSession, err := a.SupabaseClient.Login(r.Context(), email, password)
 	if err != nil {
-		a.writeSupabaseAuthError(w, err, http.StatusUnauthorized)
+		a.writeSupabaseAuthError(w, err)
 		return
 	}
 
@@ -130,6 +140,46 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleRenewSession renews one valid backend session near its expiry.
+func (a *App) handleRenewSession(w http.ResponseWriter, r *http.Request) {
+	rawSessionToken := a.SessionManager.SessionTokenFromRequest(r)
+	renewal, err := a.SessionManager.RenewSession(r.Context(), rawSessionToken)
+	response := sessionRenewalResponse{
+		ExpiresAt: renewal.ExpiresAt.Format(time.RFC3339),
+	}
+	if !renewal.ExpiresAt.IsZero() {
+		response.RenewAfter = a.SessionManager.RenewalStartsAt(renewal.ExpiresAt).Format(time.RFC3339)
+	}
+	if !renewal.RetryAfter.IsZero() {
+		response.RetryAfter = renewal.RetryAfter.Format(time.RFC3339)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, internalauth.ErrSessionRenewalNotDue):
+			writeJSON(w, http.StatusOK, response)
+		case errors.Is(err, internalauth.ErrSessionRenewalUnavailable):
+			response.Error = "session renewal unavailable"
+			writeJSON(w, http.StatusConflict, response)
+		case errors.Is(err, internalauth.ErrSessionRenewalRetryLater):
+			response.Error = "session renewal temporarily unavailable"
+			writeJSON(w, http.StatusServiceUnavailable, response)
+		case errors.Is(err, internalauth.ErrSessionExpired),
+			errors.Is(err, internalauth.ErrSessionRevoked),
+			errors.Is(err, internalauth.ErrSessionIdentityMismatch),
+			errors.Is(err, pgx.ErrNoRows):
+			a.SessionManager.ClearSessionCookie(w)
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		default:
+			serverError(w, r, err)
+		}
+		return
+	}
+
+	a.SessionManager.SetSessionCookieUntil(w, renewal.RawSessionToken, renewal.ExpiresAt)
+	response.Renewed = true
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (a *App) finishBackendSignIn(w http.ResponseWriter, r *http.Request, supabaseSession internalauth.SupabaseSession) error {
 	identity, err := a.AuthVerifier.Verify(supabaseSession.AccessToken)
 	if err != nil {
@@ -165,11 +215,12 @@ func (a *App) finishBackendSignIn(w http.ResponseWriter, r *http.Request, supaba
 	return nil
 }
 
-func (a *App) writeSupabaseAuthError(w http.ResponseWriter, err error, fallbackStatusCode int) {
+func (a *App) writeSupabaseAuthError(w http.ResponseWriter, err error) {
 	var authError *internalauth.SupabaseAuthError
 	if errors.As(err, &authError) {
 		writeJSONError(w, authError.StatusCode, authError.Message)
 		return
 	}
-	writeJSONError(w, fallbackStatusCode, err.Error())
+	log.Printf("auth: supabase request failed: %v", err)
+	writeJSONError(w, http.StatusServiceUnavailable, "authentication provider unavailable")
 }

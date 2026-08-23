@@ -444,18 +444,22 @@ type ScoringConfig struct {
 }
 
 type Session struct {
-	ID                           pgtype.UUID
-	UserID                       pgtype.UUID
-	SessionTokenHash             string
-	SupabaseAccessToken          string
-	SupabaseRefreshToken         string
-	SupabaseAccessTokenExpiresAt pgtype.Timestamptz
-	ActiveOrgID                  pgtype.UUID
-	CreatedAt                    pgtype.Timestamptz
-	UpdatedAt                    pgtype.Timestamptz
-	LastUsedAt                   pgtype.Timestamptz
-	ExpiresAt                    pgtype.Timestamptz
-	RevokedAt                    pgtype.Timestamptz
+	ID                            pgtype.UUID
+	UserID                        pgtype.UUID
+	SessionTokenHash              string
+	SupabaseAccessToken           string
+	SupabaseRefreshToken          string
+	SupabaseAccessTokenExpiresAt  pgtype.Timestamptz
+	ActiveOrgID                   pgtype.UUID
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
+	LastUsedAt                    pgtype.Timestamptz
+	ExpiresAt                     pgtype.Timestamptz
+	RevokedAt                     pgtype.Timestamptz
+	PreviousSessionTokenHash      pgtype.Text
+	PreviousSessionTokenExpiresAt pgtype.Timestamptz
+	SupabaseRefreshRetryAfter     pgtype.Timestamptz
+	SupabaseRefreshDisabledAt     pgtype.Timestamptz
 }
 
 type User struct {

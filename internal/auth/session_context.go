@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -13,6 +14,7 @@ type SessionContext struct {
 	SessionID   pgtype.UUID
 	UserID      pgtype.UUID
 	ActiveOrgID pgtype.UUID
+	ExpiresAt   time.Time
 }
 
 // WithSession stores the authenticated backend session in the context.

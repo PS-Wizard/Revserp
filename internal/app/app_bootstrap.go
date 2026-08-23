@@ -15,12 +15,14 @@ import (
 )
 
 type appBootstrapResponse struct {
-	Me              meResponse        `json:"me"`
-	Projects        []projectResponse `json:"projects"`
-	ActiveProject   *projectResponse  `json:"active_project"`
-	Crawls          []crawlResponse   `json:"crawls"`
-	SelectedCrawlID string            `json:"selected_crawl_id,omitempty"`
-	Breakdown       json.RawMessage   `json:"breakdown,omitempty"`
+	Me                meResponse        `json:"me"`
+	Projects          []projectResponse `json:"projects"`
+	ActiveProject     *projectResponse  `json:"active_project"`
+	Crawls            []crawlResponse   `json:"crawls"`
+	SelectedCrawlID   string            `json:"selected_crawl_id,omitempty"`
+	Breakdown         json.RawMessage   `json:"breakdown,omitempty"`
+	SessionExpiresAt  string            `json:"session_expires_at"`
+	SessionRenewAfter string            `json:"session_renew_after"`
 }
 
 // handleAppBootstrap collapses the frontend's 4 serial calls (/me,
@@ -41,7 +43,10 @@ func (a *App) handleAppBootstrap(w http.ResponseWriter, r *http.Request) {
 	requestedProjectID := strings.TrimSpace(r.URL.Query().Get("project"))
 	requestedCrawlID := strings.TrimSpace(r.URL.Query().Get("crawl"))
 
-	var resp appBootstrapResponse
+	resp := appBootstrapResponse{
+		SessionExpiresAt:  session.ExpiresAt.Format(time.RFC3339),
+		SessionRenewAfter: a.SessionManager.RenewalStartsAt(session.ExpiresAt).Format(time.RFC3339),
+	}
 
 	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
 		// Step 1: resolve user + orgs; persist active org if it changed.
@@ -60,6 +65,8 @@ func (a *App) handleAppBootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp.Me = newMeResponse(user, orgs, activeOrgID)
+		resp.Me.SessionExpiresAt = resp.SessionExpiresAt
+		resp.Me.SessionRenewAfter = resp.SessionRenewAfter
 		a.attachActiveOrgFeatures(r.Context(), &resp.Me, activeOrgID)
 
 		// Step 2: list projects for the active org (membership implied by org ownership).

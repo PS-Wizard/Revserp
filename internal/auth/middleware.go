@@ -20,12 +20,13 @@ func RequireSession(sessionManager *SessionManager) func(http.Handler) http.Hand
 
 			identity, session, err := sessionManager.AuthenticateRequest(r.Context(), rawSessionToken)
 			if err != nil {
-				log.Printf("auth: request authentication failed: %v", err)
-				if errors.Is(err, pgx.ErrNoRows) {
+				if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrSessionRevoked) {
+					sessionManager.ClearSessionCookie(w)
 					http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 					return
 				}
-				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+				log.Printf("auth: request authentication failed: %v", err)
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return
 			}
 

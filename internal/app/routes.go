@@ -38,6 +38,7 @@ func (a *App) Router() http.Handler {
 	r.Group(func(protected chi.Router) {
 		protected.Use(internalauth.RequireSession(a.SessionManager))
 		protected.Use(a.requireActiveUser)
+		protected.Post("/auth/session/renew", a.handleRenewSession)
 		protected.Get("/me", a.handleMe)
 		protected.Get("/app-bootstrap", a.handleAppBootstrap)
 		protected.Post("/me/active-organization", a.handleSetActiveOrganization)

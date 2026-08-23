@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
@@ -17,11 +18,13 @@ import (
 )
 
 type meResponse struct {
-	User            userResponse           `json:"user"`
-	Organizations   []organizationResponse `json:"organizations"`
-	ActiveOrgID     string                 `json:"active_org_id"`
-	IsPlatformAdmin bool                   `json:"is_platform_admin"`
-	Status          string                 `json:"status,omitempty"`
+	User              userResponse           `json:"user"`
+	Organizations     []organizationResponse `json:"organizations"`
+	ActiveOrgID       string                 `json:"active_org_id"`
+	IsPlatformAdmin   bool                   `json:"is_platform_admin"`
+	Status            string                 `json:"status,omitempty"`
+	SessionExpiresAt  string                 `json:"session_expires_at,omitempty"`
+	SessionRenewAfter string                 `json:"session_renew_after,omitempty"`
 	// Features gates what the UI offers for the active workspace. It is a
 	// convenience for the client only: every gated route and AI tool enforces
 	// the same state server-side, so a client ignoring this changes nothing.
@@ -79,6 +82,8 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meBody := newMeResponse(user, organizations, activeOrgID)
+	meBody.SessionExpiresAt = session.ExpiresAt.Format(time.RFC3339)
+	meBody.SessionRenewAfter = a.SessionManager.RenewalStartsAt(session.ExpiresAt).Format(time.RFC3339)
 	a.attachActiveOrgFeatures(r.Context(), &meBody, activeOrgID)
 	writeJSON(w, http.StatusOK, meBody)
 }

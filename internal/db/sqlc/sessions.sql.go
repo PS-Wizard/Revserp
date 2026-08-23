@@ -42,7 +42,22 @@ type CreateSessionParams struct {
 	ExpiresAt                    pgtype.Timestamptz
 }
 
-func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
+type CreateSessionRow struct {
+	ID                           pgtype.UUID
+	UserID                       pgtype.UUID
+	SessionTokenHash             string
+	SupabaseAccessToken          string
+	SupabaseRefreshToken         string
+	SupabaseAccessTokenExpiresAt pgtype.Timestamptz
+	ActiveOrgID                  pgtype.UUID
+	CreatedAt                    pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
+	LastUsedAt                   pgtype.Timestamptz
+	ExpiresAt                    pgtype.Timestamptz
+	RevokedAt                    pgtype.Timestamptz
+}
+
+func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (CreateSessionRow, error) {
 	row := q.db.QueryRow(ctx, createSession,
 		arg.UserID,
 		arg.SessionTokenHash,
@@ -52,7 +67,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		arg.ActiveOrgID,
 		arg.ExpiresAt,
 	)
-	var i Session
+	var i CreateSessionRow
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
@@ -70,28 +85,96 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 	return i, err
 }
 
+const delaySessionRenewal = `-- name: DelaySessionRenewal :exec
+UPDATE sessions
+SET supabase_refresh_retry_after = $2,
+    updated_at = now()
+WHERE id = $1
+`
+
+type DelaySessionRenewalParams struct {
+	ID                        pgtype.UUID
+	SupabaseRefreshRetryAfter pgtype.Timestamptz
+}
+
+func (q *Queries) DelaySessionRenewal(ctx context.Context, arg DelaySessionRenewalParams) error {
+	_, err := q.db.Exec(ctx, delaySessionRenewal, arg.ID, arg.SupabaseRefreshRetryAfter)
+	return err
+}
+
+const disableSessionRenewal = `-- name: DisableSessionRenewal :exec
+UPDATE sessions
+SET supabase_refresh_disabled_at = now(),
+    supabase_refresh_retry_after = NULL,
+    updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) DisableSessionRenewal(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, disableSessionRenewal, id)
+	return err
+}
+
 const getSessionByTokenHash = `-- name: GetSessionByTokenHash :one
 SELECT
-    id,
-    user_id,
-    session_token_hash,
-    supabase_access_token,
-    supabase_refresh_token,
-    supabase_access_token_expires_at,
-    active_org_id,
-    created_at,
-    updated_at,
-    last_used_at,
-    expires_at,
-    revoked_at
-FROM sessions
-WHERE session_token_hash = $1
+    s.id,
+    s.user_id,
+    s.session_token_hash,
+    s.supabase_access_token,
+    s.supabase_refresh_token,
+    s.supabase_access_token_expires_at,
+    s.active_org_id,
+    s.created_at,
+    s.updated_at,
+    s.last_used_at,
+    s.expires_at,
+    s.revoked_at,
+    s.previous_session_token_hash,
+    s.previous_session_token_expires_at,
+    s.supabase_refresh_retry_after,
+    s.supabase_refresh_disabled_at,
+    u.auth_provider,
+    u.auth_subject,
+    u.email,
+    u.name,
+    u.status AS user_status
+FROM sessions s
+JOIN users u ON u.id = s.user_id
+WHERE s.session_token_hash = $1
+   OR (
+       s.previous_session_token_hash = $1
+       AND s.previous_session_token_expires_at > now()
+   )
 LIMIT 1
 `
 
-func (q *Queries) GetSessionByTokenHash(ctx context.Context, sessionTokenHash string) (Session, error) {
+type GetSessionByTokenHashRow struct {
+	ID                            pgtype.UUID
+	UserID                        pgtype.UUID
+	SessionTokenHash              string
+	SupabaseAccessToken           string
+	SupabaseRefreshToken          string
+	SupabaseAccessTokenExpiresAt  pgtype.Timestamptz
+	ActiveOrgID                   pgtype.UUID
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
+	LastUsedAt                    pgtype.Timestamptz
+	ExpiresAt                     pgtype.Timestamptz
+	RevokedAt                     pgtype.Timestamptz
+	PreviousSessionTokenHash      pgtype.Text
+	PreviousSessionTokenExpiresAt pgtype.Timestamptz
+	SupabaseRefreshRetryAfter     pgtype.Timestamptz
+	SupabaseRefreshDisabledAt     pgtype.Timestamptz
+	AuthProvider                  string
+	AuthSubject                   string
+	Email                         string
+	Name                          pgtype.Text
+	UserStatus                    string
+}
+
+func (q *Queries) GetSessionByTokenHash(ctx context.Context, sessionTokenHash string) (GetSessionByTokenHashRow, error) {
 	row := q.db.QueryRow(ctx, getSessionByTokenHash, sessionTokenHash)
-	var i Session
+	var i GetSessionByTokenHashRow
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
@@ -105,6 +188,102 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, sessionTokenHash st
 		&i.LastUsedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.PreviousSessionTokenHash,
+		&i.PreviousSessionTokenExpiresAt,
+		&i.SupabaseRefreshRetryAfter,
+		&i.SupabaseRefreshDisabledAt,
+		&i.AuthProvider,
+		&i.AuthSubject,
+		&i.Email,
+		&i.Name,
+		&i.UserStatus,
+	)
+	return i, err
+}
+
+const getSessionByTokenHashForUpdate = `-- name: GetSessionByTokenHashForUpdate :one
+SELECT
+    s.id,
+    s.user_id,
+    s.session_token_hash,
+    s.supabase_access_token,
+    s.supabase_refresh_token,
+    s.supabase_access_token_expires_at,
+    s.active_org_id,
+    s.created_at,
+    s.updated_at,
+    s.last_used_at,
+    s.expires_at,
+    s.revoked_at,
+    s.previous_session_token_hash,
+    s.previous_session_token_expires_at,
+    s.supabase_refresh_retry_after,
+    s.supabase_refresh_disabled_at,
+    u.auth_provider,
+    u.auth_subject,
+    u.email,
+    u.name,
+    u.status AS user_status
+FROM sessions s
+JOIN users u ON u.id = s.user_id
+WHERE s.session_token_hash = $1
+   OR (
+       s.previous_session_token_hash = $1
+       AND s.previous_session_token_expires_at > now()
+   )
+LIMIT 1
+FOR UPDATE OF s
+`
+
+type GetSessionByTokenHashForUpdateRow struct {
+	ID                            pgtype.UUID
+	UserID                        pgtype.UUID
+	SessionTokenHash              string
+	SupabaseAccessToken           string
+	SupabaseRefreshToken          string
+	SupabaseAccessTokenExpiresAt  pgtype.Timestamptz
+	ActiveOrgID                   pgtype.UUID
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
+	LastUsedAt                    pgtype.Timestamptz
+	ExpiresAt                     pgtype.Timestamptz
+	RevokedAt                     pgtype.Timestamptz
+	PreviousSessionTokenHash      pgtype.Text
+	PreviousSessionTokenExpiresAt pgtype.Timestamptz
+	SupabaseRefreshRetryAfter     pgtype.Timestamptz
+	SupabaseRefreshDisabledAt     pgtype.Timestamptz
+	AuthProvider                  string
+	AuthSubject                   string
+	Email                         string
+	Name                          pgtype.Text
+	UserStatus                    string
+}
+
+func (q *Queries) GetSessionByTokenHashForUpdate(ctx context.Context, sessionTokenHash string) (GetSessionByTokenHashForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getSessionByTokenHashForUpdate, sessionTokenHash)
+	var i GetSessionByTokenHashForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.SessionTokenHash,
+		&i.SupabaseAccessToken,
+		&i.SupabaseRefreshToken,
+		&i.SupabaseAccessTokenExpiresAt,
+		&i.ActiveOrgID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastUsedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+		&i.PreviousSessionTokenHash,
+		&i.PreviousSessionTokenExpiresAt,
+		&i.SupabaseRefreshRetryAfter,
+		&i.SupabaseRefreshDisabledAt,
+		&i.AuthProvider,
+		&i.AuthSubject,
+		&i.Email,
+		&i.Name,
+		&i.UserStatus,
 	)
 	return i, err
 }
@@ -119,6 +298,74 @@ WHERE id = $1
 
 func (q *Queries) RevokeSession(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, revokeSession, id)
+	return err
+}
+
+const rotateSession = `-- name: RotateSession :exec
+UPDATE sessions
+SET previous_session_token_hash = session_token_hash,
+    previous_session_token_expires_at = $3,
+    session_token_hash = $2,
+    supabase_access_token = $4,
+    supabase_refresh_token = $5,
+    supabase_access_token_expires_at = $6,
+    expires_at = $7,
+    supabase_refresh_retry_after = NULL,
+    supabase_refresh_disabled_at = NULL,
+    updated_at = now(),
+    last_used_at = now()
+WHERE id = $1
+`
+
+type RotateSessionParams struct {
+	ID                            pgtype.UUID
+	SessionTokenHash              string
+	PreviousSessionTokenExpiresAt pgtype.Timestamptz
+	SupabaseAccessToken           string
+	SupabaseRefreshToken          string
+	SupabaseAccessTokenExpiresAt  pgtype.Timestamptz
+	ExpiresAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) RotateSession(ctx context.Context, arg RotateSessionParams) error {
+	_, err := q.db.Exec(ctx, rotateSession,
+		arg.ID,
+		arg.SessionTokenHash,
+		arg.PreviousSessionTokenExpiresAt,
+		arg.SupabaseAccessToken,
+		arg.SupabaseRefreshToken,
+		arg.SupabaseAccessTokenExpiresAt,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
+const saveUnverifiedSessionRefresh = `-- name: SaveUnverifiedSessionRefresh :exec
+UPDATE sessions
+SET supabase_access_token = $2,
+    supabase_refresh_token = $3,
+    supabase_access_token_expires_at = $4,
+    supabase_refresh_retry_after = $5,
+    updated_at = now()
+WHERE id = $1
+`
+
+type SaveUnverifiedSessionRefreshParams struct {
+	ID                           pgtype.UUID
+	SupabaseAccessToken          string
+	SupabaseRefreshToken         string
+	SupabaseAccessTokenExpiresAt pgtype.Timestamptz
+	SupabaseRefreshRetryAfter    pgtype.Timestamptz
+}
+
+func (q *Queries) SaveUnverifiedSessionRefresh(ctx context.Context, arg SaveUnverifiedSessionRefreshParams) error {
+	_, err := q.db.Exec(ctx, saveUnverifiedSessionRefresh,
+		arg.ID,
+		arg.SupabaseAccessToken,
+		arg.SupabaseRefreshToken,
+		arg.SupabaseAccessTokenExpiresAt,
+		arg.SupabaseRefreshRetryAfter,
+	)
 	return err
 }
 
@@ -137,32 +384,5 @@ type UpdateSessionActiveOrganizationParams struct {
 
 func (q *Queries) UpdateSessionActiveOrganization(ctx context.Context, arg UpdateSessionActiveOrganizationParams) error {
 	_, err := q.db.Exec(ctx, updateSessionActiveOrganization, arg.ID, arg.ActiveOrgID)
-	return err
-}
-
-const updateSessionTokens = `-- name: UpdateSessionTokens :exec
-UPDATE sessions
-SET supabase_access_token = $2,
-    supabase_refresh_token = $3,
-    supabase_access_token_expires_at = $4,
-    updated_at = now(),
-    last_used_at = now()
-WHERE id = $1
-`
-
-type UpdateSessionTokensParams struct {
-	ID                           pgtype.UUID
-	SupabaseAccessToken          string
-	SupabaseRefreshToken         string
-	SupabaseAccessTokenExpiresAt pgtype.Timestamptz
-}
-
-func (q *Queries) UpdateSessionTokens(ctx context.Context, arg UpdateSessionTokensParams) error {
-	_, err := q.db.Exec(ctx, updateSessionTokens,
-		arg.ID,
-		arg.SupabaseAccessToken,
-		arg.SupabaseRefreshToken,
-		arg.SupabaseAccessTokenExpiresAt,
-	)
 	return err
 }
