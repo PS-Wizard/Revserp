@@ -109,6 +109,30 @@ func (q *Queries) CreateCancelledAITurnEvent(ctx context.Context, turnID pgtype.
 	return err
 }
 
+const createFailedAITurnEvent = `-- name: CreateFailedAITurnEvent :exec
+INSERT INTO ai_turn_events(turn_id, event_type, payload)
+VALUES ($1, 'failed', '{"error_code":"worker_interrupted"}'::jsonb)
+`
+
+func (q *Queries) CreateFailedAITurnEvent(ctx context.Context, turnID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, createFailedAITurnEvent, turnID)
+	return err
+}
+
+const failPendingAssistantMessageForTurn = `-- name: FailPendingAssistantMessageForTurn :execrows
+UPDATE ai_messages
+SET status = 'failed', updated_at = now()
+WHERE turn_id = $1 AND role = 'assistant' AND status = 'pending'
+`
+
+func (q *Queries) FailPendingAssistantMessageForTurn(ctx context.Context, turnID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, failPendingAssistantMessageForTurn, turnID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findAITurnByClientRequestID = `-- name: FindAITurnByClientRequestID :one
 SELECT
     t.id AS turn_id,
@@ -594,6 +618,54 @@ WHERE turn_id = $1 AND role = 'assistant' AND status = 'pending'
 func (q *Queries) MarkCancelledAssistantMessage(ctx context.Context, turnID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markCancelledAssistantMessage, turnID)
 	return err
+}
+
+const recoverExpiredAITurnsForConversation = `-- name: RecoverExpiredAITurnsForConversation :many
+UPDATE ai_turns
+SET status = CASE WHEN output_started_at IS NULL AND attempt_count < $1::int THEN 'queued' ELSE 'failed' END,
+    claimed_by = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at = NULL,
+    queued_at = CASE WHEN output_started_at IS NULL AND attempt_count < $1::int THEN now() ELSE queued_at END,
+    completed_at = CASE WHEN output_started_at IS NULL AND attempt_count < $1::int THEN completed_at ELSE now() END,
+    error_code = CASE WHEN output_started_at IS NULL AND attempt_count < $1::int THEN NULL ELSE 'worker_interrupted' END,
+    updated_at = now()
+WHERE conversation_id = $2
+  AND status = 'running'
+  AND lease_expires_at IS NOT NULL
+  AND lease_expires_at < now()
+RETURNING id, status, (output_started_at IS NOT NULL)::boolean AS is_partial
+`
+
+type RecoverExpiredAITurnsForConversationParams struct {
+	MaxAttempts    int32
+	ConversationID pgtype.UUID
+}
+
+type RecoverExpiredAITurnsForConversationRow struct {
+	ID        pgtype.UUID
+	Status    string
+	IsPartial bool
+}
+
+func (q *Queries) RecoverExpiredAITurnsForConversation(ctx context.Context, arg RecoverExpiredAITurnsForConversationParams) ([]RecoverExpiredAITurnsForConversationRow, error) {
+	rows, err := q.db.Query(ctx, recoverExpiredAITurnsForConversation, arg.MaxAttempts, arg.ConversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecoverExpiredAITurnsForConversationRow
+	for rows.Next() {
+		var i RecoverExpiredAITurnsForConversationRow
+		if err := rows.Scan(&i.ID, &i.Status, &i.IsPartial); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const requestCancelRunningAITurn = `-- name: RequestCancelRunningAITurn :execrows

@@ -22,6 +22,8 @@ import (
 
 const defaultAITurnModel = "deepseek-v4-flash"
 
+const aiTurnMaxAttempts = 2
+
 type aiTurnRequest struct {
 	Content         string  `json:"content"`
 	ReasoningEffort string  `json:"reasoning_effort"`
@@ -162,6 +164,12 @@ func (a *App) submitAITurn(ctx context.Context, userID, conversationID pgtype.UU
 
 	submission, err := a.submitAITurnTx(ctx, tx, userID, conversationID, request)
 	if err != nil {
+		if errors.Is(err, errConversationBusy) {
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				return aiTurnSubmission{}, fmt.Errorf("commit recovered ai turn: %w", commitErr)
+			}
+			return aiTurnSubmission{}, errConversationBusy
+		}
 		if isAITurnIdempotencyUniqueError(err) {
 			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
 				return aiTurnSubmission{}, fmt.Errorf("rollback conflicting ai turn submission: %w", rollbackErr)
@@ -190,6 +198,10 @@ func (a *App) submitAITurnTx(ctx context.Context, tx pgx.Tx, userID, conversatio
 			return aiTurnSubmission{}, errConversationNotFound
 		}
 		return aiTurnSubmission{}, fmt.Errorf("lock ai conversation: %w", err)
+	}
+
+	if err := recoverExpiredAITurnsForConversation(ctx, queries, conversationID); err != nil {
+		return aiTurnSubmission{}, err
 	}
 
 	if existing, err := queries.FindAITurnByClientRequestID(ctx, sqlc.FindAITurnByClientRequestIDParams{
@@ -274,6 +286,36 @@ func (a *App) submitAITurnTx(ctx context.Context, tx pgx.Tx, userID, conversatio
 		return aiTurnSubmission{}, fmt.Errorf("touch ai conversation: %w", err)
 	}
 	return aiTurnSubmission{ConversationID: conversationID, TurnID: turnID, UserMessageID: userMessageID, AssistantMessageID: assistantMessageID}, nil
+}
+
+// recoverExpiredAITurnsForConversation atomically recovers any expired running
+// turn for the conversation using the same semantics as the periodic worker
+// recovery (aichatworker.Worker.recover). Expired without output and with
+// attempts remaining is requeued; otherwise it is failed and produces the same
+// terminal durable event as worker recovery. The caller must hold
+// LockAIConversationForTurn so concurrent submissions are serialized.
+func recoverExpiredAITurnsForConversation(ctx context.Context, queries *sqlc.Queries, conversationID pgtype.UUID) error {
+	recovered, err := queries.RecoverExpiredAITurnsForConversation(ctx, sqlc.RecoverExpiredAITurnsForConversationParams{
+		MaxAttempts:    aiTurnMaxAttempts,
+		ConversationID: conversationID,
+	})
+	if err != nil {
+		return fmt.Errorf("recover expired ai turns: %w", err)
+	}
+	for _, turn := range recovered {
+		if turn.Status != "failed" {
+			continue
+		}
+		if !turn.IsPartial {
+			if _, err := queries.FailPendingAssistantMessageForTurn(ctx, turn.ID); err != nil {
+				return fmt.Errorf("mark failed assistant message: %w", err)
+			}
+		}
+		if err := queries.CreateFailedAITurnEvent(ctx, turn.ID); err != nil {
+			return fmt.Errorf("create failed ai turn event: %w", err)
+		}
+	}
+	return nil
 }
 
 func (a *App) findExistingAITurnSubmission(ctx context.Context, userID, conversationID pgtype.UUID, request acceptedAITurnRequest) (aiTurnSubmission, error) {

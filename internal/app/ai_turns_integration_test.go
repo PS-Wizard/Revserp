@@ -322,3 +322,272 @@ func TestAITurnDetailWithoutToolCallsReturnsEmptyArray(t *testing.T) {
 		t.Fatalf("tool calls = %+v, want []", turn.ToolCalls)
 	}
 }
+
+func TestAITurnSubmissionRecoversExpiredNoOutputRequeuesAndBlocksNewTurn(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first", "low", "first-key", nil)
+	if err != nil {
+		t.Fatalf("submit first: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status='running', claimed_by='dead-worker', attempt_count=1, lease_expires_at=now() - interval '1 second', heartbeat_at=now() - interval '1 second', started_at=now(), output_started_at=NULL WHERE id=$1`, first.TurnID); err != nil {
+		t.Fatalf("expire turn: %v", err)
+	}
+	var beforeQueuedAt time.Time
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT queued_at FROM ai_turns WHERE id=$1`, first.TurnID).Scan(&beforeQueuedAt); err != nil {
+		t.Fatalf("read queued_at: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	_, err = fixture.submit(t, fixture.conversationID, "second", "low", "second-key", nil)
+	if !errors.Is(err, errConversationBusy) {
+		t.Fatalf("second submit error = %v, want %v", err, errConversationBusy)
+	}
+	var status, errCode string
+	var claimedBy pgtype.Text
+	var leaseExpiresAt, heartbeatAt, completedAt pgtype.Timestamptz
+	var queuedAt time.Time
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status, claimed_by, lease_expires_at, heartbeat_at, completed_at, COALESCE(error_code,''), queued_at FROM ai_turns WHERE id=$1`, first.TurnID).Scan(&status, &claimedBy, &leaseExpiresAt, &heartbeatAt, &completedAt, &errCode, &queuedAt); err != nil {
+		t.Fatalf("read recovered turn: %v", err)
+	}
+	if status != "queued" || claimedBy.Valid || leaseExpiresAt.Valid || heartbeatAt.Valid || completedAt.Valid || errCode != "" {
+		t.Fatalf("requeued turn = status=%q claimed=%v lease=%v heartbeat=%v completed=%v err=%q queued=%v", status, claimedBy, leaseExpiresAt, heartbeatAt, completedAt, errCode, queuedAt)
+	}
+	if !queuedAt.After(beforeQueuedAt) {
+		t.Fatalf("queued_at not bumped: before=%v after=%v", beforeQueuedAt, queuedAt)
+	}
+	var msgStatus string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status FROM ai_messages WHERE turn_id=$1 AND role='assistant'`, first.TurnID).Scan(&msgStatus); err != nil || msgStatus != "pending" {
+		t.Fatalf("assistant message status=%q err=%v want pending", msgStatus, err)
+	}
+	var failedEvents int
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*) FROM ai_turn_events WHERE turn_id=$1 AND event_type='failed'`, first.TurnID).Scan(&failedEvents); err != nil || failedEvents != 0 {
+		t.Fatalf("failed events=%d err=%v want 0", failedEvents, err)
+	}
+	busy, err := fixture.queries.HasActiveAITurnForConversation(fixture.ctx, fixture.conversationID)
+	if err != nil || !busy {
+		t.Fatalf("HasActive after requeue = %v err=%v want true", busy, err)
+	}
+	var queuedCount int
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*) FROM ai_turns WHERE conversation_id=$1 AND status='queued'`, fixture.conversationID).Scan(&queuedCount); err != nil || queuedCount != 1 {
+		t.Fatalf("queued count=%d err=%v want 1", queuedCount, err)
+	}
+}
+
+func TestAITurnSubmissionRecoversExpiredPartialFailsAndAllowsNewTurn(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first", "low", "first-key", nil)
+	if err != nil {
+		t.Fatalf("submit first: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_messages SET status='partial', content='partial output', updated_at=now() WHERE turn_id=$1 AND role='assistant'`, first.TurnID); err != nil {
+		t.Fatalf("mark partial message: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status='running', claimed_by='dead-worker', attempt_count=1, lease_expires_at=now() - interval '1 second', heartbeat_at=now() - interval '1 second', started_at=now(), output_started_at=now() WHERE id=$1`, first.TurnID); err != nil {
+		t.Fatalf("expire partial turn: %v", err)
+	}
+	second, err := fixture.submit(t, fixture.conversationID, "second", "low", "second-key", nil)
+	if err != nil {
+		t.Fatalf("submit second after partial expired: %v", err)
+	}
+	var status, errCode string
+	var claimedBy pgtype.Text
+	var leaseExpiresAt, heartbeatAt pgtype.Timestamptz
+	var completedAt pgtype.Timestamptz
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status, claimed_by, lease_expires_at, heartbeat_at, completed_at, COALESCE(error_code,'') FROM ai_turns WHERE id=$1`, first.TurnID).Scan(&status, &claimedBy, &leaseExpiresAt, &heartbeatAt, &completedAt, &errCode); err != nil {
+		t.Fatalf("read failed turn: %v", err)
+	}
+	if status != "failed" || claimedBy.Valid || leaseExpiresAt.Valid || heartbeatAt.Valid || !completedAt.Valid || errCode != "worker_interrupted" {
+		t.Fatalf("failed partial turn = status=%q claimed=%v lease=%v heartbeat=%v completed=%v err=%q", status, claimedBy, leaseExpiresAt, heartbeatAt, completedAt, errCode)
+	}
+	var msgStatus, msgContent string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status, content FROM ai_messages WHERE turn_id=$1 AND role='assistant'`, first.TurnID).Scan(&msgStatus, &msgContent); err != nil || msgStatus != "partial" || msgContent != "partial output" {
+		t.Fatalf("assistant message after partial fail = %q %q err=%v", msgStatus, msgContent, err)
+	}
+	var failedEvents int
+	var payload string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*), COALESCE(MIN(payload::text),'') FROM ai_turn_events WHERE turn_id=$1 AND event_type='failed'`, first.TurnID).Scan(&failedEvents, &payload); err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if failedEvents != 1 || payload != `{"error_code": "worker_interrupted"}` && payload != `{"error_code":"worker_interrupted"}` {
+		t.Fatalf("failed events=%d payload=%q want 1 with worker_interrupted", failedEvents, payload)
+	}
+	var newStatus string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status FROM ai_turns WHERE id=$1`, second.TurnID).Scan(&newStatus); err != nil || newStatus != "queued" {
+		t.Fatalf("new turn status=%q err=%v want queued", newStatus, err)
+	}
+}
+
+func TestAITurnSubmissionRecoversExpiredExhaustedFailsAndAllowsNewTurn(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first", "low", "first-key", nil)
+	if err != nil {
+		t.Fatalf("submit first: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status='running', claimed_by='dead-worker', attempt_count=2, lease_expires_at=now() - interval '1 second', heartbeat_at=now() - interval '1 second', started_at=now(), output_started_at=NULL WHERE id=$1`, first.TurnID); err != nil {
+		t.Fatalf("expire exhausted turn: %v", err)
+	}
+	second, err := fixture.submit(t, fixture.conversationID, "second", "low", "second-key", nil)
+	if err != nil {
+		t.Fatalf("submit second after exhausted: %v", err)
+	}
+	var status, errCode string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status, COALESCE(error_code,'') FROM ai_turns WHERE id=$1`, first.TurnID).Scan(&status, &errCode); err != nil || status != "failed" || errCode != "worker_interrupted" {
+		t.Fatalf("exhausted turn = %q %q err=%v", status, errCode, err)
+	}
+	var msgStatus string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status FROM ai_messages WHERE turn_id=$1 AND role='assistant'`, first.TurnID).Scan(&msgStatus); err != nil || msgStatus != "failed" {
+		t.Fatalf("assistant message status=%q err=%v want failed", msgStatus, err)
+	}
+	var failedEvents int
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*) FROM ai_turn_events WHERE turn_id=$1 AND event_type='failed'`, first.TurnID).Scan(&failedEvents); err != nil || failedEvents != 1 {
+		t.Fatalf("failed events=%d err=%v want 1", failedEvents, err)
+	}
+	var newStatus string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status FROM ai_turns WHERE id=$1`, second.TurnID).Scan(&newStatus); err != nil || newStatus != "queued" {
+		t.Fatalf("new turn status=%q err=%v want queued", newStatus, err)
+	}
+}
+
+func TestAITurnSubmissionDoesNotRecoverUnexpiredRunning(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first", "low", "first-key", nil)
+	if err != nil {
+		t.Fatalf("submit first: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status='running', claimed_by='live-worker', attempt_count=1, lease_expires_at=now() + interval '1 minute', heartbeat_at=now(), started_at=now(), output_started_at=NULL WHERE id=$1`, first.TurnID); err != nil {
+		t.Fatalf("make running live: %v", err)
+	}
+	_, err = fixture.submit(t, fixture.conversationID, "second", "low", "second-key", nil)
+	if !errors.Is(err, errConversationBusy) {
+		t.Fatalf("second submit error = %v, want %v", err, errConversationBusy)
+	}
+	var status, claimedBy string
+	var leaseExpiresAt pgtype.Timestamptz
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status, COALESCE(claimed_by,''), lease_expires_at FROM ai_turns WHERE id=$1`, first.TurnID).Scan(&status, &claimedBy, &leaseExpiresAt); err != nil {
+		t.Fatalf("read turn: %v", err)
+	}
+	if status != "running" || claimedBy != "live-worker" || !leaseExpiresAt.Valid || leaseExpiresAt.Time.Before(time.Now()) {
+		t.Fatalf("unexpired turn mutated: status=%q claimed=%q lease=%v", status, claimedBy, leaseExpiresAt)
+	}
+	var failedEvents int
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*) FROM ai_turn_events WHERE turn_id=$1 AND event_type='failed'`, first.TurnID).Scan(&failedEvents); err != nil || failedEvents != 0 {
+		t.Fatalf("failed events=%d err=%v want 0", failedEvents, err)
+	}
+}
+
+func TestAITurnSubmissionDoesNotRecoverNullLease(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first", "low", "first-key", nil)
+	if err != nil {
+		t.Fatalf("submit first: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status='running', claimed_by='dead-worker', attempt_count=1, lease_expires_at=NULL, heartbeat_at=NULL, started_at=now(), output_started_at=NULL WHERE id=$1`, first.TurnID); err != nil {
+		t.Fatalf("make running null lease: %v", err)
+	}
+	_, err = fixture.submit(t, fixture.conversationID, "second", "low", "second-key", nil)
+	if !errors.Is(err, errConversationBusy) {
+		t.Fatalf("second submit error = %v, want %v", err, errConversationBusy)
+	}
+	var status string
+	var leaseExpiresAt pgtype.Timestamptz
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status, lease_expires_at FROM ai_turns WHERE id=$1`, first.TurnID).Scan(&status, &leaseExpiresAt); err != nil || status != "running" || leaseExpiresAt.Valid {
+		t.Fatalf("null lease turn mutated: status=%q lease=%v err=%v", status, leaseExpiresAt, err)
+	}
+}
+
+func TestAITurnSubmissionRecoversExpiredConcurrentlyWithoutDuplicateEvent(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	first, err := fixture.submit(t, fixture.conversationID, "first", "low", "first-key", nil)
+	if err != nil {
+		t.Fatalf("submit first: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_messages SET status='partial', content='partial', updated_at=now() WHERE turn_id=$1 AND role='assistant'`, first.TurnID); err != nil {
+		t.Fatalf("mark partial: %v", err)
+	}
+	if _, err := fixture.app.DB.Exec(fixture.ctx, `UPDATE ai_turns SET status='running', claimed_by='dead-worker', attempt_count=1, lease_expires_at=now() - interval '1 second', heartbeat_at=now() - interval '1 second', started_at=now(), output_started_at=now() WHERE id=$1`, first.TurnID); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	ids := make(chan pgtype.UUID, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			request, _ := acceptAITurnRequest(aiTurnRequest{Content: fmt.Sprintf("concurrent %d", i), ReasoningEffort: "low", ClientRequestID: fmt.Sprintf("concurrent-expired-%d-%d", time.Now().UnixNano(), i)})
+			sub, err := fixture.app.submitAITurn(context.Background(), fixture.userID, fixture.conversationID, request)
+			errs <- err
+			if err == nil {
+				ids <- sub.TurnID
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	close(ids)
+	successes, busy := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, errConversationBusy):
+			busy++
+		default:
+			t.Fatalf("concurrent submit error: %v", err)
+		}
+	}
+	if successes != 1 || busy != 1 {
+		t.Fatalf("successes=%d busy=%d want 1/1", successes, busy)
+	}
+	var failedStatus, errCode string
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT status, COALESCE(error_code,'') FROM ai_turns WHERE id=$1`, first.TurnID).Scan(&failedStatus, &errCode); err != nil || failedStatus != "failed" {
+		t.Fatalf("first turn status=%q err=%v want failed", failedStatus, err)
+	}
+	var failedEvents int
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*) FROM ai_turn_events WHERE turn_id=$1 AND event_type='failed'`, first.TurnID).Scan(&failedEvents); err != nil || failedEvents != 1 {
+		t.Fatalf("failed events=%d err=%v want 1", failedEvents, err)
+	}
+}
+
+func TestAITurnSubmissionConcurrentCreateEnforcesSingleActive(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			request, _ := acceptAITurnRequest(aiTurnRequest{Content: fmt.Sprintf("race %d", i), ReasoningEffort: "low", ClientRequestID: fmt.Sprintf("race-%d-%d", time.Now().UnixNano(), i)})
+			_, err := fixture.app.submitAITurn(context.Background(), fixture.userID, fixture.conversationID, request)
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	successes, busy := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, errConversationBusy):
+			busy++
+		default:
+			if isAITurnActiveUniqueError(err) {
+				t.Fatalf("unique violation leaked as raw error: %v", err)
+			}
+			t.Fatalf("concurrent create error: %v", err)
+		}
+	}
+	if successes != 1 || busy != 1 {
+		t.Fatalf("successes=%d busy=%d want 1/1", successes, busy)
+	}
+	var activeCount int
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*) FROM ai_turns WHERE conversation_id=$1 AND status IN ('queued','running')`, fixture.conversationID).Scan(&activeCount); err != nil || activeCount != 1 {
+		t.Fatalf("active count=%d err=%v want 1", activeCount, err)
+	}
+}

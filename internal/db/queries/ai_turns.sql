@@ -230,3 +230,28 @@ WHERE turn_id = sqlc.arg(turn_id) AND role = 'assistant' AND status = 'pending';
 -- name: CreateCancelledAITurnEvent :exec
 INSERT INTO ai_turn_events (turn_id, event_type, payload)
 VALUES (sqlc.arg(turn_id), 'stopped', '{"error_code":"cancelled"}'::jsonb);
+
+-- name: RecoverExpiredAITurnsForConversation :many
+UPDATE ai_turns
+SET status = CASE WHEN output_started_at IS NULL AND attempt_count < sqlc.arg(max_attempts)::int THEN 'queued' ELSE 'failed' END,
+    claimed_by = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at = NULL,
+    queued_at = CASE WHEN output_started_at IS NULL AND attempt_count < sqlc.arg(max_attempts)::int THEN now() ELSE queued_at END,
+    completed_at = CASE WHEN output_started_at IS NULL AND attempt_count < sqlc.arg(max_attempts)::int THEN completed_at ELSE now() END,
+    error_code = CASE WHEN output_started_at IS NULL AND attempt_count < sqlc.arg(max_attempts)::int THEN NULL ELSE 'worker_interrupted' END,
+    updated_at = now()
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND status = 'running'
+  AND lease_expires_at IS NOT NULL
+  AND lease_expires_at < now()
+RETURNING id, status, (output_started_at IS NOT NULL)::boolean AS is_partial;
+
+-- name: FailPendingAssistantMessageForTurn :execrows
+UPDATE ai_messages
+SET status = 'failed', updated_at = now()
+WHERE turn_id = sqlc.arg(turn_id) AND role = 'assistant' AND status = 'pending';
+
+-- name: CreateFailedAITurnEvent :exec
+INSERT INTO ai_turn_events(turn_id, event_type, payload)
+VALUES (sqlc.arg(turn_id), 'failed', '{"error_code":"worker_interrupted"}'::jsonb);
