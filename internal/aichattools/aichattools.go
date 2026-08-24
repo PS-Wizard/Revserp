@@ -37,6 +37,9 @@ type Scope struct {
 	// RowBudget caps how many database rows one turn may fetch through tools.
 	// Nil means no per-turn cap (raw tool-call mode); the agent loop sets it later.
 	RowBudget *Budget
+	// PageContentBudget caps total serialized page-content bytes and unique
+	// content-page keys per turn. Nil means direct/raw mode without cumulative cap.
+	PageContentBudget *PageContentBudget
 }
 
 // Budget is a thread-safe counter of rows a turn may still fetch.
@@ -69,6 +72,81 @@ func (b *Budget) Spend(n int) int {
 	return b.remaining
 }
 
+// PageContentBudget is a thread-safe per-turn cap for serialized page content
+// bytes and unique attempted content-page keys. Calls execute sequentially,
+// so the implementation is intentionally simple.
+type PageContentBudget struct {
+	mu          sync.Mutex
+	remaining   int
+	uniqueLimit int
+	pages       map[string]struct{}
+}
+
+// NewPageContentBudget returns a budget with byteLimit bytes and
+// uniquePageLimit unique page slots. Negative limits become zero.
+func NewPageContentBudget(byteLimit, uniquePageLimit int) *PageContentBudget {
+	if byteLimit < 0 {
+		byteLimit = 0
+	}
+	if uniquePageLimit < 0 {
+		uniquePageLimit = 0
+	}
+	return &PageContentBudget{
+		remaining:   byteLimit,
+		uniqueLimit: uniquePageLimit,
+		pages:       make(map[string]struct{}),
+	}
+}
+
+// RemainingBytes reports how many serialized content bytes remain.
+func (b *PageContentBudget) RemainingBytes() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.remaining
+}
+
+// SpendBytes consumes up to n bytes and returns the remaining count.
+func (b *PageContentBudget) SpendBytes(n int) int {
+	if b == nil {
+		return 0
+	}
+	if n < 0 {
+		n = 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n >= b.remaining {
+		b.remaining = 0
+	} else {
+		b.remaining -= n
+	}
+	return b.remaining
+}
+
+// TryRegisterPage attempts to reserve a unique content-page slot for key.
+// The same key may be registered repeatedly without consuming another slot.
+// A new key fails (returns false) after uniqueLimit distinct keys have
+// been registered. Unavailable content still registers the page; metadata
+// mode will not call the budget at all.
+func (b *PageContentBudget) TryRegisterPage(key string) bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.pages[key]; ok {
+		return true
+	}
+	if len(b.pages) >= b.uniqueLimit {
+		return false
+	}
+	b.pages[key] = struct{}{}
+	return true
+}
+
 // Result is one completed tool call: model-facing content plus a UI one-liner.
 type Result struct {
 	Content string
@@ -88,7 +166,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), renderChartTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool()}}
 }
 
 // CatalogDefs lists every implemented tool definition in catalog order,
@@ -96,7 +174,7 @@ func NewRegistry() *Registry {
 // validation run against the full catalog, so a tool can be gateable (and
 // shown in the admin AI tools drawer) before the model can call it.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, renderChartTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag

@@ -712,6 +712,87 @@ func (q *Queries) GetCrawlPageByURLForUser(ctx context.Context, arg GetCrawlPage
 	return i, err
 }
 
+const getCrawlPageContentByURLForUser = `-- name: GetCrawlPageContentByURLForUser :one
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.title,
+    cp.meta_description,
+    cp.h1,
+    cp.word_count,
+    cp.status_code,
+    cp.content_type,
+    cp.fetch_error,
+    (CASE WHEN $1::boolean THEN cp.content_blocks ELSE NULL END)::jsonb AS content_blocks,
+    (CASE
+        WHEN $1::boolean THEN
+            cp.content_blocks IS NOT NULL
+            AND jsonb_typeof(cp.content_blocks) = 'array'
+            AND jsonb_array_length(cp.content_blocks) > 0
+        ELSE cp.content_blocks IS NOT NULL
+    END)::boolean AS content_available,
+    cp.created_at
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $2
+  AND cp.url = $3
+  AND om.user_id = $4
+LIMIT 1
+`
+
+type GetCrawlPageContentByURLForUserParams struct {
+	IncludeContent bool
+	CrawlID        pgtype.UUID
+	Url            string
+	UserID         pgtype.UUID
+}
+
+type GetCrawlPageContentByURLForUserRow struct {
+	ID               pgtype.UUID
+	CrawlID          pgtype.UUID
+	Url              string
+	Title            pgtype.Text
+	MetaDescription  pgtype.Text
+	H1               pgtype.Text
+	WordCount        pgtype.Int4
+	StatusCode       pgtype.Int4
+	ContentType      pgtype.Text
+	FetchError       pgtype.Text
+	ContentBlocks    []byte
+	ContentAvailable bool
+	CreatedAt        pgtype.Timestamptz
+}
+
+// content_blocks gated by include_content; metadata mode avoids large blob fetch, content_available reports presence.
+func (q *Queries) GetCrawlPageContentByURLForUser(ctx context.Context, arg GetCrawlPageContentByURLForUserParams) (GetCrawlPageContentByURLForUserRow, error) {
+	row := q.db.QueryRow(ctx, getCrawlPageContentByURLForUser,
+		arg.IncludeContent,
+		arg.CrawlID,
+		arg.Url,
+		arg.UserID,
+	)
+	var i GetCrawlPageContentByURLForUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.CrawlID,
+		&i.Url,
+		&i.Title,
+		&i.MetaDescription,
+		&i.H1,
+		&i.WordCount,
+		&i.StatusCode,
+		&i.ContentType,
+		&i.FetchError,
+		&i.ContentBlocks,
+		&i.ContentAvailable,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getCrawlPageIssueHistogramForUser = `-- name: GetCrawlPageIssueHistogramForUser :many
 WITH scoreable_pages AS (
     SELECT cp.id

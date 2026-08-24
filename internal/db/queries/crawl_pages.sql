@@ -290,6 +290,37 @@ WHERE cp.crawl_id = $1
   AND om.user_id = $3
 LIMIT 1;
 
+-- name: GetCrawlPageContentByURLForUser :one
+-- content_blocks gated by include_content; metadata mode avoids large blob fetch, content_available reports presence.
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.title,
+    cp.meta_description,
+    cp.h1,
+    cp.word_count,
+    cp.status_code,
+    cp.content_type,
+    cp.fetch_error,
+    (CASE WHEN sqlc.arg(include_content)::boolean THEN cp.content_blocks ELSE NULL END)::jsonb AS content_blocks,
+    (CASE
+        WHEN sqlc.arg(include_content)::boolean THEN
+            cp.content_blocks IS NOT NULL
+            AND jsonb_typeof(cp.content_blocks) = 'array'
+            AND jsonb_array_length(cp.content_blocks) > 0
+        ELSE cp.content_blocks IS NOT NULL
+    END)::boolean AS content_available,
+    cp.created_at
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = sqlc.arg(crawl_id)
+  AND cp.url = sqlc.arg(url)
+  AND om.user_id = sqlc.arg(user_id)
+LIMIT 1;
+
 -- name: ListCrawlPagesFilteredForUser :many
 SELECT
     cp.url,

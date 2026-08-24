@@ -10,12 +10,12 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "render_chart"}) {
-		t.Fatalf("Names() = %v, want the six served tools", names)
+	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"}) {
+		t.Fatalf("Names() = %v, want the seven served tools", names)
 	}
 	defs := registry.Defs()
-	if len(defs) != 6 {
-		t.Fatalf("Defs() = %d defs, want 6", len(defs))
+	if len(defs) != 7 {
+		t.Fatalf("Defs() = %d defs, want 7", len(defs))
 	}
 	for _, def := range defs {
 		if def.Name == "" || def.Label == "" || def.Description == "" || len(def.Schema) == 0 {
@@ -76,5 +76,61 @@ func TestBudgetConcurrentSpend(t *testing.T) {
 	wait.Wait()
 	if got := budget.Remaining(); got != 990 {
 		t.Fatalf("Remaining() = %d after 10 concurrent spends of 1, want 990", got)
+	}
+}
+
+func TestPageContentBudget(t *testing.T) {
+	budget := NewPageContentBudget(100, 2)
+	if !budget.TryRegisterPage("a") || !budget.TryRegisterPage("b") {
+		t.Fatal("first two unique pages should fit")
+	}
+	if budget.TryRegisterPage("c") {
+		t.Fatal("third unique page should exceed the limit")
+	}
+	if !budget.TryRegisterPage("a") {
+		t.Fatal("an existing page should remain available")
+	}
+	if got := budget.SpendBytes(30); got != 70 {
+		t.Fatalf("SpendBytes(30) = %d, want 70", got)
+	}
+	if got := budget.SpendBytes(100); got != 0 {
+		t.Fatalf("overspend = %d, want 0", got)
+	}
+}
+
+func TestPageContentBudgetZeroLimits(t *testing.T) {
+	budget := NewPageContentBudget(-1, -1)
+	if budget.RemainingBytes() != 0 || budget.TryRegisterPage("a") {
+		t.Fatal("negative limits should become zero")
+	}
+}
+
+func TestPageContentBudgetUnavailablePageSpendsNoBytes(t *testing.T) {
+	budget := NewPageContentBudget(100, 1)
+	if !budget.TryRegisterPage("unavailable") {
+		t.Fatal("unavailable page should register")
+	}
+	if got := budget.SpendBytes(0); got != 100 {
+		t.Fatalf("SpendBytes(0) = %d, want 100", got)
+	}
+}
+
+func TestPageContentBudgetConcurrentAccess(t *testing.T) {
+	budget := NewPageContentBudget(1000, 5)
+	var wait sync.WaitGroup
+	for i := range 10 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			budget.TryRegisterPage(string(rune('a' + i%5)))
+			budget.SpendBytes(10)
+		}()
+	}
+	wait.Wait()
+	if got := budget.RemainingBytes(); got != 900 {
+		t.Fatalf("RemainingBytes() = %d, want 900", got)
+	}
+	if budget.TryRegisterPage("sixth") {
+		t.Fatal("sixth unique page should fail")
 	}
 }

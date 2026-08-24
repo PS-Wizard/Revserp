@@ -25,8 +25,8 @@ func TestComposeSystemContext(t *testing.T) {
 
 func TestAllowedTools(t *testing.T) {
 	all := allowedTools(nil)
-	if len(all) != 6 {
-		t.Fatalf("allowedTools(nil) has %d tools, want 6: %+v", len(all), all)
+	if len(all) != 7 {
+		t.Fatalf("allowedTools(nil) has %d tools, want 7: %+v", len(all), all)
 	}
 	names := map[string]bool{}
 	for _, def := range all {
@@ -35,19 +35,19 @@ func TestAllowedTools(t *testing.T) {
 			t.Fatalf("tool %s missing description or schema: %+v", def.Name, def)
 		}
 	}
-	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "render_chart"} {
+	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"} {
 		if !names[name] {
 			t.Fatalf("allowedTools(nil) missing %s: %+v", name, all)
 		}
 	}
-	if got := allowedTools([]string{"read_issues"}); len(got) != 5 {
-		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other five", got)
+	if got := allowedTools([]string{"read_issues"}); len(got) != 6 {
+		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other six", got)
 	}
-	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "render_chart"}); len(got) != 0 {
+	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"}); len(got) != 0 {
 		t.Fatalf("allowedTools(all disabled) = %+v, want none", got)
 	}
-	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 5 {
-		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other five", got)
+	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 6 {
+		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other six", got)
 	}
 }
 

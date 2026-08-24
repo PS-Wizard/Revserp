@@ -22,20 +22,22 @@ import (
 )
 
 const (
-	defaultLease         = 45 * time.Second
-	defaultHeartbeat     = 10 * time.Second
-	defaultFlush         = 100 * time.Millisecond
-	defaultRecovery      = time.Minute
-	defaultShutdownGrace = 10 * time.Second
-	defaultAttempts      = 2
-	maxWorkerSlots       = 20
-	contextBudgetBytes   = 64 << 10
-	maxAgentRounds       = 8
-	toolRowBudget        = 200
-	liveBudgetBytes      = 192 << 10
-	toolResultContentCap = 32 << 10
-	stubbedToolContent   = "[earlier tool output omitted to fit context]"
-	toolLimitPrompt      = "You have reached the tool-call limit for this turn. Do not request any more tools. Answer now with concrete recommendations based only on what you have already gathered, citing the specific issues you found where relevant."
+	defaultLease           = 45 * time.Second
+	defaultHeartbeat       = 10 * time.Second
+	defaultFlush           = 100 * time.Millisecond
+	defaultRecovery        = time.Minute
+	defaultShutdownGrace   = 10 * time.Second
+	defaultAttempts        = 2
+	maxWorkerSlots         = 20
+	contextBudgetBytes     = 64 << 10
+	maxAgentRounds         = 8
+	toolRowBudget          = 200
+	pageContentBudgetBytes = 96 << 10
+	pageContentBudgetPages = 5
+	liveBudgetBytes        = 192 << 10
+	toolResultContentCap   = 32 << 10
+	stubbedToolContent     = "[earlier tool output omitted to fit context]"
+	toolLimitPrompt        = "You have reached the tool-call limit for this turn. Do not request any more tools. Answer now with concrete recommendations based only on what you have already gathered, citing the specific issues you found where relevant."
 )
 
 // Config contains the AI chat worker settings.
@@ -247,12 +249,13 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	registry := aichattools.NewRegistry()
 	allowed := allowedTools(claimed.DisabledTools)
 	toolScope := aichattools.Scope{
-		UserID:    scope.UserID,
-		ProjectID: scope.ProjectID,
-		CrawlID:   scope.CrawlID,
-		Queries:   queries,
-		GSC:       w.GSC,
-		RowBudget: aichattools.NewBudget(toolRowBudget),
+		UserID:            scope.UserID,
+		ProjectID:         scope.ProjectID,
+		CrawlID:           scope.CrawlID,
+		Queries:           queries,
+		GSC:               w.GSC,
+		RowBudget:         aichattools.NewBudget(toolRowBudget),
+		PageContentBudget: aichattools.NewPageContentBudget(pageContentBudgetBytes, pageContentBudgetPages),
 	}
 
 	flushTicker := time.NewTicker(w.flushInterval)
