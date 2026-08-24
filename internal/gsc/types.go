@@ -31,9 +31,12 @@ const (
 
 // QueryPageOptions selects one page of Search Console rows.
 type QueryPageOptions struct {
-	Days   int
-	Limit  int
-	Offset int
+	Days int
+	// StartDate and EndDate are optional exact dates (YYYY-MM-DD) that override Days.
+	StartDate string
+	EndDate   string
+	Limit     int
+	Offset    int
 	// Dimension groups the rows: query, page, country, or device. Empty means
 	// query, which keeps legacy callers unchanged.
 	Dimension string

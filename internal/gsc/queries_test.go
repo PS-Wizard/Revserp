@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -152,11 +153,13 @@ func TestQueryPageOptionsNormalizedCapsSearchLength(t *testing.T) {
 func TestCacheKeyDistinguishesEveryRequestDimension(t *testing.T) {
 	base := QueryPageOptions{Days: 90, Limit: 25, Offset: 0, Search: "seo"}
 	variants := map[string]QueryPageOptions{
-		"days":      {Days: 30, Limit: 25, Search: "seo"},
-		"limit":     {Days: 90, Limit: 50, Search: "seo"},
-		"offset":    {Days: 90, Limit: 25, Offset: 25, Search: "seo"},
-		"search":    {Days: 90, Limit: 25, Search: "aeo"},
-		"questions": {Days: 90, Limit: 25, Search: "seo", QuestionsOnly: true},
+		"days":       {Days: 30, Limit: 25, Search: "seo"},
+		"limit":      {Days: 90, Limit: 50, Search: "seo"},
+		"offset":     {Days: 90, Limit: 25, Offset: 25, Search: "seo"},
+		"search":     {Days: 90, Limit: 25, Search: "aeo"},
+		"questions":  {Days: 90, Limit: 25, Search: "seo", QuestionsOnly: true},
+		"start_date": {Days: 90, Limit: 25, Search: "seo", StartDate: "2025-08-22", EndDate: "2025-09-10"},
+		"end_date":   {Days: 90, Limit: 25, Search: "seo", StartDate: "2025-08-22", EndDate: "2025-09-11"},
 	}
 
 	baseKey := base.cacheKey("org", "site")
@@ -204,5 +207,66 @@ func TestQuestionQueryPatternMatchesRealQueries(t *testing.T) {
 		if pattern.MatchString(query) {
 			t.Errorf("pattern matched non-question query %q", query)
 		}
+	}
+}
+
+func TestFetchQueriesUsesExactDates(t *testing.T) {
+	captured, page := captureQueryRequest(t, QueryPageOptions{StartDate: "2025-08-22", EndDate: "2025-09-10", Limit: 10}, 1)
+	if captured["startDate"] != "2025-08-22" || captured["endDate"] != "2025-09-10" {
+		t.Fatalf("request dates = %v..%v, want 2025-08-22..2025-09-10", captured["startDate"], captured["endDate"])
+	}
+	if page.StartDate != "2025-08-22" || page.EndDate != "2025-09-10" {
+		t.Fatalf("page dates = %s..%s, want 2025-08-22..2025-09-10", page.StartDate, page.EndDate)
+	}
+	if page.Days != 20 {
+		t.Fatalf("page.Days = %d, want 20", page.Days)
+	}
+}
+
+func TestFetchQueriesExactDateValidation(t *testing.T) {
+	service := NewService("id", "secret", "http://localhost/callback", "secret", 0)
+	// Use dummy httpClient to avoid actual call - validation happens before request
+	tests := []struct {
+		name    string
+		opts    QueryPageOptions
+		wantErr string
+	}{
+		{"missing end", QueryPageOptions{StartDate: "2025-08-22"}, "must be supplied together"},
+		{"malformed", QueryPageOptions{StartDate: "bad", EndDate: "2025-09-10"}, "YYYY-MM-DD"},
+		{"reversed", QueryPageOptions{StartDate: "2025-09-10", EndDate: "2025-08-22"}, "<="},
+		{"too short", QueryPageOptions{StartDate: "2025-09-10", EndDate: "2025-09-12"}, "between 7 and 480"},
+		{"too long", QueryPageOptions{StartDate: "2024-01-01", EndDate: "2025-09-10"}, "between 7 and 480"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := service.FetchQueries(context.Background(), "tok", "https://example.com/", tc.opts)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("FetchQueries(%+v) err = %v, want containing %q", tc.opts, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCacheKeyDistinguishesExactDates(t *testing.T) {
+	base := QueryPageOptions{Days: 90, Limit: 25, Search: "seo"}
+	withDates := QueryPageOptions{Days: 90, Limit: 25, Search: "seo", StartDate: "2025-08-22", EndDate: "2025-09-10"}
+	if base.cacheKey("org", "site") == withDates.cacheKey("org", "site") {
+		t.Error("exact dates do not change cache key")
+	}
+	sameDatesDifferentDays := withDates
+	sameDatesDifferentDays.Days = 180
+	if withDates.cacheKey("org", "site") != sameDatesDifferentDays.cacheKey("org", "site") {
+		t.Error("days should not change cache key when exact dates are supplied")
+	}
+	other := QueryPageOptions{Days: 90, Limit: 25, Search: "seo", StartDate: "2025-08-23", EndDate: "2025-09-10"}
+	if withDates.cacheKey("org", "site") == other.cacheKey("org", "site") {
+		t.Error("different start_date does not change cache key")
+	}
+}
+
+func TestQueryPageOptionsNormalizedTrimsDates(t *testing.T) {
+	got := QueryPageOptions{StartDate: " 2025-08-22 ", EndDate: " 2025-09-10 "}.normalized()
+	if got.StartDate != "2025-08-22" || got.EndDate != "2025-09-10" {
+		t.Fatalf("trimmed dates = %q..%q", got.StartDate, got.EndDate)
 	}
 }

@@ -2,8 +2,10 @@ package gsc
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FetchQueries loads one page of Search Console query rows live from Google.
@@ -13,7 +15,33 @@ import (
 // appear in a site's top 25.
 func (service *Service) FetchQueries(ctx context.Context, accessToken, siteURL string, options QueryPageOptions) (QueryPage, error) {
 	options = options.normalized()
-	startDate, endDate := getDateRange(options.Days, 0)
+	var startDate, endDate string
+	var days int
+	hasStart := strings.TrimSpace(options.StartDate) != ""
+	hasEnd := strings.TrimSpace(options.EndDate) != ""
+	if hasStart || hasEnd {
+		if !hasStart || !hasEnd {
+			return QueryPage{}, &Error{Message: "start_date and end_date must be supplied together"}
+		}
+		start, sErr := time.Parse(time.DateOnly, options.StartDate)
+		end, eErr := time.Parse(time.DateOnly, options.EndDate)
+		if sErr != nil || eErr != nil {
+			return QueryPage{}, &Error{Message: "start_date and end_date must be YYYY-MM-DD"}
+		}
+		if end.Before(start) {
+			return QueryPage{}, &Error{Message: "start_date must be <= end_date"}
+		}
+		inclusive := int(end.Sub(start).Hours()/24) + 1
+		if inclusive < queryPageMinDays || inclusive > queryPageMaxDays {
+			return QueryPage{}, &Error{Message: fmt.Sprintf("date range must be between %d and %d days inclusive", queryPageMinDays, queryPageMaxDays)}
+		}
+		startDate = options.StartDate
+		endDate = options.EndDate
+		days = inclusive
+	} else {
+		startDate, endDate = getDateRange(options.Days, 0)
+		days = options.Days
+	}
 
 	payload := map[string]any{
 		"startDate":  startDate,
@@ -44,7 +72,7 @@ func (service *Service) FetchQueries(ctx context.Context, accessToken, siteURL s
 
 	return QueryPage{
 		Rows:      rows,
-		Days:      options.Days,
+		Days:      days,
 		Limit:     options.Limit,
 		Offset:    options.Offset,
 		HasMore:   hasMore,
@@ -69,6 +97,8 @@ func (service *Service) FetchQueriesCached(ctx context.Context, accessToken, org
 }
 
 func (options QueryPageOptions) normalized() QueryPageOptions {
+	options.StartDate = strings.TrimSpace(options.StartDate)
+	options.EndDate = strings.TrimSpace(options.EndDate)
 	options.Days = clampInt(options.Days, queryPageDefaultDays, queryPageMinDays, queryPageMaxDays)
 	options.Limit = clampInt(options.Limit, queryPageDefaultLimit, 1, queryPageMaxLimit)
 
@@ -120,11 +150,17 @@ func (options QueryPageOptions) dimensionFilters() []map[string]any {
 }
 
 func (options QueryPageOptions) cacheKey(organizationID, siteURL string) string {
+	days := strconv.Itoa(options.Days)
+	if options.StartDate != "" && options.EndDate != "" {
+		days = ""
+	}
 	return strings.Join([]string{
 		"queries",
 		organizationID,
 		siteURL,
-		strconv.Itoa(options.Days),
+		days,
+		options.StartDate,
+		options.EndDate,
 		strconv.Itoa(options.Limit),
 		strconv.Itoa(options.Offset),
 		options.dimension(),

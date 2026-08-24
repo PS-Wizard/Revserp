@@ -44,7 +44,7 @@ Use get_search_console_data for live search demand, including searches, question
 
 reports accepts up to seven report names. Request several reports together when useful. Each report is returned as a labeled section. summary and opportunities use the same fetch, so request them together. Each paged section has its own next_offset and has_more. To page one section, call the tool again with only that report and its next offset.
 
-days sets the date window and defaults to 180. search filters query reports by matching text. The limit is shared across requested sections.
+days sets the date window and defaults to 180. For row reports (top_queries, question_queries, top_pages, countries, devices) you can instead supply start_date and end_date as YYYY-MM-DD to request an exact range such as 2025-08-22 through 2025-09-10; they must be supplied together, must span 7 to 480 days, and override days. search filters query reports by matching text. The limit is shared across requested sections.
 
 When Search Console is not connected, repeat the tool's explanation honestly. Do not pretend traffic data is available.
 

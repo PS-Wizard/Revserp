@@ -186,6 +186,15 @@ func TestParseGSCArgs(t *testing.T) {
 		{name: "duplicate key rejected", raw: `{"reports":["summary"],"reports":["top_queries"]}`, wantErr: `duplicate argument "reports"`},
 		{name: "trailing data rejected", raw: `{"reports":["summary"]} {"x":1}`, wantErr: "trailing data"},
 		{name: "non-object rejected", raw: `[1]`, wantErr: "must be a JSON object"},
+		{name: "valid exact range", raw: `{"reports":["top_queries"],"start_date":"2025-08-22","end_date":"2025-09-10"}`, want: gscArgs{Reports: []string{"top_queries"}, Days: 180, StartDate: "2025-08-22", EndDate: "2025-09-10", Limit: 25}},
+		{name: "exact range overrides days", raw: `{"reports":["top_queries"],"days":90,"start_date":"2025-08-22","end_date":"2025-09-10"}`, want: gscArgs{Reports: []string{"top_queries"}, Days: 90, StartDate: "2025-08-22", EndDate: "2025-09-10", Limit: 25}},
+		{name: "missing end_date rejected", raw: `{"reports":["top_queries"],"start_date":"2025-08-22"}`, wantErr: "must be supplied together"},
+		{name: "missing start_date rejected", raw: `{"reports":["top_queries"],"end_date":"2025-09-10"}`, wantErr: "must be supplied together"},
+		{name: "malformed start_date rejected", raw: `{"reports":["top_queries"],"start_date":"2025/08/22","end_date":"2025-09-10"}`, wantErr: "YYYY-MM-DD"},
+		{name: "malformed end_date rejected", raw: `{"reports":["top_queries"],"start_date":"2025-08-22","end_date":"not-a-date"}`, wantErr: "YYYY-MM-DD"},
+		{name: "reversed range rejected", raw: `{"reports":["top_queries"],"start_date":"2025-09-10","end_date":"2025-08-22"}`, wantErr: "<="},
+		{name: "too short range rejected", raw: `{"reports":["top_queries"],"start_date":"2025-09-10","end_date":"2025-09-12"}`, wantErr: "at least 7"},
+		{name: "too long range rejected", raw: `{"reports":["top_queries"],"start_date":"2024-01-01","end_date":"2025-09-10"}`, wantErr: "at most 480"},
 	}
 
 	for _, test := range tests {
@@ -572,7 +581,7 @@ func TestSearchConsoleToolDef(t *testing.T) {
 	}
 	for name := range properties {
 		switch name {
-		case "reports", "days", "search", "limit", "offset":
+		case "reports", "days", "start_date", "end_date", "search", "limit", "offset":
 		default:
 			t.Fatalf("schema property %q must not exist", name)
 		}
@@ -599,5 +608,61 @@ func TestGSCGoogleConnectionLookupUsesOrganizationID(t *testing.T) {
 	runGSC(t, connections, fetcher, `{"reports":["top_queries"]}`)
 	if !connections.lastOrgID.Valid || connections.lastOrgID != orgID {
 		t.Fatalf("google connection looked up by %v, want the project's organization id %v", connections.lastOrgID, orgID)
+	}
+}
+
+func TestParseGSCArgsDefaultsWithExactDates(t *testing.T) {
+	args, err := parseGSCArgs(json.RawMessage(`{"reports":["top_queries"]}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if args.StartDate != "" || args.EndDate != "" {
+		t.Fatalf("expected no exact dates, got %+v", args)
+	}
+	if args.Days != 180 {
+		t.Fatalf("Days = %d, want 180", args.Days)
+	}
+}
+
+func TestGSCExactDateForwarding(t *testing.T) {
+	fetcher := &fakeGSCFetcher{pages: map[string]gsc.QueryPage{
+		"query|false|": {Rows: []gsc.SearchAnalyticsRow{{Query: "a"}}, StartDate: "2025-08-22", EndDate: "2025-09-10", Days: 20},
+	}}
+	connections := connectedFake(fetcher)
+	result := runGSC(t, connections, fetcher, `{"reports":["top_queries"],"start_date":"2025-08-22","end_date":"2025-09-10"}`)
+	if fetcher.lastOptions.StartDate != "2025-08-22" || fetcher.lastOptions.EndDate != "2025-09-10" {
+		t.Fatalf("forwarded dates = %q..%q, want 2025-08-22..2025-09-10", fetcher.lastOptions.StartDate, fetcher.lastOptions.EndDate)
+	}
+	var resp gscReportResponse
+	if err := json.Unmarshal(firstGSCSection(t, result), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StartDate != "2025-08-22" || resp.EndDate != "2025-09-10" {
+		t.Fatalf("response dates = %s..%s, want 2025-08-22..2025-09-10", resp.StartDate, resp.EndDate)
+	}
+	if !strings.Contains(result.Summary, "20 days") {
+		t.Fatalf("Summary = %q, want containing 20 days", result.Summary)
+	}
+}
+
+func TestGSCExactDateErrorsAreToolErrors(t *testing.T) {
+	fetcher := &fakeGSCFetcher{}
+	connections := connectedFake(fetcher)
+	tests := []struct {
+		raw     string
+		wantErr string
+	}{
+		{raw: `{"reports":["top_queries"],"start_date":"2025-08-22"}`, wantErr: "must be supplied together"},
+		{raw: `{"reports":["top_queries"],"start_date":"bad","end_date":"2025-09-10"}`, wantErr: "YYYY-MM-DD"},
+		{raw: `{"reports":["top_queries"],"start_date":"2025-09-10","end_date":"2025-08-22"}`, wantErr: "<="},
+	}
+	for _, tc := range tests {
+		result := runGSC(t, connections, fetcher, tc.raw)
+		if !strings.Contains(result.Content, "get_search_console_data error") || !strings.Contains(result.Content, tc.wantErr) {
+			t.Fatalf("run(%s) Content = %q, want error containing %q", tc.raw, result.Content, tc.wantErr)
+		}
+		if fetcher.fetchCalls != 0 {
+			t.Fatalf("fetch should not be called on parse error")
+		}
 	}
 }

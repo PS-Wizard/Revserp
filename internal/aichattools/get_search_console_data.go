@@ -40,7 +40,9 @@ const getSearchConsoleDataSchema = `{
   "type": "object",
   "properties": {
     "reports": {"type": "array", "items": {"type": "string", "enum": ["summary", "top_queries", "question_queries", "top_pages", "countries", "devices", "opportunities"]}, "minItems": 1, "maxItems": 7, "description": "The report or reports to return, in order. summary: headline clicks/impressions/CTR/position vs the previous period. top_queries: highest-traffic search queries. question_queries: queries phrased as questions or comparisons. top_pages: highest-traffic landing pages. countries: traffic split by country. devices: traffic split by desktop/mobile/tablet. opportunities: low-CTR and striking-distance queries plus question queries worth optimizing. Several reports come back as one result with one labeled section per report; request one report at a time to page deep with offset."},
-    "days": {"type": "integer", "minimum": 7, "maximum": 480, "description": "Reporting window in days (default 180). Applies to top_queries, question_queries, top_pages, countries, and devices. Search Console data lags roughly 3 days."},
+    "days": {"type": "integer", "minimum": 7, "maximum": 480, "description": "Reporting window in days (default 180). Applies to top_queries, question_queries, top_pages, countries, and devices. Ignored when start_date and end_date are supplied. Search Console data lags roughly 3 days."},
+    "start_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Optional exact start date (YYYY-MM-DD). Applies to row reports (top_queries, question_queries, top_pages, countries, devices). Must be supplied together with end_date and overrides days."},
+    "end_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Optional exact end date (YYYY-MM-DD). Applies to row reports. Must be supplied together with start_date and overrides days."},
     "search": {"type": "string", "description": "Case-insensitive substring filter on the query text. Only applies to top_queries and question_queries."},
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Max rows per report section (default 25, max 100). When several reports are requested, the limit is reduced so the combined response stays bounded (150 rows total)."},
     "offset": {"type": "integer", "minimum": 0, "maximum": 25000, "description": "Page position applied to each report section (default 0)."}
@@ -116,11 +118,13 @@ func executeGetSearchConsoleData(ctx context.Context, args json.RawMessage, s Sc
 
 // gscArgs is the raw, unvalidated argument set.
 type gscArgs struct {
-	Reports []string
-	Days    int
-	Search  string
-	Limit   int
-	Offset  int
+	Reports   []string
+	Days      int
+	StartDate string
+	EndDate   string
+	Search    string
+	Limit     int
+	Offset    int
 }
 
 // gscReportResponse is the JSON the model sees for query-style reports.
@@ -439,6 +443,8 @@ func (e *gscExecutor) pageSection(ctx context.Context, projectID pgtype.UUID, pr
 		options = gsc.QueryPageOptions{Search: args.Search}
 	}
 	options.Days = args.Days
+	options.StartDate = args.StartDate
+	options.EndDate = args.EndDate
 	options.Limit = limit
 	options.Offset = args.Offset
 	page, err := e.fetcher.FetchQueriesCached(ctx, accessToken, projectID.String(), projectConnection.SiteUrl, options)
@@ -532,6 +538,7 @@ func unavailableGSC(reason string) Result {
 // keys, and trailing data are rejected.
 func parseGSCArgs(raw json.RawMessage) (gscArgs, error) {
 	args := gscArgs{Days: gscDefaultDays, Limit: gscDefaultLimit}
+	var rawDays *int
 	fields, err := strictJSONFields(raw)
 	if err != nil {
 		return args, err
@@ -559,15 +566,38 @@ func parseGSCArgs(raw json.RawMessage) (gscArgs, error) {
 			}
 			args.Reports = normalized
 		case "days":
-			if err := json.Unmarshal(value, &args.Days); err != nil {
+			var d int
+			if err := json.Unmarshal(value, &d); err != nil {
 				return args, fmt.Errorf("argument %q must be an integer", key)
 			}
-			if args.Days < gscMinDays {
-				return args, fmt.Errorf("argument %q must be at least %d", key, gscMinDays)
+			rawDays = &d
+			args.Days = d
+		case "start_date":
+			var s string
+			if err := json.Unmarshal(value, &s); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
 			}
-			if args.Days > gscMaxDays {
-				args.Days = gscMaxDays
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return args, fmt.Errorf("argument %q must not be empty", key)
 			}
+			if _, err := time.Parse(time.DateOnly, s); err != nil {
+				return args, fmt.Errorf("argument %q must be YYYY-MM-DD", key)
+			}
+			args.StartDate = s
+		case "end_date":
+			var s string
+			if err := json.Unmarshal(value, &s); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return args, fmt.Errorf("argument %q must not be empty", key)
+			}
+			if _, err := time.Parse(time.DateOnly, s); err != nil {
+				return args, fmt.Errorf("argument %q must be YYYY-MM-DD", key)
+			}
+			args.EndDate = s
 		case "search":
 			if err := json.Unmarshal(value, &args.Search); err != nil {
 				return args, fmt.Errorf("argument %q must be a string", key)
@@ -602,6 +632,36 @@ func parseGSCArgs(raw json.RawMessage) (gscArgs, error) {
 	}
 	if len(args.Reports) == 0 {
 		return args, errors.New("missing required argument \"reports\"")
+	}
+	hasStart := args.StartDate != ""
+	hasEnd := args.EndDate != ""
+	if hasStart != hasEnd {
+		return args, errors.New("arguments \"start_date\" and \"end_date\" must be supplied together")
+	}
+	if hasStart && hasEnd {
+		start, _ := time.Parse(time.DateOnly, args.StartDate)
+		end, _ := time.Parse(time.DateOnly, args.EndDate)
+		if end.Before(start) {
+			return args, errors.New("argument \"start_date\" must be <= \"end_date\"")
+		}
+		inclusive := int(end.Sub(start).Hours()/24) + 1
+		if inclusive < gscMinDays {
+			return args, fmt.Errorf("date range must be at least %d days (got %d)", gscMinDays, inclusive)
+		}
+		if inclusive > gscMaxDays {
+			return args, fmt.Errorf("date range must be at most %d days (got %d)", gscMaxDays, inclusive)
+		}
+	} else {
+		if rawDays != nil {
+			if args.Days < gscMinDays {
+				return args, fmt.Errorf("argument %q must be at least %d", "days", gscMinDays)
+			}
+			if args.Days > gscMaxDays {
+				args.Days = gscMaxDays
+			}
+		} else {
+			args.Days = gscDefaultDays
+		}
 	}
 	return args, nil
 }
