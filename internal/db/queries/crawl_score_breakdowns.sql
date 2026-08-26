@@ -40,44 +40,160 @@ WHERE csb.crawl_id = $1
 LIMIT 1;
 
 -- name: CountDistinctCrawlIssueURLsByTypeForCrawlByUser :one
-SELECT COUNT(DISTINCT ci.url)
-FROM crawl_issues AS ci
-INNER JOIN crawls AS c ON c.id = ci.crawl_id
-INNER JOIN projects AS p ON p.id = c.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE ci.crawl_id = $1
-  AND om.user_id = $2
-  AND ci.pillar = $3
-  AND ci.bucket = $4
-  AND ci.issue_type = $5;
+WITH ranked_issues AS (
+    SELECT
+        ci.*,
+        p.id AS project_id,
+        CASE
+            WHEN ci.issue_type IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') THEN 'site'
+            WHEN ci.issue_group_id IS NOT NULL THEN 'group'
+            ELSE 'page'
+        END::text AS work_subject_kind,
+        CASE
+            WHEN ci.issue_group_id IS NOT NULL THEN encode(digest(COALESCE((
+                SELECT string_agg(member.url, E'\n' ORDER BY member.url)
+                FROM crawl_issue_group_members AS member
+                WHERE member.group_id = ci.issue_group_id
+            ), ''), 'sha256'), 'hex')
+            ELSE ci.url
+        END::text AS work_subject_key,
+        row_number() OVER (
+            PARTITION BY ci.url
+            ORDER BY
+                CASE ci.severity
+                    WHEN 'critical' THEN 4
+                    WHEN 'high' THEN 3
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 1
+                    ELSE 0
+                END DESC,
+                ci.created_at ASC
+        ) AS url_rank
+    FROM crawl_issues AS ci
+    INNER JOIN crawls AS c ON c.id = ci.crawl_id
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE ci.crawl_id = sqlc.arg(crawl_id)
+      AND om.user_id = sqlc.arg(user_id)
+      AND ci.pillar = sqlc.arg(pillar)
+      AND ci.bucket = sqlc.arg(bucket)
+      AND ci.issue_type = sqlc.arg(issue_type)
+)
+SELECT COUNT(*)
+FROM ranked_issues AS issue
+LEFT JOIN LATERAL (
+    SELECT attempt.status
+    FROM issue_work_items AS item
+    JOIN LATERAL (
+        SELECT candidate.status
+        FROM issue_work_attempts AS candidate
+        WHERE candidate.work_item_id = item.id
+        ORDER BY candidate.created_at DESC, candidate.id DESC
+        LIMIT 1
+    ) AS attempt ON attempt.status IN ('awaiting_verification', 'not_verified', 'still_open')
+    WHERE item.project_id = issue.project_id
+      AND item.subject_kind = issue.work_subject_kind
+      AND item.subject_key = issue.work_subject_key
+      AND item.pillar = issue.pillar
+      AND item.bucket = issue.bucket
+      AND item.issue_type = issue.issue_type
+    LIMIT 1
+) AS work ON TRUE
+WHERE issue.url_rank = 1
+  AND (
+      sqlc.arg(work_status)::text = 'all'
+      OR (sqlc.arg(work_status)::text = 'marked_done' AND work.status IN ('awaiting_verification', 'not_verified'))
+      OR (sqlc.arg(work_status)::text = 'needs_action' AND work.status IS DISTINCT FROM 'awaiting_verification' AND work.status IS DISTINCT FROM 'not_verified')
+  );
 
 -- name: ListDistinctCrawlIssueURLsByTypeForCrawlByUser :many
-SELECT DISTINCT ON (ci.url)
-    ci.url,
-    ci.crawl_page_id,
-    ci.severity,
-    ci.message,
-    ci.details
-FROM crawl_issues AS ci
-INNER JOIN crawls AS c ON c.id = ci.crawl_id
-INNER JOIN projects AS p ON p.id = c.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE ci.crawl_id = $1
-  AND om.user_id = $2
-  AND ci.pillar = $3
-  AND ci.bucket = $4
-  AND ci.issue_type = $5
-ORDER BY
-    ci.url ASC,
-    CASE ci.severity
-        WHEN 'high' THEN 3
-        WHEN 'medium' THEN 2
-        WHEN 'low' THEN 1
-        ELSE 0
-    END DESC,
-    ci.created_at ASC
-LIMIT $6
-OFFSET $7;
+WITH ranked_issues AS (
+    SELECT
+        ci.*,
+        p.id AS project_id,
+        CASE
+            WHEN ci.issue_type IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') THEN 'site'
+            WHEN ci.issue_group_id IS NOT NULL THEN 'group'
+            ELSE 'page'
+        END::text AS work_subject_kind,
+        CASE
+            WHEN ci.issue_group_id IS NOT NULL THEN encode(digest(COALESCE((
+                SELECT string_agg(member.url, E'\n' ORDER BY member.url)
+                FROM crawl_issue_group_members AS member
+                WHERE member.group_id = ci.issue_group_id
+            ), ''), 'sha256'), 'hex')
+            ELSE ci.url
+        END::text AS work_subject_key,
+        row_number() OVER (
+            PARTITION BY ci.url
+            ORDER BY
+                CASE ci.severity
+                    WHEN 'critical' THEN 4
+                    WHEN 'high' THEN 3
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 1
+                    ELSE 0
+                END DESC,
+                ci.created_at ASC
+        ) AS url_rank
+    FROM crawl_issues AS ci
+    INNER JOIN crawls AS c ON c.id = ci.crawl_id
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE ci.crawl_id = sqlc.arg(crawl_id)
+      AND om.user_id = sqlc.arg(user_id)
+      AND ci.pillar = sqlc.arg(pillar)
+      AND ci.bucket = sqlc.arg(bucket)
+      AND ci.issue_type = sqlc.arg(issue_type)
+)
+SELECT
+    issue.id AS issue_id,
+    issue.url,
+    issue.crawl_page_id,
+    issue.severity,
+    issue.message,
+    issue.details,
+    COALESCE(work.attempt_id::text, '')::text AS work_attempt_id,
+    COALESCE(work.status, '')::text AS work_status,
+    COALESCE(work.locked, FALSE)::boolean AS work_locked,
+    COALESCE(work.contributed_by_me, FALSE)::boolean AS contributed_by_me
+FROM ranked_issues AS issue
+LEFT JOIN LATERAL (
+    SELECT
+        attempt.id AS attempt_id,
+        attempt.status,
+        attempt.locked_at IS NOT NULL AS locked,
+        EXISTS (
+            SELECT 1
+            FROM issue_work_attempt_contributors AS contributor
+            WHERE contributor.attempt_id = attempt.id
+              AND contributor.user_id = sqlc.arg(user_id)
+        ) AS contributed_by_me
+    FROM issue_work_items AS item
+    JOIN LATERAL (
+        SELECT candidate.*
+        FROM issue_work_attempts AS candidate
+        WHERE candidate.work_item_id = item.id
+        ORDER BY candidate.created_at DESC, candidate.id DESC
+        LIMIT 1
+    ) AS attempt ON attempt.status IN ('awaiting_verification', 'not_verified', 'still_open')
+    WHERE item.project_id = issue.project_id
+      AND item.subject_kind = issue.work_subject_kind
+      AND item.subject_key = issue.work_subject_key
+      AND item.pillar = issue.pillar
+      AND item.bucket = issue.bucket
+      AND item.issue_type = issue.issue_type
+    LIMIT 1
+) AS work ON TRUE
+WHERE issue.url_rank = 1
+  AND (
+      sqlc.arg(work_status)::text = 'all'
+      OR (sqlc.arg(work_status)::text = 'marked_done' AND work.status IN ('awaiting_verification', 'not_verified'))
+      OR (sqlc.arg(work_status)::text = 'needs_action' AND work.status IS DISTINCT FROM 'awaiting_verification' AND work.status IS DISTINCT FROM 'not_verified')
+  )
+ORDER BY issue.url ASC
+LIMIT sqlc.arg('limit')
+OFFSET sqlc.arg('offset');
 
 -- name: CountCompareCrawlIssueURLsByTypeForCrawlByUser :one
 WITH baseline_urls AS (
@@ -334,6 +450,14 @@ WHERE $7 = '' OR change_type = $7 OR contribution_type = $7
 ORDER BY url ASC
 LIMIT $8
 OFFSET $9;
+
+-- name: GetLatestCompletedCrawlIDForScoreBreakdown :one
+SELECT id
+FROM crawls
+WHERE project_id = $1
+  AND status = 'completed'
+ORDER BY completed_at DESC NULLS LAST, created_at DESC, id DESC
+LIMIT 1;
 
 -- name: ListCompletedProjectCrawlScoreBreakdownsForUser :many
 SELECT

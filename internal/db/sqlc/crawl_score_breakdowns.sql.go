@@ -154,28 +154,85 @@ func (q *Queries) CountCompareCrawlIssueURLsByTypeForCrawlByUser(ctx context.Con
 }
 
 const countDistinctCrawlIssueURLsByTypeForCrawlByUser = `-- name: CountDistinctCrawlIssueURLsByTypeForCrawlByUser :one
-SELECT COUNT(DISTINCT ci.url)
-FROM crawl_issues AS ci
-INNER JOIN crawls AS c ON c.id = ci.crawl_id
-INNER JOIN projects AS p ON p.id = c.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE ci.crawl_id = $1
-  AND om.user_id = $2
-  AND ci.pillar = $3
-  AND ci.bucket = $4
-  AND ci.issue_type = $5
+WITH ranked_issues AS (
+    SELECT
+        ci.id, ci.crawl_id, ci.crawl_page_id, ci.url, ci.severity, ci.message, ci.details, ci.created_at, ci.pillar, ci.bucket, ci.issue_type, ci.issue_group_id,
+        p.id AS project_id,
+        CASE
+            WHEN ci.issue_type IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') THEN 'site'
+            WHEN ci.issue_group_id IS NOT NULL THEN 'group'
+            ELSE 'page'
+        END::text AS work_subject_kind,
+        CASE
+            WHEN ci.issue_group_id IS NOT NULL THEN encode(digest(COALESCE((
+                SELECT string_agg(member.url, E'\n' ORDER BY member.url)
+                FROM crawl_issue_group_members AS member
+                WHERE member.group_id = ci.issue_group_id
+            ), ''), 'sha256'), 'hex')
+            ELSE ci.url
+        END::text AS work_subject_key,
+        row_number() OVER (
+            PARTITION BY ci.url
+            ORDER BY
+                CASE ci.severity
+                    WHEN 'critical' THEN 4
+                    WHEN 'high' THEN 3
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 1
+                    ELSE 0
+                END DESC,
+                ci.created_at ASC
+        ) AS url_rank
+    FROM crawl_issues AS ci
+    INNER JOIN crawls AS c ON c.id = ci.crawl_id
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE ci.crawl_id = $2
+      AND om.user_id = $3
+      AND ci.pillar = $4
+      AND ci.bucket = $5
+      AND ci.issue_type = $6
+)
+SELECT COUNT(*)
+FROM ranked_issues AS issue
+LEFT JOIN LATERAL (
+    SELECT attempt.status
+    FROM issue_work_items AS item
+    JOIN LATERAL (
+        SELECT candidate.status
+        FROM issue_work_attempts AS candidate
+        WHERE candidate.work_item_id = item.id
+        ORDER BY candidate.created_at DESC, candidate.id DESC
+        LIMIT 1
+    ) AS attempt ON attempt.status IN ('awaiting_verification', 'not_verified', 'still_open')
+    WHERE item.project_id = issue.project_id
+      AND item.subject_kind = issue.work_subject_kind
+      AND item.subject_key = issue.work_subject_key
+      AND item.pillar = issue.pillar
+      AND item.bucket = issue.bucket
+      AND item.issue_type = issue.issue_type
+    LIMIT 1
+) AS work ON TRUE
+WHERE issue.url_rank = 1
+  AND (
+      $1::text = 'all'
+      OR ($1::text = 'marked_done' AND work.status IN ('awaiting_verification', 'not_verified'))
+      OR ($1::text = 'needs_action' AND work.status IS DISTINCT FROM 'awaiting_verification' AND work.status IS DISTINCT FROM 'not_verified')
+  )
 `
 
 type CountDistinctCrawlIssueURLsByTypeForCrawlByUserParams struct {
-	CrawlID   pgtype.UUID
-	UserID    pgtype.UUID
-	Pillar    string
-	Bucket    string
-	IssueType string
+	WorkStatus string
+	CrawlID    pgtype.UUID
+	UserID     pgtype.UUID
+	Pillar     string
+	Bucket     string
+	IssueType  string
 }
 
 func (q *Queries) CountDistinctCrawlIssueURLsByTypeForCrawlByUser(ctx context.Context, arg CountDistinctCrawlIssueURLsByTypeForCrawlByUserParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countDistinctCrawlIssueURLsByTypeForCrawlByUser,
+		arg.WorkStatus,
 		arg.CrawlID,
 		arg.UserID,
 		arg.Pillar,
@@ -244,6 +301,22 @@ func (q *Queries) GetCrawlScoreBreakdownByCrawlForUser(ctx context.Context, arg 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getLatestCompletedCrawlIDForScoreBreakdown = `-- name: GetLatestCompletedCrawlIDForScoreBreakdown :one
+SELECT id
+FROM crawls
+WHERE project_id = $1
+  AND status = 'completed'
+ORDER BY completed_at DESC NULLS LAST, created_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestCompletedCrawlIDForScoreBreakdown(ctx context.Context, projectID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLatestCompletedCrawlIDForScoreBreakdown, projectID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const listCompareCrawlIssueURLsByTypeForCrawlByUser = `-- name: ListCompareCrawlIssueURLsByTypeForCrawlByUser :many
@@ -509,61 +582,129 @@ func (q *Queries) ListCompletedProjectCrawlScoreBreakdownsForUser(ctx context.Co
 }
 
 const listDistinctCrawlIssueURLsByTypeForCrawlByUser = `-- name: ListDistinctCrawlIssueURLsByTypeForCrawlByUser :many
-SELECT DISTINCT ON (ci.url)
-    ci.url,
-    ci.crawl_page_id,
-    ci.severity,
-    ci.message,
-    ci.details
-FROM crawl_issues AS ci
-INNER JOIN crawls AS c ON c.id = ci.crawl_id
-INNER JOIN projects AS p ON p.id = c.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE ci.crawl_id = $1
-  AND om.user_id = $2
-  AND ci.pillar = $3
-  AND ci.bucket = $4
-  AND ci.issue_type = $5
-ORDER BY
-    ci.url ASC,
-    CASE ci.severity
-        WHEN 'high' THEN 3
-        WHEN 'medium' THEN 2
-        WHEN 'low' THEN 1
-        ELSE 0
-    END DESC,
-    ci.created_at ASC
-LIMIT $6
-OFFSET $7
+WITH ranked_issues AS (
+    SELECT
+        ci.id, ci.crawl_id, ci.crawl_page_id, ci.url, ci.severity, ci.message, ci.details, ci.created_at, ci.pillar, ci.bucket, ci.issue_type, ci.issue_group_id,
+        p.id AS project_id,
+        CASE
+            WHEN ci.issue_type IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') THEN 'site'
+            WHEN ci.issue_group_id IS NOT NULL THEN 'group'
+            ELSE 'page'
+        END::text AS work_subject_kind,
+        CASE
+            WHEN ci.issue_group_id IS NOT NULL THEN encode(digest(COALESCE((
+                SELECT string_agg(member.url, E'\n' ORDER BY member.url)
+                FROM crawl_issue_group_members AS member
+                WHERE member.group_id = ci.issue_group_id
+            ), ''), 'sha256'), 'hex')
+            ELSE ci.url
+        END::text AS work_subject_key,
+        row_number() OVER (
+            PARTITION BY ci.url
+            ORDER BY
+                CASE ci.severity
+                    WHEN 'critical' THEN 4
+                    WHEN 'high' THEN 3
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 1
+                    ELSE 0
+                END DESC,
+                ci.created_at ASC
+        ) AS url_rank
+    FROM crawl_issues AS ci
+    INNER JOIN crawls AS c ON c.id = ci.crawl_id
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE ci.crawl_id = $5
+      AND om.user_id = $1
+      AND ci.pillar = $6
+      AND ci.bucket = $7
+      AND ci.issue_type = $8
+)
+SELECT
+    issue.id AS issue_id,
+    issue.url,
+    issue.crawl_page_id,
+    issue.severity,
+    issue.message,
+    issue.details,
+    COALESCE(work.attempt_id::text, '')::text AS work_attempt_id,
+    COALESCE(work.status, '')::text AS work_status,
+    COALESCE(work.locked, FALSE)::boolean AS work_locked,
+    COALESCE(work.contributed_by_me, FALSE)::boolean AS contributed_by_me
+FROM ranked_issues AS issue
+LEFT JOIN LATERAL (
+    SELECT
+        attempt.id AS attempt_id,
+        attempt.status,
+        attempt.locked_at IS NOT NULL AS locked,
+        EXISTS (
+            SELECT 1
+            FROM issue_work_attempt_contributors AS contributor
+            WHERE contributor.attempt_id = attempt.id
+              AND contributor.user_id = $1
+        ) AS contributed_by_me
+    FROM issue_work_items AS item
+    JOIN LATERAL (
+        SELECT candidate.id, candidate.work_item_id, candidate.source_crawl_id, candidate.status, candidate.verification_crawl_id, candidate.created_at, candidate.locked_at, candidate.verified_at
+        FROM issue_work_attempts AS candidate
+        WHERE candidate.work_item_id = item.id
+        ORDER BY candidate.created_at DESC, candidate.id DESC
+        LIMIT 1
+    ) AS attempt ON attempt.status IN ('awaiting_verification', 'not_verified', 'still_open')
+    WHERE item.project_id = issue.project_id
+      AND item.subject_kind = issue.work_subject_kind
+      AND item.subject_key = issue.work_subject_key
+      AND item.pillar = issue.pillar
+      AND item.bucket = issue.bucket
+      AND item.issue_type = issue.issue_type
+    LIMIT 1
+) AS work ON TRUE
+WHERE issue.url_rank = 1
+  AND (
+      $2::text = 'all'
+      OR ($2::text = 'marked_done' AND work.status IN ('awaiting_verification', 'not_verified'))
+      OR ($2::text = 'needs_action' AND work.status IS DISTINCT FROM 'awaiting_verification' AND work.status IS DISTINCT FROM 'not_verified')
+  )
+ORDER BY issue.url ASC
+LIMIT $4
+OFFSET $3
 `
 
 type ListDistinctCrawlIssueURLsByTypeForCrawlByUserParams struct {
-	CrawlID   pgtype.UUID
-	UserID    pgtype.UUID
-	Pillar    string
-	Bucket    string
-	IssueType string
-	Limit     int32
-	Offset    int32
+	UserID     pgtype.UUID
+	WorkStatus string
+	Offset     int32
+	Limit      int32
+	CrawlID    pgtype.UUID
+	Pillar     string
+	Bucket     string
+	IssueType  string
 }
 
 type ListDistinctCrawlIssueURLsByTypeForCrawlByUserRow struct {
-	Url         string
-	CrawlPageID pgtype.UUID
-	Severity    string
-	Message     string
-	Details     string
+	IssueID         pgtype.UUID
+	Url             string
+	CrawlPageID     pgtype.UUID
+	Severity        string
+	Message         string
+	Details         string
+	WorkAttemptID   string
+	WorkStatus      string
+	WorkLocked      bool
+	ContributedByMe bool
 }
 
 func (q *Queries) ListDistinctCrawlIssueURLsByTypeForCrawlByUser(ctx context.Context, arg ListDistinctCrawlIssueURLsByTypeForCrawlByUserParams) ([]ListDistinctCrawlIssueURLsByTypeForCrawlByUserRow, error) {
 	rows, err := q.db.Query(ctx, listDistinctCrawlIssueURLsByTypeForCrawlByUser,
-		arg.CrawlID,
 		arg.UserID,
+		arg.WorkStatus,
+		arg.Offset,
+		arg.Limit,
+		arg.CrawlID,
 		arg.Pillar,
 		arg.Bucket,
 		arg.IssueType,
-		arg.Limit,
-		arg.Offset,
 	)
 	if err != nil {
 		return nil, err
@@ -573,11 +714,16 @@ func (q *Queries) ListDistinctCrawlIssueURLsByTypeForCrawlByUser(ctx context.Con
 	for rows.Next() {
 		var i ListDistinctCrawlIssueURLsByTypeForCrawlByUserRow
 		if err := rows.Scan(
+			&i.IssueID,
 			&i.Url,
 			&i.CrawlPageID,
 			&i.Severity,
 			&i.Message,
 			&i.Details,
+			&i.WorkAttemptID,
+			&i.WorkStatus,
+			&i.WorkLocked,
+			&i.ContributedByMe,
 		); err != nil {
 			return nil, err
 		}
