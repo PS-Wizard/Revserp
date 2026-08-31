@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/ps-wizard/revserp/internal/businessprofile"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -22,6 +23,7 @@ type upsertProjectBusinessProfileRequest struct {
 	PrimaryLocation     string   `json:"primary_location"`
 	BusinessDescription string   `json:"business_description"`
 	SeedPrompts         []string `json:"seed_prompts"`
+	TargetKeywords      []string `json:"target_keywords"`
 }
 
 type projectBusinessProfileResponse struct {
@@ -33,6 +35,7 @@ type projectBusinessProfileResponse struct {
 	PrimaryLocation     string   `json:"primary_location,omitempty"`
 	BusinessDescription string   `json:"business_description,omitempty"`
 	SeedPrompts         []string `json:"seed_prompts"`
+	TargetKeywords      []string `json:"target_keywords"`
 	CreatedAt           string   `json:"created_at"`
 	UpdatedAt           string   `json:"updated_at"`
 }
@@ -139,17 +142,23 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 	primaryCategory := strings.TrimSpace(requestBody.PrimaryCategory)
 	primaryLocation := strings.TrimSpace(requestBody.PrimaryLocation)
 	businessDescription := strings.TrimSpace(requestBody.BusinessDescription)
-	seedPrompts, err := normalizeSeedPrompts(requestBody.SeedPrompts)
+	seedPrompts, err := businessprofile.NormalizeSeedPrompts(requestBody.SeedPrompts)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	targetKeywords := businessprofile.NormalizeTargetKeywords(requestBody.TargetKeywords)
 	if brandName == "" || websiteURL == "" {
 		writeJSONError(w, http.StatusBadRequest, "brand_name and website_url are required")
 		return
 	}
 
 	seedPromptsJSON, err := json.Marshal(seedPrompts)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	targetKeywordsJSON, err := json.Marshal(targetKeywords)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -171,7 +180,7 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 
 	}
 	user := principal.User
-	project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
+	project, err := queries.GetProjectByIDForUserForBusinessProfileUpdate(r.Context(), sqlc.GetProjectByIDForUserForBusinessProfileUpdateParams{
 		ID:     projectID,
 		UserID: user.ID,
 	})
@@ -197,6 +206,7 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		PrimaryLocation:     pgText(primaryLocation),
 		BusinessDescription: pgText(businessDescription),
 		SeedPrompts:         seedPromptsJSON,
+		TargetKeywords:      targetKeywordsJSON,
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -245,6 +255,7 @@ func newProjectBusinessProfileResponseFromGetRow(profile sqlc.GetProjectBusiness
 		profile.PrimaryLocation,
 		profile.BusinessDescription,
 		profile.SeedPrompts,
+		profile.TargetKeywords,
 		profile.CreatedAt,
 		profile.UpdatedAt,
 	)
@@ -260,6 +271,7 @@ func newProjectBusinessProfileResponseFromUpsertRow(profile sqlc.UpsertProjectBu
 		profile.PrimaryLocation,
 		profile.BusinessDescription,
 		profile.SeedPrompts,
+		profile.TargetKeywords,
 		profile.CreatedAt,
 		profile.UpdatedAt,
 	)
@@ -274,10 +286,15 @@ func newProjectBusinessProfileResponse(
 	primaryLocation pgtype.Text,
 	businessDescription pgtype.Text,
 	rawSeedPrompts []byte,
+	rawTargetKeywords []byte,
 	createdAt pgtype.Timestamptz,
 	updatedAt pgtype.Timestamptz,
 ) (projectBusinessProfileResponse, error) {
-	seedPrompts, err := decodeSeedPrompts(rawSeedPrompts)
+	seedPrompts, err := businessprofile.DecodeSeedPrompts(rawSeedPrompts)
+	if err != nil {
+		return projectBusinessProfileResponse{}, err
+	}
+	targetKeywords, err := businessprofile.DecodeTargetKeywords(rawTargetKeywords)
 	if err != nil {
 		return projectBusinessProfileResponse{}, err
 	}
@@ -291,37 +308,28 @@ func newProjectBusinessProfileResponse(
 		PrimaryLocation:     textValue(primaryLocation),
 		BusinessDescription: textValue(businessDescription),
 		SeedPrompts:         seedPrompts,
+		TargetKeywords:      targetKeywords,
 		CreatedAt:           createdAt.Time.UTC().Format(time.RFC3339),
 		UpdatedAt:           updatedAt.Time.UTC().Format(time.RFC3339),
 	}, nil
 }
 
 func normalizeSeedPrompts(prompts []string) ([]string, error) {
-	if len(prompts) > 5 {
-		return nil, errors.New("seed_prompts cannot contain more than 5 prompts")
-	}
-
-	normalizedPrompts := make([]string, 0, len(prompts))
-	for _, prompt := range prompts {
-		trimmedPrompt := strings.TrimSpace(prompt)
-		if trimmedPrompt == "" {
-			return nil, errors.New("seed_prompts cannot contain empty prompts")
-		}
-		normalizedPrompts = append(normalizedPrompts, trimmedPrompt)
-	}
-
-	return normalizedPrompts, nil
+	return businessprofile.NormalizeSeedPrompts(prompts)
 }
 
 func decodeSeedPrompts(rawSeedPrompts []byte) ([]string, error) {
-	if len(rawSeedPrompts) == 0 {
-		return []string{}, nil
-	}
+	return businessprofile.DecodeSeedPrompts(rawSeedPrompts)
+}
 
-	var seedPrompts []string
-	if err := json.Unmarshal(rawSeedPrompts, &seedPrompts); err != nil {
-		return nil, err
-	}
+func decodeTargetKeywords(rawTargetKeywords []byte) ([]string, error) {
+	return businessprofile.DecodeTargetKeywords(rawTargetKeywords)
+}
 
-	return seedPrompts, nil
+func decodeStringSlice(raw []byte) ([]string, error) {
+	return businessprofile.DecodeStringSlice(raw)
+}
+
+func normalizeTargetKeywords(keywords []string) []string {
+	return businessprofile.NormalizeTargetKeywords(keywords)
 }

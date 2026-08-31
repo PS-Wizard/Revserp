@@ -1,8 +1,17 @@
 -- name: GetProjectBusinessProfileByProjectID :one
-SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, created_at, updated_at
+SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords, created_at, updated_at
 FROM project_business_profile
 WHERE project_id = $1
 LIMIT 1;
+
+-- name: GetProjectByIDForUserForBusinessProfileUpdate :one
+SELECT p.id, p.organization_id, p.name, p.base_url, p.created_at
+FROM projects AS p
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE p.id = $1
+  AND om.user_id = $2
+LIMIT 1
+FOR UPDATE;
 
 -- name: UpsertProjectBusinessProfile :one
 INSERT INTO project_business_profile (
@@ -12,7 +21,8 @@ INSERT INTO project_business_profile (
     primary_category,
     primary_location,
     business_description,
-    seed_prompts
+    seed_prompts,
+    target_keywords
 ) VALUES (
     $1,
     $2,
@@ -20,7 +30,8 @@ INSERT INTO project_business_profile (
     $4,
     $5,
     $6,
-    $7
+    $7,
+    $8
 )
 ON CONFLICT (project_id) DO UPDATE SET
     brand_name = excluded.brand_name,
@@ -29,8 +40,9 @@ ON CONFLICT (project_id) DO UPDATE SET
     primary_location = excluded.primary_location,
     business_description = excluded.business_description,
     seed_prompts = excluded.seed_prompts,
+    target_keywords = excluded.target_keywords,
     updated_at = now()
-RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, created_at, updated_at;
+RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords, created_at, updated_at;
 
 -- name: GetProjectBusinessProfileByProjectIDForUser :one
 SELECT
@@ -42,6 +54,7 @@ SELECT
     pbp.primary_location,
     pbp.business_description,
     pbp.seed_prompts,
+    pbp.target_keywords,
     pbp.created_at,
     pbp.updated_at
 FROM project_business_profile AS pbp

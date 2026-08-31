@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/businessprofile"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -46,7 +47,7 @@ func getBusinessProfileTool() Tool {
 		Def: Def{
 			Name:        businessProfileName,
 			Label:       "Get business profile",
-			Description: "Read the business profile configured for the current project: brand name, website, primary category, primary location, business description, and optionally the seed prompts. Use it for who/what the business is, where it operates, what it sells, and to ground brand-aware answers. This is one record per project — no filters, no paging. Returns a plain explanation when no profile is configured.",
+			Description: "Read the business profile configured for the current project: brand name, website, primary category, primary location, business description, target keywords (always returned), and optionally the seed prompts. Use it for who/what the business is, where it operates, what it sells, and to ground brand-aware answers. This is one record per project — no filters, no paging. Returns a plain explanation when no profile is configured.",
 			Schema:      json.RawMessage(getBusinessProfileSchema),
 		},
 		Execute: executeGetBusinessProfile,
@@ -74,6 +75,7 @@ type businessProfileResponse struct {
 	PrimaryLocation     string   `json:"primary_location,omitempty"`
 	BusinessDescription string   `json:"business_description,omitempty"`
 	SeedPrompts         []string `json:"seed_prompts,omitempty"`
+	TargetKeywords      []string `json:"target_keywords"`
 }
 
 // run executes one get_business_profile call. The payload is one bounded
@@ -101,6 +103,14 @@ func (e *businessProfileExecutor) run(ctx context.Context, raw json.RawMessage, 
 		PrimaryCategory:     profileText(profile.PrimaryCategory),
 		PrimaryLocation:     profileText(profile.PrimaryLocation),
 		BusinessDescription: capBusinessProfileText(profileText(profile.BusinessDescription), businessProfileMaxFieldRune),
+	}
+	if keywords, err := businessprofile.DecodeTargetKeywords(profile.TargetKeywords); err == nil {
+		response.TargetKeywords = keywords
+		if response.TargetKeywords == nil {
+			response.TargetKeywords = []string{}
+		}
+	} else {
+		response.TargetKeywords = []string{}
 	}
 
 	if args.IncludeSeedPrompts && len(profile.SeedPrompts) > 0 {

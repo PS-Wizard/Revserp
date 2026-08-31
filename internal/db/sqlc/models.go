@@ -424,6 +424,7 @@ type ProjectBusinessProfile struct {
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
 	SeedPrompts         []byte
+	TargetKeywords      []byte
 }
 
 type ProjectGscConnection struct {

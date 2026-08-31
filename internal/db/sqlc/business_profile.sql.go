@@ -12,7 +12,7 @@ import (
 )
 
 const getProjectBusinessProfileByProjectID = `-- name: GetProjectBusinessProfileByProjectID :one
-SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, created_at, updated_at
+SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords, created_at, updated_at
 FROM project_business_profile
 WHERE project_id = $1
 LIMIT 1
@@ -27,6 +27,7 @@ type GetProjectBusinessProfileByProjectIDRow struct {
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
 	SeedPrompts         []byte
+	TargetKeywords      []byte
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
 }
@@ -43,6 +44,7 @@ func (q *Queries) GetProjectBusinessProfileByProjectID(ctx context.Context, proj
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
 		&i.SeedPrompts,
+		&i.TargetKeywords,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -59,6 +61,7 @@ SELECT
     pbp.primary_location,
     pbp.business_description,
     pbp.seed_prompts,
+    pbp.target_keywords,
     pbp.created_at,
     pbp.updated_at
 FROM project_business_profile AS pbp
@@ -83,6 +86,7 @@ type GetProjectBusinessProfileByProjectIDForUserRow struct {
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
 	SeedPrompts         []byte
+	TargetKeywords      []byte
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
 }
@@ -99,8 +103,37 @@ func (q *Queries) GetProjectBusinessProfileByProjectIDForUser(ctx context.Contex
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
 		&i.SeedPrompts,
+		&i.TargetKeywords,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProjectByIDForUserForBusinessProfileUpdate = `-- name: GetProjectByIDForUserForBusinessProfileUpdate :one
+SELECT p.id, p.organization_id, p.name, p.base_url, p.created_at
+FROM projects AS p
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE p.id = $1
+  AND om.user_id = $2
+LIMIT 1
+FOR UPDATE
+`
+
+type GetProjectByIDForUserForBusinessProfileUpdateParams struct {
+	ID     pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) GetProjectByIDForUserForBusinessProfileUpdate(ctx context.Context, arg GetProjectByIDForUserForBusinessProfileUpdateParams) (Project, error) {
+	row := q.db.QueryRow(ctx, getProjectByIDForUserForBusinessProfileUpdate, arg.ID, arg.UserID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.Name,
+		&i.BaseUrl,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -113,7 +146,8 @@ INSERT INTO project_business_profile (
     primary_category,
     primary_location,
     business_description,
-    seed_prompts
+    seed_prompts,
+    target_keywords
 ) VALUES (
     $1,
     $2,
@@ -121,7 +155,8 @@ INSERT INTO project_business_profile (
     $4,
     $5,
     $6,
-    $7
+    $7,
+    $8
 )
 ON CONFLICT (project_id) DO UPDATE SET
     brand_name = excluded.brand_name,
@@ -130,8 +165,9 @@ ON CONFLICT (project_id) DO UPDATE SET
     primary_location = excluded.primary_location,
     business_description = excluded.business_description,
     seed_prompts = excluded.seed_prompts,
+    target_keywords = excluded.target_keywords,
     updated_at = now()
-RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, created_at, updated_at
+RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords, created_at, updated_at
 `
 
 type UpsertProjectBusinessProfileParams struct {
@@ -142,6 +178,7 @@ type UpsertProjectBusinessProfileParams struct {
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
 	SeedPrompts         []byte
+	TargetKeywords      []byte
 }
 
 type UpsertProjectBusinessProfileRow struct {
@@ -153,6 +190,7 @@ type UpsertProjectBusinessProfileRow struct {
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
 	SeedPrompts         []byte
+	TargetKeywords      []byte
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
 }
@@ -166,6 +204,7 @@ func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertPr
 		arg.PrimaryLocation,
 		arg.BusinessDescription,
 		arg.SeedPrompts,
+		arg.TargetKeywords,
 	)
 	var i UpsertProjectBusinessProfileRow
 	err := row.Scan(
@@ -177,6 +216,7 @@ func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertPr
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
 		&i.SeedPrompts,
+		&i.TargetKeywords,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

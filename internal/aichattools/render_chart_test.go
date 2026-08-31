@@ -192,7 +192,7 @@ func TestRenderChartToolDef(t *testing.T) {
 
 func TestRenderChartRegistryOrder(t *testing.T) {
 	names := NewRegistry().Names()
-	want := []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"}
+	want := []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile"}
 	if len(names) != len(want) {
 		t.Fatalf("names = %v, want %v", names, want)
 	}

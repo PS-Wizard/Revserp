@@ -253,6 +253,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		ProjectID:         scope.ProjectID,
 		CrawlID:           scope.CrawlID,
 		Queries:           queries,
+		DB:                w.pool,
 		GSC:               w.GSC,
 		RowBudget:         aichattools.NewBudget(toolRowBudget),
 		PageContentBudget: aichattools.NewPageContentBudget(pageContentBudgetBytes, pageContentBudgetPages),

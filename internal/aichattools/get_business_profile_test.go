@@ -35,6 +35,7 @@ func makeProfile() sqlc.GetProjectBusinessProfileByProjectIDForUserRow {
 		PrimaryLocation:     text("Portland, OR"),
 		BusinessDescription: text("Sells handmade outdoor gear."),
 		SeedPrompts:         []byte(`["who buys acme gear","is acme's warranty transferable"]`),
+		TargetKeywords:      []byte(`["seo","maps"]`),
 	}
 }
 
@@ -73,6 +74,9 @@ func TestBusinessProfileDefaultsExcludeSeedPrompts(t *testing.T) {
 	}
 	if response.SeedPrompts != nil {
 		t.Fatalf("SeedPrompts = %v, want omitted by default", response.SeedPrompts)
+	}
+	if response.TargetKeywords == nil || len(response.TargetKeywords) != 2 || response.TargetKeywords[0] != "seo" {
+		t.Fatalf("TargetKeywords = %v, want [seo maps] always", response.TargetKeywords)
 	}
 	if want := "business profile: Acme LLC (E-commerce)"; result.Summary != want {
 		t.Fatalf("Summary = %q, want %q", result.Summary, want)

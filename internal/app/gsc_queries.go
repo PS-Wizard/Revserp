@@ -76,6 +76,7 @@ func (a *App) handleProjectGSCQueries(w http.ResponseWriter, r *http.Request) {
 		Limit:         parseIntQueryParam(params.Get("limit")),
 		Offset:        parseIntQueryParam(params.Get("offset")),
 		Search:        params.Get("search"),
+		Dimension:     params.Get("dimension"),
 		QuestionsOnly: params.Get("preset") == "questions",
 	}
 
