@@ -276,6 +276,7 @@ type CrawlPage struct {
 	Soft404                 bool
 	FetchError              pgtype.Text
 	ContentBlocks           []byte
+	HealthScore             pgtype.Int2
 }
 
 type CrawlScoreBreakdown struct {

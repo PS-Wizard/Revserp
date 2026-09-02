@@ -183,5 +183,43 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 		return shared.CrawlScores{}, fmt.Errorf("upsert crawl score breakdown: %w", err)
 	}
 
+	pageHealthPageSignals := make([]PageHealthPageSignal, 0, len(crawlPages))
+	for _, crawlPage := range crawlPages {
+		pageHealthPageSignals = append(pageHealthPageSignals, PageHealthPageSignal{
+			CrawlPageID: crawlPage.ID,
+			StatusCode:  int32Value(crawlPage.StatusCode),
+			ContentType: textValue(crawlPage.ContentType),
+			Soft404:     crawlPage.Soft404,
+			FetchError:  textValue(crawlPage.FetchError),
+		})
+	}
+
+	pageHealthIssueSignals := make([]PageHealthIssueSignal, 0, len(crawlIssues))
+	for _, crawlIssue := range crawlIssues {
+		pageHealthIssueSignals = append(pageHealthIssueSignals, PageHealthIssueSignal{
+			CrawlPageID: crawlIssue.CrawlPageID,
+			Pillar:      crawlIssue.Pillar,
+			Bucket:      crawlIssue.Bucket,
+			IssueType:   crawlIssue.IssueType,
+			Severity:    crawlIssue.Severity,
+		})
+	}
+
+	pageHealthScores := CalculatePageHealthScores(pageHealthPageSignals, pageHealthIssueSignals, scoringConfig)
+	if len(pageHealthScores) > 0 {
+		pageIDs := make([]pgtype.UUID, 0, len(pageHealthScores))
+		healthScores := make([]int16, 0, len(pageHealthScores))
+		for _, pageHealthScore := range pageHealthScores {
+			pageIDs = append(pageIDs, pageHealthScore.CrawlPageID)
+			healthScores = append(healthScores, pageHealthScore.HealthScore)
+		}
+		if err := store.queries.BulkUpdateCrawlPageHealthScores(ctx, sqlc.BulkUpdateCrawlPageHealthScoresParams{
+			PageIds:      pageIDs,
+			HealthScores: healthScores,
+		}); err != nil {
+			return shared.CrawlScores{}, fmt.Errorf("bulk update crawl page health scores: %w", err)
+		}
+	}
+
 	return crawlScores, nil
 }

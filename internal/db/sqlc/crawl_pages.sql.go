@@ -30,6 +30,25 @@ func (q *Queries) BulkUpdateCrawlPageContentFingerprints(ctx context.Context, ar
 	return err
 }
 
+const bulkUpdateCrawlPageHealthScores = `-- name: BulkUpdateCrawlPageHealthScores :exec
+UPDATE crawl_pages AS cp
+SET health_score = data.health_score
+FROM (
+    SELECT unnest($1::uuid[]) AS id, unnest($2::smallint[]) AS health_score
+) AS data
+WHERE cp.id = data.id
+`
+
+type BulkUpdateCrawlPageHealthScoresParams struct {
+	PageIds      []pgtype.UUID
+	HealthScores []int16
+}
+
+func (q *Queries) BulkUpdateCrawlPageHealthScores(ctx context.Context, arg BulkUpdateCrawlPageHealthScoresParams) error {
+	_, err := q.db.Exec(ctx, bulkUpdateCrawlPageHealthScores, arg.PageIds, arg.HealthScores)
+	return err
+}
+
 const copyCrawlPageFromBaseline = `-- name: CopyCrawlPageFromBaseline :execrows
 INSERT INTO crawl_pages (
     crawl_id,
@@ -184,6 +203,34 @@ func (q *Queries) CountCrawlPagesForCrawlByUser(ctx context.Context, arg CountCr
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countCrawlPagesSearchForUser = `-- name: CountCrawlPagesSearchForUser :one
+SELECT COUNT(*)::bigint
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+  AND (
+      $3::text = ''
+      OR strpos(lower(cp.url), lower($3::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower($3::text)) > 0
+  )
+`
+
+type CountCrawlPagesSearchForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Query   string
+}
+
+func (q *Queries) CountCrawlPagesSearchForUser(ctx context.Context, arg CountCrawlPagesSearchForUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlPagesSearchForUser, arg.CrawlID, arg.UserID, arg.Query)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const createCrawlPage = `-- name: CreateCrawlPage :one
@@ -793,6 +840,48 @@ func (q *Queries) GetCrawlPageContentByURLForUser(ctx context.Context, arg GetCr
 	return i, err
 }
 
+const getCrawlPageHealthForUser = `-- name: GetCrawlPageHealthForUser :one
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.health_score
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND cp.id = $2
+  AND om.user_id = $3
+  AND cp.health_score IS NOT NULL
+LIMIT 1
+`
+
+type GetCrawlPageHealthForUserParams struct {
+	CrawlID pgtype.UUID
+	PageID  pgtype.UUID
+	UserID  pgtype.UUID
+}
+
+type GetCrawlPageHealthForUserRow struct {
+	ID          pgtype.UUID
+	CrawlID     pgtype.UUID
+	Url         string
+	HealthScore pgtype.Int2
+}
+
+func (q *Queries) GetCrawlPageHealthForUser(ctx context.Context, arg GetCrawlPageHealthForUserParams) (GetCrawlPageHealthForUserRow, error) {
+	row := q.db.QueryRow(ctx, getCrawlPageHealthForUser, arg.CrawlID, arg.PageID, arg.UserID)
+	var i GetCrawlPageHealthForUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.CrawlID,
+		&i.Url,
+		&i.HealthScore,
+	)
+	return i, err
+}
+
 const getCrawlPageIssueHistogramForUser = `-- name: GetCrawlPageIssueHistogramForUser :many
 WITH scoreable_pages AS (
     SELECT cp.id
@@ -1308,6 +1397,83 @@ func (q *Queries) ListPageValidatorsForCrawl(ctx context.Context, crawlID pgtype
 	for rows.Next() {
 		var i ListPageValidatorsForCrawlRow
 		if err := rows.Scan(&i.Url, &i.Etag, &i.LastModified); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchCrawlPagesForUser = `-- name: SearchCrawlPagesForUser :many
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.title
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+  AND (
+      $3::text = ''
+      OR strpos(lower(cp.url), lower($3::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower($3::text)) > 0
+  )
+ORDER BY
+    CASE
+        WHEN $3::text = '' THEN 4
+        WHEN lower(cp.url) = lower($3::text) THEN 0
+        WHEN strpos(lower(cp.url), lower($3::text)) = 1 THEN 1
+        WHEN strpos(lower(cp.url), lower($3::text)) > 0 THEN 2
+        WHEN strpos(lower(COALESCE(cp.title, '')), lower($3::text)) > 0 THEN 3
+        ELSE 4
+    END,
+    cp.url ASC
+LIMIT $5
+OFFSET $4
+`
+
+type SearchCrawlPagesForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Query   string
+	Offset  int32
+	Limit   int32
+}
+
+type SearchCrawlPagesForUserRow struct {
+	ID      pgtype.UUID
+	CrawlID pgtype.UUID
+	Url     string
+	Title   pgtype.Text
+}
+
+func (q *Queries) SearchCrawlPagesForUser(ctx context.Context, arg SearchCrawlPagesForUserParams) ([]SearchCrawlPagesForUserRow, error) {
+	rows, err := q.db.Query(ctx, searchCrawlPagesForUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Query,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchCrawlPagesForUserRow
+	for rows.Next() {
+		var i SearchCrawlPagesForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.Url,
+			&i.Title,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

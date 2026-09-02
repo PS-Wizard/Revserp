@@ -487,3 +487,71 @@ SELECT
 FROM crawl_pages
 WHERE crawl_id = $1
 ORDER BY created_at ASC;
+
+-- name: SearchCrawlPagesForUser :many
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.title
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = sqlc.arg(crawl_id)
+  AND om.user_id = sqlc.arg(user_id)
+  AND (
+      sqlc.arg(query)::text = ''
+      OR strpos(lower(cp.url), lower(sqlc.arg(query)::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower(sqlc.arg(query)::text)) > 0
+  )
+ORDER BY
+    CASE
+        WHEN sqlc.arg(query)::text = '' THEN 4
+        WHEN lower(cp.url) = lower(sqlc.arg(query)::text) THEN 0
+        WHEN strpos(lower(cp.url), lower(sqlc.arg(query)::text)) = 1 THEN 1
+        WHEN strpos(lower(cp.url), lower(sqlc.arg(query)::text)) > 0 THEN 2
+        WHEN strpos(lower(COALESCE(cp.title, '')), lower(sqlc.arg(query)::text)) > 0 THEN 3
+        ELSE 4
+    END,
+    cp.url ASC
+LIMIT sqlc.arg('limit')
+OFFSET sqlc.arg('offset');
+
+-- name: CountCrawlPagesSearchForUser :one
+SELECT COUNT(*)::bigint
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = sqlc.arg(crawl_id)
+  AND om.user_id = sqlc.arg(user_id)
+  AND (
+      sqlc.arg(query)::text = ''
+      OR strpos(lower(cp.url), lower(sqlc.arg(query)::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower(sqlc.arg(query)::text)) > 0
+  );
+
+-- name: GetCrawlPageHealthForUser :one
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.health_score
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = sqlc.arg(crawl_id)
+  AND cp.id = sqlc.arg(page_id)
+  AND om.user_id = sqlc.arg(user_id)
+  AND cp.health_score IS NOT NULL
+LIMIT 1;
+
+-- name: BulkUpdateCrawlPageHealthScores :exec
+UPDATE crawl_pages AS cp
+SET health_score = data.health_score
+FROM (
+    SELECT unnest(sqlc.arg(page_ids)::uuid[]) AS id, unnest(sqlc.arg(health_scores)::smallint[]) AS health_score
+) AS data
+WHERE cp.id = data.id;
