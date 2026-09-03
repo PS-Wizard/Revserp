@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -154,6 +155,31 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	maxDepthReached := 0
 	pendingQueue := []CrawlJob{{URL: normalizedRootURL.String(), Depth: 0}}
 
+	// robots.txt is fetched once per crawl and only when the toggle is on.
+	// Nil rules mean allow-all (toggle off, fetch failure, or empty file),
+	// so a missing robots.txt never blocks a crawl.
+	var robotsRules *RobotsRules
+	if runner.config.HonourRobotsTxt {
+		robotsRules = FetchRobotsRules(runContext, runner.fetcher, normalizedRootURL)
+	}
+	// robotsAllowed gates the page-crawl loop only. Fetches outside this
+	// loop (robots.txt itself, sitemap discovery, llms.txt, soft-404 probe)
+	// are intentionally not gated. Matching is on path + query per spec.
+	robotsAllowed := func(targetURL string) bool {
+		if robotsRules == nil {
+			return true
+		}
+		parsed, err := url.Parse(targetURL)
+		if err != nil || parsed.RequestURI() == "" {
+			return true
+		}
+		return robotsRules.Allow(parsed.RequestURI())
+	}
+
+	// Count of URLs dropped before dispatch because robots.txt disallows them.
+	// They are not crawled and produce no crawl_pages rows.
+	robotsSkipped := 0
+
 	// Seed the frontier from the site's sitemap when available. This gives complete,
 	// flat URL coverage without rendering pages just to discover links; plain
 	// link-following BFS still runs afterward to catch anything the sitemap omits.
@@ -243,6 +269,11 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 		var jobsChannel chan<- CrawlJob
 		if len(pendingQueue) > 0 {
 			nextJob = pendingQueue[0]
+			if !robotsAllowed(nextJob.URL) {
+				pendingQueue = pendingQueue[1:]
+				robotsSkipped++
+				continue
+			}
 			// Single point where validators are attached, so every frontier source
 			// (root, sitemap, discovered links, reused links) gets them uniformly.
 			if baselinePage, ok := runner.baseline.lookup(nextJob.URL); ok {
@@ -433,8 +464,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	if elapsed.Seconds() > 0 {
 		pagesPerSec = float64(urlsCrawled) / elapsed.Seconds()
 	}
-	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d non2xx=%d soft404=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
-		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
+	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d non2xx=%d soft404=%d robots_skipped=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
+		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, robotsSkipped, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
 
 	if shouldPersist && !runner.deferFinalStatus {
 		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, hasLlmsTxtToPGBool(summary.HasLlmsTxt)); err != nil {

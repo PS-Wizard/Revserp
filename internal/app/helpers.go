@@ -2,6 +2,8 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 
@@ -24,6 +26,36 @@ func (noopWriter) WriteHeader(int)             {}
 func readJSON(r *http.Request, target any) error {
 	r.Body = http.MaxBytesReader(noopWriter{}, r.Body, maxRequestBodySize)
 	return json.NewDecoder(r.Body).Decode(target)
+}
+
+// readJSONOrRespond decodes a JSON request body, writing the appropriate
+// error response itself. It returns true when decoding succeeded and the
+// handler may continue. A body over the 1 MB limit yields 413; any other
+// decode error yields 400.
+func readJSONOrRespond(w http.ResponseWriter, r *http.Request, target any) bool {
+	if err := readJSON(r, target); err != nil {
+		return respondReadJSONError(w, err)
+	}
+	return true
+}
+
+// readOptionalJSONOrRespond is readJSONOrRespond for endpoints that accept
+// an empty request body.
+func readOptionalJSONOrRespond(w http.ResponseWriter, r *http.Request, target any) bool {
+	if err := readJSON(r, target); err != nil && !errors.Is(err, io.EOF) {
+		return respondReadJSONError(w, err)
+	}
+	return true
+}
+
+func respondReadJSONError(w http.ResponseWriter, err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "payload too large")
+		return false
+	}
+	writeJSONError(w, http.StatusBadRequest, "invalid json")
+	return false
 }
 
 // serverError logs the error with a chi request ID when available and

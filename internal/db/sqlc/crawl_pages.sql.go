@@ -969,7 +969,9 @@ SELECT
     content_type,
     word_count,
     response_time_ms,
-    size_bytes
+    size_bytes,
+    soft_404,
+    fetch_error
 FROM crawl_pages
 WHERE crawl_id = $1
 ORDER BY created_at ASC
@@ -982,6 +984,8 @@ type ListCrawlPageSignalsForCrawlRow struct {
 	WordCount      pgtype.Int4
 	ResponseTimeMs pgtype.Int4
 	SizeBytes      pgtype.Int4
+	Soft404        bool
+	FetchError     pgtype.Text
 }
 
 func (q *Queries) ListCrawlPageSignalsForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListCrawlPageSignalsForCrawlRow, error) {
@@ -1000,6 +1004,8 @@ func (q *Queries) ListCrawlPageSignalsForCrawl(ctx context.Context, crawlID pgty
 			&i.WordCount,
 			&i.ResponseTimeMs,
 			&i.SizeBytes,
+			&i.Soft404,
+			&i.FetchError,
 		); err != nil {
 			return nil, err
 		}

@@ -36,6 +36,7 @@ type Config struct {
 	CrawlRetryBase       time.Duration
 	CrawlRetryMax        time.Duration
 	CrawlTimeout         time.Duration
+	AnalysisTimeout      time.Duration
 	MaxAPIResponseBytes  int64
 }
 
@@ -102,6 +103,9 @@ func New(pool *pgxpool.Pool, cfg Config, renderer *crawler.Renderer) *Worker {
 	if cfg.CrawlTimeout <= 0 {
 		cfg.CrawlTimeout = defaultCrawlTimeout
 	}
+	if cfg.AnalysisTimeout <= 0 {
+		cfg.AnalysisTimeout = defaultAnalysisTimeout
+	}
 
 	return &Worker{
 		pool:     pool,
@@ -165,7 +169,10 @@ const staleRunningCrawlAge = 2 * time.Hour
 // previously used a flat 15 minutes, which is *below* the 30-minute default
 // timeout, so any crawl running longer than 15 minutes was marked failed while
 // its worker was still crawling it. Deriving the cutoff from CrawlTimeout keeps
-// that invariant true even when CRAWL_TIMEOUT is overridden.
+// that invariant true even when CRAWL_TIMEOUT is overridden. The cutoff also
+// includes AnalysisTimeout: analysis (link resolution, PSI, derivation,
+// scoring) runs on a separate budget after the crawl loop finishes, so a crawl
+// past CrawlTimeout but still inside analysis is legitimately in flight.
 //
 // The cost is detection latency: a dead worker's crawl is not reclaimed until
 // CrawlTimeout elapses. Restoring a heartbeat is the only way to detect a dead
@@ -180,11 +187,17 @@ const staleRunningCrawlGrace = 5 * time.Minute
 // that rather than leaving it to two constants drifting apart.
 const defaultCrawlTimeout = 30 * time.Minute
 
+// defaultAnalysisTimeout bounds the post-crawl analysis phase (link resolution,
+// PSI, issue derivation, scoring). It is separate from the crawl timeout so a
+// site that spends its entire crawl budget fetching pages is not marked failed
+// mid-analysis despite being fully persisted.
+const defaultAnalysisTimeout = 15 * time.Minute
+
 // reclaimCutoff returns the age past which a 'running' crawl is treated as
 // orphaned, never earlier than the crawl's own timeout plus grace. floor keeps
 // the once-at-startup sweep as conservative as it has always been.
 func (w *Worker) reclaimCutoff(floor time.Duration) time.Duration {
-	cutoff := w.cfg.CrawlTimeout + staleRunningCrawlGrace
+	cutoff := w.cfg.CrawlTimeout + w.cfg.AnalysisTimeout + staleRunningCrawlGrace
 	if cutoff < floor {
 		return floor
 	}
@@ -282,6 +295,14 @@ func (w *Worker) runAutoLoop(ctx context.Context, workerID int) {
 				}
 				continue
 			}
+			if isRunningCrawlConflict(err) {
+				// Lost the race for the project's single running auto crawl
+				// (idx_crawls_one_running_auto_per_project); expected, just wait.
+				if err := sleepOrCancel(ctx, w.cfg.AutoPoll); err != nil {
+					return
+				}
+				continue
+			}
 			log.Printf("auto worker %d transient error claiming crawl: %v", workerID, err)
 			if err := sleepOrCancel(ctx, w.cfg.AutoPoll); err != nil {
 				return
@@ -373,7 +394,7 @@ func (w *Worker) sweepDueAutoCrawls(ctx context.Context) error {
 		}
 
 		// requested_by_user_id is NULL for auto crawls.
-		_, err := queries.CreateCrawl(ctx, sqlc.CreateCrawlParams{
+		created, err := queries.CreateCrawl(ctx, sqlc.CreateCrawlParams{
 			ProjectID:         s.ProjectID,
 			RequestedByUserID: pgtype.UUID{},
 			Source:            "auto",
@@ -390,7 +411,13 @@ func (w *Worker) sweepDueAutoCrawls(ctx context.Context) error {
 			ProjectID: s.ProjectID,
 			NextRunAt: pgtype.Timestamptz{Time: nextAutoCrawlRun(s, time.Now()), Valid: true},
 		}); err != nil {
+			// Advance failed: remove the just-created crawl in this same tx so the
+			// crawl row cannot commit while next_run_at still points at the slot
+			// that already fired — otherwise the next sweep re-enqueues it.
 			log.Printf("auto-crawl scheduler: failed to advance schedule for project %s: %v", s.ProjectID.String(), err)
+			if _, delErr := tx.Exec(ctx, "DELETE FROM crawls WHERE id = $1", created.ID); delErr != nil {
+				log.Printf("auto-crawl scheduler: failed to delete unadvanced auto crawl: crawl_id=%s error=%v", created.ID.String(), delErr)
+			}
 			continue
 		}
 
@@ -428,8 +455,8 @@ func nextAutoCrawlRun(s sqlc.ProjectAutoCrawlSetting, now time.Time) time.Time {
 	return schedule.Advance(from, now, frequencyDays, hour, minute, loc)
 }
 
-// runCrawlGuarded runs one crawl under a bounded timeout and turns a panic into
-// a failed crawl instead of a dead process.
+// runCrawlGuarded runs one crawl and turns a panic into a failed crawl instead
+// of a dead process.
 //
 // Go terminates the whole program on an unrecovered panic in any goroutine, so
 // without this one bad page would kill the worker process and every crawl its
@@ -438,9 +465,6 @@ func nextAutoCrawlRun(s sqlc.ProjectAutoCrawlSetting, now time.Time) time.Time {
 // The crawl row is marked failed here so it does not sit in 'running' until the
 // stale-crawl reclaim eventually notices it.
 func (w *Worker) runCrawlGuarded(ctx context.Context, claimed claimedCrawlRow) (err error) {
-	crawlCtx, cancelTimeout := context.WithTimeout(ctx, w.cfg.CrawlTimeout)
-	defer cancelTimeout()
-
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
@@ -457,7 +481,7 @@ func (w *Worker) runCrawlGuarded(ctx context.Context, claimed claimedCrawlRow) (
 		err = fmt.Errorf("crawl panicked: %v", recovered)
 	}()
 
-	return w.runCrawl(crawlCtx, claimed)
+	return w.runCrawl(ctx, claimed)
 }
 
 // runCrawl executes one claimed crawl, derives backend issues, and calculates crawl scores.
@@ -473,7 +497,12 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 
 	// Per-crawl cancellation: registered so CancelCrawl can trip it for
 	// same-process cancel requests (see CancelCrawl's cross-process caveat).
-	crawlCtx, cancelCrawl := context.WithCancel(ctx)
+	// CrawlTimeout bounds only the crawl loop; the analysis phase below gets
+	// its own budget (analysisCtx) so a crawl that used its whole crawl budget
+	// is not marked failed mid-analysis despite being fully persisted.
+	crawlCtx, cancelTimeout := context.WithTimeout(ctx, w.cfg.CrawlTimeout)
+	defer cancelTimeout()
+	crawlCtx, cancelCrawl := context.WithCancel(crawlCtx)
 	w.registerCrawlCancel(claimed.ID, cancelCrawl)
 	defer func() {
 		w.unregisterCrawlCancel(claimed.ID)
@@ -513,12 +542,18 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("run crawl: %w", err)
 	}
 
+	// Analysis runs on its own budget, detached from the crawl timeout: the
+	// crawl loop may have consumed all of CrawlTimeout, but everything below
+	// operates on already persisted crawl data and must not be cut short by it.
+	analysisCtx, analysisCancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.AnalysisTimeout)
+	defer analysisCancel()
+
 	// Attribute broken targets back to the pages linking to them. This has to
 	// happen after the crawl loop and before derivation, since it is what gives
 	// the broken/redirecting internal-link issues their input. A failure here
 	// costs those two issue types, not the crawl.
 	resolveStartedAt := time.Now()
-	resolvedLinks, err := crawlStore.ResolveInternalLinkTargetStatuses(crawlCtx, claimed.ID)
+	resolvedLinks, err := crawlStore.ResolveInternalLinkTargetStatuses(analysisCtx, claimed.ID)
 	if err != nil {
 		log.Printf("resolve internal link target statuses failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 	} else {
@@ -539,17 +574,17 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	psiChan := make(chan psiOutcome, 1)
 	go func() {
 		psiStartedAt := time.Now()
-		result, psiErr := w.enrichCrawlWithGooglePSI(crawlCtx, claimed.ID, claimed.BaseURL)
+		result, psiErr := w.enrichCrawlWithGooglePSI(analysisCtx, claimed.ID, claimed.BaseURL)
 		log.Printf("phase timing: crawl_id=%s google_psi=%s (concurrent)", claimed.ID.String(), time.Since(psiStartedAt).Round(time.Millisecond))
 		psiChan <- psiOutcome{result: result, err: psiErr}
 	}()
 
-	if phaseErr := crawlStore.UpdateCrawlPhase(crawlCtx, claimed.ID, "analyzing"); phaseErr != nil {
+	if phaseErr := crawlStore.UpdateCrawlPhase(analysisCtx, claimed.ID, "analyzing"); phaseErr != nil {
 		log.Printf("update crawl phase to analyzing failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
 	}
 
 	deriveStartedAt := time.Now()
-	derivedIssueCount, crawlPages, err := issueStore.DeriveIssuesWithPagesAndSiteFacts(crawlCtx, claimed.ID, shared.SiteFacts{HasLlmsTxt: hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)})
+	derivedIssueCount, crawlPages, err := issueStore.DeriveIssuesWithPagesAndSiteFacts(analysisCtx, claimed.ID, shared.SiteFacts{HasLlmsTxt: hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)})
 	log.Printf("phase timing: crawl_id=%s derive_issues=%s", claimed.ID.String(), time.Since(deriveStartedAt).Round(time.Millisecond))
 
 	psi := <-psiChan
@@ -565,13 +600,13 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("derive issues: %w", err)
 	}
 
-	googlePSIIssueCount, err := w.persistGooglePSIIssues(crawlCtx, claimed.ID, googlePSIResult)
+	googlePSIIssueCount, err := w.persistGooglePSIIssues(analysisCtx, claimed.ID, googlePSIResult)
 	if err != nil {
 		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 	}
 	psiInput := toSharedPSIScoreInput(googlePSIResult)
 	scoreStartedAt := time.Now()
-	crawlScores, err := issueStore.ScoreCrawlWithPages(crawlCtx, claimed.ID, crawlPages, psiInput)
+	crawlScores, err := issueStore.ScoreCrawlWithPages(analysisCtx, claimed.ID, crawlPages, psiInput)
 	log.Printf("phase timing: crawl_id=%s score_crawl=%s", claimed.ID.String(), time.Since(scoreStartedAt).Round(time.Millisecond))
 	if err != nil {
 		finalCtx := context.WithoutCancel(ctx)

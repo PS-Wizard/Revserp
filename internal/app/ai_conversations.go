@@ -153,6 +153,7 @@ func (a *App) handleListAIConversations(w http.ResponseWriter, r *http.Request) 
 		responses = append(responses, newAIConversationResponse(conversation, turnID, status))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"conversations": responses,
 		"pagination": paginationResponse{

@@ -77,8 +77,7 @@ func (a *App) handlePutScoringConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody scoringConfigRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 	configJSON, err := issueengine.MustMarshalScoringConfig(requestBody.Config)
@@ -123,8 +122,7 @@ func (a *App) handleAdminPreviewScoringConfig(w http.ResponseWriter, r *http.Req
 
 func (a *App) previewScoringConfig(w http.ResponseWriter, r *http.Request, userID pgtype.UUID) {
 	var requestBody scoringPreviewRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 	crawlID, err := parseUUIDParam(requestBody.CrawlID)

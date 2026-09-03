@@ -250,8 +250,7 @@ func (a *App) handleSetActiveOrganization(w http.ResponseWriter, r *http.Request
 	}
 
 	var requestBody setActiveOrganizationRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 

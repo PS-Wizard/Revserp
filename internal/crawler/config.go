@@ -25,6 +25,9 @@ type CrawlConfigSnapshot struct {
 	// ForceFullCrawl disables conditional requests for this crawl, refetching and
 	// reparsing every page even when the origin reports it unchanged.
 	ForceFullCrawl bool `json:"force_full_crawl,omitempty"`
+	// HonourRobotsTxt gates the page-crawl loop on the site's robots.txt:
+	// disallowed URLs are not fetched and produce no crawl_pages rows.
+	HonourRobotsTxt bool `json:"honour_robots_txt,omitempty"`
 }
 
 type crawlConfigSnapshotInput struct {
@@ -34,6 +37,7 @@ type crawlConfigSnapshotInput struct {
 	RequestDelayMs      *int  `json:"request_delay_ms"`
 	RequestJitterMs     *int  `json:"request_jitter_ms"`
 	ForceFullCrawl      *bool `json:"force_full_crawl"`
+	HonourRobotsTxt     *bool `json:"honour_robots_txt"`
 }
 
 // NormalizeConfigSnapshot resolves defaults and validates one crawl config snapshot.
@@ -87,6 +91,10 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 		if input.ForceFullCrawl != nil {
 			resolvedSnapshot.ForceFullCrawl = *input.ForceFullCrawl
 		}
+
+		if input.HonourRobotsTxt != nil {
+			resolvedSnapshot.HonourRobotsTxt = *input.HonourRobotsTxt
+		}
 	}
 
 	normalizedSnapshot, err := json.Marshal(resolvedSnapshot)
@@ -138,5 +146,6 @@ func ConfigFromBaseURLAndSnapshot(baseURL string, rawConfigSnapshot []byte) (Cra
 		RequestJitter:  requestJitter,
 		UserAgent:      defaultUserAgent,
 		ForceFullCrawl: configSnapshot.ForceFullCrawl,
+		HonourRobotsTxt: configSnapshot.HonourRobotsTxt,
 	}, nil
 }

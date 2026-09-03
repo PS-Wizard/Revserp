@@ -136,6 +136,8 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 			WordCount:      int32Value(crawlPage.WordCount),
 			ResponseTimeMs: int32Value(crawlPage.ResponseTimeMs),
 			SizeBytes:      int32Value(crawlPage.SizeBytes),
+			Soft404:        crawlPage.Soft404,
+			FetchError:     textValue(crawlPage.FetchError),
 			OGTags:         crawlPage.OgTags,
 			JSONLD:         crawlPage.JsonLd,
 		})

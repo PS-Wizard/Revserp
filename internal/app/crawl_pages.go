@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -135,8 +134,7 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createCrawlPageRequest
-	if err := readJSON(r, &requestBody); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readOptionalJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -290,6 +288,7 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newCrawlPageResponseFromListRow(page))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pages": responses,
 		"pagination": paginationResponse{

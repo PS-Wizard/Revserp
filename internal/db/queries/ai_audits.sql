@@ -66,10 +66,15 @@ OFFSET $4;
 SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
 FROM ai_audits
 WHERE project_id = $1 AND crawl_id = $2
+ORDER BY created_at DESC
 LIMIT 1;
 
--- name: DeleteAIAuditByID :exec
-DELETE FROM ai_audits WHERE id = $1;
+-- name: GetActiveAIAuditByCrawlAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+FROM ai_audits
+WHERE project_id = $1 AND crawl_id = $2 AND status IN ('queued', 'running')
+LIMIT 1;
+
 
 -- name: UpdateAIAuditStatus :exec
 UPDATE ai_audits
@@ -83,3 +88,19 @@ UPDATE ai_audits
 SET status = 'failed', error_message = 'reclaimed: stale running audit', completed_at = NOW(), updated_at = NOW()
 WHERE status = 'running'
   AND started_at < $1;
+
+-- name: ReserveAIWorkspaceMonthlyAudit :one
+-- Atomically reserves one visibility audit for the month. Returns no rows
+-- when the workspace limit is 0 (audits disabled) or already exhausted,
+-- mirroring ReserveAIWorkspaceMonthlyMessage.
+INSERT INTO ai_workspace_monthly_usage (organization_id, period_start, used_audits)
+SELECT
+    sqlc.arg(organization_id),
+    date_trunc('month', now() AT TIME ZONE 'UTC')::date,
+    1
+WHERE sqlc.arg(monthly_limit)::integer > 0
+ON CONFLICT (organization_id, period_start) DO UPDATE
+SET used_audits = ai_workspace_monthly_usage.used_audits + 1,
+    updated_at = now()
+WHERE ai_workspace_monthly_usage.used_audits < sqlc.arg(monthly_limit)::integer
+RETURNING used_audits;

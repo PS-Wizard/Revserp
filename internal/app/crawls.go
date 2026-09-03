@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -60,8 +59,7 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createCrawlRequest
-	if err := readJSON(r, &requestBody); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readOptionalJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -176,6 +174,7 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newCrawlResponseFromListRow(crawl))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"crawls": responses,
 		"pagination": paginationResponse{
@@ -519,6 +518,7 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 		responses = append(responses, response)
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{"crawls": responses})
 }
 

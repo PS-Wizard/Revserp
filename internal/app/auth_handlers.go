@@ -41,8 +41,7 @@ type sessionRenewalResponse struct {
 // handleSignUp creates one Supabase account, bootstraps local data, and starts a backend session when possible.
 func (a *App) handleSignUp(w http.ResponseWriter, r *http.Request) {
 	var requestBody authCredentialsRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -75,8 +74,7 @@ func (a *App) handleSignUp(w http.ResponseWriter, r *http.Request) {
 // handleLogin exchanges credentials for a backend-owned auth session.
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var requestBody authCredentialsRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -101,8 +99,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 // handleOAuthExchange converts a Supabase OAuth session into one backend-owned session.
 func (a *App) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
 	var requestBody authOAuthExchangeRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 

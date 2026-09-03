@@ -119,7 +119,6 @@ func (a *App) Router() http.Handler {
 			app.Get("/crawls/{crawlID}/issue-workspace/changes", a.handleListIssueWorkspaceChanges)
 			app.Get("/crawls/{crawlID}/issue-workspace/pages/search", a.handleSearchIssueWorkspacePages)
 			app.Get("/crawls/{crawlID}/issue-workspace/page", a.handleGetIssueWorkspacePage)
-			app.Post("/crawls/{crawlID}/ai/fix", a.handleAIFix)
 			app.Post("/crawls/{crawlID}/pages", a.handleCreateCrawlPage)
 			app.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)
 			app.Get("/crawls/{crawlID}/pages/search", a.handleSearchCrawlPages)

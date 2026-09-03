@@ -20,6 +20,7 @@ SELECT
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -30,13 +31,14 @@ WHERE o.id = $1
 `
 
 type GetOrganizationFeaturesRow struct {
-	AutoCrawl                    bool
-	GscConnector                 bool
-	AiChat                       bool
-	AiUseInternalPrompt          bool
-	AiMonthlyMessageLimit        int32
-	AiConcurrentTurnLimitPerUser int32
-	AiAllowedReasoningEfforts    []string
+	AutoCrawl                     bool
+	GscConnector                  bool
+	AiChat                        bool
+	AiUseInternalPrompt           bool
+	AiMonthlyMessageLimit         int32
+	AiConcurrentTurnLimitPerUser  int32
+	AiVisibilityAuditMonthlyLimit int32
+	AiAllowedReasoningEfforts     []string
 }
 
 // A workspace with no organization_features row resolves to all features on.
@@ -50,6 +52,7 @@ func (q *Queries) GetOrganizationFeatures(ctx context.Context, orgID pgtype.UUID
 		&i.AiUseInternalPrompt,
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
+		&i.AiVisibilityAuditMonthlyLimit,
 		&i.AiAllowedReasoningEfforts,
 	)
 	return i, err
@@ -63,6 +66,7 @@ SELECT
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -81,13 +85,14 @@ type GetOrganizationFeaturesByConversationIDParams struct {
 }
 
 type GetOrganizationFeaturesByConversationIDRow struct {
-	AutoCrawl                    bool
-	GscConnector                 bool
-	AiChat                       bool
-	AiUseInternalPrompt          bool
-	AiMonthlyMessageLimit        int32
-	AiConcurrentTurnLimitPerUser int32
-	AiAllowedReasoningEfforts    []string
+	AutoCrawl                     bool
+	GscConnector                  bool
+	AiChat                        bool
+	AiUseInternalPrompt           bool
+	AiMonthlyMessageLimit         int32
+	AiConcurrentTurnLimitPerUser  int32
+	AiVisibilityAuditMonthlyLimit int32
+	AiAllowedReasoningEfforts     []string
 }
 
 func (q *Queries) GetOrganizationFeaturesByConversationID(ctx context.Context, arg GetOrganizationFeaturesByConversationIDParams) (GetOrganizationFeaturesByConversationIDRow, error) {
@@ -100,6 +105,7 @@ func (q *Queries) GetOrganizationFeaturesByConversationID(ctx context.Context, a
 		&i.AiUseInternalPrompt,
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
+		&i.AiVisibilityAuditMonthlyLimit,
 		&i.AiAllowedReasoningEfforts,
 	)
 	return i, err
@@ -113,6 +119,7 @@ SELECT
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -130,13 +137,14 @@ type GetOrganizationFeaturesByProjectIDParams struct {
 }
 
 type GetOrganizationFeaturesByProjectIDRow struct {
-	AutoCrawl                    bool
-	GscConnector                 bool
-	AiChat                       bool
-	AiUseInternalPrompt          bool
-	AiMonthlyMessageLimit        int32
-	AiConcurrentTurnLimitPerUser int32
-	AiAllowedReasoningEfforts    []string
+	AutoCrawl                     bool
+	GscConnector                  bool
+	AiChat                        bool
+	AiUseInternalPrompt           bool
+	AiMonthlyMessageLimit         int32
+	AiConcurrentTurnLimitPerUser  int32
+	AiVisibilityAuditMonthlyLimit int32
+	AiAllowedReasoningEfforts     []string
 }
 
 func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, arg GetOrganizationFeaturesByProjectIDParams) (GetOrganizationFeaturesByProjectIDRow, error) {
@@ -149,6 +157,7 @@ func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, arg Ge
 		&i.AiUseInternalPrompt,
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
+		&i.AiVisibilityAuditMonthlyLimit,
 		&i.AiAllowedReasoningEfforts,
 	)
 	return i, err
@@ -164,6 +173,7 @@ SELECT
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -176,17 +186,18 @@ ORDER BY o.name ASC
 `
 
 type ListOrganizationFeaturesForAdminRow struct {
-	OrgID                        pgtype.UUID
-	OrgName                      string
-	AutoCrawl                    bool
-	GscConnector                 bool
-	AiChat                       bool
-	AiUseInternalPrompt          bool
-	AiMonthlyMessageLimit        int32
-	AiConcurrentTurnLimitPerUser int32
-	AiAllowedReasoningEfforts    []string
-	DisabledAiTools              []string
-	UpdatedAt                    pgtype.Timestamptz
+	OrgID                         pgtype.UUID
+	OrgName                       string
+	AutoCrawl                     bool
+	GscConnector                  bool
+	AiChat                        bool
+	AiUseInternalPrompt           bool
+	AiMonthlyMessageLimit         int32
+	AiConcurrentTurnLimitPerUser  int32
+	AiVisibilityAuditMonthlyLimit int32
+	AiAllowedReasoningEfforts     []string
+	DisabledAiTools               []string
+	UpdatedAt                     pgtype.Timestamptz
 }
 
 func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListOrganizationFeaturesForAdminRow, error) {
@@ -207,6 +218,7 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 			&i.AiUseInternalPrompt,
 			&i.AiMonthlyMessageLimit,
 			&i.AiConcurrentTurnLimitPerUser,
+			&i.AiVisibilityAuditMonthlyLimit,
 			&i.AiAllowedReasoningEfforts,
 			&i.DisabledAiTools,
 			&i.UpdatedAt,
@@ -224,7 +236,8 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 const upsertOrganizationFeatures = `-- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
     org_id, auto_crawl, gsc_connector, ai_chat, ai_use_internal_prompt,
-    ai_monthly_message_limit, ai_concurrent_turn_limit_per_user, ai_allowed_reasoning_efforts,
+    ai_monthly_message_limit, ai_concurrent_turn_limit_per_user,
+    ai_visibility_audit_monthly_limit, ai_allowed_reasoning_efforts,
     disabled_ai_tools, updated_by_user_id, updated_at
 ) VALUES (
     $1,
@@ -234,13 +247,14 @@ INSERT INTO organization_features (
     $5,
     $6,
     $7,
+    $8,
     ARRAY(
         SELECT effort
-        FROM unnest($8::TEXT[]) AS effort
+        FROM unnest($9::TEXT[]) AS effort
         ORDER BY array_position(ARRAY['none', 'low', 'high', 'max']::TEXT[], effort)
     ),
-    COALESCE($9::TEXT[], ARRAY[]::TEXT[]),
-    $10,
+    COALESCE($10::TEXT[], ARRAY[]::TEXT[]),
+    $11,
     now()
 )
 ON CONFLICT (org_id) DO UPDATE SET
@@ -250,6 +264,7 @@ ON CONFLICT (org_id) DO UPDATE SET
     ai_use_internal_prompt = EXCLUDED.ai_use_internal_prompt,
     ai_monthly_message_limit = EXCLUDED.ai_monthly_message_limit,
     ai_concurrent_turn_limit_per_user = EXCLUDED.ai_concurrent_turn_limit_per_user,
+    ai_visibility_audit_monthly_limit = EXCLUDED.ai_visibility_audit_monthly_limit,
     ai_allowed_reasoning_efforts = EXCLUDED.ai_allowed_reasoning_efforts,
     disabled_ai_tools = EXCLUDED.disabled_ai_tools,
     updated_by_user_id = EXCLUDED.updated_by_user_id,
@@ -257,16 +272,17 @@ ON CONFLICT (org_id) DO UPDATE SET
 `
 
 type UpsertOrganizationFeaturesParams struct {
-	OrgID                        pgtype.UUID
-	AutoCrawl                    bool
-	GscConnector                 bool
-	AiChat                       bool
-	AiUseInternalPrompt          bool
-	AiMonthlyMessageLimit        int32
-	AiConcurrentTurnLimitPerUser int32
-	AiAllowedReasoningEfforts    []string
-	DisabledAiTools              []string
-	UpdatedByUserID              pgtype.UUID
+	OrgID                         pgtype.UUID
+	AutoCrawl                     bool
+	GscConnector                  bool
+	AiChat                        bool
+	AiUseInternalPrompt           bool
+	AiMonthlyMessageLimit         int32
+	AiConcurrentTurnLimitPerUser  int32
+	AiVisibilityAuditMonthlyLimit int32
+	AiAllowedReasoningEfforts     []string
+	DisabledAiTools               []string
+	UpdatedByUserID               pgtype.UUID
 }
 
 func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrganizationFeaturesParams) error {
@@ -278,6 +294,7 @@ func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrga
 		arg.AiUseInternalPrompt,
 		arg.AiMonthlyMessageLimit,
 		arg.AiConcurrentTurnLimitPerUser,
+		arg.AiVisibilityAuditMonthlyLimit,
 		arg.AiAllowedReasoningEfforts,
 		arg.DisabledAiTools,
 		arg.UpdatedByUserID,

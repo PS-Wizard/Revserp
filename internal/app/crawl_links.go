@@ -2,7 +2,6 @@ package app
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -43,8 +42,7 @@ func (a *App) handleCreateCrawlLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createCrawlLinkRequest
-	if err := readJSON(r, &requestBody); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readOptionalJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -174,6 +172,7 @@ func (a *App) handleListCrawlLinks(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newCrawlLinkResponse(link))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"links": responses,
 		"pagination": paginationResponse{

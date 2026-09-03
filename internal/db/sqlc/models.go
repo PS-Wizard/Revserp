@@ -150,6 +150,7 @@ type AiWorkspaceMonthlyUsage struct {
 	PeriodStart    pgtype.Date
 	UsedMessages   int32
 	UpdatedAt      pgtype.Timestamptz
+	UsedAudits     int32
 }
 
 type ApiKey struct {
@@ -353,17 +354,18 @@ type Organization struct {
 }
 
 type OrganizationFeature struct {
-	OrgID                        pgtype.UUID
-	AutoCrawl                    bool
-	GscConnector                 bool
-	AiChat                       bool
-	UpdatedAt                    pgtype.Timestamptz
-	UpdatedByUserID              pgtype.UUID
-	AiMonthlyMessageLimit        int32
-	AiAllowedReasoningEfforts    []string
-	AiConcurrentTurnLimitPerUser int32
-	AiUseInternalPrompt          bool
-	DisabledAiTools              []string
+	OrgID                         pgtype.UUID
+	AutoCrawl                     bool
+	GscConnector                  bool
+	AiChat                        bool
+	UpdatedAt                     pgtype.Timestamptz
+	UpdatedByUserID               pgtype.UUID
+	AiMonthlyMessageLimit         int32
+	AiAllowedReasoningEfforts     []string
+	AiConcurrentTurnLimitPerUser  int32
+	AiUseInternalPrompt           bool
+	DisabledAiTools               []string
+	AiVisibilityAuditMonthlyLimit int32
 }
 
 type OrganizationInvite struct {

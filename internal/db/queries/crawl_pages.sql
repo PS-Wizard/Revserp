@@ -483,7 +483,9 @@ SELECT
     content_type,
     word_count,
     response_time_ms,
-    size_bytes
+    size_bytes,
+    soft_404,
+    fetch_error
 FROM crawl_pages
 WHERE crawl_id = $1
 ORDER BY created_at ASC;

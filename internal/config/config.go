@@ -64,6 +64,7 @@ type Config struct {
 	CrawlRetryBase              time.Duration
 	CrawlRetryMax               time.Duration
 	CrawlTimeout                time.Duration
+	AnalysisTimeout             time.Duration
 	MaxAPIResponseBytes         int64
 }
 
@@ -118,6 +119,7 @@ func Load() Config {
 		CrawlRetryBase:              time.Duration(getEnvInt("CRAWL_RETRY_BASE_MS", 1000)) * time.Millisecond,
 		CrawlRetryMax:               time.Duration(getEnvInt("CRAWL_RETRY_MAX_MS", 15000)) * time.Millisecond,
 		CrawlTimeout:                getEnvDuration("CRAWL_TIMEOUT", 30*time.Minute),
+		AnalysisTimeout:             getEnvDuration("CRAWL_ANALYSIS_TIMEOUT", 15*time.Minute),
 		MaxAPIResponseBytes:         getEnvInt64("MAX_API_RESPONSE_BYTES", 10<<20),
 	}
 }

@@ -132,8 +132,7 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 	}
 
 	var requestBody upsertProjectBusinessProfileRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 

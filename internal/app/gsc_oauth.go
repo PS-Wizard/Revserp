@@ -30,6 +30,11 @@ func (a *App) handleStartProjectGSCConnect(w http.ResponseWriter, r *http.Reques
 
 	var requestBody startProjectGSCConnectRequest
 	if err := decodeOptionalJSON(r, &requestBody); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "payload too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

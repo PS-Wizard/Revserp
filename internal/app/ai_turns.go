@@ -78,8 +78,7 @@ func (a *App) handleSubmitAITurn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body aiTurnRequest
-	if err := readJSON(r, &body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+	if !readJSONOrRespond(w, r, &body) {
 		return
 	}
 	request, err := acceptAITurnRequest(body)

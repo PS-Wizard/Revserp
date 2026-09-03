@@ -12,6 +12,8 @@ type CrawlerConfig struct {
 	RequestJitter  time.Duration
 	UserAgent      string
 	ForceFullCrawl bool
+	// HonourRobotsTxt skips page fetches disallowed by the site's robots.txt.
+	HonourRobotsTxt bool
 }
 
 // CrawlJob represents one URL scheduled for crawling.

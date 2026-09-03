@@ -58,8 +58,7 @@ func (a *App) handleCreateOrganizationInvite(w http.ResponseWriter, r *http.Requ
 	}
 
 	var requestBody createOrganizationInviteRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 

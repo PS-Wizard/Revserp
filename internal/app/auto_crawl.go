@@ -153,8 +153,7 @@ func (a *App) handlePutAutoCrawlSettings(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req putAutoCrawlSettingsRequest
-	if err := readJSON(r, &req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &req) {
 		return
 	}
 

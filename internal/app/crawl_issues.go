@@ -2,7 +2,6 @@ package app
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -48,8 +47,7 @@ func (a *App) handleCreateCrawlIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createCrawlIssueRequest
-	if err := readJSON(r, &requestBody); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readOptionalJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -217,6 +215,7 @@ func (a *App) handleListCrawlIssues(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newListedCrawlIssueResponse(issue))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": responses,
 		"pagination": paginationResponse{
