@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
@@ -164,6 +165,10 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 		CompletedAt:  pgtype.Timestamptz{},
 	})
 	if err != nil {
+		if isAIAuditActiveConflictError(err) {
+			writeJSONError(w, http.StatusConflict, "a visibility audit is already in progress for this crawl")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -394,6 +399,11 @@ func newAIAuditRunResponses(runs []sqlc.AiAuditRun) []aiAuditRunResponse {
 		responses = append(responses, response)
 	}
 	return responses
+}
+
+func isAIAuditActiveConflictError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func parseAIAuditStatusFilter(r *http.Request) (string, error) {
