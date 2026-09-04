@@ -233,6 +233,41 @@ func (a *App) handleListAIAudits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An optional crawl_id narrows the list to the latest audit for that
+	// crawl, even when it sits outside the first page. Project access was
+	// authorized above, and the lookup is scoped to the project, so cross
+	// project crawl ids yield an empty list rather than leaking rows.
+	if crawlParam := strings.TrimSpace(r.URL.Query().Get("crawl_id")); crawlParam != "" {
+		crawlID, err := parseUUIDParam(crawlParam)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
+			return
+		}
+		audit, err := queries.GetAIAuditByCrawlAndProject(r.Context(), sqlc.GetAIAuditByCrawlAndProjectParams{
+			ProjectID: projectID,
+			CrawlID:   crawlID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		responses := make([]aiAuditResponse, 0, 1)
+		var total int64
+		if err == nil {
+			responses = append(responses, newAIAuditResponseFromListRow(audit))
+			total = 1
+		}
+
+		if err := tx.Commit(r.Context()); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		writeAIAuditListResponse(w, responses, limit, offset, total)
+		return
+	}
+
 	total, err := queries.CountAIAuditsForProject(r.Context(), sqlc.CountAIAuditsForProjectParams{ProjectID: projectID, Column2: statusFilter})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -259,6 +294,10 @@ func (a *App) handleListAIAudits(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newAIAuditResponseFromListRow(audit))
 	}
 
+	writeAIAuditListResponse(w, responses, limit, offset, total)
+}
+
+func writeAIAuditListResponse(w http.ResponseWriter, responses []aiAuditResponse, limit, offset int32, total int64) {
 	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ai_audits": responses,
