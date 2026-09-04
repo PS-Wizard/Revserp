@@ -185,6 +185,49 @@ ORDER BY cp.created_at ASC
 LIMIT $3
 OFFSET $4;
 
+-- name: ListCrawlPageSummariesForCrawlByUser :many
+-- Lightweight list for the editor sidebar: same tenancy, ordering, and
+-- pagination as ListCrawlPagesForCrawlByUser but without large body fields
+-- (visible_text, content_blocks, heading arrays/outlines, og_tags, json_ld).
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.status_code,
+    cp.content_type,
+    cp.size_bytes,
+    cp.is_internal,
+    cp.depth,
+    cp.title,
+    cp.meta_description,
+    cp.h1,
+    cp.h1_count,
+    cp.h2_count,
+    cp.h3_count,
+    cp.word_count,
+    cp.author,
+    cp.canonical_url,
+    cp.lang,
+    cp.viewport,
+    cp.robots,
+    cp.image_count,
+    cp.images_without_alt_count,
+    cp.images_without_dimensions,
+    cp.external_links,
+    cp.internal_links,
+    cp.response_time_ms,
+    cp.javascript_rendered,
+    cp.created_at
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+ORDER BY cp.created_at ASC
+LIMIT $3
+OFFSET $4;
+
 
 -- name: ListCrawlPagesForCrawl :many
 SELECT

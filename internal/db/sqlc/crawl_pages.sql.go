@@ -1017,6 +1017,142 @@ func (q *Queries) ListCrawlPageSignalsForCrawl(ctx context.Context, crawlID pgty
 	return items, nil
 }
 
+const listCrawlPageSummariesForCrawlByUser = `-- name: ListCrawlPageSummariesForCrawlByUser :many
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.status_code,
+    cp.content_type,
+    cp.size_bytes,
+    cp.is_internal,
+    cp.depth,
+    cp.title,
+    cp.meta_description,
+    cp.h1,
+    cp.h1_count,
+    cp.h2_count,
+    cp.h3_count,
+    cp.word_count,
+    cp.author,
+    cp.canonical_url,
+    cp.lang,
+    cp.viewport,
+    cp.robots,
+    cp.image_count,
+    cp.images_without_alt_count,
+    cp.images_without_dimensions,
+    cp.external_links,
+    cp.internal_links,
+    cp.response_time_ms,
+    cp.javascript_rendered,
+    cp.created_at
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+ORDER BY cp.created_at ASC
+LIMIT $3
+OFFSET $4
+`
+
+type ListCrawlPageSummariesForCrawlByUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Limit   int32
+	Offset  int32
+}
+
+type ListCrawlPageSummariesForCrawlByUserRow struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	CreatedAt               pgtype.Timestamptz
+}
+
+// Lightweight list for the editor sidebar: same tenancy, ordering, and
+// pagination as ListCrawlPagesForCrawlByUser but without large body fields
+// (visible_text, content_blocks, heading arrays/outlines, og_tags, json_ld).
+func (q *Queries) ListCrawlPageSummariesForCrawlByUser(ctx context.Context, arg ListCrawlPageSummariesForCrawlByUserParams) ([]ListCrawlPageSummariesForCrawlByUserRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlPageSummariesForCrawlByUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCrawlPageSummariesForCrawlByUserRow
+	for rows.Next() {
+		var i ListCrawlPageSummariesForCrawlByUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.Url,
+			&i.StatusCode,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.IsInternal,
+			&i.Depth,
+			&i.Title,
+			&i.MetaDescription,
+			&i.H1,
+			&i.H1Count,
+			&i.H2Count,
+			&i.H3Count,
+			&i.WordCount,
+			&i.Author,
+			&i.CanonicalUrl,
+			&i.Lang,
+			&i.Viewport,
+			&i.Robots,
+			&i.ImageCount,
+			&i.ImagesWithoutAltCount,
+			&i.ImagesWithoutDimensions,
+			&i.ExternalLinks,
+			&i.InternalLinks,
+			&i.ResponseTimeMs,
+			&i.JavascriptRendered,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCrawlPagesFilteredForUser = `-- name: ListCrawlPagesFilteredForUser :many
 SELECT
     cp.url,
