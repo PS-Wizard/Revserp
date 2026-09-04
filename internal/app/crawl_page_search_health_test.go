@@ -246,3 +246,41 @@ func TestCrawlPageHealthDetailResponseShape(t *testing.T) {
 		t.Fatalf("health_score = %d", hs.HealthScore)
 	}
 }
+
+// A 512-rune query must be accepted end to end (513 is rejected above).
+func TestHandleSearchCrawlPagesQuery512Accepted(t *testing.T) {
+	queries, pool, ctx := newFeaturesTestQueries(t)
+	orgID := createFeaturesTestOrg(t, ctx, pool)
+
+	var userID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO users (auth_provider, auth_subject, email) VALUES ('crawl-search-512-test', gen_random_uuid()::text, gen_random_uuid()::text || '@example.com') RETURNING id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, userID) })
+	if _, err := pool.Exec(ctx, `INSERT INTO organization_members (org_id, user_id, role) VALUES ($1,$2,'owner')`, orgID, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	var projectID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO projects (organization_id, name, base_url) VALUES ($1,'crawl-search-512-test','https://example.com') RETURNING id`, orgID).Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+	var crawlID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO crawls (project_id, status, completed_at, created_at) VALUES ($1,'completed', now(), now()) RETURNING id`, projectID).Scan(&crawlID); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{DB: pool, Queries: queries}
+	q := strings.Repeat("a", 512)
+	req := httptest.NewRequest(http.MethodGet, "/crawls/"+crawlID.String()+"/pages/search?q="+q, nil)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("crawlID", crawlID.String())
+	reqCtx := context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx)
+	reqCtx = withPrincipal(reqCtx, Principal{User: sqlc.User{ID: userID}})
+	req = req.WithContext(reqCtx)
+	rr := httptest.NewRecorder()
+	app.handleSearchCrawlPages(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rr.Code, rr.Body.String())
+	}
+}
