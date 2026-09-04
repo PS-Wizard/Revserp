@@ -254,7 +254,7 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 	user := principal.User
 	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
 			return
 		}
 

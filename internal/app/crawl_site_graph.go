@@ -60,7 +60,7 @@ func (a *App) handleGetCrawlSiteGraph(w http.ResponseWriter, r *http.Request) {
 	crawl, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
 			return
 		}
 
