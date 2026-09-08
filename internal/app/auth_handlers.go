@@ -67,7 +67,7 @@ func (a *App) handleSignUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.finishBackendSignIn(w, r, *signUpResult.Session); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		serverError(w, r, err)
 	}
 }
 
@@ -92,7 +92,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.finishBackendSignIn(w, r, supabaseSession); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		serverError(w, r, err)
 	}
 }
 
@@ -122,7 +122,7 @@ func (a *App) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt.UTC(),
 	}); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		serverError(w, r, err)
 	}
 }
 
@@ -183,23 +183,14 @@ func (a *App) finishBackendSignIn(w http.ResponseWriter, r *http.Request, supaba
 		return err
 	}
 
-	tx, err := a.DB.Begin(r.Context())
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-
-	queries := a.Queries.WithTx(tx)
-	user, organizations, err := a.ensureUserAndOrganizations(r, queries, identity)
+	// Workspace provisioning owns its transaction. Base queries keep a newly
+	// created user visible to that transaction.
+	user, organizations, err := a.ensureUserAndOrganizations(r, a.Queries, identity)
 	if err != nil {
 		return err
 	}
 
 	activeOrganizationID := resolveActiveOrganizationID(pgtype.UUID{}, organizations)
-	if err := tx.Commit(r.Context()); err != nil {
-		return err
-	}
-
 	rawSessionToken, err := a.SessionManager.CreateSession(r.Context(), user.ID, activeOrganizationID, supabaseSession)
 	if err != nil {
 		return err

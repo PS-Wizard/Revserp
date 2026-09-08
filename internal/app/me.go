@@ -77,9 +77,9 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 
 // ensureUserAndOrganizations maps the auth identity to a local user and default organization.
 func (a *App) ensureUserAndOrganizations(r *http.Request, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, []sqlc.ListOrganizationsForUserRow, error) {
-	user, _ := resolveUser(r.Context(), queries, identity)
-	if !user.ID.Valid {
-		return sqlc.User{}, nil, fmt.Errorf("failed to resolve user")
+	user, err := resolveUser(r.Context(), queries, identity)
+	if err != nil {
+		return sqlc.User{}, nil, err
 	}
 
 	organizations, err := queries.ListOrganizationsForUser(r.Context(), user.ID)
@@ -151,11 +151,10 @@ func (a *App) ensureUserAndOrganizations(r *http.Request, queries *sqlc.Queries,
 }
 
 // resolveUser loads or creates the local user for an auth identity.
-// Returns the user and whether a default org should be created.
-func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, bool) {
+func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalauth.Identity) (sqlc.User, error) {
 	// Use the user already fetched by requireActiveUser middleware if available.
 	if cached, ok := ctx.Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
-		return cached, false
+		return cached, nil
 	}
 
 	userRow, err := queries.GetUserByAuthSubject(ctx, sqlc.GetUserByAuthSubjectParams{
@@ -163,11 +162,10 @@ func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalau
 		AuthSubject:  identity.Subject,
 	})
 	if err == nil {
-		return userRowToUser(userRow), false
+		return userRowToUser(userRow), nil
 	}
-
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return sqlc.User{}, false
+		return sqlc.User{}, fmt.Errorf("get user by auth subject: %w", err)
 	}
 
 	newUserRow, err := queries.CreateUser(ctx, sqlc.CreateUserParams{
@@ -177,10 +175,10 @@ func resolveUser(ctx context.Context, queries *sqlc.Queries, identity internalau
 		Name:         pgText(identity.Name),
 	})
 	if err != nil {
-		return sqlc.User{}, false
+		return sqlc.User{}, fmt.Errorf("create user: %w", err)
 	}
 
-	return userRowToUser(newUserRow), true
+	return userRowToUser(newUserRow), nil
 }
 
 // newMeResponse converts user, organizations, and active org state into the /me API response.
