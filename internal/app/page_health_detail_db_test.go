@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -54,6 +53,12 @@ type pageHealthDetailWire struct {
 	HealthScore int                      `json:"health_score"`
 	Pillars     []pageHealthDetailPillar `json:"pillars"`
 }
+
+const pageHealthDetailTestBreakdown = `{"pillars":[
+	{"id":"seo","score":80,"buckets":[{"id":"headings","score":90},{"id":"meta_tags","score":70}]},
+	{"id":"aeo","score":85,"buckets":[{"id":"answerability","score":85}]},
+	{"id":"pagespeed","score":60,"buckets":[{"id":"cls","score":75},{"id":"lcp","score":55}]}
+]}`
 
 func setupPageHealthDetailTest(t *testing.T) (*sqlc.Queries, *pgxpool.Pool, context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID) {
 	t.Helper()
@@ -152,12 +157,12 @@ func decodePageHealthDetailWire(t *testing.T, rr *httptest.ResponseRecorder) pag
 func assertPageHealthDetailPillars(t *testing.T, wire pageHealthDetailWire) {
 	t.Helper()
 	want := []pageHealthDetailPillar{
+		{ID: "seo", Score: 80, Buckets: []pageHealthDetailPillarBucket{{ID: "headings", Score: 90}, {ID: "meta_tags", Score: 70}}},
 		{ID: "aeo", Score: 85, Buckets: []pageHealthDetailPillarBucket{{ID: "answerability", Score: 85}}},
 		{ID: "pagespeed", Score: 60, Buckets: []pageHealthDetailPillarBucket{{ID: "cls", Score: 75}, {ID: "lcp", Score: 55}}},
-		{ID: "seo", Score: 80, Buckets: []pageHealthDetailPillarBucket{{ID: "headings", Score: 90}, {ID: "meta_tags", Score: 70}}},
 	}
 	if len(wire.Pillars) != len(want) {
-		t.Fatalf("pillars len = %d, want %d (%s)", len(wire.Pillars), len(want), wire.Pillars)
+		t.Fatalf("pillars len = %d, want %d (%+v)", len(wire.Pillars), len(want), wire.Pillars)
 	}
 	for i := range want {
 		got, w := wire.Pillars[i], want[i]
@@ -173,15 +178,6 @@ func assertPageHealthDetailPillars(t *testing.T, wire pageHealthDetailWire) {
 			}
 		}
 	}
-	// Deterministic ordering: pillars and buckets sorted by id.
-	if !sort.SliceIsSorted(wire.Pillars, func(i, j int) bool { return wire.Pillars[i].ID < wire.Pillars[j].ID }) {
-		t.Fatalf("pillars not sorted by id: %+v", wire.Pillars)
-	}
-	for _, p := range wire.Pillars {
-		if !sort.SliceIsSorted(p.Buckets, func(i, j int) bool { return p.Buckets[i].ID < p.Buckets[j].ID }) {
-			t.Fatalf("pillar %q buckets not sorted by id: %+v", p.ID, p.Buckets)
-		}
-	}
 }
 
 // A valid scored page returns persisted overall/pillar/bucket values exactly,
@@ -192,11 +188,7 @@ func TestPageHealthDetailScoredPageReturnsPersistedPillars(t *testing.T) {
 	crawlID := insertPageHealthDetailCrawl(t, ctx, pool, projectID, "completed")
 
 	score := int16(82)
-	breakdown := `{"pillars":[
-		{"id":"aeo","score":85,"buckets":[{"id":"answerability","score":85}]},
-		{"id":"pagespeed","score":60,"buckets":[{"id":"cls","score":75},{"id":"lcp","score":55}]},
-		{"id":"seo","score":80,"buckets":[{"id":"headings","score":90},{"id":"meta_tags","score":70}]}
-	]}`
+	breakdown := pageHealthDetailTestBreakdown
 	pageURL := "https://example.com/health-detail-scored"
 	pageID := insertPageHealthDetailPage(t, ctx, pool, crawlID, pageURL, &score, breakdown)
 
@@ -258,11 +250,7 @@ func TestPageHealthDetailTenancyReturns404(t *testing.T) {
 	otherCrawlID := insertPageHealthDetailCrawl(t, ctx, pool, projectID, "completed")
 
 	score := int16(82)
-	breakdown := `{"pillars":[
-		{"id":"aeo","score":85,"buckets":[{"id":"answerability","score":85}]},
-		{"id":"pagespeed","score":60,"buckets":[{"id":"cls","score":75},{"id":"lcp","score":55}]},
-		{"id":"seo","score":80,"buckets":[{"id":"headings","score":90},{"id":"meta_tags","score":70}]}
-	]}`
+	breakdown := pageHealthDetailTestBreakdown
 	pageID := insertPageHealthDetailPage(t, ctx, pool, crawlID, "https://example.com/health-detail-tenancy", &score, breakdown)
 
 	if rr := getPageHealthDetail(t, app, otherCrawlID, pageID, ownerID); rr.Code != http.StatusNotFound {
@@ -280,11 +268,7 @@ func TestPageHealthDetailRunningCrawlUsesNoStore(t *testing.T) {
 	crawlID := insertPageHealthDetailCrawl(t, ctx, pool, projectID, "running")
 
 	score := int16(82)
-	breakdown := `{"pillars":[
-		{"id":"aeo","score":85,"buckets":[{"id":"answerability","score":85}]},
-		{"id":"pagespeed","score":60,"buckets":[{"id":"cls","score":75},{"id":"lcp","score":55}]},
-		{"id":"seo","score":80,"buckets":[{"id":"headings","score":90},{"id":"meta_tags","score":70}]}
-	]}`
+	breakdown := pageHealthDetailTestBreakdown
 	pageID := insertPageHealthDetailPage(t, ctx, pool, crawlID, "https://example.com/health-detail-running", &score, breakdown)
 
 	rr := getPageHealthDetail(t, app, crawlID, pageID, ownerID)
