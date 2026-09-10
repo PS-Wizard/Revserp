@@ -60,13 +60,14 @@ type AiConversation struct {
 }
 
 type AiMessage struct {
-	ID        pgtype.UUID
-	TurnID    pgtype.UUID
-	Role      string
-	Status    string
-	Content   string
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID            pgtype.UUID
+	TurnID        pgtype.UUID
+	Role          string
+	Status        string
+	Content       string
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	ContentBlocks []byte
 }
 
 type AiPromptConfig struct {

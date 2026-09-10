@@ -58,3 +58,30 @@ func TestReadJSONOrRespond(t *testing.T) {
 		}
 	})
 }
+
+func TestReadJSONOrRespondWithMaxBytes(t *testing.T) {
+	oversizedForGlobal := `{"name":"` + strings.Repeat("a", maxRequestBodySize) + `"}`
+	t.Run("16mb cap accepts bodies over 1mb", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(oversizedForGlobal))
+		var body struct {
+			Name string `json:"name"`
+		}
+		if !readJSONOrRespondWithMaxBytes(rec, req, &body, 16<<20) {
+			t.Fatalf("expected true for body under 16mb cap, status %d", rec.Code)
+		}
+	})
+	t.Run("explicit 1mb cap still writes 413", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(oversizedForGlobal))
+		var body struct {
+			Name string `json:"name"`
+		}
+		if readJSONOrRespondWithMaxBytes(rec, req, &body, maxRequestBodySize) {
+			t.Fatalf("expected false for oversized body")
+		}
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
+		}
+	})
+}

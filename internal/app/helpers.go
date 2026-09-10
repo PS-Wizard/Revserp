@@ -24,7 +24,11 @@ func (noopWriter) WriteHeader(int)             {}
 
 // readJSON decodes a JSON request body with a 1 MB size limit.
 func readJSON(r *http.Request, target any) error {
-	r.Body = http.MaxBytesReader(noopWriter{}, r.Body, maxRequestBodySize)
+	return readJSONWithMaxBytes(r, target, maxRequestBodySize)
+}
+
+func readJSONWithMaxBytes(r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(noopWriter{}, r.Body, maxBytes)
 	return json.NewDecoder(r.Body).Decode(target)
 }
 
@@ -33,7 +37,11 @@ func readJSON(r *http.Request, target any) error {
 // handler may continue. A body over the 1 MB limit yields 413; any other
 // decode error yields 400.
 func readJSONOrRespond(w http.ResponseWriter, r *http.Request, target any) bool {
-	if err := readJSON(r, target); err != nil {
+	return readJSONOrRespondWithMaxBytes(w, r, target, maxRequestBodySize)
+}
+
+func readJSONOrRespondWithMaxBytes(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) bool {
+	if err := readJSONWithMaxBytes(r, target, maxBytes); err != nil {
 		return respondReadJSONError(w, err)
 	}
 	return true

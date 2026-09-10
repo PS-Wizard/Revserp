@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 func TestAcceptAITurnRequest(t *testing.T) {
 	crawlID := "018f39f7-0e1b-7e9c-9f3b-1e1d2c3b4a5f"
+	jpeg := tinyJPEGImage()
 	for _, test := range []struct {
 		name       string
 		body       aiTurnRequest
@@ -24,6 +26,16 @@ func TestAcceptAITurnRequest(t *testing.T) {
 		{name: "compatibility effort", body: aiTurnRequest{Content: "hello", ReasoningEffort: "xhigh", ClientRequestID: "request"}, wantEffort: "high"},
 		{name: "blank content", body: aiTurnRequest{Content: " \t", ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
 		{name: "oversize content", body: aiTurnRequest{Content: strings.Repeat("x", 32769), ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "oversize content with image", body: aiTurnRequest{Content: strings.Repeat("x", 32769), Images: []aiTurnImage{jpeg}, ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "image only", body: aiTurnRequest{Images: []aiTurnImage{jpeg}, ReasoningEffort: "low", ClientRequestID: "request"}, wantEffort: "low"},
+		{name: "whitespace content with image", body: aiTurnRequest{Content: " \t", Images: []aiTurnImage{jpeg}, ReasoningEffort: "low", ClientRequestID: "request"}, wantEffort: "low"},
+		{name: "too many images", body: aiTurnRequest{Images: nTinyJPEGImages(5), ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "bad base64", body: aiTurnRequest{Images: []aiTurnImage{{MediaType: "image/jpeg", Data: "not-base64!!!"}}, ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "https url", body: aiTurnRequest{Images: []aiTurnImage{{MediaType: "image/jpeg", Data: "https://example.com/a.jpg"}}, ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "http url", body: aiTurnRequest{Images: []aiTurnImage{{MediaType: "image/jpeg", Data: "http://example.com/a.jpg"}}, ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "data url", body: aiTurnRequest{Images: []aiTurnImage{{MediaType: "image/jpeg", Data: "data:image/jpeg;base64," + jpeg.Data}}, ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "empty image data", body: aiTurnRequest{Images: []aiTurnImage{{MediaType: "image/jpeg", Data: ""}}, ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
+		{name: "magic mismatch", body: aiTurnRequest{Images: []aiTurnImage{{MediaType: "image/png", Data: jpeg.Data}}, ReasoningEffort: "low", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
 		{name: "oversize client request ID", body: aiTurnRequest{Content: "hello", ReasoningEffort: "low", ClientRequestID: strings.Repeat("x", 129)}, wantErr: errInvalidTurnRequest},
 		{name: "invalid effort", body: aiTurnRequest{Content: "hello", ReasoningEffort: "fast", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
 		{name: "invalid crawl", body: aiTurnRequest{Content: "hello", ReasoningEffort: "low", CrawlID: stringPtr("not-a-uuid"), ClientRequestID: "request"}, wantErr: errInvalidCrawl},
@@ -73,6 +85,30 @@ func TestAITurnRequestHashUsesCanonicalAcceptedFields(t *testing.T) {
 	if bytes.Equal(base.requestHash, crawlChanged.requestHash) {
 		t.Fatal("supplied crawl did not change hash")
 	}
+
+	jpeg := tinyJPEGImage()
+	withImage, err := acceptAITurnRequest(aiTurnRequest{Content: "hello", Images: []aiTurnImage{jpeg}, ReasoningEffort: "high", ClientRequestID: "img-one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameImage, err := acceptAITurnRequest(aiTurnRequest{Content: "hello", Images: []aiTurnImage{jpeg}, ReasoningEffort: "high", ClientRequestID: "img-two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherJPEG := aiTurnImage{MediaType: "image/jpeg", Data: base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0x00})}
+	changedImage, err := acceptAITurnRequest(aiTurnRequest{Content: "hello", Images: []aiTurnImage{otherJPEG}, ReasoningEffort: "high", ClientRequestID: "img-three"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(base.requestHash, withImage.requestHash) {
+		t.Fatal("adding an image did not change hash")
+	}
+	if !bytes.Equal(withImage.requestHash, sameImage.requestHash) {
+		t.Fatal("same images were not hash-stable")
+	}
+	if bytes.Equal(withImage.requestHash, changedImage.requestHash) {
+		t.Fatal("different image bytes did not change hash")
+	}
 }
 
 func TestAITurnUniqueErrorClassification(t *testing.T) {
@@ -100,6 +136,18 @@ func TestNewAIToolCallsResponse(t *testing.T) {
 	if empty := newAIToolCallsResponse(nil); empty == nil || len(empty) != 0 {
 		t.Fatalf("empty rows must marshal as []: %v", empty)
 	}
+}
+
+func tinyJPEGImage() aiTurnImage {
+	return aiTurnImage{MediaType: "image/jpeg", Data: base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0xD9})}
+}
+
+func nTinyJPEGImages(n int) []aiTurnImage {
+	images := make([]aiTurnImage, n)
+	for i := range images {
+		images[i] = tinyJPEGImage()
+	}
+	return images
 }
 
 func stringPtr(value string) *string { return &value }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -590,4 +591,88 @@ func TestAITurnSubmissionConcurrentCreateEnforcesSingleActive(t *testing.T) {
 	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT count(*) FROM ai_turns WHERE conversation_id=$1 AND status IN ('queued','running')`, fixture.conversationID).Scan(&activeCount); err != nil || activeCount != 1 {
 		t.Fatalf("active count=%d err=%v want 1", activeCount, err)
 	}
+}
+
+func TestAITurnImageOnlyPersistsAndReturnsImages(t *testing.T) {
+	fixture := newAITurnFixture(t, 10, canonicalAIReasoningEfforts)
+	jpeg := tinyJPEGImage()
+	request, err := acceptAITurnRequest(aiTurnRequest{Images: []aiTurnImage{jpeg}, ReasoningEffort: "low", ClientRequestID: "image-only"})
+	if err != nil {
+		t.Fatalf("accept image-only request: %v", err)
+	}
+	submission, err := fixture.app.submitAITurn(fixture.ctx, fixture.userID, fixture.conversationID, request)
+	if err != nil {
+		t.Fatalf("submit image-only turn: %v", err)
+	}
+
+	var userContent string
+	var contentBlocks []byte
+	if err := fixture.app.DB.QueryRow(fixture.ctx, `SELECT content, content_blocks FROM ai_messages WHERE id = $1`, submission.UserMessageID).Scan(&userContent, &contentBlocks); err != nil {
+		t.Fatalf("read user message: %v", err)
+	}
+	if userContent != "" || len(contentBlocks) == 0 {
+		t.Fatalf("user content = %q blocks = %s", userContent, contentBlocks)
+	}
+	var stored []aiTurnImageBlock
+	if err := json.Unmarshal(contentBlocks, &stored); err != nil {
+		t.Fatalf("decode content_blocks: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Type != "image" || stored[0].MediaType != jpeg.MediaType || stored[0].Data != jpeg.Data {
+		t.Fatalf("stored blocks = %+v", stored)
+	}
+
+	turnResponse := httptest.NewRecorder()
+	fixture.app.handleGetAITurn(turnResponse, observerRequest(fixture.userID, http.MethodGet, "/", submission.TurnID, nil))
+	if turnResponse.Code != http.StatusOK {
+		t.Fatalf("get turn status = %d, body = %s", turnResponse.Code, turnResponse.Body.String())
+	}
+	turn := decodeAITurnResponse(t, turnResponse)
+	if len(turn.Messages) != 2 {
+		t.Fatalf("turn messages = %+v", turn.Messages)
+	}
+	if turn.Messages[0].Role != "user" || turn.Messages[0].Content != "" || len(turn.Messages[0].Images) != 1 || turn.Messages[0].Images[0] != jpeg {
+		t.Fatalf("user turn message = %+v", turn.Messages[0])
+	}
+	if turn.Messages[1].Role != "assistant" || turn.Messages[1].Images != nil {
+		t.Fatalf("assistant turn message = %+v", turn.Messages[1])
+	}
+
+	conversation, err := fixture.queries.GetAIConversationByIDForUser(fixture.ctx, sqlc.GetAIConversationByIDForUserParams{
+		ConversationID: fixture.conversationID, UserID: fixture.userID,
+	})
+	if err != nil {
+		t.Fatalf("get conversation: %v", err)
+	}
+	if conversation.Title != "Sent an image" {
+		t.Fatalf("conversation title = %q, want Sent an image", conversation.Title)
+	}
+
+	listed, err := fixture.queries.ListAIConversationsForProjectForUser(fixture.ctx, sqlc.ListAIConversationsForProjectForUserParams{
+		ProjectID: fixture.projectID, UserID: fixture.userID, PageLimit: 10,
+	})
+	if err != nil || len(listed) == 0 || listed[0].Title != "Sent an image" {
+		t.Fatalf("list title = %+v err=%v", listed, err)
+	}
+
+	detail := httptest.NewRecorder()
+	fixture.app.handleGetAIConversation(detail, conversationRequest(fixture.userID, fixture.conversationID))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("get conversation status = %d, body = %s", detail.Code, detail.Body.String())
+	}
+	var conversationDetail aiConversationDetailResponse
+	if err := json.NewDecoder(detail.Body).Decode(&conversationDetail); err != nil {
+		t.Fatalf("decode conversation: %v", err)
+	}
+	if conversationDetail.Title != "Sent an image" {
+		t.Fatalf("detail title = %q", conversationDetail.Title)
+	}
+	if len(conversationDetail.Messages) != 2 || conversationDetail.Messages[0].Images[0] != jpeg || conversationDetail.Messages[1].Images != nil {
+		t.Fatalf("detail messages = %+v", conversationDetail.Messages)
+	}
+}
+
+type aiTurnImageBlock struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }

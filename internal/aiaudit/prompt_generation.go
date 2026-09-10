@@ -65,7 +65,7 @@ func (w *Worker) handlePromptGeneration(ctx context.Context, job sqlc.ClaimNextP
 
 	model := w.cfg.DeepSeekModel
 	if model == "" {
-		model = "deepseek-v4-flash"
+		model = "deepseek-flash"
 	}
 
 	provider, err := ai.NewProvider(ai.ProviderConfig{

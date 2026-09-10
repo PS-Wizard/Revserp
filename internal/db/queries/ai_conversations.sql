@@ -22,7 +22,11 @@ SELECT
     ac.created_by_user_id,
     COALESCE(
         (
-            SELECT left(regexp_replace(btrim(m.content), '[[:space:]]+', ' ', 'g'), 120)
+            SELECT COALESCE(
+                NULLIF(left(regexp_replace(btrim(m.content), '[[:space:]]+', ' ', 'g'), 120), ''),
+                CASE WHEN m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array' AND jsonb_array_length(m.content_blocks) > 0 THEN 'Sent an image' END,
+                ac.title
+            )
             FROM ai_turns AS t
             INNER JOIN ai_messages AS m ON m.turn_id = t.id AND m.role = 'user'
             WHERE t.conversation_id = ac.id
@@ -48,7 +52,11 @@ SELECT
     ac.created_by_user_id,
     COALESCE(
         (
-            SELECT left(regexp_replace(btrim(m.content), '[[:space:]]+', ' ', 'g'), 120)
+            SELECT COALESCE(
+                NULLIF(left(regexp_replace(btrim(m.content), '[[:space:]]+', ' ', 'g'), 120), ''),
+                CASE WHEN m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array' AND jsonb_array_length(m.content_blocks) > 0 THEN 'Sent an image' END,
+                ac.title
+            )
             FROM ai_turns AS t
             INNER JOIN ai_messages AS m ON m.turn_id = t.id AND m.role = 'user'
             WHERE t.conversation_id = ac.id

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -20,19 +21,39 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-const defaultAITurnModel = "deepseek-v4-flash"
+const (
+	defaultAITurnModel       = "deepseek-flash"
+	aiTurnMaxAttempts        = 2
+	aiTurnMaxContentBytes    = 32768
+	aiTurnMaxImages          = 4
+	aiTurnMaxImageBytes      = 8 << 20
+	aiTurnMaxTotalImageBytes = 12 << 20
+	aiTurnSubmitMaxBodyBytes = 16 << 20
+)
 
-const aiTurnMaxAttempts = 2
+type aiTurnImage struct {
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
 
 type aiTurnRequest struct {
-	Content         string  `json:"content"`
-	ReasoningEffort string  `json:"reasoning_effort"`
-	CrawlID         *string `json:"crawl_id"`
-	ClientRequestID string  `json:"client_request_id"`
+	Content         string        `json:"content"`
+	Images          []aiTurnImage `json:"images"`
+	ReasoningEffort string        `json:"reasoning_effort"`
+	CrawlID         *string       `json:"crawl_id"`
+	ClientRequestID string        `json:"client_request_id"`
+}
+
+type acceptedAITurnImage struct {
+	mediaType string
+	data      string
+	decoded   []byte
 }
 
 type acceptedAITurnRequest struct {
 	content         string
+	contentBlocks   []byte
+	images          []acceptedAITurnImage
 	effort          string
 	suppliedCrawlID pgtype.UUID
 	clientRequestID string
@@ -78,7 +99,7 @@ func (a *App) handleSubmitAITurn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body aiTurnRequest
-	if !readJSONOrRespond(w, r, &body) {
+	if !readJSONOrRespondWithMaxBytes(w, r, &body, aiTurnSubmitMaxBodyBytes) {
 		return
 	}
 	request, err := acceptAITurnRequest(body)
@@ -108,7 +129,14 @@ func (a *App) handleSubmitAITurn(w http.ResponseWriter, r *http.Request) {
 }
 
 func acceptAITurnRequest(body aiTurnRequest) (acceptedAITurnRequest, error) {
-	if strings.TrimSpace(body.Content) == "" || len(body.Content) > 32768 {
+	if len(body.Content) > aiTurnMaxContentBytes {
+		return acceptedAITurnRequest{}, errInvalidTurnRequest
+	}
+	images, err := acceptAITurnImages(body.Images)
+	if err != nil {
+		return acceptedAITurnRequest{}, err
+	}
+	if strings.TrimSpace(body.Content) == "" && len(images) == 0 {
 		return acceptedAITurnRequest{}, errInvalidTurnRequest
 	}
 	clientRequestID := strings.TrimSpace(body.ClientRequestID)
@@ -126,13 +154,102 @@ func acceptAITurnRequest(body aiTurnRequest) (acceptedAITurnRequest, error) {
 			return acceptedAITurnRequest{}, errInvalidCrawl
 		}
 	}
+	contentBlocks, err := marshalAITurnContentBlocks(images)
+	if err != nil {
+		return acceptedAITurnRequest{}, errInvalidTurnRequest
+	}
 	return acceptedAITurnRequest{
 		content:         body.Content,
+		contentBlocks:   contentBlocks,
+		images:          images,
 		effort:          effort,
 		suppliedCrawlID: suppliedCrawlID,
 		clientRequestID: clientRequestID,
-		requestHash:     aiTurnRequestHash(body.Content, effort, suppliedCrawlID),
+		requestHash:     aiTurnRequestHash(body.Content, effort, suppliedCrawlID, images),
 	}, nil
+}
+
+func acceptAITurnImages(images []aiTurnImage) ([]acceptedAITurnImage, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	if len(images) > aiTurnMaxImages {
+		return nil, errInvalidTurnRequest
+	}
+	accepted := make([]acceptedAITurnImage, 0, len(images))
+	total := 0
+	for _, image := range images {
+		mediaType := strings.TrimSpace(image.MediaType)
+		if !validAITurnMediaType(mediaType) {
+			return nil, errInvalidTurnRequest
+		}
+		data := strings.TrimSpace(image.Data)
+		if data == "" || looksLikeClientImageURL(data) {
+			return nil, errInvalidTurnRequest
+		}
+		decoded, err := base64.StdEncoding.DecodeString(data)
+		if err != nil || len(decoded) == 0 || len(decoded) > aiTurnMaxImageBytes {
+			return nil, errInvalidTurnRequest
+		}
+		if sniffedImageMediaType(decoded) != mediaType {
+			return nil, errInvalidTurnRequest
+		}
+		total += len(decoded)
+		if total > aiTurnMaxTotalImageBytes {
+			return nil, errInvalidTurnRequest
+		}
+		accepted = append(accepted, acceptedAITurnImage{
+			mediaType: mediaType,
+			data:      base64.StdEncoding.EncodeToString(decoded),
+			decoded:   decoded,
+		})
+	}
+	return accepted, nil
+}
+
+func validAITurnMediaType(mediaType string) bool {
+	switch mediaType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeClientImageURL(data string) bool {
+	return strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") || strings.HasPrefix(data, "data:")
+}
+
+func sniffedImageMediaType(data []byte) string {
+	switch {
+	case bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}):
+		return "image/jpeg"
+	case bytes.HasPrefix(data, []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}):
+		return "image/png"
+	case bytes.HasPrefix(data, []byte("GIF87a")) || bytes.HasPrefix(data, []byte("GIF89a")):
+		return "image/gif"
+	case len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+func marshalAITurnContentBlocks(images []acceptedAITurnImage) ([]byte, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	blocks := make([]struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	}, len(images))
+	for i, image := range images {
+		blocks[i].Type = "image"
+		blocks[i].MediaType = image.mediaType
+		blocks[i].Data = image.data
+	}
+	return json.Marshal(blocks)
 }
 
 func normalizeAITurnEffort(value string) (string, bool) {
@@ -147,15 +264,23 @@ func normalizeAITurnEffort(value string) (string, bool) {
 	}
 }
 
-func aiTurnRequestHash(content, effort string, crawlID pgtype.UUID) []byte {
+func aiTurnRequestHash(content, effort string, crawlID pgtype.UUID, images []acceptedAITurnImage) []byte {
 	hash := sha256.New()
-	for _, value := range []string{content, effort, crawlID.String()} {
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
-		_, _ = hash.Write(length[:])
-		_, _ = hash.Write([]byte(value))
+	writeHashPrefixed(hash, []byte(content))
+	writeHashPrefixed(hash, []byte(effort))
+	writeHashPrefixed(hash, []byte(crawlID.String()))
+	for _, image := range images {
+		writeHashPrefixed(hash, image.decoded)
+		writeHashPrefixed(hash, []byte(image.mediaType))
 	}
 	return hash.Sum(nil)
+}
+
+func writeHashPrefixed(w interface{ Write([]byte) (int, error) }, value []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = w.Write(length[:])
+	_, _ = w.Write(value)
 }
 
 func (a *App) submitAITurn(ctx context.Context, userID, conversationID pgtype.UUID, request acceptedAITurnRequest) (aiTurnSubmission, error) {
@@ -277,7 +402,7 @@ func (a *App) submitAITurnTx(ctx context.Context, tx pgx.Tx, userID, conversatio
 	if err != nil {
 		return aiTurnSubmission{}, fmt.Errorf("create ai turn: %w", err)
 	}
-	userMessageID, err := queries.CreateAIMessage(ctx, sqlc.CreateAIMessageParams{TurnID: turnID, Role: "user", Status: "complete", Content: request.content})
+	userMessageID, err := queries.CreateAIMessage(ctx, sqlc.CreateAIMessageParams{TurnID: turnID, Role: "user", Status: "complete", Content: request.content, ContentBlocks: request.contentBlocks})
 	if err != nil {
 		return aiTurnSubmission{}, fmt.Errorf("create user ai message: %w", err)
 	}

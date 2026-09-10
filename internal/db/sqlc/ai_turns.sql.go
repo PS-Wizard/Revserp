@@ -12,21 +12,23 @@ import (
 )
 
 const createAIMessage = `-- name: CreateAIMessage :one
-INSERT INTO ai_messages (turn_id, role, status, content)
+INSERT INTO ai_messages (turn_id, role, status, content, content_blocks)
 VALUES (
     $1,
     $2,
     $3,
-    $4
+    $4,
+    $5
 )
 RETURNING id
 `
 
 type CreateAIMessageParams struct {
-	TurnID  pgtype.UUID
-	Role    string
-	Status  string
-	Content string
+	TurnID        pgtype.UUID
+	Role          string
+	Status        string
+	Content       string
+	ContentBlocks []byte
 }
 
 func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams) (pgtype.UUID, error) {
@@ -35,6 +37,7 @@ func (q *Queries) CreateAIMessage(ctx context.Context, arg CreateAIMessageParams
 		arg.Role,
 		arg.Status,
 		arg.Content,
+		arg.ContentBlocks,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
@@ -307,7 +310,7 @@ func (q *Queries) HasActiveAITurnForConversation(ctx context.Context, conversati
 }
 
 const listAIMessagesForConversation = `-- name: ListAIMessagesForConversation :many
-SELECT m.id, m.turn_id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.turn_id, m.role, m.status, m.content, m.content_blocks, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 WHERE t.conversation_id = $1
@@ -315,21 +318,33 @@ WHERE t.conversation_id = $1
 ORDER BY t.created_at ASC, t.id ASC, CASE m.role WHEN 'user' THEN 0 ELSE 1 END ASC
 `
 
-func (q *Queries) ListAIMessagesForConversation(ctx context.Context, conversationID pgtype.UUID) ([]AiMessage, error) {
+type ListAIMessagesForConversationRow struct {
+	ID            pgtype.UUID
+	TurnID        pgtype.UUID
+	Role          string
+	Status        string
+	Content       string
+	ContentBlocks []byte
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
+func (q *Queries) ListAIMessagesForConversation(ctx context.Context, conversationID pgtype.UUID) ([]ListAIMessagesForConversationRow, error) {
 	rows, err := q.db.Query(ctx, listAIMessagesForConversation, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AiMessage
+	var items []ListAIMessagesForConversationRow
 	for rows.Next() {
-		var i AiMessage
+		var i ListAIMessagesForConversationRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TurnID,
 			&i.Role,
 			&i.Status,
 			&i.Content,
+			&i.ContentBlocks,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -344,7 +359,7 @@ func (q *Queries) ListAIMessagesForConversation(ctx context.Context, conversatio
 }
 
 const listAIMessagesForUser = `-- name: ListAIMessagesForUser :many
-SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.role, m.status, m.content, m.content_blocks, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
@@ -361,12 +376,13 @@ type ListAIMessagesForUserParams struct {
 }
 
 type ListAIMessagesForUserRow struct {
-	ID        pgtype.UUID
-	Role      string
-	Status    string
-	Content   string
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID            pgtype.UUID
+	Role          string
+	Status        string
+	Content       string
+	ContentBlocks []byte
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
 }
 
 func (q *Queries) ListAIMessagesForUser(ctx context.Context, arg ListAIMessagesForUserParams) ([]ListAIMessagesForUserRow, error) {
@@ -383,6 +399,7 @@ func (q *Queries) ListAIMessagesForUser(ctx context.Context, arg ListAIMessagesF
 			&i.Role,
 			&i.Status,
 			&i.Content,
+			&i.ContentBlocks,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {

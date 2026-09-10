@@ -629,15 +629,16 @@ WHERE crawl.id = $1
 	system := composeSystemContext(aiprompt.SelectSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt)
 
 	var currentUser string
+	var currentBlocks []byte
 	if err := w.pool.QueryRow(ctx, `
-SELECT content
+SELECT content, content_blocks
 FROM ai_messages
-WHERE turn_id = $1 AND role = 'user' AND status = 'complete'`, claimed.ID).Scan(&currentUser); err != nil {
+WHERE turn_id = $1 AND role = 'user' AND status = 'complete'`, claimed.ID).Scan(&currentUser, &currentBlocks); err != nil {
 		return nil, turnScope{}, err
 	}
 
 	rows, err := w.pool.Query(ctx, `
-SELECT user_message.content, assistant_message.content
+SELECT user_message.content, user_message.content_blocks, assistant_message.content
 FROM ai_turns AS historical_turn
 JOIN ai_messages AS user_message ON user_message.turn_id = historical_turn.id
     AND user_message.role = 'user' AND user_message.status = 'complete'
@@ -652,12 +653,16 @@ ORDER BY historical_turn.created_at DESC, historical_turn.id DESC`, claimed.Conv
 	}
 	defer rows.Close()
 
-	type pair struct{ user, assistant string }
+	type pair struct {
+		user, assistant string
+		images          []ai.Image
+	}
 	remaining := contextBudgetBytes - len(system) - len(currentUser)
 	pairs := make([]pair, 0, 16)
 	for rows.Next() {
 		var historical pair
-		if err := rows.Scan(&historical.user, &historical.assistant); err != nil {
+		var blocks []byte
+		if err := rows.Scan(&historical.user, &blocks, &historical.assistant); err != nil {
 			return nil, turnScope{}, err
 		}
 		pairBytes := len(historical.user) + len(historical.assistant)
@@ -665,6 +670,7 @@ ORDER BY historical_turn.created_at DESC, historical_turn.id DESC`, claimed.Conv
 			continue
 		}
 		remaining -= pairBytes
+		historical.images = parseUserImages(blocks)
 		pairs = append(pairs, historical)
 	}
 	if err := rows.Err(); err != nil {
@@ -675,12 +681,37 @@ ORDER BY historical_turn.created_at DESC, historical_turn.id DESC`, claimed.Conv
 	messages = append(messages, ai.Message{Role: "system", Content: system})
 	for i := len(pairs) - 1; i >= 0; i-- {
 		messages = append(messages,
-			ai.Message{Role: "user", Content: pairs[i].user},
+			ai.Message{Role: "user", Content: pairs[i].user, Images: pairs[i].images},
 			ai.Message{Role: "assistant", Content: pairs[i].assistant},
 		)
 	}
-	messages = append(messages, ai.Message{Role: "user", Content: currentUser})
+	messages = append(messages, ai.Message{Role: "user", Content: currentUser, Images: parseUserImages(currentBlocks)})
 	return messages, scope, nil
+}
+
+func parseUserImages(blocks []byte) []ai.Image {
+	if len(blocks) == 0 {
+		return nil
+	}
+	var stored []struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	}
+	if json.Unmarshal(blocks, &stored) != nil {
+		return nil
+	}
+	images := make([]ai.Image, 0, len(stored))
+	for _, block := range stored {
+		if block.Type != "image" || block.MediaType == "" || block.Data == "" {
+			continue
+		}
+		images = append(images, ai.Image{MediaType: block.MediaType, Data: block.Data})
+	}
+	if len(images) == 0 {
+		return nil
+	}
+	return images
 }
 
 func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtype.Timestamptz) string {

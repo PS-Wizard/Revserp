@@ -102,7 +102,7 @@ func Load() Config {
 		AIVisibilityRateDelay:       getEnvDuration("AI_VISIBILITY_RATE_DELAY", 9*time.Second),
 		AIProvider:                  strings.ToLower(getEnv("AI_PROVIDER", "deepseek")),
 		DeepSeekAPIKey:              getEnv("DEEPSEEK_API_KEY", ""),
-		DeepSeekModel:               getEnv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+		DeepSeekModel:               getEnv("DEEPSEEK_MODEL", "deepseek-flash"),
 		DeepSeekBaseURL:             getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
 		AITurnTimeout:               getEnvDurationInRange("AI_TURN_TIMEOUT", 5*time.Minute, 30*time.Second, 10*time.Minute),
 		ObscuraPath:                 getEnv("OBSCURA_PATH", ""),

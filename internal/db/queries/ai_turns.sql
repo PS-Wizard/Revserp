@@ -99,12 +99,13 @@ INSERT INTO ai_turns (
 RETURNING id;
 
 -- name: CreateAIMessage :one
-INSERT INTO ai_messages (turn_id, role, status, content)
+INSERT INTO ai_messages (turn_id, role, status, content, content_blocks)
 VALUES (
     sqlc.arg(turn_id),
     sqlc.arg(role),
     sqlc.arg(status),
-    sqlc.arg(content)
+    sqlc.arg(content),
+    sqlc.narg(content_blocks)
 )
 RETURNING id;
 
@@ -170,7 +171,7 @@ FOR UPDATE OF t
 FOR KEY SHARE OF om;
 
 -- name: ListAIMessagesForUser :many
-SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.role, m.status, m.content, m.content_blocks, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
@@ -181,7 +182,7 @@ WHERE m.turn_id = sqlc.arg(turn_id)
 ORDER BY CASE m.role WHEN 'user' THEN 0 ELSE 1 END;
 
 -- name: ListAIMessagesForConversation :many
-SELECT m.id, m.turn_id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.turn_id, m.role, m.status, m.content, m.content_blocks, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 WHERE t.conversation_id = sqlc.arg(conversation_id)

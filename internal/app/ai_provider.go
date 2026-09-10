@@ -14,7 +14,7 @@ import (
 func (a *App) generateAIText(ctx context.Context, prompt string) (string, string, error) {
 	model := strings.TrimSpace(a.Config.DeepSeekModel)
 	if model == "" {
-		model = "deepseek-v4-flash"
+		model = "deepseek-flash"
 	}
 
 	content, err := ai.NewDeepSeekClient(a.Config.DeepSeekAPIKey, model, a.Config.DeepSeekBaseURL, nil).GenerateText(ctx, prompt)

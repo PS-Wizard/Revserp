@@ -87,6 +87,19 @@ func TestCapToolResultContent(t *testing.T) {
 	}
 }
 
+func TestParseUserImages(t *testing.T) {
+	if got := parseUserImages(nil); got != nil {
+		t.Fatalf("nil blocks = %#v", got)
+	}
+	if got := parseUserImages([]byte("[]")); got != nil {
+		t.Fatalf("empty array = %#v", got)
+	}
+	got := parseUserImages([]byte(`[{"type":"image","media_type":"image/jpeg","data":"abc"}]`))
+	if len(got) != 1 || got[0] != (ai.Image{MediaType: "image/jpeg", Data: "abc"}) {
+		t.Fatalf("parsed = %#v", got)
+	}
+}
+
 func TestNormalizeToolCallResult(t *testing.T) {
 	status, result := normalizeToolCallResult("read_issues", "completed", aichattools.Result{
 		Content: "read_issues error: argument \"limit\" must be at least 1",

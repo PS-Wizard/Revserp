@@ -17,18 +17,25 @@ import (
 
 const (
 	defaultDeepSeekBaseURL = "https://api.deepseek.com"
-	defaultDeepSeekModel   = "deepseek-v4-flash"
+	defaultDeepSeekModel   = "deepseek-flash"
 	defaultChatMaxTokens   = 4096
 )
+
+// Image is one user-attached image. Data is raw base64 without a data: prefix.
+type Image struct {
+	MediaType string
+	Data      string
+}
 
 // Message is one chat message. Reasoning content is intentionally not
 // representable here: it must never be sent back to the model.
 type Message struct {
 	Role       Role
 	Content    string
-	ToolCalls  []ToolCall // set on assistant messages that invoked tools
-	ToolCallID string     // set on tool messages, references the originating ToolCall.ID
-	Name       string     // tool name, set on tool messages
+	Images     []Image // user only; ignored on other roles
+	ToolCalls  []ToolCall
+	ToolCallID string
+	Name       string
 }
 
 // Request is one streaming chat request, optionally with tools available.
@@ -199,7 +206,7 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 		case RoleTool:
 			messages = append(messages, openai.ToolMessage(message.Content, message.ToolCallID))
 		default:
-			messages = append(messages, openai.UserMessage(message.Content))
+			messages = append(messages, userChatMessage(message))
 		}
 	}
 
@@ -324,4 +331,20 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 		return &ProviderError{Code: "provider_unavailable", Temporary: true}
 	}
 	return nil
+}
+
+func userChatMessage(message Message) openai.ChatCompletionMessageParamUnion {
+	if len(message.Images) == 0 {
+		return openai.UserMessage(message.Content)
+	}
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, 1+len(message.Images))
+	if message.Content != "" {
+		parts = append(parts, openai.TextContentPart(message.Content))
+	}
+	for _, image := range message.Images {
+		parts = append(parts, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{
+			URL: "data:" + image.MediaType + ";base64," + image.Data,
+		}))
+	}
+	return openai.UserMessage(parts)
 }
