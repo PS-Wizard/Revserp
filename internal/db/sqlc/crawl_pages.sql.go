@@ -32,20 +32,22 @@ func (q *Queries) BulkUpdateCrawlPageContentFingerprints(ctx context.Context, ar
 
 const bulkUpdateCrawlPageHealthScores = `-- name: BulkUpdateCrawlPageHealthScores :exec
 UPDATE crawl_pages AS cp
-SET health_score = data.health_score
+SET health_score = data.health_score,
+    health_breakdown = data.health_breakdown
 FROM (
-    SELECT unnest($1::uuid[]) AS id, unnest($2::smallint[]) AS health_score
+    SELECT unnest($1::uuid[]) AS id, unnest($2::smallint[]) AS health_score, unnest($3::jsonb[]) AS health_breakdown
 ) AS data
 WHERE cp.id = data.id
 `
 
 type BulkUpdateCrawlPageHealthScoresParams struct {
-	PageIds      []pgtype.UUID
-	HealthScores []int16
+	PageIds          []pgtype.UUID
+	HealthScores     []int16
+	HealthBreakdowns [][]byte
 }
 
 func (q *Queries) BulkUpdateCrawlPageHealthScores(ctx context.Context, arg BulkUpdateCrawlPageHealthScoresParams) error {
-	_, err := q.db.Exec(ctx, bulkUpdateCrawlPageHealthScores, arg.PageIds, arg.HealthScores)
+	_, err := q.db.Exec(ctx, bulkUpdateCrawlPageHealthScores, arg.PageIds, arg.HealthScores, arg.HealthBreakdowns)
 	return err
 }
 
@@ -845,7 +847,8 @@ SELECT
     cp.id,
     cp.crawl_id,
     cp.url,
-    cp.health_score
+    cp.health_score,
+    cp.health_breakdown
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
 INNER JOIN projects AS p ON p.id = c.project_id
@@ -864,10 +867,11 @@ type GetCrawlPageHealthForUserParams struct {
 }
 
 type GetCrawlPageHealthForUserRow struct {
-	ID          pgtype.UUID
-	CrawlID     pgtype.UUID
-	Url         string
-	HealthScore pgtype.Int2
+	ID              pgtype.UUID
+	CrawlID         pgtype.UUID
+	Url             string
+	HealthScore     pgtype.Int2
+	HealthBreakdown []byte
 }
 
 func (q *Queries) GetCrawlPageHealthForUser(ctx context.Context, arg GetCrawlPageHealthForUserParams) (GetCrawlPageHealthForUserRow, error) {
@@ -878,6 +882,7 @@ func (q *Queries) GetCrawlPageHealthForUser(ctx context.Context, arg GetCrawlPag
 		&i.CrawlID,
 		&i.Url,
 		&i.HealthScore,
+		&i.HealthBreakdown,
 	)
 	return i, err
 }

@@ -582,7 +582,8 @@ SELECT
     cp.id,
     cp.crawl_id,
     cp.url,
-    cp.health_score
+    cp.health_score,
+    cp.health_breakdown
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
 INNER JOIN projects AS p ON p.id = c.project_id
@@ -595,8 +596,9 @@ LIMIT 1;
 
 -- name: BulkUpdateCrawlPageHealthScores :exec
 UPDATE crawl_pages AS cp
-SET health_score = data.health_score
+SET health_score = data.health_score,
+    health_breakdown = data.health_breakdown
 FROM (
-    SELECT unnest(sqlc.arg(page_ids)::uuid[]) AS id, unnest(sqlc.arg(health_scores)::smallint[]) AS health_score
+    SELECT unnest(sqlc.arg(page_ids)::uuid[]) AS id, unnest(sqlc.arg(health_scores)::smallint[]) AS health_score, unnest(sqlc.arg(health_breakdowns)::jsonb[]) AS health_breakdown
 ) AS data
 WHERE cp.id = data.id;

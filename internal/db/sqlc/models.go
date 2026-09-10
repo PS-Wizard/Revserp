@@ -278,6 +278,7 @@ type CrawlPage struct {
 	FetchError              pgtype.Text
 	ContentBlocks           []byte
 	HealthScore             pgtype.Int2
+	HealthBreakdown         []byte
 }
 
 type CrawlScoreBreakdown struct {
