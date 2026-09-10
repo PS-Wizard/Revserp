@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -10,11 +12,27 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
+type crawlPageHealthBucketResponse struct {
+	ID    string `json:"id"`
+	Score int16  `json:"score"`
+}
+
+type crawlPageHealthPillarResponse struct {
+	ID      string                          `json:"id"`
+	Score   int16                           `json:"score"`
+	Buckets []crawlPageHealthBucketResponse `json:"buckets"`
+}
+
+type crawlPageHealthBreakdown struct {
+	Pillars []crawlPageHealthPillarResponse `json:"pillars"`
+}
+
 type crawlPageHealthDetailResponse struct {
-	CrawlID     string `json:"crawl_id"`
-	PageID      string `json:"page_id"`
-	URL         string `json:"url"`
-	HealthScore int16  `json:"health_score"`
+	CrawlID     string                          `json:"crawl_id"`
+	PageID      string                          `json:"page_id"`
+	URL         string                          `json:"url"`
+	HealthScore int16                           `json:"health_score"`
+	Pillars     []crawlPageHealthPillarResponse `json:"pillars"`
 }
 
 func (a *App) handleGetCrawlPageHealthDetail(w http.ResponseWriter, r *http.Request) {
@@ -55,8 +73,13 @@ func (a *App) handleGetCrawlPageHealthDetail(w http.ResponseWriter, r *http.Requ
 		serverError(w, r, err)
 		return
 	}
-	if !row.HealthScore.Valid {
+	if !row.HealthScore.Valid || len(row.HealthBreakdown) == 0 {
 		writeJSONError(w, http.StatusNotFound, "page health score not found")
+		return
+	}
+	var breakdown crawlPageHealthBreakdown
+	if err := json.Unmarshal(row.HealthBreakdown, &breakdown); err != nil {
+		serverError(w, r, fmt.Errorf("decode page health breakdown: %w", err))
 		return
 	}
 	if isCrawlStatusTerminal(crawl.Status) {
@@ -69,5 +92,6 @@ func (a *App) handleGetCrawlPageHealthDetail(w http.ResponseWriter, r *http.Requ
 		PageID:      pageID.String(),
 		URL:         row.Url,
 		HealthScore: row.HealthScore.Int16,
+		Pillars:     breakdown.Pillars,
 	})
 }

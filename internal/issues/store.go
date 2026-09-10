@@ -211,13 +211,22 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 	if len(pageHealthScores) > 0 {
 		pageIDs := make([]pgtype.UUID, 0, len(pageHealthScores))
 		healthScores := make([]int16, 0, len(pageHealthScores))
+		healthBreakdowns := make([][]byte, 0, len(pageHealthScores))
 		for _, pageHealthScore := range pageHealthScores {
+			breakdownJSON, err := json.Marshal(struct {
+				Pillars []PageHealthPillarScore `json:"pillars"`
+			}{Pillars: pageHealthScore.Pillars})
+			if err != nil {
+				return shared.CrawlScores{}, fmt.Errorf("marshal page health breakdown for %s: %w", pageHealthScore.CrawlPageID.String(), err)
+			}
 			pageIDs = append(pageIDs, pageHealthScore.CrawlPageID)
 			healthScores = append(healthScores, pageHealthScore.HealthScore)
+			healthBreakdowns = append(healthBreakdowns, breakdownJSON)
 		}
 		if err := store.queries.BulkUpdateCrawlPageHealthScores(ctx, sqlc.BulkUpdateCrawlPageHealthScoresParams{
-			PageIds:      pageIDs,
-			HealthScores: healthScores,
+			PageIds:          pageIDs,
+			HealthScores:     healthScores,
+			HealthBreakdowns: healthBreakdowns,
 		}); err != nil {
 			return shared.CrawlScores{}, fmt.Errorf("bulk update crawl page health scores: %w", err)
 		}
