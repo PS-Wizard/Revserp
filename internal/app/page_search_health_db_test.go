@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -164,6 +165,32 @@ func TestPageSearchHealthQueryContracts(t *testing.T) {
 	}
 	if totalPricing != 1 {
 		t.Fatalf("count pricing %d want 1", totalPricing)
+	}
+
+	// The bulk scorer writes the scalar score and JSON breakdown in one row update.
+	bulkPage := insertPage("https://example.com/bulk-health", "Bulk Health", nil)
+	bulkScore := int16(76)
+	bulkBreakdown := []byte(`{"pillars":[{"id":"seo","score":76,"buckets":[]}]}`)
+	if err := queries.BulkUpdateCrawlPageHealthScores(ctx, sqlc.BulkUpdateCrawlPageHealthScoresParams{
+		PageIds:          []pgtype.UUID{bulkPage},
+		HealthScores:     []int16{bulkScore},
+		HealthBreakdowns: [][]byte{bulkBreakdown},
+	}); err != nil {
+		t.Fatalf("bulk update page health: %v", err)
+	}
+	bulkRow, err := queries.GetCrawlPageHealthForUser(ctx, sqlc.GetCrawlPageHealthForUserParams{CrawlID: crawlID, PageID: bulkPage, UserID: userID})
+	if err != nil {
+		t.Fatalf("get bulk-updated page health: %v", err)
+	}
+	if !bulkRow.HealthScore.Valid || bulkRow.HealthScore.Int16 != bulkScore {
+		t.Fatalf("bulk-updated score got %+v want %d", bulkRow.HealthScore, bulkScore)
+	}
+	var bulkDecoded crawlPageHealthBreakdown
+	if err := json.Unmarshal(bulkRow.HealthBreakdown, &bulkDecoded); err != nil {
+		t.Fatalf("decode bulk-updated breakdown: %v", err)
+	}
+	if len(bulkDecoded.Pillars) != 1 || bulkDecoded.Pillars[0].ID != "seo" || bulkDecoded.Pillars[0].Score != bulkScore {
+		t.Fatalf("bulk-updated breakdown got %+v", bulkDecoded)
 	}
 
 	// GetCrawlPageHealthForUser returns 87
