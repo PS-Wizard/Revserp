@@ -125,6 +125,14 @@ func TestCalculatePageHealthScores(t *testing.T) {
 		assertZeroBreakdown(t, scores[0])
 	})
 
+	t.Run("hard error remains zero when body fetch also failed", func(t *testing.T) {
+		scores := CalculatePageHealthScores([]PageHealthPageSignal{{CrawlPageID: newPageUUID(), StatusCode: 500, ContentType: "text/html", FetchError: "truncated body"}}, nil, DefaultScoringConfig())
+		if len(scores) != 1 || scores[0].HealthScore != 0 {
+			t.Fatalf("expected one zero score, got %+v", scores)
+		}
+		assertZeroBreakdown(t, scores[0])
+	})
+
 	t.Run("soft 404 is zero breakdown", func(t *testing.T) {
 		scores := CalculatePageHealthScores([]PageHealthPageSignal{{CrawlPageID: newPageUUID(), StatusCode: 200, ContentType: "text/html", Soft404: true}}, nil, DefaultScoringConfig())
 		if len(scores) != 1 || scores[0].HealthScore != 0 {

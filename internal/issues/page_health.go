@@ -51,7 +51,7 @@ type PageHealthScore struct {
 }
 
 // pageHealthPillarOrder is the stable pillar order for page-health breakdowns.
-var pageHealthPillarOrder = []string{seo.PillarID, aeo.PillarID, pagespeed.PillarID}
+var pageHealthPillarOrder = [...]string{seo.PillarID, aeo.PillarID, pagespeed.PillarID}
 
 // pageHealthGroupKey keys deduplicated penalties by pillar/bucket within one page.
 type pageHealthGroupKey string
@@ -92,11 +92,11 @@ func CalculatePageHealthScores(pages []PageHealthPageSignal, issues []PageHealth
 
 	out := make([]PageHealthScore, 0, len(pages))
 	for _, page := range pages {
-		if strings.TrimSpace(page.FetchError) != "" {
-			continue
-		}
 		if page.StatusCode >= 400 || page.Soft404 {
 			out = append(out, PageHealthScore{CrawlPageID: page.CrawlPageID, HealthScore: 0, Pillars: zeroPageHealthPillars(config)})
+			continue
+		}
+		if strings.TrimSpace(page.FetchError) != "" {
 			continue
 		}
 		if !shared.IsScoreableContentType(page.ContentType) {
@@ -122,7 +122,7 @@ func buildPageHealthPillars(pageGroups map[pageHealthGroupKey]map[string]float64
 		weightedBucketScoreSum := 0.0
 		bucketWeightSum := 0.0
 		for _, bucketID := range shared.SortedBucketIDs(pillarConfig.BucketWeights) {
-			if bucketID == pageHealthExcludedBucketID {
+			if pillarID == pagespeed.PillarID && bucketID == pageHealthExcludedBucketID {
 				continue
 			}
 			bucketWeight := pillarConfig.BucketWeights[bucketID]
@@ -173,7 +173,7 @@ func zeroPageHealthPillars(config shared.ScoringConfig) []PageHealthPillarScore 
 		}
 		buckets := make([]PageHealthBucketScore, 0, len(pillarConfig.BucketWeights))
 		for _, bucketID := range shared.SortedBucketIDs(pillarConfig.BucketWeights) {
-			if bucketID == pageHealthExcludedBucketID {
+			if pillarID == pagespeed.PillarID && bucketID == pageHealthExcludedBucketID {
 				continue
 			}
 			buckets = append(buckets, PageHealthBucketScore{ID: bucketID, Score: 0})
