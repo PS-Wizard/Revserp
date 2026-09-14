@@ -945,11 +945,45 @@ func (q *Queries) GetCrawlPageIssueHistogramForUser(ctx context.Context, arg Get
 	return items, nil
 }
 
+const getIncrementalBaselineCrawlID = `-- name: GetIncrementalBaselineCrawlID :one
+SELECT previous.id
+FROM crawls AS current
+INNER JOIN crawls AS previous
+    ON previous.project_id = current.project_id
+   AND previous.status = 'completed'
+   AND previous.id <> current.id
+   AND (
+        (current.source = 'competitor'
+         AND previous.source = 'competitor'
+         AND previous.competitor_id = current.competitor_id)
+        OR
+        (current.source <> 'competitor'
+         AND previous.source IN ('manual', 'auto'))
+   )
+WHERE current.id = $1
+  AND current.project_id = $2
+ORDER BY previous.completed_at DESC NULLS LAST
+LIMIT 1
+`
+
+type GetIncrementalBaselineCrawlIDParams struct {
+	CurrentCrawlID pgtype.UUID
+	ProjectID      pgtype.UUID
+}
+
+func (q *Queries) GetIncrementalBaselineCrawlID(ctx context.Context, arg GetIncrementalBaselineCrawlIDParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getIncrementalBaselineCrawlID, arg.CurrentCrawlID, arg.ProjectID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getLatestCompletedCrawlIDForProject = `-- name: GetLatestCompletedCrawlIDForProject :one
 SELECT id
 FROM crawls
 WHERE project_id = $1
   AND status = 'completed'
+  AND source IN ('manual', 'auto')
   AND id <> $2
 ORDER BY completed_at DESC NULLS LAST
 LIMIT 1
@@ -1509,6 +1543,57 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 			&i.JsonLd,
 			&i.ContentBlocks,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listKeywordCoveragePagesForCrawl = `-- name: ListKeywordCoveragePagesForCrawl :many
+SELECT
+    url,
+    COALESCE(title, '')::text AS title,
+    COALESCE(h1, '')::text AS h1,
+    COALESCE(status_code, 0)::int AS status_code,
+    COALESCE(content_type, '')::text AS content_type,
+    soft_404,
+    COALESCE(fetch_error, '')::text AS fetch_error
+FROM crawl_pages
+WHERE crawl_id = $1
+`
+
+type ListKeywordCoveragePagesForCrawlRow struct {
+	Url         string
+	Title       string
+	H1          string
+	StatusCode  int32
+	ContentType string
+	Soft404     bool
+	FetchError  string
+}
+
+func (q *Queries) ListKeywordCoveragePagesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListKeywordCoveragePagesForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listKeywordCoveragePagesForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListKeywordCoveragePagesForCrawlRow
+	for rows.Next() {
+		var i ListKeywordCoveragePagesForCrawlRow
+		if err := rows.Scan(
+			&i.Url,
+			&i.Title,
+			&i.H1,
+			&i.StatusCode,
+			&i.ContentType,
+			&i.Soft404,
+			&i.FetchError,
 		); err != nil {
 			return nil, err
 		}

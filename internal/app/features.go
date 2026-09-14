@@ -21,11 +21,14 @@ const (
 	FeatureGSCConnector Feature = "gsc_connector"
 	// FeatureAIChat remains the workspace switch for the future chat rewrite.
 	FeatureAIChat Feature = "ai_chat"
+	// FeatureCompetitors gates competitor roster and crawl enqueue.
+	FeatureCompetitors Feature = "competitors"
 )
 
 const (
 	defaultAIMonthlyMessageLimit        int32 = 50
 	defaultAIConcurrentTurnLimitPerUser int32 = 2
+	defaultMaxCompetitors               int32 = 3
 )
 
 var canonicalAIReasoningEfforts = []string{"none", "low", "high", "max"}
@@ -39,6 +42,7 @@ type OrgFeatures struct {
 	AIMonthlyMessageLimit        int32
 	AIConcurrentTurnLimitPerUser int32
 	AIAllowedReasoningEfforts    []string
+	MaxCompetitors               int32
 }
 
 // allFeaturesEnabled is used for a workspace with no organization_features row.
@@ -51,6 +55,7 @@ func allFeaturesEnabled() OrgFeatures {
 		AIMonthlyMessageLimit:        defaultAIMonthlyMessageLimit,
 		AIConcurrentTurnLimitPerUser: defaultAIConcurrentTurnLimitPerUser,
 		AIAllowedReasoningEfforts:    append([]string(nil), canonicalAIReasoningEfforts...),
+		MaxCompetitors:               defaultMaxCompetitors,
 	}
 }
 
@@ -63,6 +68,8 @@ func (features OrgFeatures) Enabled(feature Feature) bool {
 		return features.GSCConnector
 	case FeatureAIChat:
 		return features.AIChat
+	case FeatureCompetitors:
+		return features.MaxCompetitors > 0
 	default:
 		return true
 	}
@@ -114,7 +121,7 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func featuresFromRow(autoCrawl, gscConnector, aiChat, useInternalPrompt bool, monthlyLimit, concurrentLimit int32, efforts []string) OrgFeatures {
+func featuresFromRow(autoCrawl, gscConnector, aiChat, useInternalPrompt bool, monthlyLimit, concurrentLimit, maxCompetitors int32, efforts []string) OrgFeatures {
 	return OrgFeatures{
 		AutoCrawl:                    autoCrawl,
 		GSCConnector:                 gscConnector,
@@ -123,6 +130,7 @@ func featuresFromRow(autoCrawl, gscConnector, aiChat, useInternalPrompt bool, mo
 		AIMonthlyMessageLimit:        monthlyLimit,
 		AIConcurrentTurnLimitPerUser: concurrentLimit,
 		AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(efforts),
+		MaxCompetitors:               maxCompetitors,
 	}
 }
 
@@ -135,7 +143,7 @@ func (a *App) OrgFeaturesForOrg(ctx context.Context, orgID pgtype.UUID) (OrgFeat
 		}
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
 }
 
 type orgFeatureResolver func(*App, *http.Request) (OrgFeatures, error)
@@ -169,7 +177,7 @@ func featuresByProjectParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
 }
 
 // featuresByConversationParam resolves a conversation route to its project workspace.
@@ -197,7 +205,7 @@ func featuresByConversationParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
 }
 
 // requireFeature gates a route group on its governing workspace feature.
@@ -240,6 +248,7 @@ type orgFeaturesResponse struct {
 	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIUseInternalPrompt          bool     `json:"ai_use_internal_prompt"`
 	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
+	MaxCompetitors               int32    `json:"max_competitors"`
 }
 
 func newOrgFeaturesResponse(features OrgFeatures) orgFeaturesResponse {
@@ -251,5 +260,6 @@ func newOrgFeaturesResponse(features OrgFeatures) orgFeaturesResponse {
 		AIMonthlyMessageLimit:        features.AIMonthlyMessageLimit,
 		AIConcurrentTurnLimitPerUser: features.AIConcurrentTurnLimitPerUser,
 		AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(features.AIAllowedReasoningEfforts),
+		MaxCompetitors:               features.MaxCompetitors,
 	}
 }

@@ -45,6 +45,9 @@ type crawlResponse struct {
 	AEOScore         *int32          `json:"aeo_score,omitempty"`
 	PageSpeedScore   *int32          `json:"pagespeed_score,omitempty"`
 	OverallScore     *int32          `json:"overall_score,omitempty"`
+	ParentCrawlID    string          `json:"parent_crawl_id,omitempty"`
+	CompetitorID     string          `json:"competitor_id,omitempty"`
+	Source           string          `json:"source,omitempty"`
 	StartedAt        string          `json:"started_at,omitempty"`
 	CompletedAt      string          `json:"completed_at,omitempty"`
 	CreatedAt        string          `json:"created_at"`
@@ -102,6 +105,8 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 		Status:            "queued",
 		ConfigSnapshot:    normalizedConfigSnapshot,
 		StartedAt:         pgtype.Timestamptz{},
+		CompetitorID:      pgtype.UUID{},
+		ParentCrawlID:     pgtype.UUID{},
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -352,7 +357,7 @@ func newCrawlResponseFromCreateRow(crawl sqlc.CreateCrawlRow) crawlResponse {
 
 // newCrawlResponseFromGetRow converts a fetched crawl row into an API response.
 func newCrawlResponseFromGetRow(crawl sqlc.GetCrawlByIDForUserRow) crawlResponse {
-	return buildCrawlResponse(
+	response := buildCrawlResponse(
 		crawl.ID,
 		crawl.ProjectID,
 		crawl.Status,
@@ -371,6 +376,8 @@ func newCrawlResponseFromGetRow(crawl sqlc.GetCrawlByIDForUserRow) crawlResponse
 		crawl.CompletedAt,
 		crawl.CreatedAt,
 	)
+	response.Source = crawl.Source
+	return response
 }
 
 // newCrawlResponseFromListRow converts a listed crawl row into an API response.
@@ -461,13 +468,15 @@ func buildCrawlResponse(
 }
 
 type activeCrawlResponse struct {
-	ID             string `json:"id"`
-	ProjectID      string `json:"project_id"`
-	Status         string `json:"status"`
-	Phase          string `json:"phase,omitempty"`
-	URLsDiscovered int32  `json:"urls_discovered"`
-	URLsCrawled    int32  `json:"urls_crawled"`
-	CreatedAt      string `json:"created_at"`
+	ID              string `json:"id"`
+	ProjectID       string `json:"project_id"`
+	Status          string `json:"status"`
+	Phase           string `json:"phase,omitempty"`
+	URLsDiscovered  int32  `json:"urls_discovered"`
+	URLsCrawled     int32  `json:"urls_crawled"`
+	CreatedAt       string `json:"created_at"`
+	Source          string `json:"source,omitempty"`
+	CompetitorLabel string `json:"competitor_label,omitempty"`
 }
 
 // handleListActiveOrganizationCrawls returns all queued/running crawls across all projects in an organization.
@@ -511,9 +520,13 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 			URLsDiscovered: c.UrlsDiscovered,
 			URLsCrawled:    c.UrlsCrawled,
 			CreatedAt:      formatTimestamp(c.CreatedAt),
+			Source:         c.Source,
 		}
 		if c.Phase.Valid {
 			response.Phase = c.Phase.String
+		}
+		if label := strings.TrimSpace(c.CompetitorLabel); label != "" {
+			response.CompetitorLabel = label
 		}
 		responses = append(responses, response)
 	}

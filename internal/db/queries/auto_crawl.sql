@@ -63,6 +63,7 @@ WHERE acs.enabled = true
       FROM crawls AS c
       WHERE c.project_id = acs.project_id
         AND c.status IN ('queued', 'running')
+        AND c.source IN ('manual', 'auto')
   )
 ORDER BY acs.next_run_at ASC
 LIMIT $1;

@@ -282,6 +282,7 @@ SELECT id
 FROM crawls
 WHERE project_id = $1
   AND status = 'completed'
+  AND source IN ('manual', 'auto')
 ORDER BY completed_at DESC NULLS LAST, id DESC
 LIMIT 1
 `

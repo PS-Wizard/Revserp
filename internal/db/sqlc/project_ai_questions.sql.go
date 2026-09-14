@@ -12,18 +12,28 @@ import (
 )
 
 const getProjectAIQuestions = `-- name: GetProjectAIQuestions :one
-SELECT id, project_id, questions, generation_model, generated_at
+SELECT id, project_id, questions, location_questions, generation_model, generated_at
 FROM project_ai_questions
 WHERE project_id = $1
 `
 
-func (q *Queries) GetProjectAIQuestions(ctx context.Context, projectID pgtype.UUID) (ProjectAiQuestion, error) {
+type GetProjectAIQuestionsRow struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	Questions         []byte
+	LocationQuestions []byte
+	GenerationModel   string
+	GeneratedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) GetProjectAIQuestions(ctx context.Context, projectID pgtype.UUID) (GetProjectAIQuestionsRow, error) {
 	row := q.db.QueryRow(ctx, getProjectAIQuestions, projectID)
-	var i ProjectAiQuestion
+	var i GetProjectAIQuestionsRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
 		&i.Questions,
+		&i.LocationQuestions,
 		&i.GenerationModel,
 		&i.GeneratedAt,
 	)
@@ -31,28 +41,45 @@ func (q *Queries) GetProjectAIQuestions(ctx context.Context, projectID pgtype.UU
 }
 
 const upsertProjectAIQuestions = `-- name: UpsertProjectAIQuestions :one
-INSERT INTO project_ai_questions (project_id, questions, generation_model)
-VALUES ($1, $2, $3)
+INSERT INTO project_ai_questions (project_id, questions, location_questions, generation_model)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (project_id) DO UPDATE SET
     questions = EXCLUDED.questions,
+    location_questions = EXCLUDED.location_questions,
     generation_model = EXCLUDED.generation_model,
     generated_at = NOW()
-RETURNING id, project_id, questions, generation_model, generated_at
+RETURNING id, project_id, questions, location_questions, generation_model, generated_at
 `
 
 type UpsertProjectAIQuestionsParams struct {
-	ProjectID       pgtype.UUID
-	Questions       []byte
-	GenerationModel string
+	ProjectID         pgtype.UUID
+	Questions         []byte
+	LocationQuestions []byte
+	GenerationModel   string
 }
 
-func (q *Queries) UpsertProjectAIQuestions(ctx context.Context, arg UpsertProjectAIQuestionsParams) (ProjectAiQuestion, error) {
-	row := q.db.QueryRow(ctx, upsertProjectAIQuestions, arg.ProjectID, arg.Questions, arg.GenerationModel)
-	var i ProjectAiQuestion
+type UpsertProjectAIQuestionsRow struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	Questions         []byte
+	LocationQuestions []byte
+	GenerationModel   string
+	GeneratedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertProjectAIQuestions(ctx context.Context, arg UpsertProjectAIQuestionsParams) (UpsertProjectAIQuestionsRow, error) {
+	row := q.db.QueryRow(ctx, upsertProjectAIQuestions,
+		arg.ProjectID,
+		arg.Questions,
+		arg.LocationQuestions,
+		arg.GenerationModel,
+	)
+	var i UpsertProjectAIQuestionsRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
 		&i.Questions,
+		&i.LocationQuestions,
 		&i.GenerationModel,
 		&i.GeneratedAt,
 	)

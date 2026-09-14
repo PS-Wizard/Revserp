@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -93,15 +94,58 @@ func (w *Worker) handlePromptGeneration(ctx context.Context, job sqlc.ClaimNextP
 		return fmt.Errorf("marshal questions: %w", err)
 	}
 
+	// The maps question rides the same generation run — one extra short LLM
+	// pass, so the profile save produces both test sets in one job.
+	locationQuestions, locationErr := w.generateLocationQuestion(ctx, provider, profile)
+	var locationJSON []byte
+	if locationErr != nil {
+		// A missing location question must not fail the whole generation — the
+		// discovery questions above are still valid. Log and continue.
+		log.Printf("prompt generation: location question skipped for project %s: %v", job.ProjectID.String(), locationErr)
+		locationJSON = []byte("[]")
+	} else {
+		locationJSON, err = json.Marshal(locationQuestions)
+		if err != nil {
+			return fmt.Errorf("marshal location questions: %w", err)
+		}
+	}
+
 	if _, err := w.queries.UpsertProjectAIQuestions(ctx, sqlc.UpsertProjectAIQuestionsParams{
-		ProjectID:       job.ProjectID,
-		Questions:       questionsJSON,
-		GenerationModel: model,
+		ProjectID:         job.ProjectID,
+		Questions:         questionsJSON,
+		LocationQuestions: locationJSON,
+		GenerationModel:   model,
 	}); err != nil {
 		return fmt.Errorf("save questions: %w", err)
 	}
 
 	return nil
+}
+
+// generateLocationQuestion produces exactly one maps-style query
+// ("best gyms near kathmandu") from the profile's category + location. Skipped
+// when the profile has no primary location — maps rank needs one.
+func (w *Worker) generateLocationQuestion(ctx context.Context, provider ai.Provider, profile sqlc.GetProjectBusinessProfileByProjectIDRow) ([]string, error) {
+	if !profile.PrimaryLocation.Valid || strings.TrimSpace(profile.PrimaryLocation.String) == "" {
+		return nil, fmt.Errorf("profile has no primary location")
+	}
+
+	prompt := fmt.Sprintf(
+		"%s\n\n---\nBusiness Profile:\nBrand: %s\nCategory: %s\nLocation: %s",
+		DefaultLocationQuestionGenerationPrompt,
+		profile.BrandName,
+		profile.PrimaryCategory.String,
+		profile.PrimaryLocation.String,
+	)
+	raw, err := provider.GenerateText(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("generate location question: %w", err)
+	}
+	questions := parseGeneratedQuestions(raw)
+	if len(questions) == 0 {
+		return nil, fmt.Errorf("ai returned no parseable location question")
+	}
+	return questions, nil
 }
 
 func buildGenerationPrompt(systemPrompt string, profile sqlc.GetProjectBusinessProfileByProjectIDRow, seedPrompts []string) string {
@@ -174,3 +218,13 @@ func parseGeneratedQuestions(raw string) []string {
 	}
 	return questions
 }
+
+const DefaultLocationQuestionGenerationPrompt = `You are a local SEO analyst. Write ONE Google Maps search query that a potential customer would type when looking for a business like the one described, in the given location.
+
+Rules:
+- ONE line only, no numbering, no quotes, no explanation.
+- Format: "{what they need} near/in {location}" using plain natural wording (e.g. "best gyms near Kathmandu", "emergency plumber in Austin").
+- Use the business CATEGORY for what they need — never the brand name, never the website.
+- Keep the location exactly as given in the profile.
+- The query must be answerable by a Google Maps local pack of businesses.
+`

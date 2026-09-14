@@ -70,10 +70,12 @@ func TestCrawlListAccessInvalidCrawlID(t *testing.T) {
 	_ = uid.Scan("00000000-0000-0000-0000-000000000001")
 	var crawlID pgtype.UUID
 	handlers := map[string]func(http.ResponseWriter, *http.Request){
-		"pages":      app.handleListCrawlPages,
-		"issues":     app.handleListCrawlIssues,
-		"links":      app.handleListCrawlLinks,
-		"site-graph": app.handleGetCrawlSiteGraph,
+		"pages":               app.handleListCrawlPages,
+		"issues":              app.handleListCrawlIssues,
+		"links":               app.handleListCrawlLinks,
+		"site-graph":          app.handleGetCrawlSiteGraph,
+		"competitor-gap":      app.handleGetCompetitorGap,
+		"competitor-gap-urls": app.handleListCompetitorGapIssueURLs,
 	}
 	for name, handler := range handlers {
 		rr := callCrawlListRoute(t, app, handler, uid, crawlID, "not-a-uuid")
@@ -86,10 +88,12 @@ func TestCrawlListAccessInvalidCrawlID(t *testing.T) {
 func TestCrawlListAccessForeignCrawlNotFound(t *testing.T) {
 	app, crawlID, outsiderID := newCrawlListAccessFixtures(t)
 	handlers := map[string]func(http.ResponseWriter, *http.Request){
-		"pages":      app.handleListCrawlPages,
-		"issues":     app.handleListCrawlIssues,
-		"links":      app.handleListCrawlLinks,
-		"site-graph": app.handleGetCrawlSiteGraph,
+		"pages":               app.handleListCrawlPages,
+		"issues":              app.handleListCrawlIssues,
+		"links":               app.handleListCrawlLinks,
+		"site-graph":          app.handleGetCrawlSiteGraph,
+		"competitor-gap":      app.handleGetCompetitorGap,
+		"competitor-gap-urls": app.handleListCompetitorGapIssueURLs,
 	}
 	for name, handler := range handlers {
 		rr := callCrawlListRoute(t, app, handler, outsiderID, crawlID, crawlID.String())

@@ -47,6 +47,7 @@ WITH candidate AS (
           FROM crawls AS running
           WHERE running.status = 'running'
             AND running.project_id = c.project_id
+            AND running.source IN ('manual', 'auto')
       )
     ORDER BY c.created_at ASC
     FOR UPDATE SKIP LOCKED
@@ -59,7 +60,7 @@ SET status = 'running',
 FROM candidate, projects AS p
 WHERE c.id = candidate.id
   AND p.id = c.project_id
-RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, c.source, p.base_url
 `
 
 type ClaimNextQueuedCrawlAutoRow struct {
@@ -67,6 +68,7 @@ type ClaimNextQueuedCrawlAutoRow struct {
 	ProjectID         pgtype.UUID
 	RequestedByUserID pgtype.UUID
 	ConfigSnapshot    []byte
+	Source            string
 	BaseUrl           string
 }
 
@@ -78,6 +80,7 @@ func (q *Queries) ClaimNextQueuedCrawlAuto(ctx context.Context) (ClaimNextQueued
 		&i.ProjectID,
 		&i.RequestedByUserID,
 		&i.ConfigSnapshot,
+		&i.Source,
 		&i.BaseUrl,
 	)
 	return i, err
@@ -88,7 +91,7 @@ WITH candidate AS (
     SELECT c.id
     FROM crawls AS c
     WHERE c.status = 'queued'
-      AND c.source = 'manual'
+      AND c.source IN ('manual', 'competitor')
       AND NOT EXISTS (
           SELECT 1
           FROM crawls AS running
@@ -107,7 +110,11 @@ SET status = 'running',
 FROM candidate, projects AS p
 WHERE c.id = candidate.id
   AND p.id = c.project_id
-RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, c.source,
+    COALESCE(
+        (SELECT comp.seed_url FROM project_competitors AS comp WHERE comp.id = c.competitor_id),
+        p.base_url
+    ) AS base_url
 `
 
 type ClaimNextQueuedCrawlManualRow struct {
@@ -115,6 +122,7 @@ type ClaimNextQueuedCrawlManualRow struct {
 	ProjectID         pgtype.UUID
 	RequestedByUserID pgtype.UUID
 	ConfigSnapshot    []byte
+	Source            string
 	BaseUrl           string
 }
 
@@ -126,6 +134,7 @@ func (q *Queries) ClaimNextQueuedCrawlManual(ctx context.Context) (ClaimNextQueu
 		&i.ProjectID,
 		&i.RequestedByUserID,
 		&i.ConfigSnapshot,
+		&i.Source,
 		&i.BaseUrl,
 	)
 	return i, err
@@ -135,6 +144,7 @@ const countCrawlsForProject = `-- name: CountCrawlsForProject :one
 SELECT COUNT(*)
 FROM crawls
 WHERE project_id = $1
+  AND source IN ('manual', 'auto')
   AND ($2 = '' OR status = $2)
 `
 
@@ -157,14 +167,18 @@ INSERT INTO crawls (
     source,
     status,
     config_snapshot,
-    started_at
+    started_at,
+    competitor_id,
+    parent_crawl_id
 ) VALUES (
     $1,
     $2,
     $3,
     $4,
     $5,
-    $6
+    $6,
+    $7,
+    $8
 )
 RETURNING id, project_id, status, phase, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at
 `
@@ -176,6 +190,8 @@ type CreateCrawlParams struct {
 	Status            string
 	ConfigSnapshot    []byte
 	StartedAt         pgtype.Timestamptz
+	CompetitorID      pgtype.UUID
+	ParentCrawlID     pgtype.UUID
 }
 
 type CreateCrawlRow struct {
@@ -206,6 +222,8 @@ func (q *Queries) CreateCrawl(ctx context.Context, arg CreateCrawlParams) (Creat
 		arg.Status,
 		arg.ConfigSnapshot,
 		arg.StartedAt,
+		arg.CompetitorID,
+		arg.ParentCrawlID,
 	)
 	var i CreateCrawlRow
 	err := row.Scan(
@@ -253,6 +271,42 @@ func (q *Queries) DeleteCrawlByIDForUser(ctx context.Context, arg DeleteCrawlByI
 	return id, err
 }
 
+const getCrawlByID = `-- name: GetCrawlByID :one
+SELECT
+    id,
+    project_id,
+    source,
+    status,
+    config_snapshot,
+    requested_by_user_id
+FROM crawls
+WHERE id = $1
+LIMIT 1
+`
+
+type GetCrawlByIDRow struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	Source            string
+	Status            string
+	ConfigSnapshot    []byte
+	RequestedByUserID pgtype.UUID
+}
+
+func (q *Queries) GetCrawlByID(ctx context.Context, id pgtype.UUID) (GetCrawlByIDRow, error) {
+	row := q.db.QueryRow(ctx, getCrawlByID, id)
+	var i GetCrawlByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Source,
+		&i.Status,
+		&i.ConfigSnapshot,
+		&i.RequestedByUserID,
+	)
+	return i, err
+}
+
 const getCrawlByIDForUser = `-- name: GetCrawlByIDForUser :one
 SELECT
     c.id,
@@ -271,7 +325,8 @@ SELECT
     c.overall_score,
     c.started_at,
     c.completed_at,
-    c.created_at
+    c.created_at,
+    c.source
 FROM crawls AS c
 INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -303,6 +358,7 @@ type GetCrawlByIDForUserRow struct {
 	StartedAt        pgtype.Timestamptz
 	CompletedAt      pgtype.Timestamptz
 	CreatedAt        pgtype.Timestamptz
+	Source           string
 }
 
 func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUserParams) (GetCrawlByIDForUserRow, error) {
@@ -326,6 +382,53 @@ func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUs
 		&i.StartedAt,
 		&i.CompletedAt,
 		&i.CreatedAt,
+		&i.Source,
+	)
+	return i, err
+}
+
+const getCrawlGapContext = `-- name: GetCrawlGapContext :one
+SELECT
+    c.id,
+    c.source,
+    c.status,
+    c.parent_crawl_id,
+    c.competitor_id,
+    c.google_psi_results,
+    c.has_llms_txt,
+    COALESCE(
+        (SELECT pc.seed_url FROM project_competitors AS pc WHERE pc.id = c.competitor_id),
+        p.base_url
+    )::text AS seed_url
+FROM crawls AS c
+INNER JOIN projects AS p ON p.id = c.project_id
+WHERE c.id = $1
+LIMIT 1
+`
+
+type GetCrawlGapContextRow struct {
+	ID               pgtype.UUID
+	Source           string
+	Status           string
+	ParentCrawlID    pgtype.UUID
+	CompetitorID     pgtype.UUID
+	GooglePsiResults []byte
+	HasLlmsTxt       pgtype.Bool
+	SeedUrl          string
+}
+
+func (q *Queries) GetCrawlGapContext(ctx context.Context, id pgtype.UUID) (GetCrawlGapContextRow, error) {
+	row := q.db.QueryRow(ctx, getCrawlGapContext, id)
+	var i GetCrawlGapContextRow
+	err := row.Scan(
+		&i.ID,
+		&i.Source,
+		&i.Status,
+		&i.ParentCrawlID,
+		&i.CompetitorID,
+		&i.GooglePsiResults,
+		&i.HasLlmsTxt,
+		&i.SeedUrl,
 	)
 	return i, err
 }
@@ -341,12 +444,30 @@ func (q *Queries) GetCrawlHasLlmsTxt(ctx context.Context, id pgtype.UUID) (pgtyp
 	return has_llms_txt, err
 }
 
+const getLatestCompletedHomeCrawlIDForProject = `-- name: GetLatestCompletedHomeCrawlIDForProject :one
+SELECT id
+FROM crawls
+WHERE project_id = $1
+  AND status = 'completed'
+  AND source IN ('manual', 'auto')
+ORDER BY completed_at DESC NULLS LAST, created_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestCompletedHomeCrawlIDForProject(ctx context.Context, projectID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLatestCompletedHomeCrawlIDForProject, projectID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getPreviousCompletedCrawlID = `-- name: GetPreviousCompletedCrawlID :one
 SELECT previous.id
 FROM crawls AS current
 INNER JOIN crawls AS previous ON previous.project_id = current.project_id
 WHERE current.id = $1
   AND previous.status = 'completed'
+  AND previous.source IN ('manual', 'auto')
   AND previous.completed_at < current.completed_at
 ORDER BY previous.completed_at DESC, previous.created_at DESC, previous.id DESC
 LIMIT 1
@@ -367,22 +488,27 @@ SELECT
     c.phase,
     c.urls_discovered,
     c.urls_crawled,
-    c.created_at
+    c.created_at,
+    c.source,
+    COALESCE(NULLIF(pc.name, ''), pc.seed_url, '')::text AS competitor_label
 FROM crawls AS c
 INNER JOIN projects AS p ON p.id = c.project_id
+LEFT JOIN project_competitors AS pc ON pc.id = c.competitor_id
 WHERE p.organization_id = $1
   AND c.status IN ('queued', 'running')
 ORDER BY c.created_at DESC
 `
 
 type ListActiveCrawlsForOrganizationRow struct {
-	ID             pgtype.UUID
-	ProjectID      pgtype.UUID
-	Status         string
-	Phase          pgtype.Text
-	UrlsDiscovered int32
-	UrlsCrawled    int32
-	CreatedAt      pgtype.Timestamptz
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	Status          string
+	Phase           pgtype.Text
+	UrlsDiscovered  int32
+	UrlsCrawled     int32
+	CreatedAt       pgtype.Timestamptz
+	Source          string
+	CompetitorLabel string
 }
 
 func (q *Queries) ListActiveCrawlsForOrganization(ctx context.Context, organizationID pgtype.UUID) ([]ListActiveCrawlsForOrganizationRow, error) {
@@ -402,6 +528,8 @@ func (q *Queries) ListActiveCrawlsForOrganization(ctx context.Context, organizat
 			&i.UrlsDiscovered,
 			&i.UrlsCrawled,
 			&i.CreatedAt,
+			&i.Source,
+			&i.CompetitorLabel,
 		); err != nil {
 			return nil, err
 		}
@@ -434,6 +562,7 @@ SELECT
     created_at
 FROM crawls
 WHERE project_id = $1
+  AND source IN ('manual', 'auto')
   AND ($2 = '' OR status = $2)
 ORDER BY created_at DESC
 LIMIT $3

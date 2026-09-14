@@ -14,6 +14,8 @@ type CrawlerConfig struct {
 	ForceFullCrawl bool
 	// HonourRobotsTxt skips page fetches disallowed by the site's robots.txt.
 	HonourRobotsTxt bool
+	// SkipSitemapSeed disables sitemap frontier seeding.
+	SkipSitemapSeed bool
 }
 
 // CrawlJob represents one URL scheduled for crawling.

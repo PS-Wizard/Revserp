@@ -348,6 +348,111 @@ func (store *testResultStore) PersistResult(_ context.Context, _ pgtype.UUID, _ 
 	return nil
 }
 
+func TestRunnerRunSkipsSitemapSeedWhenConfigured(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+		switch request.URL.Path {
+		case "/":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body><a href="/linked">Linked</a></body></html>`)
+		case "/linked":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>linked</title></head><body></body></html>`)
+		case "/sitemap.xml":
+			writer.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(writer, `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>http://%s/sitemap-only</loc></url></urlset>`, request.Host)
+		case "/sitemap-only":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>sitemap only</title></head><body></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
+	parser := NewParser()
+	runner := NewRunner(CrawlerConfig{
+		AllowedHost:     mustParseURL(t, server.URL).Host,
+		MaxDepth:        2,
+		MaxPages:        10,
+		SkipSitemapSeed: true,
+	}, 2, fetcher, parser)
+
+	results, err := runner.Run(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("run crawler: %v", err)
+	}
+
+	paths := make([]string, 0, len(results))
+	for _, result := range results {
+		paths = append(paths, mustParseURL(t, result.Fetch.FinalURL).Path)
+	}
+	sort.Strings(paths)
+
+	want := []string{"/", "/linked"}
+	if !slicesEqual(paths, want) {
+		t.Fatalf("got crawled paths %#v, want %#v", paths, want)
+	}
+}
+
+func TestRunnerRunSeedsFromSitemapByDefault(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body></body></html>`)
+		case "/sitemap.xml":
+			writer.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(writer, `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>http://%s/sitemap-only</loc></url></urlset>`, request.Host)
+		case "/sitemap-only":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>sitemap only</title></head><body></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
+	parser := NewParser()
+	runner := NewRunner(CrawlerConfig{
+		AllowedHost: mustParseURL(t, server.URL).Host,
+		MaxDepth:    1,
+		MaxPages:    10,
+	}, 2, fetcher, parser)
+
+	results, err := runner.Run(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("run crawler: %v", err)
+	}
+
+	paths := make([]string, 0, len(results))
+	for _, result := range results {
+		paths = append(paths, mustParseURL(t, result.Fetch.FinalURL).Path)
+	}
+	sort.Strings(paths)
+
+	if len(paths) != 2 {
+		t.Fatalf("got %d results, want 2; paths=%#v", len(paths), paths)
+	}
+	if paths[0] != "/" || paths[1] != "/sitemap-only" {
+		t.Fatalf("got crawled paths %#v", paths)
+	}
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (store *testResultStore) UpdateCrawlProgress(_ context.Context, _ pgtype.UUID, _ int, _ int) (bool, error) {
 	return true, nil
 }

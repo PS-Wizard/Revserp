@@ -12,9 +12,10 @@ import (
 )
 
 type projectAIQuestionsResponse struct {
-	Questions       []string `json:"questions"`
-	GenerationModel string   `json:"generation_model"`
-	GeneratedAt     string   `json:"generated_at"`
+	Questions         []string `json:"questions"`
+	LocationQuestions []string `json:"location_questions"`
+	GenerationModel   string   `json:"generation_model"`
+	GeneratedAt       string   `json:"generated_at"`
 }
 
 // handleGetProjectAIQuestions returns the AI-generated questions for a project.
@@ -79,9 +80,21 @@ func (a *App) handleGetProjectAIQuestions(w http.ResponseWriter, r *http.Request
 		questions = []string{}
 	}
 
+	var locationQuestions []string
+	if len(row.LocationQuestions) > 0 {
+		if err := json.Unmarshal(row.LocationQuestions, &locationQuestions); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	}
+	if locationQuestions == nil {
+		locationQuestions = []string{}
+	}
+
 	writeJSON(w, http.StatusOK, projectAIQuestionsResponse{
-		Questions:       questions,
-		GenerationModel: row.GenerationModel,
-		GeneratedAt:     row.GeneratedAt.Time.UTC().Format("2006-01-02T15:04:05Z"),
+		Questions:         questions,
+		LocationQuestions: locationQuestions,
+		GenerationModel:   row.GenerationModel,
+		GeneratedAt:       row.GeneratedAt.Time.UTC().Format("2006-01-02T15:04:05Z"),
 	})
 }

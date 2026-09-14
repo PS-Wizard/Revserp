@@ -13,6 +13,7 @@ import (
 
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/mapsvisibility"
 )
 
 // Worker polls ai_worker_jobs and executes them.
@@ -128,6 +129,8 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			jobErr = w.handlePromptGeneration(ctx, job)
 		case "visibility_run":
 			jobErr = w.handleVisibilityRun(ctx, job)
+		case "maps_visibility":
+			jobErr = mapsvisibility.HandleMapsVisibilityCheck(ctx, w.queries, w.cfg, job.ProjectID)
 		default:
 			jobErr = fmt.Errorf("unknown job type: %s", job.JobType)
 		}

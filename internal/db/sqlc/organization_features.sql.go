@@ -21,6 +21,7 @@ SELECT
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -38,6 +39,7 @@ type GetOrganizationFeaturesRow struct {
 	AiMonthlyMessageLimit         int32
 	AiConcurrentTurnLimitPerUser  int32
 	AiVisibilityAuditMonthlyLimit int32
+	MaxCompetitors                int32
 	AiAllowedReasoningEfforts     []string
 }
 
@@ -53,6 +55,7 @@ func (q *Queries) GetOrganizationFeatures(ctx context.Context, orgID pgtype.UUID
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
 		&i.AiVisibilityAuditMonthlyLimit,
+		&i.MaxCompetitors,
 		&i.AiAllowedReasoningEfforts,
 	)
 	return i, err
@@ -67,6 +70,7 @@ SELECT
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -92,6 +96,7 @@ type GetOrganizationFeaturesByConversationIDRow struct {
 	AiMonthlyMessageLimit         int32
 	AiConcurrentTurnLimitPerUser  int32
 	AiVisibilityAuditMonthlyLimit int32
+	MaxCompetitors                int32
 	AiAllowedReasoningEfforts     []string
 }
 
@@ -106,6 +111,7 @@ func (q *Queries) GetOrganizationFeaturesByConversationID(ctx context.Context, a
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
 		&i.AiVisibilityAuditMonthlyLimit,
+		&i.MaxCompetitors,
 		&i.AiAllowedReasoningEfforts,
 	)
 	return i, err
@@ -120,6 +126,7 @@ SELECT
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -144,6 +151,7 @@ type GetOrganizationFeaturesByProjectIDRow struct {
 	AiMonthlyMessageLimit         int32
 	AiConcurrentTurnLimitPerUser  int32
 	AiVisibilityAuditMonthlyLimit int32
+	MaxCompetitors                int32
 	AiAllowedReasoningEfforts     []string
 }
 
@@ -158,6 +166,7 @@ func (q *Queries) GetOrganizationFeaturesByProjectID(ctx context.Context, arg Ge
 		&i.AiMonthlyMessageLimit,
 		&i.AiConcurrentTurnLimitPerUser,
 		&i.AiVisibilityAuditMonthlyLimit,
+		&i.MaxCompetitors,
 		&i.AiAllowedReasoningEfforts,
 	)
 	return i, err
@@ -174,6 +183,7 @@ SELECT
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -195,6 +205,7 @@ type ListOrganizationFeaturesForAdminRow struct {
 	AiMonthlyMessageLimit         int32
 	AiConcurrentTurnLimitPerUser  int32
 	AiVisibilityAuditMonthlyLimit int32
+	MaxCompetitors                int32
 	AiAllowedReasoningEfforts     []string
 	DisabledAiTools               []string
 	UpdatedAt                     pgtype.Timestamptz
@@ -219,6 +230,7 @@ func (q *Queries) ListOrganizationFeaturesForAdmin(ctx context.Context) ([]ListO
 			&i.AiMonthlyMessageLimit,
 			&i.AiConcurrentTurnLimitPerUser,
 			&i.AiVisibilityAuditMonthlyLimit,
+			&i.MaxCompetitors,
 			&i.AiAllowedReasoningEfforts,
 			&i.DisabledAiTools,
 			&i.UpdatedAt,
@@ -237,7 +249,7 @@ const upsertOrganizationFeatures = `-- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
     org_id, auto_crawl, gsc_connector, ai_chat, ai_use_internal_prompt,
     ai_monthly_message_limit, ai_concurrent_turn_limit_per_user,
-    ai_visibility_audit_monthly_limit, ai_allowed_reasoning_efforts,
+    ai_visibility_audit_monthly_limit, max_competitors, ai_allowed_reasoning_efforts,
     disabled_ai_tools, updated_by_user_id, updated_at
 ) VALUES (
     $1,
@@ -248,13 +260,14 @@ INSERT INTO organization_features (
     $6,
     $7,
     $8,
+    $9,
     ARRAY(
         SELECT effort
-        FROM unnest($9::TEXT[]) AS effort
+        FROM unnest($10::TEXT[]) AS effort
         ORDER BY array_position(ARRAY['none', 'low', 'high', 'max']::TEXT[], effort)
     ),
-    COALESCE($10::TEXT[], ARRAY[]::TEXT[]),
-    $11,
+    COALESCE($11::TEXT[], ARRAY[]::TEXT[]),
+    $12,
     now()
 )
 ON CONFLICT (org_id) DO UPDATE SET
@@ -265,6 +278,7 @@ ON CONFLICT (org_id) DO UPDATE SET
     ai_monthly_message_limit = EXCLUDED.ai_monthly_message_limit,
     ai_concurrent_turn_limit_per_user = EXCLUDED.ai_concurrent_turn_limit_per_user,
     ai_visibility_audit_monthly_limit = EXCLUDED.ai_visibility_audit_monthly_limit,
+    max_competitors = EXCLUDED.max_competitors,
     ai_allowed_reasoning_efforts = EXCLUDED.ai_allowed_reasoning_efforts,
     disabled_ai_tools = EXCLUDED.disabled_ai_tools,
     updated_by_user_id = EXCLUDED.updated_by_user_id,
@@ -280,6 +294,7 @@ type UpsertOrganizationFeaturesParams struct {
 	AiMonthlyMessageLimit         int32
 	AiConcurrentTurnLimitPerUser  int32
 	AiVisibilityAuditMonthlyLimit int32
+	MaxCompetitors                int32
 	AiAllowedReasoningEfforts     []string
 	DisabledAiTools               []string
 	UpdatedByUserID               pgtype.UUID
@@ -295,6 +310,7 @@ func (q *Queries) UpsertOrganizationFeatures(ctx context.Context, arg UpsertOrga
 		arg.AiMonthlyMessageLimit,
 		arg.AiConcurrentTurnLimitPerUser,
 		arg.AiVisibilityAuditMonthlyLimit,
+		arg.MaxCompetitors,
 		arg.AiAllowedReasoningEfforts,
 		arg.DisabledAiTools,
 		arg.UpdatedByUserID,

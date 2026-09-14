@@ -19,6 +19,7 @@ WHERE ci.id = sqlc.arg(issue_id)
   AND c.id = (
       SELECT latest.id FROM crawls AS latest
       WHERE latest.project_id = c.project_id AND latest.status = 'completed'
+        AND latest.source IN ('manual', 'auto')
       ORDER BY latest.completed_at DESC NULLS LAST, latest.created_at DESC, latest.id DESC
       LIMIT 1
   )
@@ -403,6 +404,7 @@ WHERE (attempt.verification_crawl_id = sqlc.arg(current_id) OR (
     attempt.status IN ('awaiting_verification', 'not_verified') AND current_crawl.id = (
         SELECT latest.id FROM crawls latest
         WHERE latest.project_id = current_crawl.project_id AND latest.status = 'completed'
+          AND latest.source IN ('manual', 'auto')
         ORDER BY latest.completed_at DESC NULLS LAST, latest.created_at DESC, latest.id DESC LIMIT 1
     )
 ))

@@ -47,6 +47,7 @@ type claimedCrawlRow struct {
 	RequestedByUserID pgtype.UUID
 	ConfigSnapshot    []byte
 	BaseURL           string
+	Source            string
 }
 
 func claimedFromManual(row sqlc.ClaimNextQueuedCrawlManualRow) claimedCrawlRow {
@@ -56,6 +57,7 @@ func claimedFromManual(row sqlc.ClaimNextQueuedCrawlManualRow) claimedCrawlRow {
 		RequestedByUserID: row.RequestedByUserID,
 		ConfigSnapshot:    row.ConfigSnapshot,
 		BaseURL:           row.BaseUrl,
+		Source:            row.Source,
 	}
 }
 
@@ -66,6 +68,7 @@ func claimedFromAuto(row sqlc.ClaimNextQueuedCrawlAutoRow) claimedCrawlRow {
 		RequestedByUserID: row.RequestedByUserID,
 		ConfigSnapshot:    row.ConfigSnapshot,
 		BaseURL:           row.BaseUrl,
+		Source:            row.Source,
 	}
 }
 
@@ -401,6 +404,8 @@ func (w *Worker) sweepDueAutoCrawls(ctx context.Context) error {
 			Status:            "queued",
 			ConfigSnapshot:    configSnapshot,
 			StartedAt:         pgtype.Timestamptz{},
+			CompetitorID:      pgtype.UUID{},
+			ParentCrawlID:     pgtype.UUID{},
 		})
 		if err != nil {
 			log.Printf("auto-crawl scheduler: failed to create auto crawl for project %s: %v", s.ProjectID.String(), err)
@@ -623,6 +628,10 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	if err := crawlStore.MarkCrawlCompleted(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)); err != nil {
 		log.Printf("crawl succeeded but mark-completed status write failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 		return fmt.Errorf("mark crawl completed: %w", err)
+	}
+
+	if claimed.Source == "competitor" {
+		w.saveCompetitorGapReport(finalCtx, claimed.ID)
 	}
 
 	return nil

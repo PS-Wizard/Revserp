@@ -64,21 +64,23 @@ func (baseline *Baseline) lookup(jobURL string) (baselinePage, bool) {
 	return page, ok
 }
 
-// LoadBaseline builds the conditional-request baseline from the most recent
-// completed crawl of a project. It returns (nil, nil) when there is no usable
-// baseline — no previous completed crawl, or none of its pages carried a
-// validator — which callers treat as "crawl everything unconditionally".
+// LoadBaseline builds the conditional-request baseline from the previous
+// completed crawl that matches this one: a home crawl uses the latest completed
+// manual/auto crawl, a competitor crawl uses the latest completed crawl of the
+// same competitor. It returns (nil, nil) when there is no usable baseline —
+// no previous completed crawl, or none of its pages carried a validator —
+// which callers treat as "crawl everything unconditionally".
 func (store *Store) LoadBaseline(ctx context.Context, projectID pgtype.UUID, currentCrawlID pgtype.UUID) (*Baseline, error) {
-	baselineCrawlID, err := store.queries.GetLatestCompletedCrawlIDForProject(ctx, sqlc.GetLatestCompletedCrawlIDForProjectParams{
+	baselineCrawlID, err := store.queries.GetIncrementalBaselineCrawlID(ctx, sqlc.GetIncrementalBaselineCrawlIDParams{
+		CurrentCrawlID: currentCrawlID,
 		ProjectID:      projectID,
-		ExcludeCrawlID: currentCrawlID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 
-		return nil, fmt.Errorf("get latest completed crawl for project: %w", err)
+		return nil, fmt.Errorf("get incremental baseline crawl: %w", err)
 	}
 
 	validatorRows, err := store.queries.ListPageValidatorsForCrawl(ctx, baselineCrawlID)

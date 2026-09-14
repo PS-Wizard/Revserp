@@ -46,8 +46,13 @@ type Config struct {
 	AIVisibilityModels          []string
 	AIVisibilityRateDelay       time.Duration
 	AIProvider                  string
-	DeepSeekAPIKey              string
 	DeepSeekModel               string
+	DeepSeekAPIKey              string
+	SerperAPIKey                string
+	SerperMapsEndpoint          string
+	SerperPlacesEndpoint        string
+	SerperReviewsEndpoint       string
+	MapsVisibilityCooldown      time.Duration
 	DeepSeekBaseURL             string
 	AITurnTimeout               time.Duration
 	ObscuraPath                 string
@@ -73,37 +78,43 @@ func Load() Config {
 	_ = godotenv.Load()
 
 	return Config{
-		AppEnv:                      getEnv("APP_ENV", "development"),
-		HTTPAddr:                    getEnv("HTTP_ADDR", ":8080"),
-		DatabaseURL:                 getEnv("DATABASE_URL", ""),
-		DBStatementTimeout:          getEnvDuration("DB_STATEMENT_TIMEOUT", DefaultDBStatementTimeout),
-		DBLockTimeout:               getEnvDuration("DB_LOCK_TIMEOUT", DefaultDBLockTimeout),
-		AuthProvider:                getEnv("AUTH_PROVIDER", "supabase"),
-		SupabaseJWTIssuer:           getEnv("SUPABASE_JWT_ISSUER", ""),
-		SupabaseJWKSURL:             getEnv("SUPABASE_JWKS_URL", ""),
-		SupabaseJWTAudience:         getEnv("SUPABASE_JWT_AUDIENCE", "authenticated"),
-		SupabaseAnonKey:             getEnv("SUPABASE_ANON_KEY", ""),
-		SessionCookieName:           getEnv("SESSION_COOKIE_NAME", "revserp_session"),
-		SessionCookieDomain:         getEnv("SESSION_COOKIE_DOMAIN", ""),
-		SessionTTL:                  getEnvDuration("SESSION_TTL", 30*24*time.Hour),
-		CORSAllowedOrigins:          getEnvCSV("CORS_ALLOWED_ORIGINS", []string{"http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"}),
-		WorkerConcurrency:           getEnvInt("WORKER_CONCURRENCY", 2),
-		WorkerPollInterval:          getEnvDuration("WORKER_POLL_INTERVAL", 2*time.Second),
-		CrawlPageWorkerCount:        getEnvInt("CRAWL_PAGE_WORKER_COUNT", 4),
-		AutoCrawlConcurrency:        getEnvInt("AUTO_CRAWL_CONCURRENCY", 1),
-		AutoCrawlPollInterval:       getEnvDuration("AUTO_CRAWL_POLL_INTERVAL", 2*time.Second),
-		AutoCrawlSchedulerInterval:  getEnvDuration("AUTO_CRAWL_SCHEDULER_INTERVAL", time.Minute),
-		AIAuditWorkerConcurrency:    getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
-		AIAuditWorkerPollInterval:   getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
-		AIChatWorkerConcurrency:     getEnvInt("AI_CHAT_WORKER_CONCURRENCY", 20),
-		AIChatWorkerPollInterval:    getEnvDuration("AI_CHAT_WORKER_POLL_INTERVAL", 2*time.Second),
-		OpenRouterAPIKey:            getEnv("OPENROUTER_API_KEY", ""),
-		AIVisibilityModels:          getEnvCSV("AI_VISIBILITY_MODELS", []string{"meta-llama/llama-3.3-70b-instruct:free", "nvidia/nemotron-3-super-120b-a12b:free", "nousresearch/hermes-3-llama-3.1-405b:free"}),
-		AIVisibilityRateDelay:       getEnvDuration("AI_VISIBILITY_RATE_DELAY", 9*time.Second),
-		AIProvider:                  strings.ToLower(getEnv("AI_PROVIDER", "deepseek")),
-		DeepSeekAPIKey:              getEnv("DEEPSEEK_API_KEY", ""),
-		DeepSeekModel:               getEnv("DEEPSEEK_MODEL", "deepseek-flash"),
-		DeepSeekBaseURL:             getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+		AppEnv:                     getEnv("APP_ENV", "development"),
+		HTTPAddr:                   getEnv("HTTP_ADDR", ":8080"),
+		DatabaseURL:                getEnv("DATABASE_URL", ""),
+		DBStatementTimeout:         getEnvDuration("DB_STATEMENT_TIMEOUT", DefaultDBStatementTimeout),
+		DBLockTimeout:              getEnvDuration("DB_LOCK_TIMEOUT", DefaultDBLockTimeout),
+		AuthProvider:               getEnv("AUTH_PROVIDER", "supabase"),
+		SupabaseJWTIssuer:          getEnv("SUPABASE_JWT_ISSUER", ""),
+		SupabaseJWKSURL:            getEnv("SUPABASE_JWKS_URL", ""),
+		SupabaseJWTAudience:        getEnv("SUPABASE_JWT_AUDIENCE", "authenticated"),
+		SupabaseAnonKey:            getEnv("SUPABASE_ANON_KEY", ""),
+		SessionCookieName:          getEnv("SESSION_COOKIE_NAME", "revserp_session"),
+		SessionCookieDomain:        getEnv("SESSION_COOKIE_DOMAIN", ""),
+		SessionTTL:                 getEnvDuration("SESSION_TTL", 30*24*time.Hour),
+		CORSAllowedOrigins:         getEnvCSV("CORS_ALLOWED_ORIGINS", []string{"http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"}),
+		WorkerConcurrency:          getEnvInt("WORKER_CONCURRENCY", 2),
+		WorkerPollInterval:         getEnvDuration("WORKER_POLL_INTERVAL", 2*time.Second),
+		CrawlPageWorkerCount:       getEnvInt("CRAWL_PAGE_WORKER_COUNT", 4),
+		AutoCrawlConcurrency:       getEnvInt("AUTO_CRAWL_CONCURRENCY", 1),
+		AutoCrawlPollInterval:      getEnvDuration("AUTO_CRAWL_POLL_INTERVAL", 2*time.Second),
+		AutoCrawlSchedulerInterval: getEnvDuration("AUTO_CRAWL_SCHEDULER_INTERVAL", time.Minute),
+		AIAuditWorkerConcurrency:   getEnvInt("AI_AUDIT_WORKER_CONCURRENCY", 2),
+		AIAuditWorkerPollInterval:  getEnvDuration("AI_AUDIT_WORKER_POLL_INTERVAL", 2*time.Second),
+		AIChatWorkerConcurrency:    getEnvInt("AI_CHAT_WORKER_CONCURRENCY", 20),
+		AIChatWorkerPollInterval:   getEnvDuration("AI_CHAT_WORKER_POLL_INTERVAL", 2*time.Second),
+		OpenRouterAPIKey:           getEnv("OPENROUTER_API_KEY", ""),
+		AIVisibilityModels:         getEnvCSV("AI_VISIBILITY_MODELS", []string{"meta-llama/llama-3.3-70b-instruct:free", "nvidia/nemotron-3-super-120b-a12b:free", "nousresearch/hermes-3-llama-3.1-405b:free"}),
+		AIVisibilityRateDelay:      getEnvDuration("AI_VISIBILITY_RATE_DELAY", 9*time.Second),
+		AIProvider:                 strings.ToLower(getEnv("AI_PROVIDER", "deepseek")),
+		DeepSeekAPIKey:             getEnv("DEEPSEEK_API_KEY", ""),
+		DeepSeekModel:              getEnv("DEEPSEEK_MODEL", "deepseek-flash"),
+		SerperAPIKey:               getEnv("SERPER_KEY", ""),
+		SerperMapsEndpoint:         getEnv("SERPER_MAPS_ENDPOINT", "https://google.serper.dev/maps"),
+		SerperPlacesEndpoint:       getEnv("SERPER_PLACES_ENDPOINT", "https://google.serper.dev/places"),
+		SerperReviewsEndpoint:      getEnv("SERPER_REVIEWS_ENDPOINT", "https://google.serper.dev/reviews"),
+		// Dev override: set to 0s to re-test the maps card freely. Prod keeps
+		// the 24h default so a click cannot quietly drain Serper credits.
+		MapsVisibilityCooldown:      getEnvDuration("MAPS_VISIBILITY_COOLDOWN", 24*time.Hour),
 		AITurnTimeout:               getEnvDurationInRange("AI_TURN_TIMEOUT", 5*time.Minute, 30*time.Second, 10*time.Minute),
 		ObscuraPath:                 getEnv("OBSCURA_PATH", ""),
 		RendererConcurrency:         getEnvInt("RENDERER_CONCURRENCY", 2),

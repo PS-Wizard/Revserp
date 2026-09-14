@@ -456,6 +456,7 @@ SELECT id
 FROM crawls
 WHERE project_id = $1
   AND status = 'completed'
+  AND source IN ('manual', 'auto')
 ORDER BY completed_at DESC NULLS LAST, created_at DESC, id DESC
 LIMIT 1;
 
@@ -472,5 +473,6 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE c.project_id = $1
   AND om.user_id = $2
   AND c.status = 'completed'
+  AND c.source IN ('manual', 'auto')
 ORDER BY c.created_at DESC
 LIMIT $3;

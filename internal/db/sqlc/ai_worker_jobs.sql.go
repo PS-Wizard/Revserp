@@ -98,6 +98,45 @@ func (q *Queries) EnqueueAIWorkerJob(ctx context.Context, arg EnqueueAIWorkerJob
 	return i, err
 }
 
+const getLatestPromptGenerationJobByProject = `-- name: GetLatestPromptGenerationJobByProject :one
+SELECT id, job_type, project_id, audit_id, status, error_message, started_at, completed_at, created_at, updated_at
+FROM ai_worker_jobs
+WHERE project_id = $1 AND job_type = 'prompt_generation'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetLatestPromptGenerationJobByProjectRow struct {
+	ID           pgtype.UUID
+	JobType      string
+	ProjectID    pgtype.UUID
+	AuditID      pgtype.UUID
+	Status       string
+	ErrorMessage pgtype.Text
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) GetLatestPromptGenerationJobByProject(ctx context.Context, projectID pgtype.UUID) (GetLatestPromptGenerationJobByProjectRow, error) {
+	row := q.db.QueryRow(ctx, getLatestPromptGenerationJobByProject, projectID)
+	var i GetLatestPromptGenerationJobByProjectRow
+	err := row.Scan(
+		&i.ID,
+		&i.JobType,
+		&i.ProjectID,
+		&i.AuditID,
+		&i.Status,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const markAIWorkerJobCompleted = `-- name: MarkAIWorkerJobCompleted :exec
 UPDATE ai_worker_jobs
 SET status = 'completed', completed_at = NOW(), updated_at = NOW()

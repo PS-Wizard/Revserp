@@ -165,6 +165,16 @@ type ApiKey struct {
 	RevokedAt   pgtype.Timestamptz
 }
 
+type CompetitorGapReport struct {
+	ID                pgtype.UUID
+	ParentCrawlID     pgtype.UUID
+	CompetitorCrawlID pgtype.UUID
+	Version           string
+	ReportJson        []byte
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
 type Crawl struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID
@@ -185,6 +195,8 @@ type Crawl struct {
 	RequestedByUserID pgtype.UUID
 	Source            string
 	Phase             pgtype.Text
+	CompetitorID      pgtype.UUID
+	ParentCrawlID     pgtype.UUID
 }
 
 type CrawlIssue struct {
@@ -349,6 +361,44 @@ type IssueWorkItem struct {
 	SourceIssueGroupID pgtype.UUID
 }
 
+type MapsListingRef struct {
+	ProjectID  pgtype.UUID
+	Cid        pgtype.Text
+	PlaceID    pgtype.Text
+	Title      pgtype.Text
+	Website    pgtype.Text
+	Address    pgtype.Text
+	ResolvedAt pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
+type MapsListingReview struct {
+	PlaceID       string
+	Cid           pgtype.Text
+	Reviews       []byte
+	NextPageToken pgtype.Text
+	FetchedAt     pgtype.Timestamptz
+	CreditsUsed   pgtype.Int4
+}
+
+type MapsVisibilityCheck struct {
+	ID            pgtype.UUID
+	ProjectID     pgtype.UUID
+	Question      string
+	Status        string
+	Ll            pgtype.Text
+	Zoom          pgtype.Int4
+	OurRank       pgtype.Int4
+	OurMatchBasis pgtype.Text
+	CreditsUsed   pgtype.Int4
+	Error         pgtype.Text
+	Results       []byte
+	Listing       []byte
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	CompletedAt   pgtype.Timestamptz
+}
+
 type Organization struct {
 	ID        pgtype.UUID
 	Name      string
@@ -368,6 +418,7 @@ type OrganizationFeature struct {
 	AiUseInternalPrompt           bool
 	DisabledAiTools               []string
 	AiVisibilityAuditMonthlyLimit int32
+	MaxCompetitors                int32
 }
 
 type OrganizationInvite struct {
@@ -398,11 +449,12 @@ type Project struct {
 }
 
 type ProjectAiQuestion struct {
-	ID              pgtype.UUID
-	ProjectID       pgtype.UUID
-	Questions       []byte
-	GenerationModel string
-	GeneratedAt     pgtype.Timestamptz
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	Questions         []byte
+	GenerationModel   string
+	GeneratedAt       pgtype.Timestamptz
+	LocationQuestions []byte
 }
 
 type ProjectAutoCrawlSetting struct {
@@ -430,6 +482,14 @@ type ProjectBusinessProfile struct {
 	UpdatedAt           pgtype.Timestamptz
 	SeedPrompts         []byte
 	TargetKeywords      []byte
+}
+
+type ProjectCompetitor struct {
+	ID        pgtype.UUID
+	ProjectID pgtype.UUID
+	SeedUrl   string
+	Name      string
+	CreatedAt pgtype.Timestamptz
 }
 
 type ProjectGscConnection struct {

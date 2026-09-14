@@ -394,8 +394,29 @@ SELECT id
 FROM crawls
 WHERE project_id = sqlc.arg(project_id)
   AND status = 'completed'
+  AND source IN ('manual', 'auto')
   AND id <> sqlc.arg(exclude_crawl_id)
 ORDER BY completed_at DESC NULLS LAST
+LIMIT 1;
+
+-- name: GetIncrementalBaselineCrawlID :one
+SELECT previous.id
+FROM crawls AS current
+INNER JOIN crawls AS previous
+    ON previous.project_id = current.project_id
+   AND previous.status = 'completed'
+   AND previous.id <> current.id
+   AND (
+        (current.source = 'competitor'
+         AND previous.source = 'competitor'
+         AND previous.competitor_id = current.competitor_id)
+        OR
+        (current.source <> 'competitor'
+         AND previous.source IN ('manual', 'auto'))
+   )
+WHERE current.id = sqlc.arg(current_crawl_id)
+  AND current.project_id = sqlc.arg(project_id)
+ORDER BY previous.completed_at DESC NULLS LAST
 LIMIT 1;
 
 -- name: ListPageValidatorsForCrawl :many
@@ -532,6 +553,18 @@ SELECT
 FROM crawl_pages
 WHERE crawl_id = $1
 ORDER BY created_at ASC;
+
+-- name: ListKeywordCoveragePagesForCrawl :many
+SELECT
+    url,
+    COALESCE(title, '')::text AS title,
+    COALESCE(h1, '')::text AS h1,
+    COALESCE(status_code, 0)::int AS status_code,
+    COALESCE(content_type, '')::text AS content_type,
+    soft_404,
+    COALESCE(fetch_error, '')::text AS fetch_error
+FROM crawl_pages
+WHERE crawl_id = sqlc.arg(crawl_id);
 
 -- name: SearchCrawlPagesForUser :many
 SELECT

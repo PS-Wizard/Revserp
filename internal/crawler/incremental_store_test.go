@@ -513,6 +513,137 @@ func seedBaselineResult(t *testing.T, ctx context.Context, store *Store, baselin
 	}
 }
 
+func TestLoadBaselineForCompetitorUsesSameCompetitorNotHome(t *testing.T) {
+	loadCrawlerTestEnv(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	projectID, homeCrawlID, runningHomeID, cleanup := createTestProjectWithTwoCrawls(t, ctx, pool)
+	defer cleanup()
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO crawl_pages (crawl_id, url, status_code, etag)
+		VALUES ($1, 'https://example.com/home', 200, '"home"')
+	`, homeCrawlID); err != nil {
+		t.Fatalf("seed home page: %v", err)
+	}
+
+	var competitorID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO project_competitors (project_id, seed_url, name)
+		VALUES ($1, 'https://competitor.example/', 'Comp')
+		RETURNING id
+	`, projectID).Scan(&competitorID); err != nil {
+		t.Fatalf("create competitor: %v", err)
+	}
+
+	var competitorBaselineID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO crawls (project_id, status, source, competitor_id, parent_crawl_id, completed_at)
+		VALUES ($1, 'completed', 'competitor', $2, $3, now() - interval '1 hour')
+		RETURNING id
+	`, projectID, competitorID, homeCrawlID).Scan(&competitorBaselineID); err != nil {
+		t.Fatalf("create competitor baseline crawl: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO crawl_pages (crawl_id, url, status_code, etag)
+		VALUES ($1, 'https://competitor.example/', 200, '"comp"')
+	`, competitorBaselineID); err != nil {
+		t.Fatalf("seed competitor page: %v", err)
+	}
+
+	var competitorCurrentID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO crawls (project_id, status, source, competitor_id, parent_crawl_id)
+		VALUES ($1, 'running', 'competitor', $2, $3)
+		RETURNING id
+	`, projectID, competitorID, runningHomeID).Scan(&competitorCurrentID); err != nil {
+		t.Fatalf("create competitor current crawl: %v", err)
+	}
+
+	store := NewStore(pool)
+	baseline, err := store.LoadBaseline(ctx, projectID, competitorCurrentID)
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+	if baseline == nil {
+		t.Fatal("got nil baseline, want competitor crawl")
+	}
+	if baseline.CrawlID != competitorBaselineID {
+		t.Fatalf("got baseline.CrawlID = %v, want competitor crawl %v", baseline.CrawlID, competitorBaselineID)
+	}
+	if _, ok := baseline.lookup("https://competitor.example/"); !ok {
+		t.Fatal("expected competitor URL in baseline")
+	}
+	if _, ok := baseline.lookup("https://example.com/home"); ok {
+		t.Fatal("home crawl URL must not leak into competitor baseline")
+	}
+}
+
+func TestLoadBaselineForFirstCompetitorCrawlIgnoresHomeCrawl(t *testing.T) {
+	loadCrawlerTestEnv(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	projectID, homeCrawlID, runningHomeID, cleanup := createTestProjectWithTwoCrawls(t, ctx, pool)
+	defer cleanup()
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO crawl_pages (crawl_id, url, status_code, etag)
+		VALUES ($1, 'https://example.com/home', 200, '"home"')
+	`, homeCrawlID); err != nil {
+		t.Fatalf("seed home page: %v", err)
+	}
+
+	var competitorID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO project_competitors (project_id, seed_url, name)
+		VALUES ($1, 'https://competitor.example/', 'Comp')
+		RETURNING id
+	`, projectID).Scan(&competitorID); err != nil {
+		t.Fatalf("create competitor: %v", err)
+	}
+
+	var competitorCurrentID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO crawls (project_id, status, source, competitor_id, parent_crawl_id)
+		VALUES ($1, 'running', 'competitor', $2, $3)
+		RETURNING id
+	`, projectID, competitorID, runningHomeID).Scan(&competitorCurrentID); err != nil {
+		t.Fatalf("create competitor current crawl: %v", err)
+	}
+
+	store := NewStore(pool)
+	baseline, err := store.LoadBaseline(ctx, projectID, competitorCurrentID)
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+	if baseline != nil {
+		t.Fatalf("got baseline %+v, want nil for a first competitor crawl", baseline)
+	}
+}
+
 // createTestProjectWithTwoCrawls sets up one project with a completed baseline
 // crawl and a running current crawl, so incremental-crawl tests can exercise
 // LoadBaseline/PersistReusedResult across two crawls of the same project.
