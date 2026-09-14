@@ -134,16 +134,16 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 		name = sessionRow.Name.String
 	}
 	return Identity{
-			Provider: sessionRow.AuthProvider,
-			Subject:  sessionRow.AuthSubject,
-			Email:    sessionRow.Email,
-			Name:     name,
-		}, SessionContext{
-			SessionID:   sessionRow.ID,
-			UserID:      sessionRow.UserID,
-			ActiveOrgID: sessionRow.ActiveOrgID,
-			ExpiresAt:   sessionRow.ExpiresAt.Time.UTC(),
-		}, nil
+		Provider: sessionRow.AuthProvider,
+		Subject:  sessionRow.AuthSubject,
+		Email:    sessionRow.Email,
+		Name:     name,
+	}, SessionContext{
+		SessionID:   sessionRow.ID,
+		UserID:      sessionRow.UserID,
+		ActiveOrgID: sessionRow.ActiveOrgID,
+		ExpiresAt:   sessionRow.ExpiresAt.Time.UTC(),
+	}, nil
 }
 
 // RenewSession refreshes Supabase only near backend-session expiry and rotates the cookie token.

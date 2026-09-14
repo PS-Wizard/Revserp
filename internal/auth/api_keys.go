@@ -94,13 +94,13 @@ func (m *APIKeyManager) Authenticate(ctx context.Context, raw string) (Identity,
 		name = row.Name.String
 	}
 	return Identity{
-			Provider: row.AuthProvider,
-			Subject:  row.AuthSubject,
-			Email:    row.Email,
-			Name:     name,
-		}, APIKeyMetadata{
-			ID:     row.ApiKeyID.String(),
-			Prefix: row.TokenPrefix,
-			UserID: row.UserID.String(),
-		}, nil
+		Provider: row.AuthProvider,
+		Subject:  row.AuthSubject,
+		Email:    row.Email,
+		Name:     name,
+	}, APIKeyMetadata{
+		ID:     row.ApiKeyID.String(),
+		Prefix: row.TokenPrefix,
+		UserID: row.UserID.String(),
+	}, nil
 }
