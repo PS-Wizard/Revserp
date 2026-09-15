@@ -25,6 +25,9 @@ const (
 	sessionRenewBefore      = 24 * time.Hour
 	sessionRenewRetryDelay  = 5 * time.Minute
 	previousSessionTokenTTL = time.Minute
+	// supabaseAccessTokenSkew refreshes a stored access token slightly early so
+	// a call made with it does not expire mid-flight.
+	supabaseAccessTokenSkew = 30 * time.Second
 )
 
 var (
@@ -144,6 +147,50 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 		ActiveOrgID: sessionRow.ActiveOrgID,
 		ExpiresAt:   sessionRow.ExpiresAt.Time.UTC(),
 	}, nil
+}
+
+// UserAccessToken returns a Supabase access token for one backend session and
+// refreshes it when the stored token is expired. This path never rotates the
+// browser session cookie; only RenewSession does that.
+func (manager *SessionManager) UserAccessToken(ctx context.Context, rawSessionToken string) (string, error) {
+	if strings.TrimSpace(rawSessionToken) == "" {
+		return "", errors.New("missing session token")
+	}
+
+	sessionRow, err := manager.queries.GetSessionByTokenHash(ctx, hashSessionToken(rawSessionToken))
+	if err != nil {
+		return "", fmt.Errorf("load backend session: %w", err)
+	}
+
+	now := time.Now().UTC()
+	if err := validateSession(sessionRow.RevokedAt, sessionRow.ExpiresAt, now); err != nil {
+		return "", err
+	}
+
+	accessToken := strings.TrimSpace(sessionRow.SupabaseAccessToken)
+	if accessToken != "" && now.Add(supabaseAccessTokenSkew).Before(sessionRow.SupabaseAccessTokenExpiresAt.Time.UTC()) {
+		return accessToken, nil
+	}
+
+	if manager.supabaseClient == nil {
+		return "", errors.New("supabase client is not configured")
+	}
+
+	refreshedSession, err := manager.supabaseClient.Refresh(ctx, sessionRow.SupabaseRefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("refresh supabase session: %w", err)
+	}
+
+	if err := manager.queries.UpdateSessionSupabaseTokens(ctx, sqlc.UpdateSessionSupabaseTokensParams{
+		ID:                           sessionRow.ID,
+		SupabaseAccessToken:          refreshedSession.AccessToken,
+		SupabaseRefreshToken:         refreshedSession.RefreshToken,
+		SupabaseAccessTokenExpiresAt: timestamptzValue(refreshedSession.ExpiresAt.UTC()),
+	}); err != nil {
+		return "", fmt.Errorf("persist refreshed supabase session: %w", err)
+	}
+
+	return refreshedSession.AccessToken, nil
 }
 
 // RenewSession refreshes Supabase only near backend-session expiry and rotates the cookie token.

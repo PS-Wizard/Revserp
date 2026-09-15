@@ -19,12 +19,25 @@ func (a *App) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   a.Config.CORSAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "Last-Event-ID"},
+		AllowedOrigins: a.Config.CORSAllowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{
+			"Accept",
+			"Authorization",
+			"Content-Type",
+			"X-CSRF-Token",
+			"Last-Event-ID",
+			"Mcp-Method",
+			"Mcp-Name",
+			"Mcp-Protocol-Version",
+			"MCP-Protocol-Version",
+		},
+		ExposedHeaders:   []string{"WWW-Authenticate"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+
+	a.mountMCP(r)
 
 	r.Get("/health", a.handleHealth)
 	r.Post("/auth/signup", a.handleSignUp)
@@ -47,6 +60,8 @@ func (a *App) Router() http.Handler {
 			app.Get("/api-keys", a.handleListAPIKeys)
 			app.Post("/api-keys/{apiKeyID}/revoke", a.handleRevokeAPIKey)
 			app.Post("/agent/setup-codes", a.handleCreateAgentSetupCode)
+			app.Get("/oauth/authorizations/{authorizationID}", a.handleGetOAuthAuthorization)
+			app.Post("/oauth/authorizations/{authorizationID}/consent", a.handlePostOAuthConsent)
 			app.Get("/internal/scoring-config", a.platformAdminOnly(a.handleGetScoringConfig))
 			app.Put("/internal/scoring-config", a.platformAdminOnly(a.handlePutScoringConfig))
 			app.Post("/internal/scoring-config/preview", a.platformAdminOnly(a.handlePreviewScoringConfig))

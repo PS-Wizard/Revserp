@@ -45,6 +45,16 @@ func TestLoadAutoCrawlDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadMCPResourceURL(t *testing.T) {
+	unsetEnv(t, "MCP_RESOURCE_URL")
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+	setEnv(t, "MCP_RESOURCE_URL", "https://api.revserp.ai/mcp")
+	cfg := Load()
+	if cfg.MCPResourceURL != "https://api.revserp.ai/mcp" {
+		t.Errorf("MCPResourceURL: got %q", cfg.MCPResourceURL)
+	}
+}
+
 func TestLoadAutoCrawlCustom(t *testing.T) {
 	for _, k := range []string{
 		"AUTO_CRAWL_CONCURRENCY",

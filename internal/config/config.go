@@ -63,6 +63,7 @@ type Config struct {
 	ObscuraTimeout              time.Duration
 	ObscuraKillTimeout          time.Duration
 	FrontendURL                 string
+	MCPResourceURL              string
 	GoogleClientID              string
 	GoogleClientSecret          string
 	GoogleRedirectURL           string
@@ -127,6 +128,7 @@ func Load() Config {
 		ObscuraTimeout:              time.Duration(getEnvInt("OBSCURA_TIMEOUT_SECONDS", 5)) * time.Second,
 		ObscuraKillTimeout:          time.Duration(getEnvInt("OBSCURA_KILL_TIMEOUT_SECONDS", 7)) * time.Second,
 		FrontendURL:                 getEnv("FRONTEND_URL", ""),
+		MCPResourceURL:              getEnv("MCP_RESOURCE_URL", ""),
 		GoogleClientID:              getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret:          getEnv("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURL:           getEnv("GOOGLE_REDIRECT_URL", ""),

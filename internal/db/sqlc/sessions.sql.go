@@ -386,3 +386,29 @@ func (q *Queries) UpdateSessionActiveOrganization(ctx context.Context, arg Updat
 	_, err := q.db.Exec(ctx, updateSessionActiveOrganization, arg.ID, arg.ActiveOrgID)
 	return err
 }
+
+const updateSessionSupabaseTokens = `-- name: UpdateSessionSupabaseTokens :exec
+UPDATE sessions
+SET supabase_access_token = $2,
+    supabase_refresh_token = $3,
+    supabase_access_token_expires_at = $4,
+    updated_at = now()
+WHERE id = $1
+`
+
+type UpdateSessionSupabaseTokensParams struct {
+	ID                           pgtype.UUID
+	SupabaseAccessToken          string
+	SupabaseRefreshToken         string
+	SupabaseAccessTokenExpiresAt pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateSessionSupabaseTokens(ctx context.Context, arg UpdateSessionSupabaseTokensParams) error {
+	_, err := q.db.Exec(ctx, updateSessionSupabaseTokens,
+		arg.ID,
+		arg.SupabaseAccessToken,
+		arg.SupabaseRefreshToken,
+		arg.SupabaseAccessTokenExpiresAt,
+	)
+	return err
+}
