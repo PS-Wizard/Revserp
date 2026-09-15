@@ -153,6 +153,17 @@ func (manager *SessionManager) AuthenticateRequest(ctx context.Context, rawSessi
 // refreshes it when the stored token is expired. This path never rotates the
 // browser session cookie; only RenewSession does that.
 func (manager *SessionManager) UserAccessToken(ctx context.Context, rawSessionToken string) (string, error) {
+	return manager.userAccessToken(ctx, rawSessionToken, false)
+}
+
+// FreshUserAccessToken always exchanges the stored refresh token so the JWT's
+// session_id still exists in GoTrue. Cached access tokens can outlive that
+// session row, which breaks OAuth consent.
+func (manager *SessionManager) FreshUserAccessToken(ctx context.Context, rawSessionToken string) (string, error) {
+	return manager.userAccessToken(ctx, rawSessionToken, true)
+}
+
+func (manager *SessionManager) userAccessToken(ctx context.Context, rawSessionToken string, forceRefresh bool) (string, error) {
 	if strings.TrimSpace(rawSessionToken) == "" {
 		return "", errors.New("missing session token")
 	}
@@ -168,7 +179,7 @@ func (manager *SessionManager) UserAccessToken(ctx context.Context, rawSessionTo
 	}
 
 	accessToken := strings.TrimSpace(sessionRow.SupabaseAccessToken)
-	if accessToken != "" && now.Add(supabaseAccessTokenSkew).Before(sessionRow.SupabaseAccessTokenExpiresAt.Time.UTC()) {
+	if !forceRefresh && accessToken != "" && now.Add(supabaseAccessTokenSkew).Before(sessionRow.SupabaseAccessTokenExpiresAt.Time.UTC()) {
 		return accessToken, nil
 	}
 

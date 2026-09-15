@@ -107,17 +107,17 @@ func TestPostOAuthConsentRejectsInvalidAction(t *testing.T) {
 	}
 }
 
-func TestWriteSupabaseOAuthErrorMapsUnauthorizedToNotFound(t *testing.T) {
+func TestWriteSupabaseOAuthErrorMapsUnauthorizedToUnauthorized(t *testing.T) {
 	response := httptest.NewRecorder()
 	writeSupabaseOAuthError(response, "load authorization", &internalauth.SupabaseAuthError{
 		StatusCode: http.StatusUnauthorized,
 		Message:    "invalid jwt",
 	})
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
-	if message := decodeErrorBody(t, response); !strings.Contains(message, "not found") {
-		t.Fatalf("error = %q, want not found", message)
+	if message := decodeErrorBody(t, response); !strings.Contains(message, "sign in") {
+		t.Fatalf("error = %q, want sign in again", message)
 	}
 }
 

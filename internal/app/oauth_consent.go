@@ -115,7 +115,7 @@ func validOAuthAuthorizationID(id string) bool {
 // backend session, refreshing it when the stored one has expired.
 func (a *App) supabaseUserAccessToken(w http.ResponseWriter, r *http.Request) (string, bool) {
 	rawSessionToken := a.SessionManager.SessionTokenFromRequest(r)
-	accessToken, err := a.SessionManager.UserAccessToken(r.Context(), rawSessionToken)
+	accessToken, err := a.SessionManager.FreshUserAccessToken(r.Context(), rawSessionToken)
 	if err != nil {
 		// The session middleware already rejects missing or revoked sessions, so
 		// reaching here means the Supabase refresh itself failed.
@@ -141,10 +141,7 @@ func writeSupabaseOAuthError(w http.ResponseWriter, stage string, err error) {
 			writeJSONError(w, http.StatusBadRequest, authError.Message)
 			return
 		case http.StatusUnauthorized, http.StatusForbidden:
-			// Session cookie already passed RequireSession. A 401 from this
-			// GoTrue endpoint means the authorization id is not available to
-			// this user, not that they need to log in again.
-			writeJSONError(w, http.StatusNotFound, "authorization request not found or expired")
+			writeJSONError(w, http.StatusUnauthorized, "session expired, sign in again")
 			return
 		}
 	}
