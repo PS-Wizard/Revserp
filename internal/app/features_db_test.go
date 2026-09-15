@@ -67,8 +67,8 @@ func TestOrgWithNoRowResolvesToEverythingEnabled(t *testing.T) {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
 
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts)
-	for _, feature := range []Feature{FeatureAutoCrawl, FeatureGSCConnector, FeatureAIChat, FeatureCompetitors} {
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts)
+	for _, feature := range []Feature{FeatureAutoCrawl, FeatureGSCConnector, FeatureAIChat, FeatureIntegrations, FeatureCompetitors} {
 		if !features.Enabled(feature) {
 			t.Errorf("unrestricted workspace has %q disabled", feature)
 		}
@@ -96,6 +96,7 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 		AutoCrawl:                     false,
 		GscConnector:                  true,
 		AiChat:                        true,
+		Integrations:                  false,
 		AiUseInternalPrompt:           true,
 		AiMonthlyMessageLimit:         123,
 		AiConcurrentTurnLimitPerUser:  2,
@@ -110,13 +111,16 @@ func TestUpsertThenReadRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts)
 
 	if features.Enabled(FeatureAutoCrawl) {
 		t.Error("auto_crawl was saved disabled but read back enabled")
 	}
 	if !features.Enabled(FeatureGSCConnector) {
 		t.Error("gsc_connector was saved enabled but read back disabled")
+	}
+	if features.Enabled(FeatureIntegrations) {
+		t.Error("integrations was saved disabled but read back enabled")
 	}
 	if !features.AIUseInternalPrompt {
 		t.Error("ai_use_internal_prompt was saved true but read back false")
@@ -136,7 +140,7 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 	orgID := createFeaturesTestOrg(t, ctx, pool)
 
 	first := sqlc.UpsertOrganizationFeaturesParams{
-		OrgID: orgID, AutoCrawl: false, GscConnector: false, AiChat: false,
+		OrgID: orgID, AutoCrawl: false, GscConnector: false, AiChat: false, Integrations: false,
 		AiMonthlyMessageLimit: 1, AiConcurrentTurnLimitPerUser: 2,
 		AiVisibilityAuditMonthlyLimit: 10, MaxCompetitors: 3,
 		AiAllowedReasoningEfforts: []string{"max"},
@@ -146,7 +150,7 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 	}
 
 	second := sqlc.UpsertOrganizationFeaturesParams{
-		OrgID: orgID, AutoCrawl: true, GscConnector: true, AiChat: true,
+		OrgID: orgID, AutoCrawl: true, GscConnector: true, AiChat: true, Integrations: true,
 		AiMonthlyMessageLimit: 999, AiConcurrentTurnLimitPerUser: 2,
 		AiVisibilityAuditMonthlyLimit: 10, MaxCompetitors: 3,
 		AiAllowedReasoningEfforts: []string{"low", "none"},
@@ -159,9 +163,9 @@ func TestUpsertIsIdempotentAndOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrganizationFeatures: %v", err)
 	}
-	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts)
+	features := featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts)
 
-	if !features.Enabled(FeatureAutoCrawl) || !features.Enabled(FeatureGSCConnector) || !features.Enabled(FeatureAIChat) {
+	if !features.Enabled(FeatureAutoCrawl) || !features.Enabled(FeatureGSCConnector) || !features.Enabled(FeatureAIChat) || !features.Enabled(FeatureIntegrations) {
 		t.Error("re-enabling via a second save did not take effect")
 	}
 	if row.AiMonthlyMessageLimit != 999 || !slices.Equal(row.AiAllowedReasoningEfforts, []string{"none", "low"}) {
@@ -184,7 +188,7 @@ func TestAdminListIncludesUnrestrictedWorkspaces(t *testing.T) {
 		if row.OrgID != orgID {
 			continue
 		}
-		if !row.AutoCrawl || !row.GscConnector || !row.AiChat {
+		if !row.AutoCrawl || !row.GscConnector || !row.AiChat || !row.Integrations {
 			t.Error("an unrestricted workspace is listed with features disabled")
 		}
 		if row.AiMonthlyMessageLimit != 50 || !slices.Equal(row.AiAllowedReasoningEfforts, canonicalAIReasoningEfforts) {

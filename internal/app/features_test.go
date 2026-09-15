@@ -9,7 +9,7 @@ import (
 
 func TestDefaultIsEverythingEnabled(t *testing.T) {
 	features := allFeaturesEnabled()
-	for _, feature := range []Feature{FeatureAutoCrawl, FeatureGSCConnector, FeatureAIChat, FeatureCompetitors} {
+	for _, feature := range []Feature{FeatureAutoCrawl, FeatureGSCConnector, FeatureAIChat, FeatureIntegrations, FeatureCompetitors} {
 		if !features.Enabled(feature) {
 			t.Errorf("feature %q defaulted to disabled", feature)
 		}
@@ -23,12 +23,14 @@ func TestEnabledReadsEachFeatureIndependently(t *testing.T) {
 		feature     Feature
 		wantEnabled bool
 	}{
-		{"autocrawl off", featuresFromRow(false, true, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureAutoCrawl, false},
-		{"autocrawl off leaves gsc on", featuresFromRow(false, true, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureGSCConnector, true},
-		{"gsc off", featuresFromRow(true, false, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureGSCConnector, false},
-		{"gsc off leaves autocrawl on", featuresFromRow(true, false, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureAutoCrawl, true},
-		{"ai chat off", featuresFromRow(true, true, false, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureAIChat, false},
-		{"competitors off when max is zero", featuresFromRow(true, true, true, false, 50, 2, 0, canonicalAIReasoningEfforts), FeatureCompetitors, false},
+		{"autocrawl off", featuresFromRow(false, true, true, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureAutoCrawl, false},
+		{"autocrawl off leaves gsc on", featuresFromRow(false, true, true, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureGSCConnector, true},
+		{"gsc off", featuresFromRow(true, false, true, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureGSCConnector, false},
+		{"gsc off leaves autocrawl on", featuresFromRow(true, false, true, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureAutoCrawl, true},
+		{"ai chat off", featuresFromRow(true, true, false, true, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureAIChat, false},
+		{"integrations off", featuresFromRow(true, true, true, false, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureIntegrations, false},
+		{"integrations off leaves chat on", featuresFromRow(true, true, true, false, false, 50, 2, 3, canonicalAIReasoningEfforts), FeatureAIChat, true},
+		{"competitors off when max is zero", featuresFromRow(true, true, true, true, false, 50, 2, 0, canonicalAIReasoningEfforts), FeatureCompetitors, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -40,7 +42,7 @@ func TestEnabledReadsEachFeatureIndependently(t *testing.T) {
 }
 
 func TestUnknownFeatureFailsOpen(t *testing.T) {
-	if !featuresFromRow(false, false, false, false, 50, 2, 3, canonicalAIReasoningEfforts).Enabled(Feature("not_a_real_feature")) {
+	if !featuresFromRow(false, false, false, false, false, 50, 2, 3, canonicalAIReasoningEfforts).Enabled(Feature("not_a_real_feature")) {
 		t.Error("an unrecognized feature resolved to disabled")
 	}
 }
@@ -94,7 +96,7 @@ func TestDefaultAIChatSettings(t *testing.T) {
 func TestAIChatFeatureGateUsesStableError(t *testing.T) {
 	app := &App{}
 	resolver := func(*App, *http.Request) (OrgFeatures, error) {
-		return featuresFromRow(true, true, false, false, 50, 2, 3, canonicalAIReasoningEfforts), nil
+		return featuresFromRow(true, true, false, true, false, 50, 2, 3, canonicalAIReasoningEfforts), nil
 	}
 	response := httptest.NewRecorder()
 	app.requireFeature(FeatureAIChat, resolver)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -102,6 +104,21 @@ func TestAIChatFeatureGateUsesStableError(t *testing.T) {
 	})).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
 
 	if response.Code != http.StatusForbidden || response.Body.String() != "{\"error\":\"ai_chat_disabled\"}\n" {
+		t.Fatalf("feature response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestIntegrationsFeatureGateUsesForbidden(t *testing.T) {
+	app := &App{}
+	resolver := func(*App, *http.Request) (OrgFeatures, error) {
+		return featuresFromRow(true, true, true, false, false, 50, 2, 3, canonicalAIReasoningEfforts), nil
+	}
+	response := httptest.NewRecorder()
+	app.requireFeature(FeatureIntegrations, resolver)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("disabled feature reached handler")
+	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api-keys", nil))
+
+	if response.Code != http.StatusForbidden || response.Body.String() != "{\"error\":\"feature not enabled for this workspace\"}\n" {
 		t.Fatalf("feature response = %d %q", response.Code, response.Body.String())
 	}
 }

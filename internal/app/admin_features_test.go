@@ -206,7 +206,7 @@ func TestAdminListFeaturesIncludesAIToolCatalog(t *testing.T) {
 func TestAdminPutFeaturesRoundTripsDisabledAITools(t *testing.T) {
 	app, queries, ctx, orgID, userID := adminFeaturesTestApp(t)
 
-	body := fmt.Sprintf(`{"workspaces":[{"org_id":%q,"auto_crawl":true,"gsc_connector":true,"ai_chat":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_visibility_audit_monthly_limit":10,"max_competitors":3,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none","low","high","max"],"disabled_ai_tools":["","read_issues","read_issues"]}]}`, orgID.String())
+	body := fmt.Sprintf(`{"workspaces":[{"org_id":%q,"auto_crawl":true,"gsc_connector":true,"ai_chat":true,"integrations":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_visibility_audit_monthly_limit":10,"max_competitors":3,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none","low","high","max"],"disabled_ai_tools":["","read_issues","read_issues"]}]}`, orgID.String())
 	recorder := httptest.NewRecorder()
 	app.handleAdminPutFeatures(recorder, adminFeaturesPutRequest(t, userID, body))
 

@@ -419,6 +419,7 @@ type OrganizationFeature struct {
 	DisabledAiTools               []string
 	AiVisibilityAuditMonthlyLimit int32
 	MaxCompetitors                int32
+	Integrations                  bool
 }
 
 type OrganizationInvite struct {

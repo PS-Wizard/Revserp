@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -44,7 +45,7 @@ func newMCPTestApp(t *testing.T) (context.Context, *App, *pgxpool.Pool, pgtype.U
 			{ID: orgID, Name: "mcp-tools-test-org", Role: "owner"},
 		},
 	}
-	return withPrincipal(ctx, p), &App{Queries: queries}, pool, orgID
+	return withPrincipal(ctx, p), &App{Queries: queries, DB: pool}, pool, orgID
 }
 
 func newMCPTestProject(t *testing.T, pool *pgxpool.Pool, ctx context.Context, orgID pgtype.UUID, name string) pgtype.UUID {
@@ -90,7 +91,7 @@ func TestMCPListProjectsEmptyAccountGetsGuidance(t *testing.T) {
 	if len(out.Projects) != 0 {
 		t.Fatalf("expected no projects, got %d", len(out.Projects))
 	}
-	if !strings.Contains(out.Message, "Revserp app") || !strings.Contains(out.Message, "Do not invent") {
+	if !strings.Contains(out.Message, "create_project") || !strings.Contains(out.Message, "Do not invent") {
 		t.Errorf("empty-state message missing guidance: %q", out.Message)
 	}
 }
@@ -129,7 +130,27 @@ func TestMCPListProjectsForeignOrgIsNotFound(t *testing.T) {
 	}
 }
 
-func TestMCPReadIssuesResolvesLatestCompletedCrawl(t *testing.T) {
+type mcpReadIssuesPayload struct {
+	TotalMatching int64 `json:"total_matching"`
+	Issues        []struct {
+		URL            string `json:"url"`
+		Severity       string `json:"severity"`
+		RecommendedFix string `json:"recommended_fix"`
+	} `json:"issues"`
+	HasMore    bool `json:"has_more"`
+	NextOffset int  `json:"next_offset"`
+}
+
+func parseMCPReadIssuesContent(t *testing.T, content string) mcpReadIssuesPayload {
+	t.Helper()
+	var payload mcpReadIssuesPayload
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		t.Fatalf("read_issues content is not the in-app JSON: %v\n%s", err, content)
+	}
+	return payload
+}
+
+func TestMCPReadIssuesWrapsInAppExecutor(t *testing.T) {
 	ctx, a, pool, orgID := newMCPTestApp(t)
 	projectID := newMCPTestProject(t, pool, ctx, orgID, "mcp-issues-project")
 
@@ -137,46 +158,40 @@ func TestMCPReadIssuesResolvesLatestCompletedCrawl(t *testing.T) {
 	newMCPTestIssue(t, pool, ctx, older, "https://example.com/old", "high")
 	newMCPTestIssue(t, pool, ctx, older, "https://example.com/old2", "low")
 	latest := newMCPTestCrawl(t, pool, ctx, projectID, "completed", "1 hour")
-	latestIssue := newMCPTestIssue(t, pool, ctx, latest, "https://example.com/new", "medium")
+	newMCPTestIssue(t, pool, ctx, latest, "https://example.com/new", "medium")
 	newMCPTestCrawl(t, pool, ctx, projectID, "running", "30 minutes")
 
 	out, err := callMCPTool(t, a.mcpReadIssues, ctx, mcpReadIssuesInput{ProjectID: projectID.String()})
 	if err != nil {
 		t.Fatalf("read_issues by project: %v", err)
 	}
-	if out.Crawl == nil || out.Crawl.ID != latest.String() || out.Crawl.Status != "completed" {
-		t.Fatalf("expected latest completed crawl %s, got %+v", latest, out.Crawl)
+	payload := parseMCPReadIssuesContent(t, out.Content)
+	if payload.TotalMatching != 1 || len(payload.Issues) != 1 {
+		t.Fatalf("expected latest crawl's one issue, got %+v from %s", payload, out.Content)
 	}
-	if out.Total != 1 || out.Count != 1 {
-		t.Fatalf("counts wrong: count=%d total=%d", out.Count, out.Total)
+	if payload.Issues[0].URL != "https://example.com/new" || payload.Issues[0].Severity != "medium" {
+		t.Errorf("issue row fields wrong: %+v", payload.Issues[0])
 	}
-	if out.Limit != defaultPaginationLimit || out.Offset != 0 {
-		t.Errorf("pagination defaults wrong: limit=%d offset=%d", out.Limit, out.Offset)
-	}
-	if len(out.Issues) != 1 || out.Issues[0].ID != latestIssue.String() {
-		t.Fatalf("expected the latest crawl's issue, got %+v", out.Issues)
-	}
-	issue := out.Issues[0]
-	if issue.URL != "https://example.com/new" || issue.Severity != "medium" || issue.Pillar != "seo" || issue.Bucket != "serp_metadata" || issue.IssueType != "missing_title" || issue.Message != "msg" {
-		t.Errorf("issue row fields wrong: %+v", issue)
+	if payload.Issues[0].RecommendedFix == "" {
+		t.Error("expected in-app recommended_fix on the row")
 	}
 
-	// Direct crawl_id must bypass the latest-completed resolution.
 	byID, err := callMCPTool(t, a.mcpReadIssues, ctx, mcpReadIssuesInput{CrawlID: older.String()})
 	if err != nil {
 		t.Fatalf("read_issues by crawl_id: %v", err)
 	}
-	if byID.Total != 2 || len(byID.Issues) != 2 {
-		t.Errorf("expected 2 issues from the older crawl, got count=%d total=%d", len(byID.Issues), byID.Total)
+	olderPayload := parseMCPReadIssuesContent(t, byID.Content)
+	if olderPayload.TotalMatching != 2 || len(olderPayload.Issues) != 2 {
+		t.Errorf("expected 2 issues from the older crawl, got %+v", olderPayload)
 	}
 
-	// Cap the limit like /v1 does.
 	capped, err := callMCPTool(t, a.mcpReadIssues, ctx, mcpReadIssuesInput{CrawlID: older.String(), Limit: 1000})
 	if err != nil {
 		t.Fatalf("read_issues with big limit: %v", err)
 	}
-	if capped.Limit != maxPaginationLimit {
-		t.Errorf("limit cap wrong: %d", capped.Limit)
+	cappedPayload := parseMCPReadIssuesContent(t, capped.Content)
+	if cappedPayload.TotalMatching != 2 || len(cappedPayload.Issues) != 2 {
+		t.Errorf("in-app cap should still return both rows: %+v", cappedPayload)
 	}
 }
 
@@ -210,24 +225,21 @@ func TestMCPReadIssuesPaginationPages(t *testing.T) {
 		t.Fatalf("past end: %v", err)
 	}
 
-	for _, page := range []mcpReadIssuesOutput{page0, page1, page2} {
-		if page.Total != 3 || page.Limit != 1 || page.Count != 1 || len(page.Issues) != 1 {
-			t.Fatalf("unexpected page meta: %+v", page)
-		}
+	p0 := parseMCPReadIssuesContent(t, page0.Content)
+	p1 := parseMCPReadIssuesContent(t, page1.Content)
+	p2 := parseMCPReadIssuesContent(t, page2.Content)
+	pPast := parseMCPReadIssuesContent(t, past.Content)
+	if p0.TotalMatching != 3 || p1.TotalMatching != 3 || p2.TotalMatching != 3 {
+		t.Fatalf("total_matching: %d %d %d", p0.TotalMatching, p1.TotalMatching, p2.TotalMatching)
 	}
-	if page0.Offset != 0 || page1.Offset != 1 || page2.Offset != 2 {
-		t.Fatalf("offsets: %d %d %d", page0.Offset, page1.Offset, page2.Offset)
+	if len(p0.Issues) != 1 || len(p1.Issues) != 1 || len(p2.Issues) != 1 {
+		t.Fatalf("page sizes: %d %d %d", len(p0.Issues), len(p1.Issues), len(p2.Issues))
 	}
-	got := []string{page0.Issues[0].ID, page1.Issues[0].ID, page2.Issues[0].ID}
-	want := []string{first.String(), second.String(), third.String()}
-	if got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
-		t.Fatalf("page ids = %v, want %v", got, want)
-	}
-	if page0.Issues[0].ID == page1.Issues[0].ID || page1.Issues[0].ID == page2.Issues[0].ID {
+	if p0.Issues[0].URL == p1.Issues[0].URL || p1.Issues[0].URL == p2.Issues[0].URL {
 		t.Fatal("pages returned overlapping issues")
 	}
-	if past.Total != 3 || past.Count != 0 || len(past.Issues) != 0 || past.Offset != 3 {
-		t.Fatalf("past-end page wrong: %+v", past)
+	if pPast.TotalMatching != 3 || len(pPast.Issues) != 0 || pPast.HasMore {
+		t.Fatalf("past-end page wrong: %+v", pPast)
 	}
 }
 
@@ -240,11 +252,8 @@ func TestMCPReadIssuesNoCompletedCrawlGetsGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read_issues with no completed crawl must not error: %v", err)
 	}
-	if out.Crawl != nil || out.Total != 0 || len(out.Issues) != 0 {
-		t.Fatalf("expected empty result, got %+v", out)
-	}
-	if !strings.Contains(out.Message, "Revserp app") || !strings.Contains(out.Message, "Do not invent") {
-		t.Errorf("empty-state message missing guidance: %q", out.Message)
+	if !strings.Contains(out.Content, "start_crawl") || !strings.Contains(out.Content, "Do not invent") {
+		t.Errorf("empty-state message missing guidance: %q", out.Content)
 	}
 }
 
@@ -270,7 +279,7 @@ func TestMCPReadIssuesRequiresCrawlOrProject(t *testing.T) {
 	ctx, a, _, _ := newMCPTestApp(t)
 
 	_, err := callMCPTool(t, a.mcpReadIssues, ctx, mcpReadIssuesInput{})
-	if err == nil || !strings.Contains(err.Error(), "provide either crawl_id or project_id") {
+	if err == nil || !strings.Contains(err.Error(), "provide project_id or crawl_id") {
 		t.Fatalf("want argument error, got %v", err)
 	}
 	if _, err := callMCPTool(t, a.mcpReadIssues, ctx, mcpReadIssuesInput{CrawlID: "not-a-uuid"}); err == nil || !strings.Contains(err.Error(), "invalid crawl_id") {
@@ -317,5 +326,221 @@ func TestMCPToolsNeedPrincipal(t *testing.T) {
 	}
 	if _, err := callMCPTool(t, a.mcpReadIssues, context.Background(), mcpReadIssuesInput{ProjectID: "00000000-0000-0000-0000-000000000000"}); err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Errorf("read_issues without principal: want unauthorized error, got %v", err)
+	}
+	if _, err := callMCPTool(t, a.mcpGetProject, context.Background(), mcpGetProjectInput{ProjectID: "00000000-0000-0000-0000-000000000000"}); err == nil || !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("get_project without principal: want unauthorized error, got %v", err)
+	}
+}
+
+func TestMCPListOrganizationsAndGetProject(t *testing.T) {
+	ctx, a, pool, orgID := newMCPTestApp(t)
+	projectID := newMCPTestProject(t, pool, ctx, orgID, "mcp-get-project")
+
+	orgs, err := callMCPTool(t, a.mcpListOrganizations, ctx, mcpListOrganizationsInput{})
+	if err != nil {
+		t.Fatalf("list_organizations: %v", err)
+	}
+	if len(orgs.Organizations) != 1 || orgs.Organizations[0].ID != orgID.String() {
+		t.Fatalf("unexpected orgs: %+v", orgs)
+	}
+
+	project, err := callMCPTool(t, a.mcpGetProject, ctx, mcpGetProjectInput{ProjectID: projectID.String()})
+	if err != nil {
+		t.Fatalf("get_project: %v", err)
+	}
+	if project.Name != "mcp-get-project" || project.OrganizationID != orgID.String() {
+		t.Fatalf("unexpected project: %+v", project)
+	}
+
+	foreign := createFeaturesTestOrg(t, ctx, pool)
+	var foreignProject pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO projects (organization_id, name, base_url) VALUES ($1, 'foreign', 'https://example.com') RETURNING id`, foreign).Scan(&foreignProject); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callMCPTool(t, a.mcpGetProject, ctx, mcpGetProjectInput{ProjectID: foreignProject.String()}); err == nil || !strings.Contains(err.Error(), "project not found") {
+		t.Fatalf("foreign project: want not found, got %v", err)
+	}
+}
+
+func TestMCPGetIssueAndCrawls(t *testing.T) {
+	ctx, a, pool, orgID := newMCPTestApp(t)
+	projectID := newMCPTestProject(t, pool, ctx, orgID, "mcp-issue-project")
+	crawlID := newMCPTestCrawl(t, pool, ctx, projectID, "completed", "1 hour")
+	issueID := newMCPTestIssue(t, pool, ctx, crawlID, "https://example.com/", "high")
+
+	issue, err := callMCPTool(t, a.mcpGetIssue, ctx, mcpGetIssueInput{IssueID: issueID.String()})
+	if err != nil {
+		t.Fatalf("get_issue: %v", err)
+	}
+	if issue.Issue.ID != issueID.String() || issue.Issue.URL != "https://example.com/" || issue.Issue.Details != "det" {
+		t.Fatalf("unexpected issue: %+v", issue.Issue)
+	}
+
+	listed, err := callMCPTool(t, a.mcpListCrawls, ctx, mcpListCrawlsInput{ProjectID: projectID.String()})
+	if err != nil {
+		t.Fatalf("list_crawls: %v", err)
+	}
+	if listed.Count != 1 || listed.Crawls[0].ID != crawlID.String() || listed.Crawls[0].Status != "completed" {
+		t.Fatalf("unexpected crawls: %+v", listed)
+	}
+
+	got, err := callMCPTool(t, a.mcpGetCrawl, ctx, mcpGetCrawlInput{CrawlID: crawlID.String()})
+	if err != nil {
+		t.Fatalf("get_crawl: %v", err)
+	}
+	if got.Crawl.ID != crawlID.String() || got.Message != "" {
+		t.Fatalf("unexpected crawl: %+v", got)
+	}
+
+	health, err := callMCPTool(t, a.mcpGetPageHealth, ctx, mcpGetPageHealthInput{ProjectID: projectID.String()})
+	if err != nil {
+		t.Fatalf("get_page_health: %v", err)
+	}
+	if health.CrawlID != crawlID.String() || len(health.Buckets) != pageHealthBuckets {
+		t.Fatalf("unexpected page health: %+v", health)
+	}
+}
+
+func TestMCPCreateProjectAndStartCrawl(t *testing.T) {
+	ctx, a, pool, orgID := newMCPTestApp(t)
+
+	created, err := callMCPTool(t, a.mcpCreateProject, ctx, mcpCreateProjectInput{
+		Name:    "mcp-created",
+		BaseURL: "https://example.com",
+	})
+	if err != nil {
+		t.Fatalf("create_project: %v", err)
+	}
+	if created.Project.Name != "mcp-created" || created.Project.OrganizationID != orgID.String() || created.Project.ID == "" {
+		t.Fatalf("unexpected created project: %+v", created)
+	}
+	if !strings.Contains(created.Message, "start_crawl") {
+		t.Errorf("create message missing start_crawl: %q", created.Message)
+	}
+
+	started, err := callMCPTool(t, a.mcpStartCrawl, ctx, mcpStartCrawlInput{ProjectID: created.Project.ID})
+	if err != nil {
+		t.Fatalf("start_crawl: %v", err)
+	}
+	if started.Crawl.Status != "queued" || started.Crawl.ProjectID != created.Project.ID {
+		t.Fatalf("unexpected started crawl: %+v", started)
+	}
+	if !strings.Contains(started.Message, "Poll get_crawl") {
+		t.Errorf("start message missing poll guidance: %q", started.Message)
+	}
+
+	again, err := callMCPTool(t, a.mcpStartCrawl, ctx, mcpStartCrawlInput{ProjectID: created.Project.ID})
+	if err != nil {
+		t.Fatalf("start_crawl while active: %v", err)
+	}
+	if again.Crawl.ID != started.Crawl.ID || !strings.Contains(again.Message, "already") {
+		t.Fatalf("expected existing active crawl, got %+v", again)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM crawls WHERE project_id = $1`, created.Project.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("queued %d crawls, want 1", n)
+	}
+}
+
+func TestMCPWrappedAIChatTools(t *testing.T) {
+	ctx, a, pool, orgID := newMCPTestApp(t)
+	projectID := newMCPTestProject(t, pool, ctx, orgID, "mcp-aichat-project")
+	crawlID := newMCPTestCrawl(t, pool, ctx, projectID, "completed", "1 hour")
+
+	summary, err := callMCPTool(t, a.mcpGetScoreSummary, ctx, mcpGetScoreSummaryInput{ProjectID: projectID.String()})
+	if err != nil {
+		t.Fatalf("get_score_summary: %v", err)
+	}
+	if !strings.Contains(summary.Content, crawlID.String()) && !strings.Contains(summary.Content, "overall_score") {
+		t.Fatalf("score summary missing crawl/score JSON: %q", summary.Content)
+	}
+
+	profile, err := callMCPTool(t, a.mcpGetBusinessProfile, ctx, mcpGetBusinessProfileInput{ProjectID: projectID.String()})
+	if err != nil {
+		t.Fatalf("get_business_profile: %v", err)
+	}
+	if !strings.Contains(profile.Content, "No business profile") {
+		t.Fatalf("expected missing-profile message, got %q", profile.Content)
+	}
+
+	gsc, err := callMCPTool(t, a.mcpGetSearchConsoleData, ctx, mcpGetSearchConsoleDataInput{
+		ProjectID: projectID.String(),
+		Reports:   []string{"summary"},
+	})
+	if err != nil {
+		t.Fatalf("get_search_console_data: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(gsc.Content), "search console") {
+		t.Fatalf("expected GSC unavailable copy, got %q", gsc.Content)
+	}
+
+	page, err := callMCPTool(t, a.mcpReadPage, ctx, mcpReadPageInput{
+		ProjectID: projectID.String(),
+		URL:       "https://example.com/",
+		Mode:      "metadata",
+	})
+	if err != nil {
+		t.Fatalf("read_page: %v", err)
+	}
+	if page.Content == "" {
+		t.Fatal("read_page returned empty content")
+	}
+
+	updated, err := callMCPTool(t, a.mcpUpdateBusinessProfile, ctx, mcpUpdateBusinessProfileInput{
+		ProjectID:  projectID.String(),
+		BrandName:  "Revketer",
+		WebsiteURL: "https://example.com",
+	})
+	if err != nil {
+		t.Fatalf("update_business_profile: %v", err)
+	}
+	if strings.Contains(updated.Content, "error:") {
+		t.Fatalf("profile update failed: %q", updated.Content)
+	}
+}
+
+func TestMCPIntegrationsOffHidesWorkspace(t *testing.T) {
+	ctx, a, pool, orgID := newMCPTestApp(t)
+	projectID := newMCPTestProject(t, pool, ctx, orgID, "gated")
+
+	listed, err := callMCPTool(t, a.mcpListProjects, ctx, mcpListProjectsInput{})
+	if err != nil {
+		t.Fatalf("list_projects before gate: %v", err)
+	}
+	if len(listed.Projects) != 1 {
+		t.Fatalf("list_projects before gate = %+v, want 1 project", listed)
+	}
+
+	if err := a.Queries.UpsertOrganizationFeatures(ctx, sqlc.UpsertOrganizationFeaturesParams{
+		OrgID: orgID, AutoCrawl: true, GscConnector: true, AiChat: true, Integrations: false,
+		AiMonthlyMessageLimit: 50, AiConcurrentTurnLimitPerUser: 2,
+		AiVisibilityAuditMonthlyLimit: 10, MaxCompetitors: 3,
+		AiAllowedReasoningEfforts: canonicalAIReasoningEfforts,
+	}); err != nil {
+		t.Fatalf("disable integrations: %v", err)
+	}
+
+	listed, err = callMCPTool(t, a.mcpListProjects, ctx, mcpListProjectsInput{})
+	if err != nil {
+		t.Fatalf("list_projects after gate: %v", err)
+	}
+	if len(listed.Projects) != 0 {
+		t.Fatalf("list_projects after gate = %+v, want empty", listed)
+	}
+
+	orgs, err := callMCPTool(t, a.mcpListOrganizations, ctx, mcpListOrganizationsInput{})
+	if err != nil {
+		t.Fatalf("list_organizations after gate: %v", err)
+	}
+	if len(orgs.Organizations) != 0 {
+		t.Fatalf("list_organizations after gate = %+v, want empty", orgs)
+	}
+
+	if _, err := callMCPTool(t, a.mcpGetProject, ctx, mcpGetProjectInput{ProjectID: projectID.String()}); err == nil || !strings.Contains(err.Error(), "project not found") {
+		t.Fatalf("get_project after gate: %v", err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -21,6 +22,8 @@ const (
 	FeatureGSCConnector Feature = "gsc_connector"
 	// FeatureAIChat remains the workspace switch for the future chat rewrite.
 	FeatureAIChat Feature = "ai_chat"
+	// FeatureIntegrations gates the Integrations tab, API keys, and OAuth consent.
+	FeatureIntegrations Feature = "integrations"
 	// FeatureCompetitors gates competitor roster and crawl enqueue.
 	FeatureCompetitors Feature = "competitors"
 )
@@ -38,6 +41,7 @@ type OrgFeatures struct {
 	AutoCrawl                    bool
 	GSCConnector                 bool
 	AIChat                       bool
+	Integrations                 bool
 	AIUseInternalPrompt          bool
 	AIMonthlyMessageLimit        int32
 	AIConcurrentTurnLimitPerUser int32
@@ -51,6 +55,7 @@ func allFeaturesEnabled() OrgFeatures {
 		AutoCrawl:                    true,
 		GSCConnector:                 true,
 		AIChat:                       true,
+		Integrations:                 true,
 		AIUseInternalPrompt:          false,
 		AIMonthlyMessageLimit:        defaultAIMonthlyMessageLimit,
 		AIConcurrentTurnLimitPerUser: defaultAIConcurrentTurnLimitPerUser,
@@ -68,6 +73,8 @@ func (features OrgFeatures) Enabled(feature Feature) bool {
 		return features.GSCConnector
 	case FeatureAIChat:
 		return features.AIChat
+	case FeatureIntegrations:
+		return features.Integrations
 	case FeatureCompetitors:
 		return features.MaxCompetitors > 0
 	default:
@@ -121,11 +128,12 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func featuresFromRow(autoCrawl, gscConnector, aiChat, useInternalPrompt bool, monthlyLimit, concurrentLimit, maxCompetitors int32, efforts []string) OrgFeatures {
+func featuresFromRow(autoCrawl, gscConnector, aiChat, integrations, useInternalPrompt bool, monthlyLimit, concurrentLimit, maxCompetitors int32, efforts []string) OrgFeatures {
 	return OrgFeatures{
 		AutoCrawl:                    autoCrawl,
 		GSCConnector:                 gscConnector,
 		AIChat:                       aiChat,
+		Integrations:                 integrations,
 		AIUseInternalPrompt:          useInternalPrompt,
 		AIMonthlyMessageLimit:        monthlyLimit,
 		AIConcurrentTurnLimitPerUser: concurrentLimit,
@@ -143,7 +151,7 @@ func (a *App) OrgFeaturesForOrg(ctx context.Context, orgID pgtype.UUID) (OrgFeat
 		}
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
 }
 
 type orgFeatureResolver func(*App, *http.Request) (OrgFeatures, error)
@@ -177,7 +185,7 @@ func featuresByProjectParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
 }
 
 // featuresByConversationParam resolves a conversation route to its project workspace.
@@ -205,7 +213,25 @@ func featuresByConversationParam(a *App, r *http.Request) (OrgFeatures, error) {
 	if err != nil {
 		return allFeaturesEnabled(), err
 	}
-	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.AiAllowedReasoningEfforts), nil
+}
+
+// featuresByActiveOrg resolves cookie routes against the session's active workspace.
+// No active org fails open (same as a missing organization_features row).
+func featuresByActiveOrg(a *App, r *http.Request) (OrgFeatures, error) {
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		return allFeaturesEnabled(), errors.New("missing principal")
+	}
+	session, ok := internalauth.SessionFromContext(r.Context())
+	if !ok {
+		return allFeaturesEnabled(), errors.New("missing session")
+	}
+	activeOrgID := resolveActiveOrganizationID(session.ActiveOrgID, p.Organizations)
+	if !activeOrgID.Valid {
+		return allFeaturesEnabled(), nil
+	}
+	return a.OrgFeaturesForOrg(r.Context(), activeOrgID)
 }
 
 // requireFeature gates a route group on its governing workspace feature.
@@ -244,6 +270,7 @@ type orgFeaturesResponse struct {
 	AutoCrawl                    bool     `json:"auto_crawl"`
 	GSCConnector                 bool     `json:"gsc_connector"`
 	AIChat                       bool     `json:"ai_chat"`
+	Integrations                 bool     `json:"integrations"`
 	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
 	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIUseInternalPrompt          bool     `json:"ai_use_internal_prompt"`
@@ -256,6 +283,7 @@ func newOrgFeaturesResponse(features OrgFeatures) orgFeaturesResponse {
 		AutoCrawl:                    features.AutoCrawl,
 		GSCConnector:                 features.GSCConnector,
 		AIChat:                       features.AIChat,
+		Integrations:                 features.Integrations,
 		AIUseInternalPrompt:          features.AIUseInternalPrompt,
 		AIMonthlyMessageLimit:        features.AIMonthlyMessageLimit,
 		AIConcurrentTurnLimitPerUser: features.AIConcurrentTurnLimitPerUser,

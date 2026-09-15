@@ -19,6 +19,7 @@ type adminWorkspaceFeaturesResponse struct {
 	AutoCrawl                     bool     `json:"auto_crawl"`
 	GSCConnector                  bool     `json:"gsc_connector"`
 	AIChat                        bool     `json:"ai_chat"`
+	Integrations                  bool     `json:"integrations"`
 	AIUseInternalPrompt           bool     `json:"ai_use_internal_prompt"`
 	AIMonthlyMessageLimit         int32    `json:"ai_monthly_message_limit"`
 	AIVisibilityAuditMonthlyLimit int32    `json:"ai_visibility_audit_monthly_limit"`
@@ -133,6 +134,7 @@ func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 			AutoCrawl:                     row.AutoCrawl,
 			GSCConnector:                  row.GscConnector,
 			AIChat:                        row.AiChat,
+			Integrations:                  row.Integrations,
 			AIUseInternalPrompt:           row.AiUseInternalPrompt,
 			AIMonthlyMessageLimit:         row.AiMonthlyMessageLimit,
 			AIVisibilityAuditMonthlyLimit: row.AiVisibilityAuditMonthlyLimit,
@@ -160,6 +162,7 @@ type adminPutWorkspaceFeatures struct {
 	AutoCrawl                     bool     `json:"auto_crawl"`
 	GSCConnector                  bool     `json:"gsc_connector"`
 	AIChat                        bool     `json:"ai_chat"`
+	Integrations                  bool     `json:"integrations"`
 	AIUseInternalPrompt           bool     `json:"ai_use_internal_prompt"`
 	AIMonthlyMessageLimit         int32    `json:"ai_monthly_message_limit"`
 	AIVisibilityAuditMonthlyLimit int32    `json:"ai_visibility_audit_monthly_limit"`
@@ -185,6 +188,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 		autoCrawl                     bool
 		gscConnector                  bool
 		aiChat                        bool
+		integrations                  bool
 		aiUseInternalPrompt           bool
 		aiMonthlyMessageLimit         int32
 		aiVisibilityAuditMonthlyLimit int32
@@ -223,6 +227,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			autoCrawl:                     workspace.AutoCrawl,
 			gscConnector:                  workspace.GSCConnector,
 			aiChat:                        workspace.AIChat,
+			integrations:                  workspace.Integrations,
 			aiUseInternalPrompt:           workspace.AIUseInternalPrompt,
 			aiMonthlyMessageLimit:         workspace.AIMonthlyMessageLimit,
 			aiVisibilityAuditMonthlyLimit: workspace.AIVisibilityAuditMonthlyLimit,
@@ -252,6 +257,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			AutoCrawl:                     workspace.autoCrawl,
 			GscConnector:                  workspace.gscConnector,
 			AiChat:                        workspace.aiChat,
+			Integrations:                  workspace.integrations,
 			AiUseInternalPrompt:           workspace.aiUseInternalPrompt,
 			AiMonthlyMessageLimit:         workspace.aiMonthlyMessageLimit,
 			AiVisibilityAuditMonthlyLimit: workspace.aiVisibilityAuditMonthlyLimit,

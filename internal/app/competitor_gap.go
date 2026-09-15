@@ -198,7 +198,7 @@ func (a *App) loadCompetitorGapReport(w http.ResponseWriter, r *http.Request) (s
 		serverError(w, r, err)
 		return zero, competitorgaps.Report{}, false
 	}
-	if !featuresFromRow(featuresRow.AutoCrawl, featuresRow.GscConnector, featuresRow.AiChat, featuresRow.AiUseInternalPrompt, featuresRow.AiMonthlyMessageLimit, featuresRow.AiConcurrentTurnLimitPerUser, featuresRow.MaxCompetitors, featuresRow.AiAllowedReasoningEfforts).Enabled(FeatureCompetitors) {
+	if !featuresFromRow(featuresRow.AutoCrawl, featuresRow.GscConnector, featuresRow.AiChat, featuresRow.Integrations, featuresRow.AiUseInternalPrompt, featuresRow.AiMonthlyMessageLimit, featuresRow.AiConcurrentTurnLimitPerUser, featuresRow.MaxCompetitors, featuresRow.AiAllowedReasoningEfforts).Enabled(FeatureCompetitors) {
 		writeJSONError(w, http.StatusForbidden, "feature not enabled for this workspace")
 		return zero, competitorgaps.Report{}, false
 	}
