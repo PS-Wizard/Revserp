@@ -132,6 +132,7 @@ func (a *App) supabaseUserAccessToken(w http.ResponseWriter, r *http.Request) (s
 func writeSupabaseOAuthError(w http.ResponseWriter, stage string, err error) {
 	var authError *internalauth.SupabaseAuthError
 	if errors.As(err, &authError) {
+		log.Printf("oauth consent: %s failed: status=%d message=%q", stage, authError.StatusCode, authError.Message)
 		switch authError.StatusCode {
 		case http.StatusNotFound:
 			writeJSONError(w, http.StatusNotFound, "authorization request not found or expired")
