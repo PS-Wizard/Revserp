@@ -83,15 +83,32 @@ func (a *App) handlePostOAuthConsent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, consent)
 }
 
-// oauthAuthorizationID reads the authorization id from the path and rejects
-// anything that is not a uuid before we call Supabase.
+// oauthAuthorizationID reads the authorization id from the path. Supabase
+// issues opaque ids (not UUIDs), so this only rejects empty or junk values
+// before we forward the id upstream.
 func oauthAuthorizationID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	authorizationID := strings.TrimSpace(chi.URLParam(r, "authorizationID"))
-	if _, err := parseUUIDParam(authorizationID); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "authorization id must be a uuid")
+	if !validOAuthAuthorizationID(authorizationID) {
+		writeJSONError(w, http.StatusBadRequest, "invalid authorization id")
 		return "", false
 	}
 	return authorizationID, true
+}
+
+func validOAuthAuthorizationID(id string) bool {
+	n := len(id)
+	if n < 16 || n > 128 {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // supabaseUserAccessToken loads a usable Supabase access token for the current

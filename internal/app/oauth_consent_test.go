@@ -43,6 +43,22 @@ func decodeErrorBody(t *testing.T, response *httptest.ResponseRecorder) string {
 	return body["error"]
 }
 
+func TestValidOAuthAuthorizationID(t *testing.T) {
+	for _, id := range []string{
+		"i6gi5jmnamqp4qddiw2rfmvzssgut64y",
+		consentTestAuthorizationID,
+	} {
+		if !validOAuthAuthorizationID(id) {
+			t.Errorf("%q should be accepted", id)
+		}
+	}
+	for _, id := range []string{"", "12345", "not-a-uuid", "../secret", "id/with/slash", "has spaceinside12"} {
+		if validOAuthAuthorizationID(id) {
+			t.Errorf("%q should be rejected", id)
+		}
+	}
+}
+
 func TestGetOAuthAuthorizationRejectsInvalidID(t *testing.T) {
 	for _, authorizationID := range []string{"", "not-a-uuid", "12345"} {
 		t.Run("id="+authorizationID, func(t *testing.T) {
@@ -53,8 +69,8 @@ func TestGetOAuthAuthorizationRejectsInvalidID(t *testing.T) {
 			if response.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
 			}
-			if message := decodeErrorBody(t, response); !strings.Contains(message, "uuid") {
-				t.Fatalf("error = %q, want it to mention a uuid", message)
+			if message := decodeErrorBody(t, response); !strings.Contains(message, "invalid authorization id") {
+				t.Fatalf("error = %q, want invalid authorization id", message)
 			}
 		})
 	}
