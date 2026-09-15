@@ -117,9 +117,9 @@ func (a *App) supabaseUserAccessToken(w http.ResponseWriter, r *http.Request) (s
 	rawSessionToken := a.SessionManager.SessionTokenFromRequest(r)
 	accessToken, err := a.SessionManager.FreshUserAccessToken(r.Context(), rawSessionToken)
 	if err != nil {
-		// The session middleware already rejects missing or revoked sessions, so
-		// reaching here means the Supabase refresh itself failed.
 		log.Printf("oauth consent: supabase access token unavailable: %v", err)
+		_ = a.SessionManager.RevokeSession(r.Context(), rawSessionToken)
+		a.SessionManager.ClearSessionCookie(w)
 		writeJSONError(w, http.StatusUnauthorized, "session expired, sign in again")
 		return "", false
 	}
