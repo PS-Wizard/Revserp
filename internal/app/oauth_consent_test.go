@@ -91,6 +91,20 @@ func TestPostOAuthConsentRejectsInvalidAction(t *testing.T) {
 	}
 }
 
+func TestWriteSupabaseOAuthErrorMapsUnauthorizedToNotFound(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeSupabaseOAuthError(response, "load authorization", &internalauth.SupabaseAuthError{
+		StatusCode: http.StatusUnauthorized,
+		Message:    "invalid jwt",
+	})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+	if message := decodeErrorBody(t, response); !strings.Contains(message, "not found") {
+		t.Fatalf("error = %q, want not found", message)
+	}
+}
+
 func TestConsentRoutesRequireSession(t *testing.T) {
 	// No cookie means the session middleware rejects the request before any
 	// database work, so a manager without a pool is enough here.

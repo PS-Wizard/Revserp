@@ -123,7 +123,10 @@ func writeSupabaseOAuthError(w http.ResponseWriter, stage string, err error) {
 			writeJSONError(w, http.StatusBadRequest, authError.Message)
 			return
 		case http.StatusUnauthorized, http.StatusForbidden:
-			writeJSONError(w, http.StatusUnauthorized, "session expired, sign in again")
+			// Session cookie already passed RequireSession. A 401 from this
+			// GoTrue endpoint means the authorization id is not available to
+			// this user, not that they need to log in again.
+			writeJSONError(w, http.StatusNotFound, "authorization request not found or expired")
 			return
 		}
 	}
