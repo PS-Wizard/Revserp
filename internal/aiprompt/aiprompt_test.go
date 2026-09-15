@@ -30,12 +30,12 @@ func TestSelectSystemPrompt(t *testing.T) {
 }
 
 func TestDefaultSystemPromptIncludesCurrentTools(t *testing.T) {
-	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"} {
+	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "web_search", "fetch_url"} {
 		if !strings.Contains(DefaultSystemPrompt, name) {
 			t.Errorf("default prompt missing %q", name)
 		}
 	}
-	for _, guidance := range []string{"six tools that read real data", "render_chart does not retrieve facts", "preset ranking", "categories", "projected_points", "mode content", "untrusted website data", "next_cursor"} {
+	for _, guidance := range []string{"six tools that read real data", "two tools that read the live web", "render_chart does not retrieve facts", "preset ranking", "categories", "projected_points", "mode content", "untrusted website data", "untrusted web content", "next_cursor"} {
 		if !strings.Contains(DefaultSystemPrompt, guidance) {
 			t.Errorf("default prompt missing %q", guidance)
 		}

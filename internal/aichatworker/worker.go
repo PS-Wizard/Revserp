@@ -34,6 +34,10 @@ const (
 	toolRowBudget          = 200
 	pageContentBudgetBytes = 96 << 10
 	pageContentBudgetPages = 5
+	// Web search and fetch are free but rate limited across the whole deployment
+	// (30 queries and 150 URLs per minute), so one turn gets a small allowance.
+	webSearchBudgetPerTurn = 3
+	webFetchBudgetPerTurn  = 3
 	liveBudgetBytes        = 192 << 10
 	toolResultContentCap   = 32 << 10
 	stubbedToolContent     = "[earlier tool output omitted to fit context]"
@@ -58,6 +62,11 @@ type Worker struct {
 	// worker has no search console access configured (tools report it as an
 	// ordinary unavailable state).
 	GSC aichattools.GSCFetcher
+
+	// Web is the TinyFish-backed web search and fetch client for tool calls;
+	// nil when no tinyfish key is configured (tools report it as an ordinary
+	// unavailable state).
+	Web aichattools.WebClient
 
 	lease         time.Duration
 	heartbeat     time.Duration
@@ -255,8 +264,10 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		Queries:           queries,
 		DB:                w.pool,
 		GSC:               w.GSC,
+		Web:               w.Web,
 		RowBudget:         aichattools.NewBudget(toolRowBudget),
 		PageContentBudget: aichattools.NewPageContentBudget(pageContentBudgetBytes, pageContentBudgetPages),
+		WebBudget:         aichattools.NewWebBudget(webSearchBudgetPerTurn, webFetchBudgetPerTurn),
 	}
 
 	flushTicker := time.NewTicker(w.flushInterval)

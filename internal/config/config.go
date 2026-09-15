@@ -52,6 +52,9 @@ type Config struct {
 	SerperMapsEndpoint          string
 	SerperPlacesEndpoint        string
 	SerperReviewsEndpoint       string
+	TinyfishAPIKey              string
+	TinyfishSearchEndpoint      string
+	TinyfishFetchEndpoint       string
 	MapsVisibilityCooldown      time.Duration
 	DeepSeekBaseURL             string
 	AITurnTimeout               time.Duration
@@ -112,6 +115,9 @@ func Load() Config {
 		SerperMapsEndpoint:         getEnv("SERPER_MAPS_ENDPOINT", "https://google.serper.dev/maps"),
 		SerperPlacesEndpoint:       getEnv("SERPER_PLACES_ENDPOINT", "https://google.serper.dev/places"),
 		SerperReviewsEndpoint:      getEnv("SERPER_REVIEWS_ENDPOINT", "https://google.serper.dev/reviews"),
+		TinyfishAPIKey:             getEnv("TINYFISH_API_KEY", ""),
+		TinyfishSearchEndpoint:     getEnv("TINYFISH_SEARCH_ENDPOINT", "https://api.search.tinyfish.ai"),
+		TinyfishFetchEndpoint:      getEnv("TINYFISH_FETCH_ENDPOINT", "https://api.fetch.tinyfish.ai"),
 		// Dev override: set to 0s to re-test the maps card freely. Prod keeps
 		// the 24h default so a click cannot quietly drain Serper credits.
 		MapsVisibilityCooldown:      getEnvDuration("MAPS_VISIBILITY_COOLDOWN", 24*time.Hour),

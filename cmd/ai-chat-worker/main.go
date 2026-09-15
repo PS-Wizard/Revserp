@@ -14,6 +14,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 	"github.com/ps-wizard/revserp/internal/gsc"
+	"github.com/ps-wizard/revserp/internal/tinyfish"
 )
 
 func main() {
@@ -50,6 +51,11 @@ func run() error {
 		TurnTimeout:  cfg.AITurnTimeout,
 	})
 	worker.GSC = gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes)
+	// The web tools stay unregistered as unavailable when no key is set: the
+	// handler layer reports that as an ordinary state rather than failing turns.
+	if strings.TrimSpace(cfg.TinyfishAPIKey) != "" {
+		worker.Web = tinyfish.NewClient(cfg.TinyfishAPIKey, cfg.TinyfishSearchEndpoint, cfg.TinyfishFetchEndpoint, 0)
+	}
 	log.Printf("ai chat worker starting: worker_id=%s concurrency=%d poll=%s turn_timeout=%s model=%s", workerID, cfg.AIChatWorkerConcurrency, cfg.AIChatWorkerPollInterval, cfg.AITurnTimeout, cfg.DeepSeekModel)
 	if err := worker.Run(ctx); err != nil {
 		return fmt.Errorf("run ai chat worker: %w", err)
