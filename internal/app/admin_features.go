@@ -24,6 +24,7 @@ type adminWorkspaceFeaturesResponse struct {
 	AIMonthlyMessageLimit         int32    `json:"ai_monthly_message_limit"`
 	AIVisibilityAuditMonthlyLimit int32    `json:"ai_visibility_audit_monthly_limit"`
 	MaxCompetitors                int32    `json:"max_competitors"`
+	MaxProjects                   int32    `json:"max_projects"`
 	AIConcurrentTurnLimitPerUser  int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIAllowedReasoningEfforts     []string `json:"ai_allowed_reasoning_efforts"`
 	DisabledAITools               []string `json:"disabled_ai_tools"`
@@ -109,6 +110,15 @@ func validateMaxCompetitors(limit int32) error {
 	return nil
 }
 
+// validateMaxProjects rejects negative project limits;
+// 0 disables creation of new projects entirely.
+func validateMaxProjects(limit int32) error {
+	if limit < 0 {
+		return fmt.Errorf("max_projects must be >= 0")
+	}
+	return nil
+}
+
 // validateAIVisibilityAuditMonthlyLimit rejects negative audit limits;
 // 0 disables visibility audits entirely (reserve never succeeds).
 func validateAIVisibilityAuditMonthlyLimit(limit int32) error {
@@ -139,6 +149,7 @@ func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 			AIMonthlyMessageLimit:         row.AiMonthlyMessageLimit,
 			AIVisibilityAuditMonthlyLimit: row.AiVisibilityAuditMonthlyLimit,
 			MaxCompetitors:                row.MaxCompetitors,
+			MaxProjects:                   row.MaxProjects,
 			AIConcurrentTurnLimitPerUser:  row.AiConcurrentTurnLimitPerUser,
 			AIAllowedReasoningEfforts:     normalizeAIReasoningEfforts(row.AiAllowedReasoningEfforts),
 			DisabledAITools:               normalizeDisabledAITools(row.DisabledAiTools, row.GscConnector),
@@ -167,6 +178,7 @@ type adminPutWorkspaceFeatures struct {
 	AIMonthlyMessageLimit         int32    `json:"ai_monthly_message_limit"`
 	AIVisibilityAuditMonthlyLimit int32    `json:"ai_visibility_audit_monthly_limit"`
 	MaxCompetitors                int32    `json:"max_competitors"`
+	MaxProjects                   int32    `json:"max_projects"`
 	AIConcurrentTurnLimitPerUser  int32    `json:"ai_concurrent_turn_limit_per_user"`
 	AIAllowedReasoningEfforts     []string `json:"ai_allowed_reasoning_efforts"`
 	DisabledAITools               []string `json:"disabled_ai_tools"`
@@ -193,6 +205,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 		aiMonthlyMessageLimit         int32
 		aiVisibilityAuditMonthlyLimit int32
 		maxCompetitors                int32
+		maxProjects                   int32
 		aiConcurrentTurnLimitPerUser  int32
 		aiAllowedReasoningEfforts     []string
 		disabledAITools               []string
@@ -217,6 +230,10 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := validateMaxProjects(workspace.MaxProjects); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		normalizedTools, err := validateDisabledAITools(workspace.DisabledAITools, workspace.GSCConnector)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -232,6 +249,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			aiMonthlyMessageLimit:         workspace.AIMonthlyMessageLimit,
 			aiVisibilityAuditMonthlyLimit: workspace.AIVisibilityAuditMonthlyLimit,
 			maxCompetitors:                workspace.MaxCompetitors,
+			maxProjects:                   workspace.MaxProjects,
 			aiConcurrentTurnLimitPerUser:  workspace.AIConcurrentTurnLimitPerUser,
 			aiAllowedReasoningEfforts:     normalizedEfforts,
 			disabledAITools:               normalizedTools,
@@ -262,6 +280,7 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			AiMonthlyMessageLimit:         workspace.aiMonthlyMessageLimit,
 			AiVisibilityAuditMonthlyLimit: workspace.aiVisibilityAuditMonthlyLimit,
 			MaxCompetitors:                workspace.maxCompetitors,
+			MaxProjects:                   workspace.maxProjects,
 			AiConcurrentTurnLimitPerUser:  workspace.aiConcurrentTurnLimitPerUser,
 			AiAllowedReasoningEfforts:     workspace.aiAllowedReasoningEfforts,
 			DisabledAiTools:               workspace.disabledAITools,

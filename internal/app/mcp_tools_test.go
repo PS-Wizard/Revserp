@@ -446,6 +446,39 @@ func TestMCPCreateProjectAndStartCrawl(t *testing.T) {
 	}
 }
 
+// create_project over MCP must respect the same workspace cap as the HTTP route.
+// Without this the limit is trivially bypassable by any MCP client.
+func TestMCPCreateProjectRefusesAtWorkspaceLimit(t *testing.T) {
+	ctx, a, pool, orgID := newMCPTestApp(t)
+
+	if err := a.Queries.UpsertOrganizationFeatures(ctx, capParams(orgID, 1)); err != nil {
+		t.Fatalf("UpsertOrganizationFeatures: %v", err)
+	}
+
+	if _, err := callMCPTool(t, a.mcpCreateProject, ctx, mcpCreateProjectInput{
+		Name:    "mcp-cap-first",
+		BaseURL: "https://93.184.216.34",
+	}); err != nil {
+		t.Fatalf("first create_project: %v", err)
+	}
+
+	_, err := callMCPTool(t, a.mcpCreateProject, ctx, mcpCreateProjectInput{
+		Name:    "mcp-cap-second",
+		BaseURL: "https://93.184.216.34",
+	})
+	if err == nil || !strings.Contains(err.Error(), "project_limit_reached") {
+		t.Fatalf("second create_project error = %v, want project_limit_reached", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM projects WHERE organization_id = $1`, orgID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("organization has %d projects, want the refused create to leave 1", n)
+	}
+}
+
 func TestMCPWrappedAIChatTools(t *testing.T) {
 	ctx, a, pool, orgID := newMCPTestApp(t)
 	projectID := newMCPTestProject(t, pool, ctx, orgID, "mcp-aichat-project")

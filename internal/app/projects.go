@@ -75,6 +75,25 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
+		maxProjects := defaultMaxProjects
+		if featuresRow, err := queries.GetOrganizationFeatures(r.Context(), organizationID); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				serverError(w, r, err)
+				return err
+			}
+		} else {
+			maxProjects = featuresRow.MaxProjects
+		}
+		count, err := queries.CountProjectsForOrganization(r.Context(), organizationID)
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		if count >= int64(maxProjects) {
+			writeJSONError(w, http.StatusConflict, "project_limit_reached")
+			return errors.New("project_limit_reached")
+		}
+
 		project, err = queries.CreateProject(r.Context(), sqlc.CreateProjectParams{
 			OrganizationID: organizationID,
 			Name:           name,

@@ -420,6 +420,7 @@ type OrganizationFeature struct {
 	AiVisibilityAuditMonthlyLimit int32
 	MaxCompetitors                int32
 	Integrations                  bool
+	MaxProjects                   int32
 }
 
 type OrganizationInvite struct {

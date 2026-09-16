@@ -170,6 +170,22 @@ func (a *App) mcpCreateProject(ctx context.Context, _ *mcp.CallToolRequest, in m
 		return nil, mcpCreateProjectOutput{}, errors.New("base_url must not point to a private or internal host")
 	}
 
+	maxProjects := defaultMaxProjects
+	if featuresRow, err := a.Queries.GetOrganizationFeatures(ctx, orgID); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, mcpCreateProjectOutput{}, err
+		}
+	} else {
+		maxProjects = featuresRow.MaxProjects
+	}
+	count, err := a.Queries.CountProjectsForOrganization(ctx, orgID)
+	if err != nil {
+		return nil, mcpCreateProjectOutput{}, err
+	}
+	if count >= int64(maxProjects) {
+		return nil, mcpCreateProjectOutput{}, errors.New("project_limit_reached")
+	}
+
 	project, err := a.Queries.CreateProject(ctx, sqlc.CreateProjectParams{
 		OrganizationID: orgID,
 		Name:           name,
