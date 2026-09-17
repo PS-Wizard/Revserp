@@ -65,6 +65,11 @@ func (f *fakeUpdateStore) UpsertProjectBusinessProfile(_ context.Context, arg sq
 		PrimaryCategory:     arg.PrimaryCategory,
 		PrimaryLocation:     arg.PrimaryLocation,
 		BusinessDescription: arg.BusinessDescription,
+		ProductDescription:  arg.ProductDescription,
+		TargetAudience:      arg.TargetAudience,
+		BusinessCompetitors: arg.BusinessCompetitors,
+		BrandedKeywords:     arg.BrandedKeywords,
+		NonBrandedKeywords:  arg.NonBrandedKeywords,
 		SeedPrompts:         arg.SeedPrompts,
 		TargetKeywords:      arg.TargetKeywords,
 	}
@@ -77,6 +82,11 @@ func (f *fakeUpdateStore) UpsertProjectBusinessProfile(_ context.Context, arg sq
 		PrimaryCategory:     row.PrimaryCategory,
 		PrimaryLocation:     row.PrimaryLocation,
 		BusinessDescription: row.BusinessDescription,
+		ProductDescription:  row.ProductDescription,
+		TargetAudience:      row.TargetAudience,
+		BusinessCompetitors: row.BusinessCompetitors,
+		BrandedKeywords:     row.BrandedKeywords,
+		NonBrandedKeywords:  row.NonBrandedKeywords,
 		SeedPrompts:         row.SeedPrompts,
 		TargetKeywords:      row.TargetKeywords,
 	}, nil

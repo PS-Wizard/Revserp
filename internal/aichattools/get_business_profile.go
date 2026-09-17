@@ -47,7 +47,7 @@ func getBusinessProfileTool() Tool {
 		Def: Def{
 			Name:        businessProfileName,
 			Label:       "Get business profile",
-			Description: "Read the business profile configured for the current project: brand name, website, primary category, primary location, business description, target keywords (always returned), and optionally the seed prompts. Use it for who/what the business is, where it operates, what it sells, and to ground brand-aware answers. This is one record per project — no filters, no paging. Returns a plain explanation when no profile is configured.",
+			Description: "Read the business profile configured for the current project: brand name, website, primary category, primary location, business description, product description, target audience, business competitors, branded keywords, non-branded keywords, target keywords (always returned), and optionally the seed prompts. Use it for who/what the business is, where it operates, what it sells, who it serves, and to ground brand-aware answers. This is one record per project — no filters, no paging. Returns a plain explanation when no profile is configured.",
 			Schema:      json.RawMessage(getBusinessProfileSchema),
 		},
 		Execute: executeGetBusinessProfile,
@@ -74,6 +74,11 @@ type businessProfileResponse struct {
 	PrimaryCategory     string   `json:"primary_category,omitempty"`
 	PrimaryLocation     string   `json:"primary_location,omitempty"`
 	BusinessDescription string   `json:"business_description,omitempty"`
+	ProductDescription  string   `json:"product_description,omitempty"`
+	TargetAudience      string   `json:"target_audience,omitempty"`
+	BusinessCompetitors []string `json:"business_competitors"`
+	BrandedKeywords     []string `json:"branded_keywords"`
+	NonBrandedKeywords  []string `json:"non_branded_keywords"`
 	SeedPrompts         []string `json:"seed_prompts,omitempty"`
 	TargetKeywords      []string `json:"target_keywords"`
 }
@@ -103,6 +108,8 @@ func (e *businessProfileExecutor) run(ctx context.Context, raw json.RawMessage, 
 		PrimaryCategory:     profileText(profile.PrimaryCategory),
 		PrimaryLocation:     profileText(profile.PrimaryLocation),
 		BusinessDescription: capBusinessProfileText(profileText(profile.BusinessDescription), businessProfileMaxFieldRune),
+		ProductDescription:  capBusinessProfileText(profileText(profile.ProductDescription), businessProfileMaxFieldRune),
+		TargetAudience:      capBusinessProfileText(profileText(profile.TargetAudience), businessProfileMaxFieldRune),
 	}
 	if keywords, err := businessprofile.DecodeTargetKeywords(profile.TargetKeywords); err == nil {
 		response.TargetKeywords = keywords
@@ -111,6 +118,30 @@ func (e *businessProfileExecutor) run(ctx context.Context, raw json.RawMessage, 
 		}
 	} else {
 		response.TargetKeywords = []string{}
+	}
+	if competitors, err := businessprofile.DecodeBusinessCompetitors(profile.BusinessCompetitors); err == nil {
+		response.BusinessCompetitors = competitors
+		if response.BusinessCompetitors == nil {
+			response.BusinessCompetitors = []string{}
+		}
+	} else {
+		response.BusinessCompetitors = []string{}
+	}
+	if branded, err := businessprofile.DecodeBrandedKeywords(profile.BrandedKeywords); err == nil {
+		response.BrandedKeywords = branded
+		if response.BrandedKeywords == nil {
+			response.BrandedKeywords = []string{}
+		}
+	} else {
+		response.BrandedKeywords = []string{}
+	}
+	if nonBranded, err := businessprofile.DecodeNonBrandedKeywords(profile.NonBrandedKeywords); err == nil {
+		response.NonBrandedKeywords = nonBranded
+		if response.NonBrandedKeywords == nil {
+			response.NonBrandedKeywords = []string{}
+		}
+	} else {
+		response.NonBrandedKeywords = []string{}
 	}
 
 	if args.IncludeSeedPrompts && len(profile.SeedPrompts) > 0 {

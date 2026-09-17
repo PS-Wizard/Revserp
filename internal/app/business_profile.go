@@ -22,6 +22,11 @@ type upsertProjectBusinessProfileRequest struct {
 	PrimaryCategory     string   `json:"primary_category"`
 	PrimaryLocation     string   `json:"primary_location"`
 	BusinessDescription string   `json:"business_description"`
+	ProductDescription  string   `json:"product_description"`
+	TargetAudience      string   `json:"target_audience"`
+	BusinessCompetitors []string `json:"business_competitors"`
+	BrandedKeywords     []string `json:"branded_keywords"`
+	NonBrandedKeywords  []string `json:"non_branded_keywords"`
 	SeedPrompts         []string `json:"seed_prompts"`
 	TargetKeywords      []string `json:"target_keywords"`
 }
@@ -34,6 +39,11 @@ type projectBusinessProfileResponse struct {
 	PrimaryCategory     string   `json:"primary_category,omitempty"`
 	PrimaryLocation     string   `json:"primary_location,omitempty"`
 	BusinessDescription string   `json:"business_description,omitempty"`
+	ProductDescription  string   `json:"product_description,omitempty"`
+	TargetAudience      string   `json:"target_audience,omitempty"`
+	BusinessCompetitors []string `json:"business_competitors"`
+	BrandedKeywords     []string `json:"branded_keywords"`
+	NonBrandedKeywords  []string `json:"non_branded_keywords"`
 	SeedPrompts         []string `json:"seed_prompts"`
 	TargetKeywords      []string `json:"target_keywords"`
 	CreatedAt           string   `json:"created_at"`
@@ -141,12 +151,16 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 	primaryCategory := strings.TrimSpace(requestBody.PrimaryCategory)
 	primaryLocation := strings.TrimSpace(requestBody.PrimaryLocation)
 	businessDescription := strings.TrimSpace(requestBody.BusinessDescription)
+	productDescription := strings.TrimSpace(requestBody.ProductDescription)
+	targetAudience := strings.TrimSpace(requestBody.TargetAudience)
 	seedPrompts, err := businessprofile.NormalizeSeedPrompts(requestBody.SeedPrompts)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	targetKeywords := businessprofile.NormalizeTargetKeywords(requestBody.TargetKeywords)
+	brandedKeywords, nonBrandedKeywords := businessprofile.NormalizeKeywordLists(requestBody.BrandedKeywords, requestBody.NonBrandedKeywords)
+	businessCompetitors := businessprofile.NormalizeBusinessCompetitors(requestBody.BusinessCompetitors)
 	if brandName == "" || websiteURL == "" {
 		writeJSONError(w, http.StatusBadRequest, "brand_name and website_url are required")
 		return
@@ -158,6 +172,21 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		return
 	}
 	targetKeywordsJSON, err := json.Marshal(targetKeywords)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	brandedKeywordsJSON, err := json.Marshal(brandedKeywords)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	nonBrandedKeywordsJSON, err := json.Marshal(nonBrandedKeywords)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	businessCompetitorsJSON, err := json.Marshal(businessCompetitors)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -204,6 +233,11 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		PrimaryCategory:     pgText(primaryCategory),
 		PrimaryLocation:     pgText(primaryLocation),
 		BusinessDescription: pgText(businessDescription),
+		ProductDescription:  pgText(productDescription),
+		TargetAudience:      pgText(targetAudience),
+		BusinessCompetitors: businessCompetitorsJSON,
+		BrandedKeywords:     brandedKeywordsJSON,
+		NonBrandedKeywords:  nonBrandedKeywordsJSON,
 		SeedPrompts:         seedPromptsJSON,
 		TargetKeywords:      targetKeywordsJSON,
 	})
@@ -253,6 +287,11 @@ func newProjectBusinessProfileResponseFromGetRow(profile sqlc.GetProjectBusiness
 		profile.PrimaryCategory,
 		profile.PrimaryLocation,
 		profile.BusinessDescription,
+		profile.ProductDescription,
+		profile.TargetAudience,
+		profile.BusinessCompetitors,
+		profile.BrandedKeywords,
+		profile.NonBrandedKeywords,
 		profile.SeedPrompts,
 		profile.TargetKeywords,
 		profile.CreatedAt,
@@ -269,6 +308,11 @@ func newProjectBusinessProfileResponseFromUpsertRow(profile sqlc.UpsertProjectBu
 		profile.PrimaryCategory,
 		profile.PrimaryLocation,
 		profile.BusinessDescription,
+		profile.ProductDescription,
+		profile.TargetAudience,
+		profile.BusinessCompetitors,
+		profile.BrandedKeywords,
+		profile.NonBrandedKeywords,
 		profile.SeedPrompts,
 		profile.TargetKeywords,
 		profile.CreatedAt,
@@ -284,6 +328,11 @@ func newProjectBusinessProfileResponse(
 	primaryCategory pgtype.Text,
 	primaryLocation pgtype.Text,
 	businessDescription pgtype.Text,
+	productDescription pgtype.Text,
+	targetAudience pgtype.Text,
+	rawBusinessCompetitors []byte,
+	rawBrandedKeywords []byte,
+	rawNonBrandedKeywords []byte,
 	rawSeedPrompts []byte,
 	rawTargetKeywords []byte,
 	createdAt pgtype.Timestamptz,
@@ -297,6 +346,18 @@ func newProjectBusinessProfileResponse(
 	if err != nil {
 		return projectBusinessProfileResponse{}, err
 	}
+	businessCompetitors, err := decodeBusinessCompetitors(rawBusinessCompetitors)
+	if err != nil {
+		return projectBusinessProfileResponse{}, err
+	}
+	brandedKeywords, err := decodeBrandedKeywords(rawBrandedKeywords)
+	if err != nil {
+		return projectBusinessProfileResponse{}, err
+	}
+	nonBrandedKeywords, err := decodeNonBrandedKeywords(rawNonBrandedKeywords)
+	if err != nil {
+		return projectBusinessProfileResponse{}, err
+	}
 
 	return projectBusinessProfileResponse{
 		ID:                  id.String(),
@@ -306,6 +367,11 @@ func newProjectBusinessProfileResponse(
 		PrimaryCategory:     textValue(primaryCategory),
 		PrimaryLocation:     textValue(primaryLocation),
 		BusinessDescription: textValue(businessDescription),
+		ProductDescription:  textValue(productDescription),
+		TargetAudience:      textValue(targetAudience),
+		BusinessCompetitors: businessCompetitors,
+		BrandedKeywords:     brandedKeywords,
+		NonBrandedKeywords:  nonBrandedKeywords,
 		SeedPrompts:         seedPrompts,
 		TargetKeywords:      targetKeywords,
 		CreatedAt:           createdAt.Time.UTC().Format(time.RFC3339),
@@ -323,6 +389,18 @@ func decodeSeedPrompts(rawSeedPrompts []byte) ([]string, error) {
 
 func decodeTargetKeywords(rawTargetKeywords []byte) ([]string, error) {
 	return businessprofile.DecodeTargetKeywords(rawTargetKeywords)
+}
+
+func decodeBrandedKeywords(raw []byte) ([]string, error) {
+	return businessprofile.DecodeBrandedKeywords(raw)
+}
+
+func decodeNonBrandedKeywords(raw []byte) ([]string, error) {
+	return businessprofile.DecodeNonBrandedKeywords(raw)
+}
+
+func decodeBusinessCompetitors(raw []byte) ([]string, error) {
+	return businessprofile.DecodeBusinessCompetitors(raw)
 }
 
 func decodeStringSlice(raw []byte) ([]string, error) {

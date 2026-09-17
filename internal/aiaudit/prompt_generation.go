@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ps-wizard/revserp/internal/ai"
+	"github.com/ps-wizard/revserp/internal/businessprofile"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -51,10 +52,6 @@ func (w *Worker) handlePromptGeneration(ctx context.Context, job sqlc.ClaimNextP
 			return fmt.Errorf("decode seed prompts: %w", err)
 		}
 	}
-	if len(seedPrompts) == 0 {
-		return fmt.Errorf("no seed prompts configured for project %s", job.ProjectID.String())
-	}
-
 	generationPrompt := DefaultQuestionGenerationPrompt
 	adminConfig, err := w.queries.GetAIPromptConfig(ctx)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -170,9 +167,31 @@ func buildGenerationPrompt(systemPrompt string, profile sqlc.GetProjectBusinessP
 		sb.WriteString("\nDescription: ")
 		sb.WriteString(profile.BusinessDescription.String)
 	}
-	sb.WriteString("\n\nSeed questions:\n")
-	for i, p := range seedPrompts {
-		fmt.Fprintf(&sb, "%d. %s\n", i+1, p)
+	if profile.ProductDescription.Valid && strings.TrimSpace(profile.ProductDescription.String) != "" {
+		sb.WriteString("\nProducts: ")
+		sb.WriteString(profile.ProductDescription.String)
+	}
+	if profile.TargetAudience.Valid && strings.TrimSpace(profile.TargetAudience.String) != "" {
+		sb.WriteString("\nAudience: ")
+		sb.WriteString(profile.TargetAudience.String)
+	}
+	if competitors, err := businessprofile.DecodeBusinessCompetitors(profile.BusinessCompetitors); err == nil && len(competitors) > 0 {
+		sb.WriteString("\nCompetitors: ")
+		sb.WriteString(strings.Join(competitors, ", "))
+	}
+	if branded, err := businessprofile.DecodeBrandedKeywords(profile.BrandedKeywords); err == nil && len(branded) > 0 {
+		sb.WriteString("\nBranded keywords (brand terms — NEVER name these in the questions; the point is to see whether the brand appears unprompted): ")
+		sb.WriteString(strings.Join(branded, ", "))
+	}
+	if nonBranded, err := businessprofile.DecodeNonBrandedKeywords(profile.NonBrandedKeywords); err == nil && len(nonBranded) > 0 {
+		sb.WriteString("\nNon-branded keywords: ")
+		sb.WriteString(strings.Join(nonBranded, ", "))
+	}
+	if len(seedPrompts) > 0 {
+		sb.WriteString("\n\nSeed questions:\n")
+		for i, p := range seedPrompts {
+			fmt.Fprintf(&sb, "%d. %s\n", i+1, p)
+		}
 	}
 	sb.WriteString("\nGenerate 10 questions:")
 	return sb.String()

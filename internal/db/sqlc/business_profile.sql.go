@@ -12,7 +12,7 @@ import (
 )
 
 const getProjectBusinessProfileByProjectID = `-- name: GetProjectBusinessProfileByProjectID :one
-SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords, created_at, updated_at
+SELECT id, project_id, brand_name, website_url, primary_category, primary_location, business_description, product_description, target_audience, business_competitors, branded_keywords, non_branded_keywords, seed_prompts, target_keywords, created_at, updated_at
 FROM project_business_profile
 WHERE project_id = $1
 LIMIT 1
@@ -26,6 +26,11 @@ type GetProjectBusinessProfileByProjectIDRow struct {
 	PrimaryCategory     pgtype.Text
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
+	ProductDescription  pgtype.Text
+	TargetAudience      pgtype.Text
+	BusinessCompetitors []byte
+	BrandedKeywords     []byte
+	NonBrandedKeywords  []byte
 	SeedPrompts         []byte
 	TargetKeywords      []byte
 	CreatedAt           pgtype.Timestamptz
@@ -43,6 +48,11 @@ func (q *Queries) GetProjectBusinessProfileByProjectID(ctx context.Context, proj
 		&i.PrimaryCategory,
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
+		&i.ProductDescription,
+		&i.TargetAudience,
+		&i.BusinessCompetitors,
+		&i.BrandedKeywords,
+		&i.NonBrandedKeywords,
 		&i.SeedPrompts,
 		&i.TargetKeywords,
 		&i.CreatedAt,
@@ -60,6 +70,11 @@ SELECT
     pbp.primary_category,
     pbp.primary_location,
     pbp.business_description,
+    pbp.product_description,
+    pbp.target_audience,
+    pbp.business_competitors,
+    pbp.branded_keywords,
+    pbp.non_branded_keywords,
     pbp.seed_prompts,
     pbp.target_keywords,
     pbp.created_at,
@@ -85,6 +100,11 @@ type GetProjectBusinessProfileByProjectIDForUserRow struct {
 	PrimaryCategory     pgtype.Text
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
+	ProductDescription  pgtype.Text
+	TargetAudience      pgtype.Text
+	BusinessCompetitors []byte
+	BrandedKeywords     []byte
+	NonBrandedKeywords  []byte
 	SeedPrompts         []byte
 	TargetKeywords      []byte
 	CreatedAt           pgtype.Timestamptz
@@ -102,6 +122,11 @@ func (q *Queries) GetProjectBusinessProfileByProjectIDForUser(ctx context.Contex
 		&i.PrimaryCategory,
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
+		&i.ProductDescription,
+		&i.TargetAudience,
+		&i.BusinessCompetitors,
+		&i.BrandedKeywords,
+		&i.NonBrandedKeywords,
 		&i.SeedPrompts,
 		&i.TargetKeywords,
 		&i.CreatedAt,
@@ -146,6 +171,11 @@ INSERT INTO project_business_profile (
     primary_category,
     primary_location,
     business_description,
+    product_description,
+    target_audience,
+    business_competitors,
+    branded_keywords,
+    non_branded_keywords,
     seed_prompts,
     target_keywords
 ) VALUES (
@@ -156,7 +186,12 @@ INSERT INTO project_business_profile (
     $5,
     $6,
     $7,
-    $8
+    $8,
+    $9,
+    $10,
+    $11,
+    $12,
+    $13
 )
 ON CONFLICT (project_id) DO UPDATE SET
     brand_name = excluded.brand_name,
@@ -164,10 +199,15 @@ ON CONFLICT (project_id) DO UPDATE SET
     primary_category = excluded.primary_category,
     primary_location = excluded.primary_location,
     business_description = excluded.business_description,
+    product_description = excluded.product_description,
+    target_audience = excluded.target_audience,
+    business_competitors = excluded.business_competitors,
+    branded_keywords = excluded.branded_keywords,
+    non_branded_keywords = excluded.non_branded_keywords,
     seed_prompts = excluded.seed_prompts,
     target_keywords = excluded.target_keywords,
     updated_at = now()
-RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords, created_at, updated_at
+RETURNING id, project_id, brand_name, website_url, primary_category, primary_location, business_description, product_description, target_audience, business_competitors, branded_keywords, non_branded_keywords, seed_prompts, target_keywords, created_at, updated_at
 `
 
 type UpsertProjectBusinessProfileParams struct {
@@ -177,6 +217,11 @@ type UpsertProjectBusinessProfileParams struct {
 	PrimaryCategory     pgtype.Text
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
+	ProductDescription  pgtype.Text
+	TargetAudience      pgtype.Text
+	BusinessCompetitors []byte
+	BrandedKeywords     []byte
+	NonBrandedKeywords  []byte
 	SeedPrompts         []byte
 	TargetKeywords      []byte
 }
@@ -189,6 +234,11 @@ type UpsertProjectBusinessProfileRow struct {
 	PrimaryCategory     pgtype.Text
 	PrimaryLocation     pgtype.Text
 	BusinessDescription pgtype.Text
+	ProductDescription  pgtype.Text
+	TargetAudience      pgtype.Text
+	BusinessCompetitors []byte
+	BrandedKeywords     []byte
+	NonBrandedKeywords  []byte
 	SeedPrompts         []byte
 	TargetKeywords      []byte
 	CreatedAt           pgtype.Timestamptz
@@ -203,6 +253,11 @@ func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertPr
 		arg.PrimaryCategory,
 		arg.PrimaryLocation,
 		arg.BusinessDescription,
+		arg.ProductDescription,
+		arg.TargetAudience,
+		arg.BusinessCompetitors,
+		arg.BrandedKeywords,
+		arg.NonBrandedKeywords,
 		arg.SeedPrompts,
 		arg.TargetKeywords,
 	)
@@ -215,6 +270,11 @@ func (q *Queries) UpsertProjectBusinessProfile(ctx context.Context, arg UpsertPr
 		&i.PrimaryCategory,
 		&i.PrimaryLocation,
 		&i.BusinessDescription,
+		&i.ProductDescription,
+		&i.TargetAudience,
+		&i.BusinessCompetitors,
+		&i.BrandedKeywords,
+		&i.NonBrandedKeywords,
 		&i.SeedPrompts,
 		&i.TargetKeywords,
 		&i.CreatedAt,

@@ -82,6 +82,11 @@ type mcpUpdateBusinessProfileInput struct {
 	PrimaryCategory     string   `json:"primary_category,omitempty"`
 	PrimaryLocation     string   `json:"primary_location,omitempty"`
 	BusinessDescription string   `json:"business_description,omitempty"`
+	ProductDescription  string   `json:"product_description,omitempty"`
+	TargetAudience      string   `json:"target_audience,omitempty"`
+	BusinessCompetitors []string `json:"business_competitors,omitempty"`
+	BrandedKeywords     []string `json:"branded_keywords,omitempty"`
+	NonBrandedKeywords  []string `json:"non_branded_keywords,omitempty"`
 	SeedPrompts         []string `json:"seed_prompts,omitempty"`
 	TargetKeywords      []string `json:"target_keywords,omitempty"`
 }

@@ -484,6 +484,11 @@ type ProjectBusinessProfile struct {
 	UpdatedAt           pgtype.Timestamptz
 	SeedPrompts         []byte
 	TargetKeywords      []byte
+	ProductDescription  pgtype.Text
+	TargetAudience      pgtype.Text
+	BusinessCompetitors []byte
+	BrandedKeywords     []byte
+	NonBrandedKeywords  []byte
 }
 
 type ProjectCompetitor struct {

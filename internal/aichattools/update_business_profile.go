@@ -28,6 +28,11 @@ const updateBusinessProfileSchema = `{
     "primary_category": {"type": "string", "description": "Primary business category. Trimmed; empty string clears the field."},
     "primary_location": {"type": "string", "description": "Primary location. Trimmed; empty string clears the field."},
     "business_description": {"type": "string", "description": "Business description. Trimmed; empty string clears the field."},
+    "product_description": {"type": "string", "description": "Product description. Trimmed; empty string clears the field."},
+    "target_audience": {"type": "string", "description": "Target audience. Trimmed; empty string clears the field."},
+    "business_competitors": {"type": "array", "items": {"type": "string"}, "description": "Competitor names; replaces the complete list. Empty array clears. Max 20, trimmed, empty dropped, case-insensitive dedupe preserving first spelling/order."},
+    "branded_keywords": {"type": "array", "items": {"type": "string"}, "description": "Branded keywords; replaces the complete list. Empty array clears. Max 50 per keyword list. Trimmed, empty dropped, case-insensitive dedupe; entries also present in non_branded_keywords are dropped from this list."},
+    "non_branded_keywords": {"type": "array", "items": {"type": "string"}, "description": "Non-branded keywords; replaces the complete list. Empty array clears. Max 50 per keyword list. Trimmed, empty dropped, case-insensitive dedupe; wins over branded_keywords on overlap."},
     "seed_prompts": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "Seed prompts; replaces the complete list. Empty array clears. Max 5, no empty values."},
     "target_keywords": {"type": "array", "items": {"type": "string"}, "description": "Target keywords; replaces the complete list. Empty array clears. Trimmed, empty dropped, case-insensitive dedupe preserving first spelling/order."}
   },
@@ -40,6 +45,11 @@ type updateBusinessProfileArgs struct {
 	PrimaryCategory     *string
 	PrimaryLocation     *string
 	BusinessDescription *string
+	ProductDescription  *string
+	TargetAudience      *string
+	BusinessCompetitors *[]string
+	BrandedKeywords     *[]string
+	NonBrandedKeywords  *[]string
 	SeedPrompts         *[]string
 	TargetKeywords      *[]string
 }
@@ -149,7 +159,7 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		}
 	}
 
-	var existingSeed, existingKeywords []string
+	var existingSeed, existingKeywords, existingCompetitors, existingBranded, existingNonBranded []string
 	if exists {
 		if args.SeedPrompts == nil {
 			v, err := businessprofile.DecodeSeedPrompts(existing.SeedPrompts)
@@ -177,14 +187,53 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 				existingKeywords = []string{}
 			}
 		}
+		if args.BusinessCompetitors == nil {
+			v, err := businessprofile.DecodeBusinessCompetitors(existing.BusinessCompetitors)
+			if err != nil {
+				return Result{}, fmt.Errorf("%s: decode business_competitors: %w", updateBusinessProfileName, err)
+			}
+			existingCompetitors = v
+		} else {
+			if v, err := businessprofile.DecodeBusinessCompetitors(existing.BusinessCompetitors); err == nil {
+				existingCompetitors = v
+			} else {
+				existingCompetitors = []string{}
+			}
+		}
+		if args.BrandedKeywords == nil && args.NonBrandedKeywords == nil {
+			v, err := businessprofile.DecodeBrandedKeywords(existing.BrandedKeywords)
+			if err != nil {
+				return Result{}, fmt.Errorf("%s: decode branded_keywords: %w", updateBusinessProfileName, err)
+			}
+			existingBranded = v
+			v, err = businessprofile.DecodeNonBrandedKeywords(existing.NonBrandedKeywords)
+			if err != nil {
+				return Result{}, fmt.Errorf("%s: decode non_branded_keywords: %w", updateBusinessProfileName, err)
+			}
+			existingNonBranded = v
+		} else {
+			if v, err := businessprofile.DecodeBrandedKeywords(existing.BrandedKeywords); err == nil {
+				existingBranded = v
+			} else {
+				existingBranded = []string{}
+			}
+			if v, err := businessprofile.DecodeNonBrandedKeywords(existing.NonBrandedKeywords); err == nil {
+				existingNonBranded = v
+			} else {
+				existingNonBranded = []string{}
+			}
+		}
 	} else {
 		existingSeed = []string{}
 		existingKeywords = []string{}
+		existingCompetitors = []string{}
+		existingBranded = []string{}
+		existingNonBranded = []string{}
 	}
 
 	var finalBrand, finalWebsite string
-	var finalCategory, finalLocation, finalDesc pgtype.Text
-	var finalSeed, finalKeywords []string
+	var finalCategory, finalLocation, finalDesc, finalProduct, finalAudience pgtype.Text
+	var finalSeed, finalKeywords, finalCompetitors, finalBranded, finalNonBranded []string
 	changed := []string{}
 
 	// brand_name
@@ -274,6 +323,38 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 			finalDesc = existing.BusinessDescription
 		}
 	}
+	// product_description
+	if args.ProductDescription != nil {
+		trim := strings.TrimSpace(*args.ProductDescription)
+		finalProduct = pgnull.Text(trim)
+		existingVal := ""
+		if exists && existing.ProductDescription.Valid {
+			existingVal = existing.ProductDescription.String
+		}
+		if trim != existingVal {
+			changed = append(changed, "product_description")
+		}
+	} else {
+		if exists {
+			finalProduct = existing.ProductDescription
+		}
+	}
+	// target_audience
+	if args.TargetAudience != nil {
+		trim := strings.TrimSpace(*args.TargetAudience)
+		finalAudience = pgnull.Text(trim)
+		existingVal := ""
+		if exists && existing.TargetAudience.Valid {
+			existingVal = existing.TargetAudience.String
+		}
+		if trim != existingVal {
+			changed = append(changed, "target_audience")
+		}
+	} else {
+		if exists {
+			finalAudience = existing.TargetAudience
+		}
+	}
 
 	// seed_prompts
 	if args.SeedPrompts != nil {
@@ -298,11 +379,51 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 	} else {
 		finalKeywords = existingKeywords
 	}
+	// business_competitors
+	if args.BusinessCompetitors != nil {
+		norm := businessprofile.NormalizeBusinessCompetitors(*args.BusinessCompetitors)
+		finalCompetitors = norm
+		if !reflect.DeepEqual(norm, existingCompetitors) {
+			changed = append(changed, "business_competitors")
+		}
+	} else {
+		finalCompetitors = existingCompetitors
+	}
+	// branded_keywords / non_branded_keywords: merged pair must stay disjoint,
+	// non-branded wins, even when only one side was supplied.
+	{
+		brandedRaw := existingBranded
+		if args.BrandedKeywords != nil {
+			brandedRaw = businessprofile.NormalizeStringList(*args.BrandedKeywords, businessprofile.MaxTargetKeywords)
+		}
+		nonBrandedRaw := existingNonBranded
+		if args.NonBrandedKeywords != nil {
+			nonBrandedRaw = businessprofile.NormalizeStringList(*args.NonBrandedKeywords, businessprofile.MaxTargetKeywords)
+		}
+		finalBranded, finalNonBranded = businessprofile.NormalizeKeywordLists(brandedRaw, nonBrandedRaw)
+		if args.BrandedKeywords != nil || args.NonBrandedKeywords != nil {
+			if !reflect.DeepEqual(finalBranded, existingBranded) {
+				changed = append(changed, "branded_keywords")
+			}
+			if !reflect.DeepEqual(finalNonBranded, existingNonBranded) {
+				changed = append(changed, "non_branded_keywords")
+			}
+		}
+	}
 	if finalSeed == nil {
 		finalSeed = []string{}
 	}
 	if finalKeywords == nil {
 		finalKeywords = []string{}
+	}
+	if finalCompetitors == nil {
+		finalCompetitors = []string{}
+	}
+	if finalBranded == nil {
+		finalBranded = []string{}
+	}
+	if finalNonBranded == nil {
+		finalNonBranded = []string{}
 	}
 
 	seedJSON, err := json.Marshal(finalSeed)
@@ -313,6 +434,18 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: marshal keywords: %w", updateBusinessProfileName, err)
 	}
+	competitorsJSON, err := json.Marshal(finalCompetitors)
+	if err != nil {
+		return Result{}, fmt.Errorf("%s: marshal competitors: %w", updateBusinessProfileName, err)
+	}
+	brandedJSON, err := json.Marshal(finalBranded)
+	if err != nil {
+		return Result{}, fmt.Errorf("%s: marshal branded: %w", updateBusinessProfileName, err)
+	}
+	nonBrandedJSON, err := json.Marshal(finalNonBranded)
+	if err != nil {
+		return Result{}, fmt.Errorf("%s: marshal non-branded: %w", updateBusinessProfileName, err)
+	}
 
 	upserted, err := q.UpsertProjectBusinessProfile(ctx, sqlc.UpsertProjectBusinessProfileParams{
 		ProjectID:           projectID,
@@ -321,6 +454,11 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		PrimaryCategory:     finalCategory,
 		PrimaryLocation:     finalLocation,
 		BusinessDescription: finalDesc,
+		ProductDescription:  finalProduct,
+		TargetAudience:      finalAudience,
+		BusinessCompetitors: competitorsJSON,
+		BrandedKeywords:     brandedJSON,
+		NonBrandedKeywords:  nonBrandedJSON,
 		SeedPrompts:         seedJSON,
 		TargetKeywords:      kwJSON,
 	})
@@ -334,6 +472,11 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		"primary_category":     profileText(upserted.PrimaryCategory),
 		"primary_location":     profileText(upserted.PrimaryLocation),
 		"business_description": profileText(upserted.BusinessDescription),
+		"product_description":  profileText(upserted.ProductDescription),
+		"target_audience":      profileText(upserted.TargetAudience),
+		"business_competitors": finalCompetitors,
+		"branded_keywords":     finalBranded,
+		"non_branded_keywords": finalNonBranded,
 		"seed_prompts":         finalSeed,
 		"target_keywords":      finalKeywords,
 	}
@@ -361,14 +504,14 @@ func parseUpdateBusinessProfileArgs(raw json.RawMessage) (updateBusinessProfileA
 		return args, err
 	}
 	if len(fields) == 0 {
-		return args, errors.New("no fields provided; provide at least one of brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords")
+		return args, errors.New("no fields provided; provide at least one of brand_name, website_url, primary_category, primary_location, business_description, product_description, target_audience, business_competitors, branded_keywords, non_branded_keywords, seed_prompts, target_keywords")
 	}
 	for key, value := range fields {
 		trimmedVal := strings.TrimSpace(string(value))
 		if trimmedVal == "null" {
 			// JSON null is never allowed: scalars must be string, arrays must be array
 			switch key {
-			case "seed_prompts", "target_keywords":
+			case "seed_prompts", "target_keywords", "business_competitors", "branded_keywords", "non_branded_keywords":
 				return args, fmt.Errorf("argument %q must be an array of strings", key)
 			default:
 				return args, fmt.Errorf("argument %q must be a string", key)
@@ -405,6 +548,45 @@ func parseUpdateBusinessProfileArgs(raw json.RawMessage) (updateBusinessProfileA
 				return args, fmt.Errorf("argument %q must be a string", key)
 			}
 			args.BusinessDescription = &v
+		case "product_description":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.ProductDescription = &v
+		case "target_audience":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.TargetAudience = &v
+		case "business_competitors":
+			var v []string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			}
+			if v == nil {
+				v = []string{}
+			}
+			args.BusinessCompetitors = &v
+		case "branded_keywords":
+			var v []string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			}
+			if v == nil {
+				v = []string{}
+			}
+			args.BrandedKeywords = &v
+		case "non_branded_keywords":
+			var v []string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			}
+			if v == nil {
+				v = []string{}
+			}
+			args.NonBrandedKeywords = &v
 		case "seed_prompts":
 			var v []string
 			if err := json.Unmarshal(value, &v); err != nil {
