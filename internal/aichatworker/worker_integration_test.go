@@ -2,6 +2,7 @@ package aichatworker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -404,8 +405,8 @@ func TestDisabledToolsAreNotSentToProvider(t *testing.T) {
 	if len(provider.requests) != 1 {
 		t.Fatalf("streams=%d, want 1", len(provider.requests))
 	}
-	if len(provider.requests[0].Tools) != 6 {
-		t.Fatalf("round tools = %+v, want the six non-disabled tools", provider.requests[0].Tools)
+	if len(provider.requests[0].Tools) != 7 {
+		t.Fatalf("round tools = %+v, want the seven non-disabled tools", provider.requests[0].Tools)
 	}
 	for _, def := range provider.requests[0].Tools {
 		if def.Name == "read_issues" {
@@ -440,8 +441,8 @@ func TestToolRoundCapSynthesizesFinalAnswer(t *testing.T) {
 		t.Fatalf("streams=%d, want %d", len(provider.requests), maxAgentRounds+1)
 	}
 	for i := 0; i < maxAgentRounds; i++ {
-		if len(provider.requests[i].Tools) != 7 {
-			t.Fatalf("round %d tools = %+v, want the seven registered tools", i, provider.requests[i].Tools)
+		if len(provider.requests[i].Tools) != 8 {
+			t.Fatalf("round %d tools = %+v, want the eight registered tools", i, provider.requests[i].Tools)
 		}
 	}
 	final := provider.requests[maxAgentRounds]
@@ -658,5 +659,127 @@ func TestToolRoundSearchConsoleUnavailable(t *testing.T) {
 	}
 	if toolEvents != 2 {
 		t.Fatalf("tool events = %d, want 2", toolEvents)
+	}
+}
+
+func TestUpdateBusinessProfileIntegration(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	ctx := context.Background()
+	if _, err := a.pool.Exec(ctx, `INSERT INTO project_business_profile(project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords) VALUES($1,'OldBrand','https://old.example','Cat','Loc','Desc','["s1"]','["k1","k2"]')`, project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM project_business_profile WHERE project_id=$1`, project)
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM ai_worker_jobs WHERE project_id=$1 AND job_type='prompt_generation'`, project)
+	})
+	provider := &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: "update_business_profile", Args: `{"brand_name":"NewBrand","target_keywords":["  NEW ","new","  Another "]}`}}},
+		{{Text: "done"}},
+	}}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(ctx, claimed)
+	var status, content string
+	if err := a.pool.QueryRow(ctx, `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id=t.id AND m.role='assistant' WHERE t.id=$1`, id).Scan(&status, &content); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || content != "done" {
+		t.Fatalf("turn %q content %q", status, content)
+	}
+	var brandQ, websiteQ string
+	var catQ, locQ, descQ pgtype.Text
+	var seed, kw []byte
+	if err := a.pool.QueryRow(ctx, `SELECT brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords FROM project_business_profile WHERE project_id=$1`, project).Scan(&brandQ, &websiteQ, &catQ, &locQ, &descQ, &seed, &kw); err != nil {
+		t.Fatal(err)
+	}
+	if brandQ != "NewBrand" {
+		t.Fatalf("brand %q want NewBrand", brandQ)
+	}
+	if websiteQ != "https://old.example" {
+		t.Fatalf("website should be preserved %q", websiteQ)
+	}
+	if catQ.String != "Cat" || locQ.String != "Loc" || descQ.String != "Desc" {
+		t.Fatalf("omitted fields not preserved cat %v loc %v desc %v", catQ, locQ, descQ)
+	}
+	var seedVals []string
+	if err := json.Unmarshal(seed, &seedVals); err != nil {
+		t.Fatal(err)
+	}
+	if len(seedVals) != 1 || seedVals[0] != "s1" {
+		t.Fatalf("seed preserved %v", seedVals)
+	}
+	var kwVals []string
+	if err := json.Unmarshal(kw, &kwVals); err != nil {
+		t.Fatal(err)
+	}
+	if len(kwVals) != 2 || kwVals[0] != "NEW" || kwVals[1] != "Another" {
+		t.Fatalf("keywords normalized %v", kwVals)
+	}
+	var calls int
+	var name, callStatus, summary string
+	if err := a.pool.QueryRow(ctx, `SELECT count(*), MIN(name), MIN(status), MIN(summary) FROM ai_tool_calls WHERE turn_id=$1`, id).Scan(&calls, &name, &callStatus, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || name != "update_business_profile" || callStatus != "completed" {
+		t.Fatalf("tool rows %d %q %q %q", calls, name, callStatus, summary)
+	}
+	if !strings.Contains(summary, "brand_name") || !strings.Contains(summary, "target_keywords") {
+		t.Fatalf("summary %q should name changed fields", summary)
+	}
+	var jobs int
+	if err := a.pool.QueryRow(ctx, `SELECT count(*) FROM ai_worker_jobs WHERE project_id=$1 AND job_type='prompt_generation' AND status='pending'`, project).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 {
+		t.Fatalf("prompt jobs %d want 1", jobs)
+	}
+	if len(provider.requests) < 1 || len(provider.requests[0].Tools) != 8 {
+		t.Fatalf("provider tools %v want 8", provider.requests[0].Tools)
+	}
+}
+
+func TestUpdateBusinessProfileIntegrationMissingCreation(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	ctx := context.Background()
+	_, _ = a.pool.Exec(ctx, `DELETE FROM project_business_profile WHERE project_id=$1`, project)
+	t.Cleanup(func() {
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM project_business_profile WHERE project_id=$1`, project)
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM ai_worker_jobs WHERE project_id=$1`, project)
+	})
+	provider := &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "c1", Name: "update_business_profile", Args: `{"brand_name":"Acme","website_url":"https://acme.example","target_keywords":["a","b"]}`}}},
+		{{Text: "created"}},
+	}}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(ctx, claimed)
+	var status string
+	if err := a.pool.QueryRow(ctx, `SELECT status FROM ai_turns WHERE id=$1`, id).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" {
+		t.Fatalf("status %q", status)
+	}
+	var brand string
+	if err := a.pool.QueryRow(ctx, `SELECT brand_name FROM project_business_profile WHERE project_id=$1`, project).Scan(&brand); err != nil {
+		t.Fatal(err)
+	}
+	if brand != "Acme" {
+		t.Fatalf("brand %q", brand)
+	}
+	var jobs int
+	if err := a.pool.QueryRow(ctx, `SELECT count(*) FROM ai_worker_jobs WHERE project_id=$1 AND job_type='prompt_generation'`, project).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 {
+		t.Fatalf("jobs %d", jobs)
 	}
 }

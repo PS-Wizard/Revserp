@@ -87,3 +87,31 @@ func TestNormalizeConfigSnapshotMarshalsExpectedJSON(t *testing.T) {
 		t.Fatalf("did not expect enable_javascript in normalized snapshot")
 	}
 }
+
+func TestNormalizeConfigSnapshotSkipSitemapSeed(t *testing.T) {
+	configSnapshot, normalizedConfigSnapshot, err := NormalizeConfigSnapshot([]byte(`{"skip_sitemap_seed":true}`))
+	if err != nil {
+		t.Fatalf("normalize config snapshot: %v", err)
+	}
+	if !configSnapshot.SkipSitemapSeed {
+		t.Fatal("expected skip_sitemap_seed true")
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(normalizedConfigSnapshot, &decoded); err != nil {
+		t.Fatalf("unmarshal normalized config snapshot: %v", err)
+	}
+	if decoded["skip_sitemap_seed"].(bool) != true {
+		t.Fatalf("got skip_sitemap_seed %v", decoded["skip_sitemap_seed"])
+	}
+}
+
+func TestConfigFromBaseURLAndSnapshotCopiesSkipSitemapSeed(t *testing.T) {
+	crawlerConfig, err := ConfigFromBaseURLAndSnapshot("https://example.com", []byte(`{"skip_sitemap_seed":true}`))
+	if err != nil {
+		t.Fatalf("build crawler config: %v", err)
+	}
+	if !crawlerConfig.SkipSitemapSeed {
+		t.Fatal("expected SkipSitemapSeed true")
+	}
+}

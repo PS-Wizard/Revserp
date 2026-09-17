@@ -47,6 +47,7 @@ func (a *App) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, adminUsersListResponse{Users: items})
 }
 

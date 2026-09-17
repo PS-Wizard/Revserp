@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
 // handleMarkCrawlIssueWorkDone records that the current user finished their
@@ -371,12 +372,7 @@ func newIssueWorkStateResponse(
 }
 
 func isSitewideWorkspaceIssue(issueType string) bool {
-	switch issueType {
-	case "weak_open_graph_coverage", "missing_website_schema", "missing_org_identity_schema", "missing_about_page", "missing_contact_page", "missing_policy_page", "missing_llms_txt", "homepage_missing_org_contact_trust_signals":
-		return true
-	default:
-		return false
-	}
+	return shared.IsSitewideIssue(issueType)
 }
 
 func duplicateGroupWorkKey(members []sqlc.CrawlIssueGroupMember) string {

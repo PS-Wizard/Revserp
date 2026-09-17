@@ -30,6 +30,27 @@ func (q *Queries) BulkUpdateCrawlPageContentFingerprints(ctx context.Context, ar
 	return err
 }
 
+const bulkUpdateCrawlPageHealthScores = `-- name: BulkUpdateCrawlPageHealthScores :exec
+UPDATE crawl_pages AS cp
+SET health_score = data.health_score,
+    health_breakdown = data.health_breakdown
+FROM (
+    SELECT unnest($1::uuid[]) AS id, unnest($2::smallint[]) AS health_score, unnest($3::jsonb[]) AS health_breakdown
+) AS data
+WHERE cp.id = data.id
+`
+
+type BulkUpdateCrawlPageHealthScoresParams struct {
+	PageIds          []pgtype.UUID
+	HealthScores     []int16
+	HealthBreakdowns [][]byte
+}
+
+func (q *Queries) BulkUpdateCrawlPageHealthScores(ctx context.Context, arg BulkUpdateCrawlPageHealthScoresParams) error {
+	_, err := q.db.Exec(ctx, bulkUpdateCrawlPageHealthScores, arg.PageIds, arg.HealthScores, arg.HealthBreakdowns)
+	return err
+}
+
 const copyCrawlPageFromBaseline = `-- name: CopyCrawlPageFromBaseline :execrows
 INSERT INTO crawl_pages (
     crawl_id,
@@ -184,6 +205,34 @@ func (q *Queries) CountCrawlPagesForCrawlByUser(ctx context.Context, arg CountCr
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countCrawlPagesSearchForUser = `-- name: CountCrawlPagesSearchForUser :one
+SELECT COUNT(*)::bigint
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+  AND (
+      $3::text = ''
+      OR strpos(lower(cp.url), lower($3::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower($3::text)) > 0
+  )
+`
+
+type CountCrawlPagesSearchForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Query   string
+}
+
+func (q *Queries) CountCrawlPagesSearchForUser(ctx context.Context, arg CountCrawlPagesSearchForUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlPagesSearchForUser, arg.CrawlID, arg.UserID, arg.Query)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const createCrawlPage = `-- name: CreateCrawlPage :one
@@ -793,6 +842,51 @@ func (q *Queries) GetCrawlPageContentByURLForUser(ctx context.Context, arg GetCr
 	return i, err
 }
 
+const getCrawlPageHealthForUser = `-- name: GetCrawlPageHealthForUser :one
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.health_score,
+    cp.health_breakdown
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND cp.id = $2
+  AND om.user_id = $3
+  AND cp.health_score IS NOT NULL
+LIMIT 1
+`
+
+type GetCrawlPageHealthForUserParams struct {
+	CrawlID pgtype.UUID
+	PageID  pgtype.UUID
+	UserID  pgtype.UUID
+}
+
+type GetCrawlPageHealthForUserRow struct {
+	ID              pgtype.UUID
+	CrawlID         pgtype.UUID
+	Url             string
+	HealthScore     pgtype.Int2
+	HealthBreakdown []byte
+}
+
+func (q *Queries) GetCrawlPageHealthForUser(ctx context.Context, arg GetCrawlPageHealthForUserParams) (GetCrawlPageHealthForUserRow, error) {
+	row := q.db.QueryRow(ctx, getCrawlPageHealthForUser, arg.CrawlID, arg.PageID, arg.UserID)
+	var i GetCrawlPageHealthForUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.CrawlID,
+		&i.Url,
+		&i.HealthScore,
+		&i.HealthBreakdown,
+	)
+	return i, err
+}
+
 const getCrawlPageIssueHistogramForUser = `-- name: GetCrawlPageIssueHistogramForUser :many
 WITH scoreable_pages AS (
     SELECT cp.id
@@ -851,11 +945,45 @@ func (q *Queries) GetCrawlPageIssueHistogramForUser(ctx context.Context, arg Get
 	return items, nil
 }
 
+const getIncrementalBaselineCrawlID = `-- name: GetIncrementalBaselineCrawlID :one
+SELECT previous.id
+FROM crawls AS current
+INNER JOIN crawls AS previous
+    ON previous.project_id = current.project_id
+   AND previous.status = 'completed'
+   AND previous.id <> current.id
+   AND (
+        (current.source = 'competitor'
+         AND previous.source = 'competitor'
+         AND previous.competitor_id = current.competitor_id)
+        OR
+        (current.source <> 'competitor'
+         AND previous.source IN ('manual', 'auto', 'mcp'))
+   )
+WHERE current.id = $1
+  AND current.project_id = $2
+ORDER BY previous.completed_at DESC NULLS LAST
+LIMIT 1
+`
+
+type GetIncrementalBaselineCrawlIDParams struct {
+	CurrentCrawlID pgtype.UUID
+	ProjectID      pgtype.UUID
+}
+
+func (q *Queries) GetIncrementalBaselineCrawlID(ctx context.Context, arg GetIncrementalBaselineCrawlIDParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getIncrementalBaselineCrawlID, arg.CurrentCrawlID, arg.ProjectID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getLatestCompletedCrawlIDForProject = `-- name: GetLatestCompletedCrawlIDForProject :one
 SELECT id
 FROM crawls
 WHERE project_id = $1
   AND status = 'completed'
+  AND source IN ('manual', 'auto', 'mcp')
   AND id <> $2
 ORDER BY completed_at DESC NULLS LAST
 LIMIT 1
@@ -880,7 +1008,9 @@ SELECT
     content_type,
     word_count,
     response_time_ms,
-    size_bytes
+    size_bytes,
+    soft_404,
+    fetch_error
 FROM crawl_pages
 WHERE crawl_id = $1
 ORDER BY created_at ASC
@@ -893,6 +1023,8 @@ type ListCrawlPageSignalsForCrawlRow struct {
 	WordCount      pgtype.Int4
 	ResponseTimeMs pgtype.Int4
 	SizeBytes      pgtype.Int4
+	Soft404        bool
+	FetchError     pgtype.Text
 }
 
 func (q *Queries) ListCrawlPageSignalsForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListCrawlPageSignalsForCrawlRow, error) {
@@ -911,6 +1043,144 @@ func (q *Queries) ListCrawlPageSignalsForCrawl(ctx context.Context, crawlID pgty
 			&i.WordCount,
 			&i.ResponseTimeMs,
 			&i.SizeBytes,
+			&i.Soft404,
+			&i.FetchError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCrawlPageSummariesForCrawlByUser = `-- name: ListCrawlPageSummariesForCrawlByUser :many
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.status_code,
+    cp.content_type,
+    cp.size_bytes,
+    cp.is_internal,
+    cp.depth,
+    cp.title,
+    cp.meta_description,
+    cp.h1,
+    cp.h1_count,
+    cp.h2_count,
+    cp.h3_count,
+    cp.word_count,
+    cp.author,
+    cp.canonical_url,
+    cp.lang,
+    cp.viewport,
+    cp.robots,
+    cp.image_count,
+    cp.images_without_alt_count,
+    cp.images_without_dimensions,
+    cp.external_links,
+    cp.internal_links,
+    cp.response_time_ms,
+    cp.javascript_rendered,
+    cp.created_at
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+ORDER BY cp.created_at ASC
+LIMIT $3
+OFFSET $4
+`
+
+type ListCrawlPageSummariesForCrawlByUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Limit   int32
+	Offset  int32
+}
+
+type ListCrawlPageSummariesForCrawlByUserRow struct {
+	ID                      pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Url                     string
+	StatusCode              pgtype.Int4
+	ContentType             pgtype.Text
+	SizeBytes               pgtype.Int4
+	IsInternal              pgtype.Bool
+	Depth                   pgtype.Int4
+	Title                   pgtype.Text
+	MetaDescription         pgtype.Text
+	H1                      pgtype.Text
+	H1Count                 pgtype.Int4
+	H2Count                 pgtype.Int4
+	H3Count                 pgtype.Int4
+	WordCount               pgtype.Int4
+	Author                  pgtype.Text
+	CanonicalUrl            pgtype.Text
+	Lang                    pgtype.Text
+	Viewport                pgtype.Text
+	Robots                  pgtype.Text
+	ImageCount              pgtype.Int4
+	ImagesWithoutAltCount   pgtype.Int4
+	ImagesWithoutDimensions pgtype.Int4
+	ExternalLinks           pgtype.Int4
+	InternalLinks           pgtype.Int4
+	ResponseTimeMs          pgtype.Int4
+	JavascriptRendered      pgtype.Bool
+	CreatedAt               pgtype.Timestamptz
+}
+
+// Lightweight list for the editor sidebar: same tenancy, ordering, and
+// pagination as ListCrawlPagesForCrawlByUser but without large body fields
+// (visible_text, content_blocks, heading arrays/outlines, og_tags, json_ld).
+func (q *Queries) ListCrawlPageSummariesForCrawlByUser(ctx context.Context, arg ListCrawlPageSummariesForCrawlByUserParams) ([]ListCrawlPageSummariesForCrawlByUserRow, error) {
+	rows, err := q.db.Query(ctx, listCrawlPageSummariesForCrawlByUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCrawlPageSummariesForCrawlByUserRow
+	for rows.Next() {
+		var i ListCrawlPageSummariesForCrawlByUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.Url,
+			&i.StatusCode,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.IsInternal,
+			&i.Depth,
+			&i.Title,
+			&i.MetaDescription,
+			&i.H1,
+			&i.H1Count,
+			&i.H2Count,
+			&i.H3Count,
+			&i.WordCount,
+			&i.Author,
+			&i.CanonicalUrl,
+			&i.Lang,
+			&i.Viewport,
+			&i.Robots,
+			&i.ImageCount,
+			&i.ImagesWithoutAltCount,
+			&i.ImagesWithoutDimensions,
+			&i.ExternalLinks,
+			&i.InternalLinks,
+			&i.ResponseTimeMs,
+			&i.JavascriptRendered,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1284,6 +1554,57 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 	return items, nil
 }
 
+const listKeywordCoveragePagesForCrawl = `-- name: ListKeywordCoveragePagesForCrawl :many
+SELECT
+    url,
+    COALESCE(title, '')::text AS title,
+    COALESCE(h1, '')::text AS h1,
+    COALESCE(status_code, 0)::int AS status_code,
+    COALESCE(content_type, '')::text AS content_type,
+    soft_404,
+    COALESCE(fetch_error, '')::text AS fetch_error
+FROM crawl_pages
+WHERE crawl_id = $1
+`
+
+type ListKeywordCoveragePagesForCrawlRow struct {
+	Url         string
+	Title       string
+	H1          string
+	StatusCode  int32
+	ContentType string
+	Soft404     bool
+	FetchError  string
+}
+
+func (q *Queries) ListKeywordCoveragePagesForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListKeywordCoveragePagesForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listKeywordCoveragePagesForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListKeywordCoveragePagesForCrawlRow
+	for rows.Next() {
+		var i ListKeywordCoveragePagesForCrawlRow
+		if err := rows.Scan(
+			&i.Url,
+			&i.Title,
+			&i.H1,
+			&i.StatusCode,
+			&i.ContentType,
+			&i.Soft404,
+			&i.FetchError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPageValidatorsForCrawl = `-- name: ListPageValidatorsForCrawl :many
 SELECT url, etag, last_modified
 FROM crawl_pages
@@ -1308,6 +1629,83 @@ func (q *Queries) ListPageValidatorsForCrawl(ctx context.Context, crawlID pgtype
 	for rows.Next() {
 		var i ListPageValidatorsForCrawlRow
 		if err := rows.Scan(&i.Url, &i.Etag, &i.LastModified); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchCrawlPagesForUser = `-- name: SearchCrawlPagesForUser :many
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.title
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+  AND (
+      $3::text = ''
+      OR strpos(lower(cp.url), lower($3::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower($3::text)) > 0
+  )
+ORDER BY
+    CASE
+        WHEN $3::text = '' THEN 4
+        WHEN lower(cp.url) = lower($3::text) THEN 0
+        WHEN strpos(lower(cp.url), lower($3::text)) = 1 THEN 1
+        WHEN strpos(lower(cp.url), lower($3::text)) > 0 THEN 2
+        WHEN strpos(lower(COALESCE(cp.title, '')), lower($3::text)) > 0 THEN 3
+        ELSE 4
+    END,
+    cp.url ASC
+LIMIT $5
+OFFSET $4
+`
+
+type SearchCrawlPagesForUserParams struct {
+	CrawlID pgtype.UUID
+	UserID  pgtype.UUID
+	Query   string
+	Offset  int32
+	Limit   int32
+}
+
+type SearchCrawlPagesForUserRow struct {
+	ID      pgtype.UUID
+	CrawlID pgtype.UUID
+	Url     string
+	Title   pgtype.Text
+}
+
+func (q *Queries) SearchCrawlPagesForUser(ctx context.Context, arg SearchCrawlPagesForUserParams) ([]SearchCrawlPagesForUserRow, error) {
+	rows, err := q.db.Query(ctx, searchCrawlPagesForUser,
+		arg.CrawlID,
+		arg.UserID,
+		arg.Query,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchCrawlPagesForUserRow
+	for rows.Next() {
+		var i SearchCrawlPagesForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CrawlID,
+			&i.Url,
+			&i.Title,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -61,6 +61,90 @@ func TestDeepSeekStreamRequestMapping(t *testing.T) {
 	}
 }
 
+func TestDeepSeekStreamUserImageMapping(t *testing.T) {
+	t.Run("text plus image uses content parts", func(t *testing.T) {
+		var request map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read request: %v", err)
+				return
+			}
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Errorf("decode request: %v", err)
+				return
+			}
+			writeSSE(t, w, `{"id":"x","choices":[{"delta":{"content":"ok"}}]}`)
+			writeSSE(t, w, "[DONE]")
+		}))
+		defer server.Close()
+
+		err := NewDeepSeekClient("key", "model", server.URL, nil).Stream(context.Background(), Request{
+			Effort: "none",
+			Messages: []Message{{
+				Role:    RoleUser,
+				Content: "see this",
+				Images:  []Image{{MediaType: "image/jpeg", Data: "abc"}},
+			}},
+		}, func(Event) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages, _ := request["messages"].([]any)
+		if len(messages) != 1 {
+			t.Fatalf("messages: %#v", request["messages"])
+		}
+		msg, _ := messages[0].(map[string]any)
+		parts, ok := msg["content"].([]any)
+		if !ok || len(parts) != 2 {
+			t.Fatalf("content parts: %#v", msg["content"])
+		}
+		textPart, _ := parts[0].(map[string]any)
+		if textPart["type"] != "text" || textPart["text"] != "see this" {
+			t.Fatalf("text part: %#v", textPart)
+		}
+		imagePart, _ := parts[1].(map[string]any)
+		if imagePart["type"] != "image_url" {
+			t.Fatalf("image part: %#v", imagePart)
+		}
+		imageURL, _ := imagePart["image_url"].(map[string]any)
+		if imageURL["url"] != "data:image/jpeg;base64,abc" {
+			t.Fatalf("image url: %#v", imageURL)
+		}
+	})
+
+	t.Run("text only stays a string", func(t *testing.T) {
+		var request map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read request: %v", err)
+				return
+			}
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Errorf("decode request: %v", err)
+				return
+			}
+			writeSSE(t, w, `{"id":"x","choices":[{"delta":{"content":"ok"}}]}`)
+			writeSSE(t, w, "[DONE]")
+		}))
+		defer server.Close()
+
+		err := NewDeepSeekClient("key", "model", server.URL, nil).Stream(context.Background(), Request{
+			Effort:   "none",
+			Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		}, func(Event) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages, _ := request["messages"].([]any)
+		msg, _ := messages[0].(map[string]any)
+		if content, ok := msg["content"].(string); !ok || content != "hi" {
+			t.Fatalf("text-only content: %#v", msg["content"])
+		}
+	})
+}
+
 func TestDeepSeekStreamEvents(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

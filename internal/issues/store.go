@@ -136,6 +136,8 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 			WordCount:      int32Value(crawlPage.WordCount),
 			ResponseTimeMs: int32Value(crawlPage.ResponseTimeMs),
 			SizeBytes:      int32Value(crawlPage.SizeBytes),
+			Soft404:        crawlPage.Soft404,
+			FetchError:     textValue(crawlPage.FetchError),
 			OGTags:         crawlPage.OgTags,
 			JSONLD:         crawlPage.JsonLd,
 		})
@@ -181,6 +183,53 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 		BreakdownJson:  breakdownJSON,
 	}); err != nil {
 		return shared.CrawlScores{}, fmt.Errorf("upsert crawl score breakdown: %w", err)
+	}
+
+	pageHealthPageSignals := make([]PageHealthPageSignal, 0, len(crawlPages))
+	for _, crawlPage := range crawlPages {
+		pageHealthPageSignals = append(pageHealthPageSignals, PageHealthPageSignal{
+			CrawlPageID: crawlPage.ID,
+			StatusCode:  int32Value(crawlPage.StatusCode),
+			ContentType: textValue(crawlPage.ContentType),
+			Soft404:     crawlPage.Soft404,
+			FetchError:  textValue(crawlPage.FetchError),
+		})
+	}
+
+	pageHealthIssueSignals := make([]PageHealthIssueSignal, 0, len(crawlIssues))
+	for _, crawlIssue := range crawlIssues {
+		pageHealthIssueSignals = append(pageHealthIssueSignals, PageHealthIssueSignal{
+			CrawlPageID: crawlIssue.CrawlPageID,
+			Pillar:      crawlIssue.Pillar,
+			Bucket:      crawlIssue.Bucket,
+			IssueType:   crawlIssue.IssueType,
+			Severity:    crawlIssue.Severity,
+		})
+	}
+
+	pageHealthScores := CalculatePageHealthScores(pageHealthPageSignals, pageHealthIssueSignals, scoringConfig)
+	if len(pageHealthScores) > 0 {
+		pageIDs := make([]pgtype.UUID, 0, len(pageHealthScores))
+		healthScores := make([]int16, 0, len(pageHealthScores))
+		healthBreakdowns := make([][]byte, 0, len(pageHealthScores))
+		for _, pageHealthScore := range pageHealthScores {
+			breakdownJSON, err := json.Marshal(struct {
+				Pillars []PageHealthPillarScore `json:"pillars"`
+			}{Pillars: pageHealthScore.Pillars})
+			if err != nil {
+				return shared.CrawlScores{}, fmt.Errorf("marshal page health breakdown for %s: %w", pageHealthScore.CrawlPageID.String(), err)
+			}
+			pageIDs = append(pageIDs, pageHealthScore.CrawlPageID)
+			healthScores = append(healthScores, pageHealthScore.HealthScore)
+			healthBreakdowns = append(healthBreakdowns, breakdownJSON)
+		}
+		if err := store.queries.BulkUpdateCrawlPageHealthScores(ctx, sqlc.BulkUpdateCrawlPageHealthScoresParams{
+			PageIds:          pageIDs,
+			HealthScores:     healthScores,
+			HealthBreakdowns: healthBreakdowns,
+		}); err != nil {
+			return shared.CrawlScores{}, fmt.Errorf("bulk update crawl page health scores: %w", err)
+		}
 	}
 
 	return crawlScores, nil

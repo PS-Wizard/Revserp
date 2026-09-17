@@ -5,16 +5,41 @@ INSERT INTO crawls (
     source,
     status,
     config_snapshot,
-    started_at
+    started_at,
+    competitor_id,
+    parent_crawl_id
 ) VALUES (
     $1,
     $2,
     $3,
     $4,
     $5,
-    $6
+    $6,
+    sqlc.narg(competitor_id),
+    sqlc.narg(parent_crawl_id)
 )
 RETURNING id, project_id, status, phase, config_snapshot, urls_discovered, urls_crawled, max_depth_reached, google_psi_results, has_llms_txt, seo_score, aeo_score, pagespeed_score, overall_score, started_at, completed_at, created_at;
+
+-- name: GetCrawlByID :one
+SELECT
+    id,
+    project_id,
+    source,
+    status,
+    config_snapshot,
+    requested_by_user_id
+FROM crawls
+WHERE id = $1
+LIMIT 1;
+
+-- name: GetLatestCompletedHomeCrawlIDForProject :one
+SELECT id
+FROM crawls
+WHERE project_id = $1
+  AND status = 'completed'
+  AND source IN ('manual', 'auto', 'mcp')
+ORDER BY completed_at DESC NULLS LAST, created_at DESC, id DESC
+LIMIT 1;
 
 -- name: GetCrawlByIDForUser :one
 SELECT
@@ -34,7 +59,8 @@ SELECT
     c.overall_score,
     c.started_at,
     c.completed_at,
-    c.created_at
+    c.created_at,
+    c.source
 FROM crawls AS c
 INNER JOIN projects AS p ON p.id = c.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -68,6 +94,7 @@ RETURNING c.id;
 SELECT COUNT(*)
 FROM crawls
 WHERE project_id = $1
+  AND source IN ('manual', 'auto', 'mcp')
   AND ($2 = '' OR status = $2);
 
 -- name: ListCrawlsForProject :many
@@ -91,6 +118,7 @@ SELECT
     created_at
 FROM crawls
 WHERE project_id = $1
+  AND source IN ('manual', 'auto', 'mcp')
   AND ($2 = '' OR status = $2)
 ORDER BY created_at DESC
 LIMIT $3
@@ -142,7 +170,7 @@ WITH candidate AS (
     SELECT c.id
     FROM crawls AS c
     WHERE c.status = 'queued'
-      AND c.source = 'manual'
+      AND c.source IN ('manual', 'competitor', 'mcp')
       AND NOT EXISTS (
           SELECT 1
           FROM crawls AS running
@@ -161,7 +189,11 @@ SET status = 'running',
 FROM candidate, projects AS p
 WHERE c.id = candidate.id
   AND p.id = c.project_id
-RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url;
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, c.source,
+    COALESCE(
+        (SELECT comp.seed_url FROM project_competitors AS comp WHERE comp.id = c.competitor_id),
+        p.base_url
+    ) AS base_url;
 
 
 -- name: ClaimNextQueuedCrawlAuto :one
@@ -175,6 +207,7 @@ WITH candidate AS (
           FROM crawls AS running
           WHERE running.status = 'running'
             AND running.project_id = c.project_id
+            AND running.source IN ('manual', 'auto', 'mcp')
       )
     ORDER BY c.created_at ASC
     FOR UPDATE SKIP LOCKED
@@ -187,7 +220,7 @@ SET status = 'running',
 FROM candidate, projects AS p
 WHERE c.id = candidate.id
   AND p.id = c.project_id
-RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, p.base_url;
+RETURNING c.id, c.project_id, c.requested_by_user_id, c.config_snapshot, c.source, p.base_url;
 
 
 -- name: UpdateCrawlScores :exec
@@ -223,9 +256,12 @@ SELECT
     c.phase,
     c.urls_discovered,
     c.urls_crawled,
-    c.created_at
+    c.created_at,
+    c.source,
+    COALESCE(NULLIF(pc.name, ''), pc.seed_url, '')::text AS competitor_label
 FROM crawls AS c
 INNER JOIN projects AS p ON p.id = c.project_id
+LEFT JOIN project_competitors AS pc ON pc.id = c.competitor_id
 WHERE p.organization_id = $1
   AND c.status IN ('queued', 'running')
 ORDER BY c.created_at DESC;
@@ -236,9 +272,28 @@ FROM crawls AS current
 INNER JOIN crawls AS previous ON previous.project_id = current.project_id
 WHERE current.id = sqlc.arg(current_crawl_id)
   AND previous.status = 'completed'
+  AND previous.source IN ('manual', 'auto', 'mcp')
   AND previous.completed_at < current.completed_at
 ORDER BY previous.completed_at DESC, previous.created_at DESC, previous.id DESC
 LIMIT 1;
 
 -- name: GetCrawlHasLlmsTxt :one
 SELECT has_llms_txt FROM crawls WHERE id = $1;
+
+-- name: GetCrawlGapContext :one
+SELECT
+    c.id,
+    c.source,
+    c.status,
+    c.parent_crawl_id,
+    c.competitor_id,
+    c.google_psi_results,
+    c.has_llms_txt,
+    COALESCE(
+        (SELECT pc.seed_url FROM project_competitors AS pc WHERE pc.id = c.competitor_id),
+        p.base_url
+    )::text AS seed_url
+FROM crawls AS c
+INNER JOIN projects AS p ON p.id = c.project_id
+WHERE c.id = $1
+LIMIT 1;

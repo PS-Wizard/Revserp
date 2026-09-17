@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
@@ -59,8 +60,7 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createAIAuditRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -123,25 +123,36 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := queries.GetAIAuditByCrawlAndProject(r.Context(), sqlc.GetAIAuditByCrawlAndProjectParams{
+	if _, err := queries.GetActiveAIAuditByCrawlAndProject(r.Context(), sqlc.GetActiveAIAuditByCrawlAndProjectParams{
 		ProjectID: project.ID,
 		CrawlID:   crawlID,
-	})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	}); err == nil {
+		writeJSONError(w, http.StatusConflict, "a visibility audit is already in progress for this crawl")
+		return
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if err == nil {
-		switch existing.Status {
-		case "queued", "running":
-			writeJSONError(w, http.StatusConflict, "a visibility audit is already in progress for this crawl")
+
+	featureRow, err := queries.GetOrganizationFeaturesByProjectID(r.Context(), sqlc.GetOrganizationFeaturesByProjectIDParams{ProjectID: project.ID, UserID: user.ID})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	// Reserving a monthly audit atomically enforces the workspace quota;
+	// ErrNoRows means the limit is 0 or already exhausted. Prior audits are
+	// never deleted — audit history is append-only.
+	if _, err := queries.ReserveAIWorkspaceMonthlyAudit(r.Context(), sqlc.ReserveAIWorkspaceMonthlyAuditParams{
+		OrganizationID: project.OrganizationID,
+		MonthlyLimit:   featureRow.AiVisibilityAuditMonthlyLimit,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusTooManyRequests, "visibility audit monthly limit reached")
 			return
-		default:
-			if delErr := queries.DeleteAIAuditByID(r.Context(), existing.ID); delErr != nil {
-				writeJSONError(w, http.StatusInternalServerError, "internal server error")
-				return
-			}
 		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
 	}
 
 	audit, err := queries.CreateAIAudit(r.Context(), sqlc.CreateAIAuditParams{
@@ -154,6 +165,10 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 		CompletedAt:  pgtype.Timestamptz{},
 	})
 	if err != nil {
+		if isAIAuditActiveConflictError(err) {
+			writeJSONError(w, http.StatusConflict, "a visibility audit is already in progress for this crawl")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -218,6 +233,41 @@ func (a *App) handleListAIAudits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An optional crawl_id narrows the list to the latest audit for that
+	// crawl, even when it sits outside the first page. Project access was
+	// authorized above, and the lookup is scoped to the project, so cross
+	// project crawl ids yield an empty list rather than leaking rows.
+	if crawlParam := strings.TrimSpace(r.URL.Query().Get("crawl_id")); crawlParam != "" {
+		crawlID, err := parseUUIDParam(crawlParam)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid crawl id")
+			return
+		}
+		audit, err := queries.GetAIAuditByCrawlAndProject(r.Context(), sqlc.GetAIAuditByCrawlAndProjectParams{
+			ProjectID: projectID,
+			CrawlID:   crawlID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		responses := make([]aiAuditResponse, 0, 1)
+		var total int64
+		if err == nil {
+			responses = append(responses, newAIAuditResponseFromListRow(audit))
+			total = 1
+		}
+
+		if err := tx.Commit(r.Context()); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		writeAIAuditListResponse(w, responses, limit, offset, total)
+		return
+	}
+
 	total, err := queries.CountAIAuditsForProject(r.Context(), sqlc.CountAIAuditsForProjectParams{ProjectID: projectID, Column2: statusFilter})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -244,6 +294,11 @@ func (a *App) handleListAIAudits(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newAIAuditResponseFromListRow(audit))
 	}
 
+	writeAIAuditListResponse(w, responses, limit, offset, total)
+}
+
+func writeAIAuditListResponse(w http.ResponseWriter, responses []aiAuditResponse, limit, offset int32, total int64) {
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ai_audits": responses,
 		"pagination": paginationResponse{
@@ -383,6 +438,11 @@ func newAIAuditRunResponses(runs []sqlc.AiAuditRun) []aiAuditRunResponse {
 		responses = append(responses, response)
 	}
 	return responses
+}
+
+func isAIAuditActiveConflictError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func parseAIAuditStatusFilter(r *http.Request) (string, error) {

@@ -19,9 +19,24 @@ type aiConfigResponse struct {
 	UpdatedAt                string `json:"updated_at,omitempty"`
 }
 
+// adminAIConfigResponse carries the stored audience deltas, the default deltas,
+// and the code-owned base prompt. The base is always applied and is read-only
+// here: an admin adds workspace instructions, and can never remove the base
+// rules for accuracy, safety, and citation.
 type adminAIConfigResponse struct {
-	Config  aiConfigResponse `json:"config"`
-	Default aiConfigResponse `json:"default"`
+	Config           aiConfigResponse `json:"config"`
+	Default          aiConfigResponse `json:"default"`
+	BaseSystemPrompt string           `json:"base_system_prompt"`
+}
+
+// newAdminAIConfigResponse pairs a stored config with the defaults and the
+// code-owned base prompt, which every response must report.
+func newAdminAIConfigResponse(config aiConfigResponse) adminAIConfigResponse {
+	return adminAIConfigResponse{
+		Config:           config,
+		Default:          defaultAIConfig(),
+		BaseSystemPrompt: aiprompt.DefaultSystemPrompt,
+	}
 }
 
 type putAIConfigRequest struct {
@@ -30,11 +45,13 @@ type putAIConfigRequest struct {
 	QuestionGenerationPrompt string `json:"question_generation_prompt"`
 }
 
-// defaultAIConfig returns the built-in default AI prompt config.
+// defaultAIConfig returns the built-in default AI prompt config. The audience
+// prompts default to empty: the code-owned base prompt always applies, so an
+// audience column holds an optional delta and not a complete prompt.
 func defaultAIConfig() aiConfigResponse {
 	return aiConfigResponse{
-		InternalSystemPrompt:     aiprompt.DefaultSystemPrompt,
-		ExternalSystemPrompt:     aiprompt.DefaultSystemPrompt,
+		InternalSystemPrompt:     "",
+		ExternalSystemPrompt:     "",
 		QuestionGenerationPrompt: aiaudit.DefaultQuestionGenerationPrompt,
 	}
 }
@@ -44,10 +61,7 @@ func (a *App) handleAdminGetAIConfig(w http.ResponseWriter, r *http.Request) {
 	row, err := a.Queries.GetAIPromptConfig(r.Context())
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, http.StatusOK, adminAIConfigResponse{
-				Config:  defaultAIConfig(),
-				Default: defaultAIConfig(),
-			})
+			writeJSON(w, http.StatusOK, newAdminAIConfigResponse(defaultAIConfig()))
 			return
 		}
 		serverError(w, r, err)
@@ -63,10 +77,7 @@ func (a *App) handleAdminGetAIConfig(w http.ResponseWriter, r *http.Request) {
 		config.UpdatedAt = row.UpdatedAt.Time.Format("2006-01-02T15:04:05Z")
 	}
 
-	writeJSON(w, http.StatusOK, adminAIConfigResponse{
-		Config:  config,
-		Default: defaultAIConfig(),
-	})
+	writeJSON(w, http.StatusOK, newAdminAIConfigResponse(config))
 }
 
 // handleAdminPutAIConfig saves the AI prompt config.
@@ -103,10 +114,7 @@ func (a *App) handleAdminPutAIConfig(w http.ResponseWriter, r *http.Request) {
 		config.UpdatedAt = row.UpdatedAt.Time.Format("2006-01-02T15:04:05Z")
 	}
 
-	writeJSON(w, http.StatusOK, adminAIConfigResponse{
-		Config:  config,
-		Default: defaultAIConfig(),
-	})
+	writeJSON(w, http.StatusOK, newAdminAIConfigResponse(config))
 }
 
 // handleAdminResetAIConfig clears the saved AI config so defaults take effect.
@@ -116,8 +124,5 @@ func (a *App) handleAdminResetAIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, adminAIConfigResponse{
-		Config:  defaultAIConfig(),
-		Default: defaultAIConfig(),
-	})
+	writeJSON(w, http.StatusOK, newAdminAIConfigResponse(defaultAIConfig()))
 }

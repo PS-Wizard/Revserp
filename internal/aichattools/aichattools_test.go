@@ -3,6 +3,7 @@ package aichattools
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -10,12 +11,12 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"}) {
-		t.Fatalf("Names() = %v, want the seven served tools", names)
+	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "web_search", "fetch_url"}) {
+		t.Fatalf("Names() = %v, want the ten served tools", names)
 	}
 	defs := registry.Defs()
-	if len(defs) != 7 {
-		t.Fatalf("Defs() = %d defs, want 7", len(defs))
+	if len(defs) != 10 {
+		t.Fatalf("Defs() = %d defs, want 10", len(defs))
 	}
 	for _, def := range defs {
 		if def.Name == "" || def.Label == "" || def.Description == "" || len(def.Schema) == 0 {
@@ -132,5 +133,25 @@ func TestPageContentBudgetConcurrentAccess(t *testing.T) {
 	}
 	if budget.TryRegisterPage("sixth") {
 		t.Fatal("sixth unique page should fail")
+	}
+}
+
+// Tool definitions are the only place the model learns what a tool does. Their
+// descriptions travel through the provider's tool-calling contract and are
+// filtered to the enabled tools, so a tool with no description would be shipped
+// to the model undocumented, with no other channel to describe it. The system
+// prompt deliberately names no tool.
+func TestEveryCatalogToolHasADescription(t *testing.T) {
+	defs := CatalogDefs()
+	if len(defs) == 0 {
+		t.Fatal("catalog is empty")
+	}
+	for _, def := range defs {
+		if strings.TrimSpace(def.Description) == "" {
+			t.Errorf("tool %q has an empty description; the system prompt does not describe tools", def.Name)
+		}
+		if len(def.Schema) == 0 {
+			t.Errorf("tool %q has an empty schema", def.Name)
+		}
 	}
 }

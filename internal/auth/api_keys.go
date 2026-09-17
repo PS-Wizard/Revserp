@@ -68,6 +68,11 @@ func HashCredential(raw string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// IsLiveAPIKey reports whether raw looks like a Revserp API key.
+func IsLiveAPIKey(raw string) bool {
+	return strings.HasPrefix(raw, apiKeyPrefix)
+}
+
 // ParseBearer strictly parses one Authorization header value.
 func ParseBearer(value string) (string, error) {
 	scheme, credential, ok := strings.Cut(value, " ")
@@ -94,13 +99,13 @@ func (m *APIKeyManager) Authenticate(ctx context.Context, raw string) (Identity,
 		name = row.Name.String
 	}
 	return Identity{
-			Provider: row.AuthProvider,
-			Subject:  row.AuthSubject,
-			Email:    row.Email,
-			Name:     name,
-		}, APIKeyMetadata{
-			ID:     row.ApiKeyID.String(),
-			Prefix: row.TokenPrefix,
-			UserID: row.UserID.String(),
-		}, nil
+		Provider: row.AuthProvider,
+		Subject:  row.AuthSubject,
+		Email:    row.Email,
+		Name:     name,
+	}, APIKeyMetadata{
+		ID:     row.ApiKeyID.String(),
+		Prefix: row.TokenPrefix,
+		UserID: row.UserID.String(),
+	}, nil
 }

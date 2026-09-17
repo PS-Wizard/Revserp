@@ -19,12 +19,25 @@ func (a *App) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   a.Config.CORSAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "Last-Event-ID"},
+		AllowedOrigins: a.Config.CORSAllowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{
+			"Accept",
+			"Authorization",
+			"Content-Type",
+			"X-CSRF-Token",
+			"Last-Event-ID",
+			"Mcp-Method",
+			"Mcp-Name",
+			"Mcp-Protocol-Version",
+			"MCP-Protocol-Version",
+		},
+		ExposedHeaders:   []string{"WWW-Authenticate"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+
+	a.mountMCP(r)
 
 	r.Get("/health", a.handleHealth)
 	r.Post("/auth/signup", a.handleSignUp)
@@ -44,12 +57,19 @@ func (a *App) Router() http.Handler {
 			app.Get("/me", a.handleMe)
 			app.Get("/app-bootstrap", a.handleAppBootstrap)
 			app.Post("/me/active-organization", a.handleSetActiveOrganization)
-			app.Get("/api-keys", a.handleListAPIKeys)
-			app.Post("/api-keys/{apiKeyID}/revoke", a.handleRevokeAPIKey)
-			app.Post("/agent/setup-codes", a.handleCreateAgentSetupCode)
+			app.Group(func(gated chi.Router) {
+				gated.Use(a.requireFeature(FeatureIntegrations, featuresByActiveOrg))
+				gated.Get("/api-keys", a.handleListAPIKeys)
+				gated.Post("/api-keys/{apiKeyID}/revoke", a.handleRevokeAPIKey)
+				gated.Post("/agent/setup-codes", a.handleCreateAgentSetupCode)
+				gated.Get("/oauth/authorizations/{authorizationID}", a.handleGetOAuthAuthorization)
+				gated.Post("/oauth/authorizations/{authorizationID}/consent", a.handlePostOAuthConsent)
+			})
+
 			app.Get("/internal/scoring-config", a.platformAdminOnly(a.handleGetScoringConfig))
 			app.Put("/internal/scoring-config", a.platformAdminOnly(a.handlePutScoringConfig))
 			app.Post("/internal/scoring-config/preview", a.platformAdminOnly(a.handlePreviewScoringConfig))
+			app.Get("/organizations/{organizationID}/events", a.handleListOrganizationEvents)
 			app.Post("/organizations/{organizationID}/leave", a.handleLeaveOrganization)
 			app.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
 			app.Get("/organizations/{organizationID}/projects", a.handleListProjects)
@@ -61,7 +81,14 @@ func (a *App) Router() http.Handler {
 			app.Delete("/projects/{projectID}", a.handleDeleteProject)
 			app.Get("/projects/{projectID}/business-profile", a.handleProjectBusinessProfile)
 			app.Put("/projects/{projectID}/business-profile", a.handleUpsertProjectBusinessProfile)
+			app.Get("/projects/{projectID}/keywords", a.handleProjectKeywords)
 			app.Get("/projects/{projectID}/ai-questions", a.handleGetProjectAIQuestions)
+			app.Post("/projects/{projectID}/ai-questions/regenerate", a.handleRegenerateProjectAIQuestions)
+			app.Get("/projects/{projectID}/ai-questions/status", a.handleGetAIQuestionsGenerationStatus)
+			app.Get("/projects/{projectID}/maps-visibility", a.handleGetMapsVisibility)
+			app.Post("/projects/{projectID}/maps-visibility/runs", a.handleCreateMapsVisibilityCheck)
+			app.Get("/projects/{projectID}/maps-visibility/reviews", a.handleGetMapsListingReviews)
+			app.Post("/projects/{projectID}/maps-visibility/reviews", a.handleFetchMapsListingReviews)
 			app.Post("/projects/{projectID}/ai-audits", a.handleCreateAIAudit)
 			app.Get("/projects/{projectID}/ai-audits", a.handleListAIAudits)
 			app.Get("/ai-audits/{auditID}", a.handleGetAIAudit)
@@ -100,11 +127,21 @@ func (a *App) Router() http.Handler {
 				gated.Get("/projects/{projectID}/gsc/queries", a.handleProjectGSCQueries)
 			})
 
+			app.Group(func(gated chi.Router) {
+				gated.Use(a.requireFeature(FeatureCompetitors, featuresByProjectParam))
+				gated.Get("/projects/{projectID}/competitors", a.handleListProjectCompetitors)
+				gated.Post("/projects/{projectID}/competitors", a.handleCreateProjectCompetitor)
+				gated.Post("/projects/{projectID}/competitors/crawls", a.handleEnqueueProjectCompetitorCrawls)
+				gated.Delete("/projects/{projectID}/competitors/{competitorID}", a.handleDeleteProjectCompetitor)
+			})
+
 			app.Post("/projects/{projectID}/crawls", a.handleCreateCrawl)
 			app.Get("/projects/{projectID}/crawls", a.handleListCrawls)
 			app.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)
 			app.Get("/projects/{projectID}/score-potential", a.handleGetProjectScorePotential)
 			app.Get("/crawls/{crawlID}", a.handleGetCrawl)
+			app.Get("/crawls/{crawlID}/competitor-gap", a.handleGetCompetitorGap)
+			app.Get("/crawls/{crawlID}/competitor-gap/{side}/{pillar}/{bucket}/{issueType}/urls", a.handleListCompetitorGapIssueURLs)
 			app.Delete("/crawls/{crawlID}", a.handleDeleteCrawl)
 			app.Post("/crawls/{crawlID}/cancel", a.handleCancelCrawl)
 			app.Get("/crawls/{crawlID}/score-breakdown", a.handleGetCrawlScoreBreakdown)
@@ -119,10 +156,11 @@ func (a *App) Router() http.Handler {
 			app.Get("/crawls/{crawlID}/issue-workspace/changes", a.handleListIssueWorkspaceChanges)
 			app.Get("/crawls/{crawlID}/issue-workspace/pages/search", a.handleSearchIssueWorkspacePages)
 			app.Get("/crawls/{crawlID}/issue-workspace/page", a.handleGetIssueWorkspacePage)
-			app.Post("/crawls/{crawlID}/ai/fix", a.handleAIFix)
 			app.Post("/crawls/{crawlID}/pages", a.handleCreateCrawlPage)
 			app.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)
+			app.Get("/crawls/{crawlID}/pages/search", a.handleSearchCrawlPages)
 			app.Get("/crawls/{crawlID}/pages/by-url", a.handleGetCrawlPageByURL)
+			app.Get("/crawls/{crawlID}/pages/{pageID}/health", a.handleGetCrawlPageHealthDetail)
 			app.Get("/crawl-pages/{pageID}", a.handleGetCrawlPage)
 			app.Post("/crawls/{crawlID}/links", a.handleCreateCrawlLink)
 			app.Get("/crawls/{crawlID}/links", a.handleListCrawlLinks)
@@ -180,6 +218,8 @@ func (a *App) Router() http.Handler {
 		v1.Get("/projects/{projectID}/bucket-trends", a.handleGetProjectBucketTrends)
 		v1.Get("/projects/{projectID}/score-potential", a.handleGetProjectScorePotential)
 		v1.Get("/crawls/{crawlID}", a.handleGetCrawl)
+		v1.Get("/crawls/{crawlID}/competitor-gap", a.handleGetCompetitorGap)
+		v1.Get("/crawls/{crawlID}/competitor-gap/{side}/{pillar}/{bucket}/{issueType}/urls", a.handleListCompetitorGapIssueURLs)
 		v1.Get("/crawls/{crawlID}/score-breakdown", a.handleGetCrawlScoreBreakdown)
 		v1.Get("/crawls/{crawlID}/page-health", a.handleGetCrawlPageHealth)
 		v1.Get("/crawls/{crawlID}/pages", a.handleListCrawlPages)

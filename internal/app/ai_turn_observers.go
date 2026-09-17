@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -55,6 +56,7 @@ type aiMessageResponse struct {
 	Role              string               `json:"role"`
 	Status            string               `json:"status"`
 	Content           string               `json:"content"`
+	Images            []aiTurnImage        `json:"images,omitempty"`
 	CreatedAt         time.Time            `json:"created_at"`
 	UpdatedAt         time.Time            `json:"updated_at"`
 	ToolCalls         []aiToolCallResponse `json:"tool_calls,omitempty"`
@@ -133,10 +135,36 @@ func newAITurnResponse(turn aiTurnSnapshot, messages []sqlc.ListAIMessagesForUse
 	for _, message := range messages {
 		response.Messages = append(response.Messages, aiMessageResponse{
 			ID: message.ID.String(), Role: message.Role, Status: message.Status, Content: message.Content,
+			Images:    imagesFromContentBlocks(message.Role, message.ContentBlocks),
 			CreatedAt: message.CreatedAt.Time, UpdatedAt: message.UpdatedAt.Time,
 		})
 	}
 	return response
+}
+
+func imagesFromContentBlocks(role string, blocks []byte) []aiTurnImage {
+	if role != "user" || len(blocks) == 0 {
+		return nil
+	}
+	var stored []struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	}
+	if json.Unmarshal(blocks, &stored) != nil {
+		return nil
+	}
+	images := make([]aiTurnImage, 0, len(stored))
+	for _, block := range stored {
+		if block.Type != "image" || block.MediaType == "" || block.Data == "" {
+			continue
+		}
+		images = append(images, aiTurnImage{MediaType: block.MediaType, Data: block.Data})
+	}
+	if len(images) == 0 {
+		return nil
+	}
+	return images
 }
 
 func nullableInt32(value pgtype.Int4) *int32 {

@@ -25,8 +25,8 @@ func TestComposeSystemContext(t *testing.T) {
 
 func TestAllowedTools(t *testing.T) {
 	all := allowedTools(nil)
-	if len(all) != 7 {
-		t.Fatalf("allowedTools(nil) has %d tools, want 7: %+v", len(all), all)
+	if len(all) != 10 {
+		t.Fatalf("allowedTools(nil) has %d tools, want 10: %+v", len(all), all)
 	}
 	names := map[string]bool{}
 	for _, def := range all {
@@ -35,19 +35,19 @@ func TestAllowedTools(t *testing.T) {
 			t.Fatalf("tool %s missing description or schema: %+v", def.Name, def)
 		}
 	}
-	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"} {
+	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "web_search", "fetch_url"} {
 		if !names[name] {
 			t.Fatalf("allowedTools(nil) missing %s: %+v", name, all)
 		}
 	}
-	if got := allowedTools([]string{"read_issues"}); len(got) != 6 {
-		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other six", got)
+	if got := allowedTools([]string{"read_issues"}); len(got) != 9 {
+		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other nine", got)
 	}
-	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart"}); len(got) != 0 {
+	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "web_search", "fetch_url"}); len(got) != 0 {
 		t.Fatalf("allowedTools(all disabled) = %+v, want none", got)
 	}
-	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 6 {
-		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other six", got)
+	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 9 {
+		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other nine", got)
 	}
 }
 
@@ -84,6 +84,19 @@ func TestCapToolResultContent(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "\u2026") {
 		t.Fatalf("cap missing truncation marker: %q", got[len(got)-16:])
+	}
+}
+
+func TestParseUserImages(t *testing.T) {
+	if got := parseUserImages(nil); got != nil {
+		t.Fatalf("nil blocks = %#v", got)
+	}
+	if got := parseUserImages([]byte("[]")); got != nil {
+		t.Fatalf("empty array = %#v", got)
+	}
+	got := parseUserImages([]byte(`[{"type":"image","media_type":"image/jpeg","data":"abc"}]`))
+	if len(got) != 1 || got[0] != (ai.Image{MediaType: "image/jpeg", Data: "abc"}) {
+		t.Fatalf("parsed = %#v", got)
 	}
 }
 

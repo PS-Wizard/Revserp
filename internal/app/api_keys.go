@@ -124,6 +124,11 @@ func (a *App) handleRedeemAgentSetup(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	var body redeemAgentSetupRequest
 	if err := readJSON(r, &body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "payload too large")
+			return
+		}
 		writeInvalidSetupCode(w)
 		return
 	}

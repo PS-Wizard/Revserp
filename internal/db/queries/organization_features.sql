@@ -5,9 +5,13 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.integrations, TRUE)::boolean AS integrations,
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
+    COALESCE(f.max_projects, 5)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -21,9 +25,13 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.integrations, TRUE)::boolean AS integrations,
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
+    COALESCE(f.max_projects, 5)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -39,9 +47,13 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.integrations, TRUE)::boolean AS integrations,
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
+    COALESCE(f.max_projects, 5)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -60,9 +72,13 @@ SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
     COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
     COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.integrations, TRUE)::boolean AS integrations,
     COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
     COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
+    COALESCE(f.max_projects, 5)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -75,17 +91,22 @@ ORDER BY o.name ASC;
 
 -- name: UpsertOrganizationFeatures :exec
 INSERT INTO organization_features (
-    org_id, auto_crawl, gsc_connector, ai_chat, ai_use_internal_prompt,
-    ai_monthly_message_limit, ai_concurrent_turn_limit_per_user, ai_allowed_reasoning_efforts,
+    org_id, auto_crawl, gsc_connector, ai_chat, integrations, ai_use_internal_prompt,
+    ai_monthly_message_limit, ai_concurrent_turn_limit_per_user,
+    ai_visibility_audit_monthly_limit, max_competitors, max_projects, ai_allowed_reasoning_efforts,
     disabled_ai_tools, updated_by_user_id, updated_at
 ) VALUES (
     sqlc.arg(org_id),
     sqlc.arg(auto_crawl),
     sqlc.arg(gsc_connector),
     sqlc.arg(ai_chat),
+    sqlc.arg(integrations),
     sqlc.arg(ai_use_internal_prompt),
     sqlc.arg(ai_monthly_message_limit),
     sqlc.arg(ai_concurrent_turn_limit_per_user),
+    sqlc.arg(ai_visibility_audit_monthly_limit),
+    sqlc.arg(max_competitors),
+    sqlc.arg(max_projects),
     ARRAY(
         SELECT effort
         FROM unnest(sqlc.arg(ai_allowed_reasoning_efforts)::TEXT[]) AS effort
@@ -99,9 +120,13 @@ ON CONFLICT (org_id) DO UPDATE SET
     auto_crawl = EXCLUDED.auto_crawl,
     gsc_connector = EXCLUDED.gsc_connector,
     ai_chat = EXCLUDED.ai_chat,
+    integrations = EXCLUDED.integrations,
     ai_use_internal_prompt = EXCLUDED.ai_use_internal_prompt,
     ai_monthly_message_limit = EXCLUDED.ai_monthly_message_limit,
     ai_concurrent_turn_limit_per_user = EXCLUDED.ai_concurrent_turn_limit_per_user,
+    ai_visibility_audit_monthly_limit = EXCLUDED.ai_visibility_audit_monthly_limit,
+    max_competitors = EXCLUDED.max_competitors,
+    max_projects = EXCLUDED.max_projects,
     ai_allowed_reasoning_efforts = EXCLUDED.ai_allowed_reasoning_efforts,
     disabled_ai_tools = EXCLUDED.disabled_ai_tools,
     updated_by_user_id = EXCLUDED.updated_by_user_id,

@@ -25,6 +25,12 @@ type CrawlConfigSnapshot struct {
 	// ForceFullCrawl disables conditional requests for this crawl, refetching and
 	// reparsing every page even when the origin reports it unchanged.
 	ForceFullCrawl bool `json:"force_full_crawl,omitempty"`
+	// HonourRobotsTxt gates the page-crawl loop on the site's robots.txt:
+	// disallowed URLs are not fetched and produce no crawl_pages rows.
+	HonourRobotsTxt bool `json:"honour_robots_txt,omitempty"`
+	// SkipSitemapSeed disables robots.txt / sitemap.xml frontier seeding so the
+	// crawl starts from homepage BFS only.
+	SkipSitemapSeed bool `json:"skip_sitemap_seed,omitempty"`
 }
 
 type crawlConfigSnapshotInput struct {
@@ -34,6 +40,8 @@ type crawlConfigSnapshotInput struct {
 	RequestDelayMs      *int  `json:"request_delay_ms"`
 	RequestJitterMs     *int  `json:"request_jitter_ms"`
 	ForceFullCrawl      *bool `json:"force_full_crawl"`
+	HonourRobotsTxt     *bool `json:"honour_robots_txt"`
+	SkipSitemapSeed     *bool `json:"skip_sitemap_seed"`
 }
 
 // NormalizeConfigSnapshot resolves defaults and validates one crawl config snapshot.
@@ -87,6 +95,14 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 		if input.ForceFullCrawl != nil {
 			resolvedSnapshot.ForceFullCrawl = *input.ForceFullCrawl
 		}
+
+		if input.HonourRobotsTxt != nil {
+			resolvedSnapshot.HonourRobotsTxt = *input.HonourRobotsTxt
+		}
+
+		if input.SkipSitemapSeed != nil {
+			resolvedSnapshot.SkipSitemapSeed = *input.SkipSitemapSeed
+		}
 	}
 
 	normalizedSnapshot, err := json.Marshal(resolvedSnapshot)
@@ -130,13 +146,15 @@ func ConfigFromBaseURLAndSnapshot(baseURL string, rawConfigSnapshot []byte) (Cra
 	}
 
 	return CrawlerConfig{
-		AllowedHost:    normalizeHostForScope(parsedBaseURL.Hostname()),
-		MaxDepth:       configSnapshot.MaxDepth,
-		MaxPages:       maxPages,
-		FetchTimeout:   time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
-		RequestDelay:   requestDelay,
-		RequestJitter:  requestJitter,
-		UserAgent:      defaultUserAgent,
-		ForceFullCrawl: configSnapshot.ForceFullCrawl,
+		AllowedHost:     normalizeHostForScope(parsedBaseURL.Hostname()),
+		MaxDepth:        configSnapshot.MaxDepth,
+		MaxPages:        maxPages,
+		FetchTimeout:    time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
+		RequestDelay:    requestDelay,
+		RequestJitter:   requestJitter,
+		UserAgent:       defaultUserAgent,
+		ForceFullCrawl:  configSnapshot.ForceFullCrawl,
+		HonourRobotsTxt: configSnapshot.HonourRobotsTxt,
+		SkipSitemapSeed: configSnapshot.SkipSitemapSeed,
 	}, nil
 }

@@ -64,3 +64,8 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE p.organization_id = $1
   AND om.user_id = $2
 ORDER BY p.created_at ASC;
+
+-- name: CountProjectsForOrganization :one
+SELECT COUNT(*)::bigint
+FROM projects
+WHERE organization_id = sqlc.arg(organization_id);

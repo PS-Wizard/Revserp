@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -370,6 +371,13 @@ func (a *App) handleListIssueWorkspaceChanges(w http.ResponseWriter, r *http.Req
 }
 
 func (a *App) handleSearchIssueWorkspacePages(w http.ResponseWriter, r *http.Request) {
+	// Bound the input before any database access, matching the crawl page
+	// search design: over 512 Unicode code points is rejected with 400.
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if utf8.RuneCountInString(q) > 512 {
+		writeJSONError(w, http.StatusBadRequest, "query is too long")
+		return
+	}
 	baseline, current, userID, err := a.workspaceCrawls(r)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -379,13 +387,12 @@ func (a *App) handleSearchIssueWorkspacePages(w http.ResponseWriter, r *http.Req
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	limit, offset, err := parsePaginationParams(r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := `SELECT url, title, COUNT(*) OVER() FROM (SELECT url, MAX(title) AS title FROM (SELECT url, title FROM crawl_pages WHERE crawl_id=$1 UNION ALL SELECT url, title FROM crawl_pages WHERE crawl_id=$2) p WHERE $3='' OR url ILIKE '%'||$3||'%' GROUP BY url) matches ORDER BY url LIMIT $4 OFFSET $5`
+	query := `SELECT url, title, COUNT(*) OVER() FROM (SELECT url, MAX(title) AS title FROM (SELECT url, title FROM crawl_pages WHERE crawl_id=$1 UNION ALL SELECT url, title FROM crawl_pages WHERE crawl_id=$2) p WHERE $3='' OR strpos(lower(url), lower($3)) > 0 GROUP BY url) matches ORDER BY url LIMIT $4 OFFSET $5`
 	rows, err := a.DB.Query(r.Context(), query, baseline.ID, current.ID, q, limit, offset)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")

@@ -35,8 +35,7 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createProjectRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -74,6 +73,25 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			}
 			serverError(w, r, err)
 			return err
+		}
+
+		maxProjects := defaultMaxProjects
+		if featuresRow, err := queries.GetOrganizationFeatures(r.Context(), organizationID); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				serverError(w, r, err)
+				return err
+			}
+		} else {
+			maxProjects = featuresRow.MaxProjects
+		}
+		count, err := queries.CountProjectsForOrganization(r.Context(), organizationID)
+		if err != nil {
+			serverError(w, r, err)
+			return err
+		}
+		if count >= int64(maxProjects) {
+			writeJSONError(w, http.StatusConflict, "project_limit_reached")
+			return errors.New("project_limit_reached")
 		}
 
 		project, err = queries.CreateProject(r.Context(), sqlc.CreateProjectParams{
@@ -130,6 +148,7 @@ func (a *App) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newProjectResponse(project))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{"projects": responses})
 }
 

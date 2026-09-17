@@ -185,6 +185,49 @@ ORDER BY cp.created_at ASC
 LIMIT $3
 OFFSET $4;
 
+-- name: ListCrawlPageSummariesForCrawlByUser :many
+-- Lightweight list for the editor sidebar: same tenancy, ordering, and
+-- pagination as ListCrawlPagesForCrawlByUser but without large body fields
+-- (visible_text, content_blocks, heading arrays/outlines, og_tags, json_ld).
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.status_code,
+    cp.content_type,
+    cp.size_bytes,
+    cp.is_internal,
+    cp.depth,
+    cp.title,
+    cp.meta_description,
+    cp.h1,
+    cp.h1_count,
+    cp.h2_count,
+    cp.h3_count,
+    cp.word_count,
+    cp.author,
+    cp.canonical_url,
+    cp.lang,
+    cp.viewport,
+    cp.robots,
+    cp.image_count,
+    cp.images_without_alt_count,
+    cp.images_without_dimensions,
+    cp.external_links,
+    cp.internal_links,
+    cp.response_time_ms,
+    cp.javascript_rendered,
+    cp.created_at
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = $1
+  AND om.user_id = $2
+ORDER BY cp.created_at ASC
+LIMIT $3
+OFFSET $4;
+
 
 -- name: ListCrawlPagesForCrawl :many
 SELECT
@@ -351,8 +394,29 @@ SELECT id
 FROM crawls
 WHERE project_id = sqlc.arg(project_id)
   AND status = 'completed'
+  AND source IN ('manual', 'auto', 'mcp')
   AND id <> sqlc.arg(exclude_crawl_id)
 ORDER BY completed_at DESC NULLS LAST
+LIMIT 1;
+
+-- name: GetIncrementalBaselineCrawlID :one
+SELECT previous.id
+FROM crawls AS current
+INNER JOIN crawls AS previous
+    ON previous.project_id = current.project_id
+   AND previous.status = 'completed'
+   AND previous.id <> current.id
+   AND (
+        (current.source = 'competitor'
+         AND previous.source = 'competitor'
+         AND previous.competitor_id = current.competitor_id)
+        OR
+        (current.source <> 'competitor'
+         AND previous.source IN ('manual', 'auto', 'mcp'))
+   )
+WHERE current.id = sqlc.arg(current_crawl_id)
+  AND current.project_id = sqlc.arg(project_id)
+ORDER BY previous.completed_at DESC NULLS LAST
 LIMIT 1;
 
 -- name: ListPageValidatorsForCrawl :many
@@ -483,7 +547,91 @@ SELECT
     content_type,
     word_count,
     response_time_ms,
-    size_bytes
+    size_bytes,
+    soft_404,
+    fetch_error
 FROM crawl_pages
 WHERE crawl_id = $1
 ORDER BY created_at ASC;
+
+-- name: ListKeywordCoveragePagesForCrawl :many
+SELECT
+    url,
+    COALESCE(title, '')::text AS title,
+    COALESCE(h1, '')::text AS h1,
+    COALESCE(status_code, 0)::int AS status_code,
+    COALESCE(content_type, '')::text AS content_type,
+    soft_404,
+    COALESCE(fetch_error, '')::text AS fetch_error
+FROM crawl_pages
+WHERE crawl_id = sqlc.arg(crawl_id);
+
+-- name: SearchCrawlPagesForUser :many
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.title
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = sqlc.arg(crawl_id)
+  AND om.user_id = sqlc.arg(user_id)
+  AND (
+      sqlc.arg(query)::text = ''
+      OR strpos(lower(cp.url), lower(sqlc.arg(query)::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower(sqlc.arg(query)::text)) > 0
+  )
+ORDER BY
+    CASE
+        WHEN sqlc.arg(query)::text = '' THEN 4
+        WHEN lower(cp.url) = lower(sqlc.arg(query)::text) THEN 0
+        WHEN strpos(lower(cp.url), lower(sqlc.arg(query)::text)) = 1 THEN 1
+        WHEN strpos(lower(cp.url), lower(sqlc.arg(query)::text)) > 0 THEN 2
+        WHEN strpos(lower(COALESCE(cp.title, '')), lower(sqlc.arg(query)::text)) > 0 THEN 3
+        ELSE 4
+    END,
+    cp.url ASC
+LIMIT sqlc.arg('limit')
+OFFSET sqlc.arg('offset');
+
+-- name: CountCrawlPagesSearchForUser :one
+SELECT COUNT(*)::bigint
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = sqlc.arg(crawl_id)
+  AND om.user_id = sqlc.arg(user_id)
+  AND (
+      sqlc.arg(query)::text = ''
+      OR strpos(lower(cp.url), lower(sqlc.arg(query)::text)) > 0
+      OR strpos(lower(COALESCE(cp.title, '')), lower(sqlc.arg(query)::text)) > 0
+  );
+
+-- name: GetCrawlPageHealthForUser :one
+SELECT
+    cp.id,
+    cp.crawl_id,
+    cp.url,
+    cp.health_score,
+    cp.health_breakdown
+FROM crawl_pages AS cp
+INNER JOIN crawls AS c ON c.id = cp.crawl_id
+INNER JOIN projects AS p ON p.id = c.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+WHERE cp.crawl_id = sqlc.arg(crawl_id)
+  AND cp.id = sqlc.arg(page_id)
+  AND om.user_id = sqlc.arg(user_id)
+  AND cp.health_score IS NOT NULL
+LIMIT 1;
+
+-- name: BulkUpdateCrawlPageHealthScores :exec
+UPDATE crawl_pages AS cp
+SET health_score = data.health_score,
+    health_breakdown = data.health_breakdown
+FROM (
+    SELECT unnest(sqlc.arg(page_ids)::uuid[]) AS id, unnest(sqlc.arg(health_scores)::smallint[]) AS health_score, unnest(sqlc.arg(health_breakdowns)::jsonb[]) AS health_breakdown
+) AS data
+WHERE cp.id = data.id;

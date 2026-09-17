@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -135,8 +134,7 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var requestBody createCrawlPageRequest
-	if err := readJSON(r, &requestBody); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readOptionalJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 
@@ -256,7 +254,7 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 	user := principal.User
 	if _, err := queries.GetCrawlByIDForUser(r.Context(), sqlc.GetCrawlByIDForUserParams{ID: crawlID, UserID: user.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
 			return
 		}
 
@@ -269,7 +267,7 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	pages, err := queries.ListCrawlPagesForCrawlByUser(r.Context(), sqlc.ListCrawlPagesForCrawlByUserParams{
+	pages, err := queries.ListCrawlPageSummariesForCrawlByUser(r.Context(), sqlc.ListCrawlPageSummariesForCrawlByUserParams{
 		CrawlID: crawlID,
 		UserID:  user.ID,
 		Limit:   limit,
@@ -290,6 +288,7 @@ func (a *App) handleListCrawlPages(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, newCrawlPageResponseFromListRow(page))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pages": responses,
 		"pagination": paginationResponse{
@@ -429,8 +428,11 @@ func newCrawlPageResponseFromCreateRow(page sqlc.CreateCrawlPageRow) crawlPageRe
 	})
 }
 
-// newCrawlPageResponseFromListRow converts a listed crawl page row into an API response.
-func newCrawlPageResponseFromListRow(page sqlc.ListCrawlPagesForCrawlByUserRow) crawlPageResponse {
+// newCrawlPageResponseFromListRow converts a listed crawl page summary row into
+// an API response. The summary query omits large body fields (visible_text,
+// content_blocks, heading arrays/outlines, og_tags, json_ld) so they stay
+// empty and are omitted from the JSON payload.
+func newCrawlPageResponseFromListRow(page sqlc.ListCrawlPageSummariesForCrawlByUserRow) crawlPageResponse {
 	return buildCrawlPageResponse(crawlPageRowData{
 		ID:                      page.ID,
 		CrawlID:                 page.CrawlID,
@@ -447,7 +449,6 @@ func newCrawlPageResponseFromListRow(page sqlc.ListCrawlPagesForCrawlByUserRow) 
 		H2Count:                 page.H2Count,
 		H3Count:                 page.H3Count,
 		WordCount:               page.WordCount,
-		VisibleText:             page.VisibleText,
 		Author:                  page.Author,
 		CanonicalUrl:            page.CanonicalUrl,
 		Lang:                    page.Lang,
@@ -460,12 +461,6 @@ func newCrawlPageResponseFromListRow(page sqlc.ListCrawlPagesForCrawlByUserRow) 
 		InternalLinks:           page.InternalLinks,
 		ResponseTimeMs:          page.ResponseTimeMs,
 		JavascriptRendered:      page.JavascriptRendered,
-		H2Headings:              page.H2Headings,
-		H3Headings:              page.H3Headings,
-		HeadingOutline:          page.HeadingOutline,
-		OgTags:                  page.OgTags,
-		JsonLd:                  page.JsonLd,
-		ContentBlocks:           page.ContentBlocks,
 		CreatedAt:               page.CreatedAt,
 	})
 }

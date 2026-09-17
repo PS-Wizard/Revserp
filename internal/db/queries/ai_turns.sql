@@ -46,6 +46,7 @@ SELECT id
 FROM crawls
 WHERE project_id = sqlc.arg(project_id)
   AND status = 'completed'
+  AND source IN ('manual', 'auto', 'mcp')
 ORDER BY completed_at DESC NULLS LAST, id DESC
 LIMIT 1;
 
@@ -90,7 +91,7 @@ INSERT INTO ai_turns (
     sqlc.arg(requested_effort),
     sqlc.arg(effective_effort),
     sqlc.arg(model),
-    'chat-v1',
+    sqlc.arg(prompt_version),
     sqlc.narg(crawl_id),
     sqlc.arg(client_request_id),
     sqlc.arg(request_hash),
@@ -99,12 +100,13 @@ INSERT INTO ai_turns (
 RETURNING id;
 
 -- name: CreateAIMessage :one
-INSERT INTO ai_messages (turn_id, role, status, content)
+INSERT INTO ai_messages (turn_id, role, status, content, content_blocks)
 VALUES (
     sqlc.arg(turn_id),
     sqlc.arg(role),
     sqlc.arg(status),
-    sqlc.arg(content)
+    sqlc.arg(content),
+    sqlc.narg(content_blocks)
 )
 RETURNING id;
 
@@ -170,7 +172,7 @@ FOR UPDATE OF t
 FOR KEY SHARE OF om;
 
 -- name: ListAIMessagesForUser :many
-SELECT m.id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.role, m.status, m.content, m.content_blocks, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 INNER JOIN ai_conversations AS c ON c.id = t.conversation_id
@@ -181,7 +183,7 @@ WHERE m.turn_id = sqlc.arg(turn_id)
 ORDER BY CASE m.role WHEN 'user' THEN 0 ELSE 1 END;
 
 -- name: ListAIMessagesForConversation :many
-SELECT m.id, m.turn_id, m.role, m.status, m.content, m.created_at, m.updated_at
+SELECT m.id, m.turn_id, m.role, m.status, m.content, m.content_blocks, m.created_at, m.updated_at
 FROM ai_messages AS m
 INNER JOIN ai_turns AS t ON t.id = m.turn_id
 WHERE t.conversation_id = sqlc.arg(conversation_id)

@@ -87,19 +87,11 @@ func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (A
 	return i, err
 }
 
-const deleteAIAuditByID = `-- name: DeleteAIAuditByID :exec
-DELETE FROM ai_audits WHERE id = $1
-`
-
-func (q *Queries) DeleteAIAuditByID(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteAIAuditByID, id)
-	return err
-}
-
 const getAIAuditByCrawlAndProject = `-- name: GetAIAuditByCrawlAndProject :one
 SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
 FROM ai_audits
 WHERE project_id = $1 AND crawl_id = $2
+ORDER BY created_at DESC
 LIMIT 1
 `
 
@@ -153,6 +145,36 @@ type GetAIAuditByIDForUserParams struct {
 
 func (q *Queries) GetAIAuditByIDForUser(ctx context.Context, arg GetAIAuditByIDForUserParams) (AiAudit, error) {
 	row := q.db.QueryRow(ctx, getAIAuditByIDForUser, arg.ID, arg.UserID)
+	var i AiAudit
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.CrawlID,
+		&i.Status,
+		&i.Score,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getActiveAIAuditByCrawlAndProject = `-- name: GetActiveAIAuditByCrawlAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+FROM ai_audits
+WHERE project_id = $1 AND crawl_id = $2 AND status IN ('queued', 'running')
+LIMIT 1
+`
+
+type GetActiveAIAuditByCrawlAndProjectParams struct {
+	ProjectID pgtype.UUID
+	CrawlID   pgtype.UUID
+}
+
+func (q *Queries) GetActiveAIAuditByCrawlAndProject(ctx context.Context, arg GetActiveAIAuditByCrawlAndProjectParams) (AiAudit, error) {
+	row := q.db.QueryRow(ctx, getActiveAIAuditByCrawlAndProject, arg.ProjectID, arg.CrawlID)
 	var i AiAudit
 	err := row.Scan(
 		&i.ID,
@@ -244,6 +266,35 @@ WHERE status = 'running'
 func (q *Queries) ReclaimStaleRunningAIAudits(ctx context.Context, startedAt pgtype.Timestamptz) error {
 	_, err := q.db.Exec(ctx, reclaimStaleRunningAIAudits, startedAt)
 	return err
+}
+
+const reserveAIWorkspaceMonthlyAudit = `-- name: ReserveAIWorkspaceMonthlyAudit :one
+INSERT INTO ai_workspace_monthly_usage (organization_id, period_start, used_audits)
+SELECT
+    $1,
+    date_trunc('month', now() AT TIME ZONE 'UTC')::date,
+    1
+WHERE $2::integer > 0
+ON CONFLICT (organization_id, period_start) DO UPDATE
+SET used_audits = ai_workspace_monthly_usage.used_audits + 1,
+    updated_at = now()
+WHERE ai_workspace_monthly_usage.used_audits < $2::integer
+RETURNING used_audits
+`
+
+type ReserveAIWorkspaceMonthlyAuditParams struct {
+	OrganizationID pgtype.UUID
+	MonthlyLimit   int32
+}
+
+// Atomically reserves one visibility audit for the month. Returns no rows
+// when the workspace limit is 0 (audits disabled) or already exhausted,
+// mirroring ReserveAIWorkspaceMonthlyMessage.
+func (q *Queries) ReserveAIWorkspaceMonthlyAudit(ctx context.Context, arg ReserveAIWorkspaceMonthlyAuditParams) (int32, error) {
+	row := q.db.QueryRow(ctx, reserveAIWorkspaceMonthlyAudit, arg.OrganizationID, arg.MonthlyLimit)
+	var used_audits int32
+	err := row.Scan(&used_audits)
+	return used_audits, err
 }
 
 const updateAIAuditStatus = `-- name: UpdateAIAuditStatus :exec

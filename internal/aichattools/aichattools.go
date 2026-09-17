@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"sync"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
@@ -25,6 +26,11 @@ type Def struct {
 	Feature string
 }
 
+// Transactor can begin a transaction; implemented by *pgxpool.Pool and pgx.Tx.
+type Transactor interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
 // Scope carries server-derived identity and data access for one tool call.
 // Tool schemas never contain tenant IDs; the loop fills these fields instead.
 type Scope struct {
@@ -32,6 +38,7 @@ type Scope struct {
 	ProjectID pgtype.UUID
 	CrawlID   pgtype.UUID
 	Queries   *sqlc.Queries
+	DB        Transactor
 	// GSC is the search console data fetcher, nil when the worker has none.
 	GSC GSCFetcher
 	// RowBudget caps how many database rows one turn may fetch through tools.
@@ -40,6 +47,11 @@ type Scope struct {
 	// PageContentBudget caps total serialized page-content bytes and unique
 	// content-page keys per turn. Nil means direct/raw mode without cumulative cap.
 	PageContentBudget *PageContentBudget
+	// Web is the web search and fetch path (TinyFish), nil when the worker has no
+	// web key configured. The web tools report that as an unavailable state.
+	Web WebClient
+	// WebBudget caps web searches and fetches per turn. Nil means no cap.
+	WebBudget *WebBudget
 }
 
 // Budget is a thread-safe counter of rows a turn may still fetch.
@@ -166,7 +178,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), webSearchTool(), fetchURLTool()}}
 }
 
 // CatalogDefs lists every implemented tool definition in catalog order,
@@ -174,7 +186,7 @@ func NewRegistry() *Registry {
 // validation run against the full catalog, so a tool can be gateable (and
 // shown in the admin AI tools drawer) before the model can call it.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, webSearchTool().Def, fetchURLTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag

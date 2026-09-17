@@ -153,6 +153,7 @@ func (a *App) handleListAIConversations(w http.ResponseWriter, r *http.Request) 
 		responses = append(responses, newAIConversationResponse(conversation, turnID, status))
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"conversations": responses,
 		"pagination": paginationResponse{
@@ -174,7 +175,7 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		conversation sqlc.AiConversation
-		messages     []sqlc.AiMessage
+		messages     []sqlc.ListAIMessagesForConversationRow
 		turns        []sqlc.ListAITurnsForConversationRow
 		toolCalls    []sqlc.ListAIToolCallsForConversationRow
 	)
@@ -257,6 +258,7 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 	for _, message := range messages {
 		item := aiMessageResponse{
 			ID: message.ID.String(), Role: message.Role, Status: message.Status, Content: message.Content,
+			Images:    imagesFromContentBlocks(message.Role, message.ContentBlocks),
 			CreatedAt: message.CreatedAt.Time, UpdatedAt: message.UpdatedAt.Time,
 		}
 		if message.Role == "assistant" {

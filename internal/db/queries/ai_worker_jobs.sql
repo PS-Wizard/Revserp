@@ -30,3 +30,10 @@ UPDATE ai_worker_jobs
 SET status = 'failed', error_message = 'reclaimed: worker restarted', completed_at = NOW(), updated_at = NOW()
 WHERE status = 'running'
   AND started_at < $1;
+
+-- name: GetLatestPromptGenerationJobByProject :one
+SELECT id, job_type, project_id, audit_id, status, error_message, started_at, completed_at, created_at, updated_at
+FROM ai_worker_jobs
+WHERE project_id = $1 AND job_type = 'prompt_generation'
+ORDER BY created_at DESC
+LIMIT 1;

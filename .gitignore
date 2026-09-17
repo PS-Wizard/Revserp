@@ -3,3 +3,10 @@ bin/
 tmp/
 *.log
 requests/
+
+# Go build output when building a single command without -o
+/api
+/worker
+/ai-audit-worker
+/ai-chat-worker
+/migrate

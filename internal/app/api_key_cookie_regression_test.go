@@ -213,3 +213,23 @@ func TestValidBrowserSessionStillWorksIntegration(t *testing.T) {
 		t.Error("valid browser session listed no API keys despite one existing")
 	}
 }
+
+func TestAPIKeysForbiddenWhenIntegrationsOff(t *testing.T) {
+	f := newSessionFixture(t)
+	orgID := createFeaturesTestOrg(t, f.ctx, f.pool)
+	if _, err := f.pool.Exec(f.ctx, `INSERT INTO organization_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, orgID, f.userID); err != nil {
+		t.Fatalf("add membership: %v", err)
+	}
+	if err := f.app.Queries.UpsertOrganizationFeatures(f.ctx, sqlc.UpsertOrganizationFeaturesParams{
+		OrgID: orgID, AutoCrawl: true, GscConnector: true, AiChat: true, Integrations: false,
+		AiMonthlyMessageLimit: 50, AiConcurrentTurnLimitPerUser: 2,
+		AiVisibilityAuditMonthlyLimit: 10, MaxCompetitors: 3,
+		AiAllowedReasoningEfforts: canonicalAIReasoningEfforts,
+	}); err != nil {
+		t.Fatalf("disable integrations: %v", err)
+	}
+	rec := get(t, f.app.Router(), "/api-keys", "", f.rawCookie)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /api-keys with integrations off status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+}

@@ -27,5 +27,6 @@ func (a *App) handleAdminListOrganizations(w http.ResponseWriter, r *http.Reques
 		})
 	}
 
+	setNoStore(w)
 	writeJSON(w, http.StatusOK, map[string]any{"organizations": items})
 }

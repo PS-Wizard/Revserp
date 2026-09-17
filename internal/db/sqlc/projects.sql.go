@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countProjectsForOrganization = `-- name: CountProjectsForOrganization :one
+SELECT COUNT(*)::bigint
+FROM projects
+WHERE organization_id = $1
+`
+
+func (q *Queries) CountProjectsForOrganization(ctx context.Context, organizationID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countProjectsForOrganization, organizationID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createProject = `-- name: CreateProject :one
 INSERT INTO projects (
     organization_id,

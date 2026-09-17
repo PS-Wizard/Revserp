@@ -55,7 +55,7 @@ func TestValidateDisabledAITools(t *testing.T) {
 		{"known tool", []string{"read_issues"}, true, []string{"read_issues"}, ""},
 		{"dupes normalized", []string{"read_issues", "read_issues"}, true, []string{"read_issues"}, ""},
 		{"gsc flag off force-disables", []string{}, false, []string{"get_search_console_data"}, ""},
-		{"unknown tool rejected", []string{"bogus"}, true, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary, get_search_console_data, get_business_profile, read_issue_work, read_page, render_chart`},
+		{"unknown tool rejected", []string{"bogus"}, true, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary, get_search_console_data, get_business_profile, read_issue_work, read_page, render_chart, update_business_profile, web_search, fetch_url`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -76,10 +76,70 @@ func TestValidateDisabledAITools(t *testing.T) {
 	}
 }
 
+func TestValidateMaxCompetitors(t *testing.T) {
+	tests := []struct {
+		limit   int32
+		wantErr bool
+	}{
+		{0, false},
+		{3, false},
+		{-1, true},
+	}
+	for _, test := range tests {
+		err := validateMaxCompetitors(test.limit)
+		if (err != nil) != test.wantErr {
+			t.Fatalf("validateMaxCompetitors(%d) error = %v, wantErr %v", test.limit, err, test.wantErr)
+		}
+	}
+}
+
+func TestValidateMaxProjects(t *testing.T) {
+	tests := []struct {
+		limit   int32
+		wantErr bool
+	}{
+		{0, false},
+		{5, false},
+		{-1, true},
+	}
+	for _, test := range tests {
+		err := validateMaxProjects(test.limit)
+		if (err != nil) != test.wantErr {
+			t.Fatalf("validateMaxProjects(%d) error = %v, wantErr %v", test.limit, err, test.wantErr)
+		}
+	}
+}
+
+// Validation happens before any database access, so this needs no DB.
+func TestAdminPutFeaturesRejectsNegativeMaxCompetitors(t *testing.T) {
+	app := &App{}
+	body := `{"workspaces":[{"org_id":"00000000-0000-0000-0000-000000000000","auto_crawl":true,"gsc_connector":true,"ai_chat":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_visibility_audit_monthly_limit":10,"max_competitors":-1,"max_projects":5,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none"],"disabled_ai_tools":[]}]}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/admin/features", strings.NewReader(body))
+	app.handleAdminPutFeatures(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// Validation happens before any database access, so this needs no DB.
+func TestAdminPutFeaturesRejectsNegativeMaxProjects(t *testing.T) {
+	app := &App{}
+	body := `{"workspaces":[{"org_id":"00000000-0000-0000-0000-000000000000","auto_crawl":true,"gsc_connector":true,"ai_chat":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_visibility_audit_monthly_limit":10,"max_competitors":3,"max_projects":-1,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none"],"disabled_ai_tools":[]}]}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/admin/features", strings.NewReader(body))
+	app.handleAdminPutFeatures(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // Validation happens before any database access, so this needs no DB.
 func TestAdminPutFeaturesRejectsUnknownAITool(t *testing.T) {
 	app := &App{}
-	body := `{"workspaces":[{"org_id":"00000000-0000-0000-0000-000000000000","auto_crawl":true,"gsc_connector":true,"ai_chat":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none"],"disabled_ai_tools":["does_not_exist"]}]}`
+	body := `{"workspaces":[{"org_id":"00000000-0000-0000-0000-000000000000","auto_crawl":true,"gsc_connector":true,"ai_chat":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_visibility_audit_monthly_limit":10,"max_competitors":3,"max_projects":5,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none"],"disabled_ai_tools":["does_not_exist"]}]}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/admin/features", strings.NewReader(body))
 	app.handleAdminPutFeatures(recorder, request)
@@ -176,7 +236,7 @@ func TestAdminListFeaturesIncludesAIToolCatalog(t *testing.T) {
 func TestAdminPutFeaturesRoundTripsDisabledAITools(t *testing.T) {
 	app, queries, ctx, orgID, userID := adminFeaturesTestApp(t)
 
-	body := fmt.Sprintf(`{"workspaces":[{"org_id":%q,"auto_crawl":true,"gsc_connector":true,"ai_chat":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none","low","high","max"],"disabled_ai_tools":["","read_issues","read_issues"]}]}`, orgID.String())
+	body := fmt.Sprintf(`{"workspaces":[{"org_id":%q,"auto_crawl":true,"gsc_connector":true,"ai_chat":true,"integrations":true,"ai_use_internal_prompt":false,"ai_monthly_message_limit":50,"ai_visibility_audit_monthly_limit":10,"max_competitors":3,"max_projects":5,"ai_concurrent_turn_limit_per_user":2,"ai_allowed_reasoning_efforts":["none","low","high","max"],"disabled_ai_tools":["","read_issues","read_issues"]}]}`, orgID.String())
 	recorder := httptest.NewRecorder()
 	app.handleAdminPutFeatures(recorder, adminFeaturesPutRequest(t, userID, body))
 

@@ -14,17 +14,21 @@ import (
 
 // adminWorkspaceFeaturesResponse is one row of the admin matrix.
 type adminWorkspaceFeaturesResponse struct {
-	OrgID                        string   `json:"org_id"`
-	OrgName                      string   `json:"org_name"`
-	AutoCrawl                    bool     `json:"auto_crawl"`
-	GSCConnector                 bool     `json:"gsc_connector"`
-	AIChat                       bool     `json:"ai_chat"`
-	AIUseInternalPrompt          bool     `json:"ai_use_internal_prompt"`
-	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
-	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
-	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
-	DisabledAITools              []string `json:"disabled_ai_tools"`
-	UpdatedAt                    string   `json:"updated_at,omitempty"`
+	OrgID                         string   `json:"org_id"`
+	OrgName                       string   `json:"org_name"`
+	AutoCrawl                     bool     `json:"auto_crawl"`
+	GSCConnector                  bool     `json:"gsc_connector"`
+	AIChat                        bool     `json:"ai_chat"`
+	Integrations                  bool     `json:"integrations"`
+	AIUseInternalPrompt           bool     `json:"ai_use_internal_prompt"`
+	AIMonthlyMessageLimit         int32    `json:"ai_monthly_message_limit"`
+	AIVisibilityAuditMonthlyLimit int32    `json:"ai_visibility_audit_monthly_limit"`
+	MaxCompetitors                int32    `json:"max_competitors"`
+	MaxProjects                   int32    `json:"max_projects"`
+	AIConcurrentTurnLimitPerUser  int32    `json:"ai_concurrent_turn_limit_per_user"`
+	AIAllowedReasoningEfforts     []string `json:"ai_allowed_reasoning_efforts"`
+	DisabledAITools               []string `json:"disabled_ai_tools"`
+	UpdatedAt                     string   `json:"updated_at,omitempty"`
 }
 
 // adminAIToolInfo is one tool in the admin catalog.
@@ -97,6 +101,33 @@ func validateDisabledAITools(tools []string, gscConnector bool) ([]string, error
 	return normalizeDisabledAITools(tools, gscConnector), nil
 }
 
+// validateMaxCompetitors rejects negative competitor limits;
+// 0 disables competitor analysis entirely.
+func validateMaxCompetitors(limit int32) error {
+	if limit < 0 {
+		return fmt.Errorf("max_competitors must be >= 0")
+	}
+	return nil
+}
+
+// validateMaxProjects rejects negative project limits;
+// 0 disables creation of new projects entirely.
+func validateMaxProjects(limit int32) error {
+	if limit < 0 {
+		return fmt.Errorf("max_projects must be >= 0")
+	}
+	return nil
+}
+
+// validateAIVisibilityAuditMonthlyLimit rejects negative audit limits;
+// 0 disables visibility audits entirely (reserve never succeeds).
+func validateAIVisibilityAuditMonthlyLimit(limit int32) error {
+	if limit < 0 {
+		return fmt.Errorf("ai_visibility_audit_monthly_limit must be >= 0")
+	}
+	return nil
+}
+
 // handleAdminListFeatures returns every workspace's gating state.
 func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.Queries.ListOrganizationFeaturesForAdmin(r.Context())
@@ -108,16 +139,20 @@ func (a *App) handleAdminListFeatures(w http.ResponseWriter, r *http.Request) {
 	workspaces := make([]adminWorkspaceFeaturesResponse, 0, len(rows))
 	for _, row := range rows {
 		workspace := adminWorkspaceFeaturesResponse{
-			OrgID:                        row.OrgID.String(),
-			OrgName:                      row.OrgName,
-			AutoCrawl:                    row.AutoCrawl,
-			GSCConnector:                 row.GscConnector,
-			AIChat:                       row.AiChat,
-			AIUseInternalPrompt:          row.AiUseInternalPrompt,
-			AIMonthlyMessageLimit:        row.AiMonthlyMessageLimit,
-			AIConcurrentTurnLimitPerUser: row.AiConcurrentTurnLimitPerUser,
-			AIAllowedReasoningEfforts:    normalizeAIReasoningEfforts(row.AiAllowedReasoningEfforts),
-			DisabledAITools:              normalizeDisabledAITools(row.DisabledAiTools, row.GscConnector),
+			OrgID:                         row.OrgID.String(),
+			OrgName:                       row.OrgName,
+			AutoCrawl:                     row.AutoCrawl,
+			GSCConnector:                  row.GscConnector,
+			AIChat:                        row.AiChat,
+			Integrations:                  row.Integrations,
+			AIUseInternalPrompt:           row.AiUseInternalPrompt,
+			AIMonthlyMessageLimit:         row.AiMonthlyMessageLimit,
+			AIVisibilityAuditMonthlyLimit: row.AiVisibilityAuditMonthlyLimit,
+			MaxCompetitors:                row.MaxCompetitors,
+			MaxProjects:                   row.MaxProjects,
+			AIConcurrentTurnLimitPerUser:  row.AiConcurrentTurnLimitPerUser,
+			AIAllowedReasoningEfforts:     normalizeAIReasoningEfforts(row.AiAllowedReasoningEfforts),
+			DisabledAITools:               normalizeDisabledAITools(row.DisabledAiTools, row.GscConnector),
 		}
 		if row.UpdatedAt.Valid {
 			workspace.UpdatedAt = row.UpdatedAt.Time.UTC().Format(time.RFC3339)
@@ -134,22 +169,25 @@ type adminPutFeaturesRequest struct {
 }
 
 type adminPutWorkspaceFeatures struct {
-	OrgID                        string   `json:"org_id"`
-	AutoCrawl                    bool     `json:"auto_crawl"`
-	GSCConnector                 bool     `json:"gsc_connector"`
-	AIChat                       bool     `json:"ai_chat"`
-	AIUseInternalPrompt          bool     `json:"ai_use_internal_prompt"`
-	AIMonthlyMessageLimit        int32    `json:"ai_monthly_message_limit"`
-	AIConcurrentTurnLimitPerUser int32    `json:"ai_concurrent_turn_limit_per_user"`
-	AIAllowedReasoningEfforts    []string `json:"ai_allowed_reasoning_efforts"`
-	DisabledAITools              []string `json:"disabled_ai_tools"`
+	OrgID                         string   `json:"org_id"`
+	AutoCrawl                     bool     `json:"auto_crawl"`
+	GSCConnector                  bool     `json:"gsc_connector"`
+	AIChat                        bool     `json:"ai_chat"`
+	Integrations                  bool     `json:"integrations"`
+	AIUseInternalPrompt           bool     `json:"ai_use_internal_prompt"`
+	AIMonthlyMessageLimit         int32    `json:"ai_monthly_message_limit"`
+	AIVisibilityAuditMonthlyLimit int32    `json:"ai_visibility_audit_monthly_limit"`
+	MaxCompetitors                int32    `json:"max_competitors"`
+	MaxProjects                   int32    `json:"max_projects"`
+	AIConcurrentTurnLimitPerUser  int32    `json:"ai_concurrent_turn_limit_per_user"`
+	AIAllowedReasoningEfforts     []string `json:"ai_allowed_reasoning_efforts"`
+	DisabledAITools               []string `json:"disabled_ai_tools"`
 }
 
 // handleAdminPutFeatures saves the edited rows in one transaction.
 func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 	var requestBody adminPutFeaturesRequest
-	if err := readJSON(r, &requestBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+	if !readJSONOrRespond(w, r, &requestBody) {
 		return
 	}
 	if len(requestBody.Workspaces) == 0 {
@@ -158,15 +196,19 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type parsedWorkspace struct {
-		orgID                        pgtype.UUID
-		autoCrawl                    bool
-		gscConnector                 bool
-		aiChat                       bool
-		aiUseInternalPrompt          bool
-		aiMonthlyMessageLimit        int32
-		aiConcurrentTurnLimitPerUser int32
-		aiAllowedReasoningEfforts    []string
-		disabledAITools              []string
+		orgID                         pgtype.UUID
+		autoCrawl                     bool
+		gscConnector                  bool
+		aiChat                        bool
+		integrations                  bool
+		aiUseInternalPrompt           bool
+		aiMonthlyMessageLimit         int32
+		aiVisibilityAuditMonthlyLimit int32
+		maxCompetitors                int32
+		maxProjects                   int32
+		aiConcurrentTurnLimitPerUser  int32
+		aiAllowedReasoningEfforts     []string
+		disabledAITools               []string
 	}
 	parsed := make([]parsedWorkspace, 0, len(requestBody.Workspaces))
 	for _, workspace := range requestBody.Workspaces {
@@ -180,21 +222,37 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := validateAIVisibilityAuditMonthlyLimit(workspace.AIVisibilityAuditMonthlyLimit); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := validateMaxCompetitors(workspace.MaxCompetitors); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := validateMaxProjects(workspace.MaxProjects); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		normalizedTools, err := validateDisabledAITools(workspace.DisabledAITools, workspace.GSCConnector)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		parsed = append(parsed, parsedWorkspace{
-			orgID:                        orgID,
-			autoCrawl:                    workspace.AutoCrawl,
-			gscConnector:                 workspace.GSCConnector,
-			aiChat:                       workspace.AIChat,
-			aiUseInternalPrompt:          workspace.AIUseInternalPrompt,
-			aiMonthlyMessageLimit:        workspace.AIMonthlyMessageLimit,
-			aiConcurrentTurnLimitPerUser: workspace.AIConcurrentTurnLimitPerUser,
-			aiAllowedReasoningEfforts:    normalizedEfforts,
-			disabledAITools:              normalizedTools,
+			orgID:                         orgID,
+			autoCrawl:                     workspace.AutoCrawl,
+			gscConnector:                  workspace.GSCConnector,
+			aiChat:                        workspace.AIChat,
+			integrations:                  workspace.Integrations,
+			aiUseInternalPrompt:           workspace.AIUseInternalPrompt,
+			aiMonthlyMessageLimit:         workspace.AIMonthlyMessageLimit,
+			aiVisibilityAuditMonthlyLimit: workspace.AIVisibilityAuditMonthlyLimit,
+			maxCompetitors:                workspace.MaxCompetitors,
+			maxProjects:                   workspace.MaxProjects,
+			aiConcurrentTurnLimitPerUser:  workspace.AIConcurrentTurnLimitPerUser,
+			aiAllowedReasoningEfforts:     normalizedEfforts,
+			disabledAITools:               normalizedTools,
 		})
 	}
 
@@ -213,16 +271,20 @@ func (a *App) handleAdminPutFeatures(w http.ResponseWriter, r *http.Request) {
 	queries := a.Queries.WithTx(tx)
 	for _, workspace := range parsed {
 		if err := queries.UpsertOrganizationFeatures(r.Context(), sqlc.UpsertOrganizationFeaturesParams{
-			OrgID:                        workspace.orgID,
-			AutoCrawl:                    workspace.autoCrawl,
-			GscConnector:                 workspace.gscConnector,
-			AiChat:                       workspace.aiChat,
-			AiUseInternalPrompt:          workspace.aiUseInternalPrompt,
-			AiMonthlyMessageLimit:        workspace.aiMonthlyMessageLimit,
-			AiConcurrentTurnLimitPerUser: workspace.aiConcurrentTurnLimitPerUser,
-			AiAllowedReasoningEfforts:    workspace.aiAllowedReasoningEfforts,
-			DisabledAiTools:              workspace.disabledAITools,
-			UpdatedByUserID:              editorID,
+			OrgID:                         workspace.orgID,
+			AutoCrawl:                     workspace.autoCrawl,
+			GscConnector:                  workspace.gscConnector,
+			AiChat:                        workspace.aiChat,
+			Integrations:                  workspace.integrations,
+			AiUseInternalPrompt:           workspace.aiUseInternalPrompt,
+			AiMonthlyMessageLimit:         workspace.aiMonthlyMessageLimit,
+			AiVisibilityAuditMonthlyLimit: workspace.aiVisibilityAuditMonthlyLimit,
+			MaxCompetitors:                workspace.maxCompetitors,
+			MaxProjects:                   workspace.maxProjects,
+			AiConcurrentTurnLimitPerUser:  workspace.aiConcurrentTurnLimitPerUser,
+			AiAllowedReasoningEfforts:     workspace.aiAllowedReasoningEfforts,
+			DisabledAiTools:               workspace.disabledAITools,
+			UpdatedByUserID:               editorID,
 		}); err != nil {
 			serverError(w, r, err)
 			return

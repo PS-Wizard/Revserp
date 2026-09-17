@@ -216,6 +216,8 @@ func PageSignalsFromRows(rows []sqlc.ListCrawlPageSignalsForCrawlRow) []shared.C
 			WordCount:      int32Value(row.WordCount),
 			ResponseTimeMs: int32Value(row.ResponseTimeMs),
 			SizeBytes:      int32Value(row.SizeBytes),
+			Soft404:        row.Soft404,
+			FetchError:     textValue(row.FetchError),
 		})
 	}
 	return signals

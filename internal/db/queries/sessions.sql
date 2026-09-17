@@ -113,6 +113,14 @@ SET supabase_access_token = $2,
     updated_at = now()
 WHERE id = $1;
 
+-- name: UpdateSessionSupabaseTokens :exec
+UPDATE sessions
+SET supabase_access_token = $2,
+    supabase_refresh_token = $3,
+    supabase_access_token_expires_at = $4,
+    updated_at = now()
+WHERE id = $1;
+
 -- name: DisableSessionRenewal :exec
 UPDATE sessions
 SET supabase_refresh_disabled_at = now(),

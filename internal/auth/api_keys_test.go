@@ -205,6 +205,18 @@ func TestGenerate_RandomReaderErrors(t *testing.T) {
 	}
 }
 
+func TestIsLiveAPIKey(t *testing.T) {
+	if !IsLiveAPIKey("rvs_live_abc") {
+		t.Fatal("expected live key prefix to match")
+	}
+	if IsLiveAPIKey("rvs_setup_abc") {
+		t.Fatal("setup codes are not live API keys")
+	}
+	if IsLiveAPIKey("") {
+		t.Fatal("empty token is not a live API key")
+	}
+}
+
 func TestParseBearer(t *testing.T) {
 	valid := "rvs_live_abc123"
 	tests := []struct {
