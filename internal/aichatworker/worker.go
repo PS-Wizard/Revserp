@@ -637,7 +637,7 @@ WHERE crawl.id = $1
 		internalPrompt = configRow.InternalSystemPrompt
 		externalPrompt = configRow.ExternalSystemPrompt
 	}
-	system := composeSystemContext(aiprompt.SelectSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt)
+	system := composeSystemContext(aiprompt.ComposeSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt)
 
 	var currentUser string
 	var currentBlocks []byte

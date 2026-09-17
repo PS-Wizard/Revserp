@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/aiprompt"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
@@ -124,7 +125,7 @@ func TestAITurnSubmissionIntegration(t *testing.T) {
 		WHERE t.id = $1`, first.TurnID).Scan(&status, &requested, &effective, &model, &promptVersion, &userStatus, &userContent, &assistantStatus, &assistantContent); err != nil {
 		t.Fatalf("read submitted turn: %v", err)
 	}
-	if status != "queued" || requested != "high" || effective != "high" || model != defaultAITurnModel || promptVersion != "chat-v1" || userStatus != "complete" || userContent != "exact content" || assistantStatus != "pending" || assistantContent != "" {
+	if status != "queued" || requested != "high" || effective != "high" || model != defaultAITurnModel || promptVersion != aiprompt.Version || userStatus != "complete" || userContent != "exact content" || assistantStatus != "pending" || assistantContent != "" {
 		t.Fatalf("submitted turn fields = %q %q %q %q %q %q %q %q %q", status, requested, effective, model, promptVersion, userStatus, userContent, assistantStatus, assistantContent)
 	}
 	if got := fixture.usage(t); got != 1 {

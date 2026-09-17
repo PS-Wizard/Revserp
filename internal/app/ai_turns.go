@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/aiprompt"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -394,6 +395,7 @@ func (a *App) submitAITurnTx(ctx context.Context, tx pgx.Tx, userID, conversatio
 		RequestedEffort: request.effort,
 		EffectiveEffort: request.effort,
 		Model:           aiTurnModel(a.Config.DeepSeekModel),
+		PromptVersion:   aiprompt.Version,
 		CrawlID:         resolvedCrawlID,
 		ClientRequestID: request.clientRequestID,
 		RequestHash:     request.requestHash,

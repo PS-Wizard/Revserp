@@ -3,6 +3,7 @@ package aichattools
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -132,5 +133,25 @@ func TestPageContentBudgetConcurrentAccess(t *testing.T) {
 	}
 	if budget.TryRegisterPage("sixth") {
 		t.Fatal("sixth unique page should fail")
+	}
+}
+
+// Tool definitions are the only place the model learns what a tool does. Their
+// descriptions travel through the provider's tool-calling contract and are
+// filtered to the enabled tools, so a tool with no description would be shipped
+// to the model undocumented, with no other channel to describe it. The system
+// prompt deliberately names no tool.
+func TestEveryCatalogToolHasADescription(t *testing.T) {
+	defs := CatalogDefs()
+	if len(defs) == 0 {
+		t.Fatal("catalog is empty")
+	}
+	for _, def := range defs {
+		if strings.TrimSpace(def.Description) == "" {
+			t.Errorf("tool %q has an empty description; the system prompt does not describe tools", def.Name)
+		}
+		if len(def.Schema) == 0 {
+			t.Errorf("tool %q has an empty schema", def.Name)
+		}
 	}
 }

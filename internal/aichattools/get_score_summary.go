@@ -67,7 +67,7 @@ func getScoreSummaryTool() Tool {
 		Def: Def{
 			Name:        "get_score_summary",
 			Label:       "Get score summary",
-			Description: "Read the current crawl's score summary: the overall score, per-pillar scores with weights, penalties, and the top contributing buckets, optionally compared with the previous crawl. Use this before read_issues to explain why a score is where it is.",
+			Description: "Read the current crawl's score summary: the overall score, per-pillar scores with weights, penalties, and the top contributing buckets, optionally compared with the previous crawl. Call it first when the user asks why a score has its value, how the site is doing overall, or how scores changed between crawls; then use read_issues with a relevant bucket or issue_type for concrete rows and fixes. pillar narrows the response to one pillar, compare includes the previous crawl, and limit caps the buckets at 20. This tool has no paging.",
 			Schema:      json.RawMessage(getScoreSummarySchema),
 		},
 		Execute: executeGetScoreSummary,

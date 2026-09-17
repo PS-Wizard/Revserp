@@ -64,11 +64,11 @@ INSERT INTO ai_turns (
     $3,
     $4,
     $5,
-    'chat-v1',
     $6,
     $7,
     $8,
-    COALESCE($9::TEXT[], ARRAY[]::TEXT[])
+    $9,
+    COALESCE($10::TEXT[], ARRAY[]::TEXT[])
 )
 RETURNING id
 `
@@ -79,6 +79,7 @@ type CreateAITurnParams struct {
 	RequestedEffort string
 	EffectiveEffort string
 	Model           string
+	PromptVersion   string
 	CrawlID         pgtype.UUID
 	ClientRequestID string
 	RequestHash     []byte
@@ -92,6 +93,7 @@ func (q *Queries) CreateAITurn(ctx context.Context, arg CreateAITurnParams) (pgt
 		arg.RequestedEffort,
 		arg.EffectiveEffort,
 		arg.Model,
+		arg.PromptVersion,
 		arg.CrawlID,
 		arg.ClientRequestID,
 		arg.RequestHash,

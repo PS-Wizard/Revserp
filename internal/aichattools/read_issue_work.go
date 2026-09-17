@@ -70,7 +70,7 @@ func readIssueWorkTool() Tool {
 		Def: Def{
 			Name:        "read_issue_work",
 			Label:       "Read fix work",
-			Description: "Read the project's fix-work queue merged with no-longer-detected disappearances. Returns work items by collapsed status (open, awaiting_verification, not_verified, still_open, fixed) plus verified disappearances (no_longer_detected) derived from the last two completed crawls. Use status/pillar/bucket/issue_type filters and limit/offset paging.",
+			Description: "Read the project's fix-work queue merged with no-longer-detected disappearances. Use it when the user asks what work is open, awaiting verification, not verified, still open, fixed, no longer detected, or credited to contributors. Returns work items by collapsed status (open, awaiting_verification, not_verified, still_open, fixed) plus verified disappearances (no_longer_detected) derived from the last two completed crawls. Items carry status, issue identity, representative URL, activity times, and contributor emails when work was recorded. no_longer_detected means the crawl no longer found the issue, with no contributor credit unless work was recorded. Use status/pillar/bucket/issue_type filters; limit sets the page size up to 50 (default 25), offset advances the cursor, and paging uses next_offset and has_more.",
 			Schema:      json.RawMessage(readIssueWorkSchema),
 		},
 		Execute: executeReadIssueWork,

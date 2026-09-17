@@ -48,8 +48,12 @@ func renderChartTool() Tool {
 		Def: Def{
 			Name:  renderChartToolName,
 			Label: "Render chart",
-			Description: "Render a trend or vertical ranking bar chart when data is clearer visually. Use at most two charts per answer. " +
-				"Use trend with x_kind and x. Use ranking with 2 to 12 ordered categories. Copy observed labels and values exactly from prior tool outputs. Only trend supports projected_points, and note must explain forecast assumptions.",
+			Description: "Render a trend or vertical ranking bar chart when data is clearer visually. Use at most two charts per answer, only after gathering the values to display. " +
+				"Use trend for changes over dates or ordered steps: supply x_kind as date or category, 2 to 60 x labels, and 1 to 3 series with one value or null for every x label. " +
+				"Use ranking for vertical bars comparing 2 to 12 ordered categories: supply categories in display order with 1 to 3 series, one numeric value for every category. Only trend supports projected_points. " +
+				"Both presets require title and unit (count, percent, score, or milliseconds); note is optional unless the trend contains projections. " +
+				"Copy observed labels and values exactly from prior tool outputs or user data. Forecasts are allowed only in trend charts as trailing values: set projected_points to the trailing forecast count, explain the forecast basis and assumptions in note, and describe projections as projections, not measured facts. " +
+				"Never supply design options (colors, orientation, fills, stacking, curves, brush, formatters); the app owns chart design.",
 			Schema: json.RawMessage(renderChartSchema),
 		},
 		Execute: executeRenderChart,

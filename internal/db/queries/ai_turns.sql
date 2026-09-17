@@ -91,7 +91,7 @@ INSERT INTO ai_turns (
     sqlc.arg(requested_effort),
     sqlc.arg(effective_effort),
     sqlc.arg(model),
-    'chat-v1',
+    sqlc.arg(prompt_version),
     sqlc.narg(crawl_id),
     sqlc.arg(client_request_id),
     sqlc.arg(request_hash),
