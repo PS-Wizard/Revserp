@@ -46,7 +46,7 @@ SELECT id
 FROM crawls
 WHERE project_id = sqlc.arg(project_id)
   AND status = 'completed'
-  AND source IN ('manual', 'auto')
+  AND source IN ('manual', 'auto', 'mcp')
 ORDER BY completed_at DESC NULLS LAST, id DESC
 LIMIT 1;
 

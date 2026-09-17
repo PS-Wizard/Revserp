@@ -43,6 +43,8 @@ func run() error {
 	}
 
 	application := app.New(cfg, dbPool, authVerifier)
+	application.StartOrganizationEventHub(ctx)
+	application.StartOrganizationEventsCleanup(ctx)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

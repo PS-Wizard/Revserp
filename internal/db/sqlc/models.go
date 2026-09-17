@@ -405,6 +405,16 @@ type Organization struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type OrganizationEvent struct {
+	ID             int64
+	OrganizationID pgtype.UUID
+	ProjectID      pgtype.UUID
+	EventType      string
+	ResourceID     pgtype.UUID
+	Payload        []byte
+	CreatedAt      pgtype.Timestamptz
+}
+
 type OrganizationFeature struct {
 	OrgID                         pgtype.UUID
 	AutoCrawl                     bool

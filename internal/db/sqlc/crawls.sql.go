@@ -47,7 +47,7 @@ WITH candidate AS (
           FROM crawls AS running
           WHERE running.status = 'running'
             AND running.project_id = c.project_id
-            AND running.source IN ('manual', 'auto')
+            AND running.source IN ('manual', 'auto', 'mcp')
       )
     ORDER BY c.created_at ASC
     FOR UPDATE SKIP LOCKED
@@ -91,7 +91,7 @@ WITH candidate AS (
     SELECT c.id
     FROM crawls AS c
     WHERE c.status = 'queued'
-      AND c.source IN ('manual', 'competitor')
+      AND c.source IN ('manual', 'competitor', 'mcp')
       AND NOT EXISTS (
           SELECT 1
           FROM crawls AS running
@@ -144,7 +144,7 @@ const countCrawlsForProject = `-- name: CountCrawlsForProject :one
 SELECT COUNT(*)
 FROM crawls
 WHERE project_id = $1
-  AND source IN ('manual', 'auto')
+  AND source IN ('manual', 'auto', 'mcp')
   AND ($2 = '' OR status = $2)
 `
 
@@ -449,7 +449,7 @@ SELECT id
 FROM crawls
 WHERE project_id = $1
   AND status = 'completed'
-  AND source IN ('manual', 'auto')
+  AND source IN ('manual', 'auto', 'mcp')
 ORDER BY completed_at DESC NULLS LAST, created_at DESC, id DESC
 LIMIT 1
 `
@@ -467,7 +467,7 @@ FROM crawls AS current
 INNER JOIN crawls AS previous ON previous.project_id = current.project_id
 WHERE current.id = $1
   AND previous.status = 'completed'
-  AND previous.source IN ('manual', 'auto')
+  AND previous.source IN ('manual', 'auto', 'mcp')
   AND previous.completed_at < current.completed_at
 ORDER BY previous.completed_at DESC, previous.created_at DESC, previous.id DESC
 LIMIT 1
@@ -562,7 +562,7 @@ SELECT
     created_at
 FROM crawls
 WHERE project_id = $1
-  AND source IN ('manual', 'auto')
+  AND source IN ('manual', 'auto', 'mcp')
   AND ($2 = '' OR status = $2)
 ORDER BY created_at DESC
 LIMIT $3

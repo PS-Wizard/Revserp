@@ -958,7 +958,7 @@ INNER JOIN crawls AS previous
          AND previous.competitor_id = current.competitor_id)
         OR
         (current.source <> 'competitor'
-         AND previous.source IN ('manual', 'auto'))
+         AND previous.source IN ('manual', 'auto', 'mcp'))
    )
 WHERE current.id = $1
   AND current.project_id = $2
@@ -983,7 +983,7 @@ SELECT id
 FROM crawls
 WHERE project_id = $1
   AND status = 'completed'
-  AND source IN ('manual', 'auto')
+  AND source IN ('manual', 'auto', 'mcp')
   AND id <> $2
 ORDER BY completed_at DESC NULLS LAST
 LIMIT 1

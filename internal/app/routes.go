@@ -69,6 +69,7 @@ func (a *App) Router() http.Handler {
 			app.Get("/internal/scoring-config", a.platformAdminOnly(a.handleGetScoringConfig))
 			app.Put("/internal/scoring-config", a.platformAdminOnly(a.handlePutScoringConfig))
 			app.Post("/internal/scoring-config/preview", a.platformAdminOnly(a.handlePreviewScoringConfig))
+			app.Get("/organizations/{organizationID}/events", a.handleListOrganizationEvents)
 			app.Post("/organizations/{organizationID}/leave", a.handleLeaveOrganization)
 			app.Post("/organizations/{organizationID}/projects", a.handleCreateProject)
 			app.Get("/organizations/{organizationID}/projects", a.handleListProjects)

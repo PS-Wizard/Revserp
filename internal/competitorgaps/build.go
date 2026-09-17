@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	issueengine "github.com/ps-wizard/revserp/internal/issues"
 	"github.com/ps-wizard/revserp/internal/issues/shared"
@@ -42,7 +43,7 @@ func Build(ctx context.Context, queries *sqlc.Queries, parentCrawlID, competitor
 		}
 		return Report{}, fmt.Errorf("get parent crawl: %w", err)
 	}
-	if parent.Status != "completed" || (parent.Source != "manual" && parent.Source != "auto") {
+	if parent.Status != "completed" || !crawler.IsManualLikeSource(parent.Source) {
 		return Report{}, ErrParentNotReady
 	}
 

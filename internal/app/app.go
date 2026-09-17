@@ -19,6 +19,7 @@ type App struct {
 	SessionManager *internalauth.SessionManager
 	APIKeyManager  *internalauth.APIKeyManager
 	GSCService     *gsc.Service
+	OrgEvents      *organizationEventHub
 }
 
 // New builds an application with shared dependencies.
@@ -44,5 +45,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		SessionManager: sessionManager,
 		APIKeyManager:  internalauth.NewAPIKeyManager(queries),
 		GSCService:     gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes),
+		OrgEvents:      newOrganizationEventHub(),
 	}
 }

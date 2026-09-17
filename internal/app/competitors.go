@@ -301,7 +301,7 @@ func resolveCompetitorListParentCrawlID(r *http.Request, queries *sqlc.Queries, 
 	if err != nil || !parentCrawlID.Valid {
 		return parentCrawlID, err
 	}
-	if crawl.Status != "completed" || (crawl.Source != "manual" && crawl.Source != "auto") {
+	if crawl.Status != "completed" || !crawler.IsManualLikeSource(crawl.Source) {
 		return pgtype.UUID{}, nil
 	}
 	return parentCrawlID, nil
@@ -312,7 +312,7 @@ func resolveCompetitorParentCrawlID(r *http.Request, queries *sqlc.Queries, proj
 	if err != nil || !parentCrawlID.Valid {
 		return parentCrawlID, err
 	}
-	if crawl.Status != "completed" || (crawl.Source != "manual" && crawl.Source != "auto") {
+	if crawl.Status != "completed" || !crawler.IsManualLikeSource(crawl.Source) {
 		return pgtype.UUID{}, featureParamError("invalid crawl id")
 	}
 	return parentCrawlID, nil

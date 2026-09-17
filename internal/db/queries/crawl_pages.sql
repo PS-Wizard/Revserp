@@ -394,7 +394,7 @@ SELECT id
 FROM crawls
 WHERE project_id = sqlc.arg(project_id)
   AND status = 'completed'
-  AND source IN ('manual', 'auto')
+  AND source IN ('manual', 'auto', 'mcp')
   AND id <> sqlc.arg(exclude_crawl_id)
 ORDER BY completed_at DESC NULLS LAST
 LIMIT 1;
@@ -412,7 +412,7 @@ INNER JOIN crawls AS previous
          AND previous.competitor_id = current.competitor_id)
         OR
         (current.source <> 'competitor'
-         AND previous.source IN ('manual', 'auto'))
+         AND previous.source IN ('manual', 'auto', 'mcp'))
    )
 WHERE current.id = sqlc.arg(current_crawl_id)
   AND current.project_id = sqlc.arg(project_id)

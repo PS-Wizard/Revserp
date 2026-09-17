@@ -315,7 +315,7 @@ func (a *App) mcpStartCrawl(ctx context.Context, _ *mcp.CallToolRequest, in mcpS
 	crawl, err := a.Queries.CreateCrawl(ctx, sqlc.CreateCrawlParams{
 		ProjectID:         project.ID,
 		RequestedByUserID: p.User.ID,
-		Source:            "manual",
+		Source:            "mcp",
 		Status:            "queued",
 		ConfigSnapshot:    snapshot,
 		StartedAt:         pgtype.Timestamptz{},

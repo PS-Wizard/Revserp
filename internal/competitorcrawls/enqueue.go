@@ -31,7 +31,7 @@ func EnqueueMissing(ctx context.Context, queries *sqlc.Queries, parentCrawlID, r
 	if parent.Status != "completed" {
 		return nil, nil
 	}
-	if parent.Source != "manual" && parent.Source != "auto" {
+	if !crawler.IsManualLikeSource(parent.Source) {
 		return nil, nil
 	}
 
