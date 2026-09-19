@@ -52,6 +52,13 @@ type Scope struct {
 	Web WebClient
 	// WebBudget caps web searches and fetches per turn. Nil means no cap.
 	WebBudget *WebBudget
+	// Suggest is the Google autocomplete reader, nil when the worker has none.
+	// The suggestions tool reports that as an unavailable state.
+	Suggest SuggestClient
+	// SuggestBudget caps autocomplete calls and upstream requests per turn. Nil
+	// means no cap. An expand costs about 27 requests, so it stops one turn from
+	// spending many rounds of requests.
+	SuggestBudget *SuggestBudget
 	// SuppressPromptGeneration stops update_business_profile from enqueuing its
 	// own prompt_generation follow-up. Setup chaining sets it because the setup
 	// transaction owns that enqueue once it advances setup status. Chat leaves it
@@ -183,7 +190,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), webSearchTool(), fetchURLTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool()}}
 }
 
 // CatalogDefs lists every implemented tool definition in catalog order,
@@ -191,7 +198,7 @@ func NewRegistry() *Registry {
 // validation run against the full catalog, so a tool can be gateable (and
 // shown in the admin AI tools drawer) before the model can call it.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, webSearchTool().Def, fetchURLTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag

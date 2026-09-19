@@ -38,6 +38,10 @@ const (
 	// (30 queries and 150 URLs per minute), so one turn gets a small allowance.
 	webSearchBudgetPerTurn = 3
 	webFetchBudgetPerTurn  = 3
+	// Autocomplete is free but a turn can chain expands (about 27 requests each),
+	// so the tool gets both a call cap and a request cap.
+	suggestCallsPerTurn    = 4
+	suggestRequestsPerTurn = 40
 	liveBudgetBytes        = 192 << 10
 	toolResultContentCap   = 32 << 10
 	stubbedToolContent     = "[earlier tool output omitted to fit context]"
@@ -67,6 +71,11 @@ type Worker struct {
 	// nil when no tinyfish key is configured (tools report it as an ordinary
 	// unavailable state).
 	Web aichattools.WebClient
+
+	// Suggest is the Google autocomplete reader for tool calls; nil when the
+	// worker could not be wired to the endpoint (tools report it as an ordinary
+	// unavailable state).
+	Suggest aichattools.SuggestClient
 
 	lease         time.Duration
 	heartbeat     time.Duration
@@ -265,9 +274,11 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		DB:                w.pool,
 		GSC:               w.GSC,
 		Web:               w.Web,
+		Suggest:           w.Suggest,
 		RowBudget:         aichattools.NewBudget(toolRowBudget),
 		PageContentBudget: aichattools.NewPageContentBudget(pageContentBudgetBytes, pageContentBudgetPages),
 		WebBudget:         aichattools.NewWebBudget(webSearchBudgetPerTurn, webFetchBudgetPerTurn),
+		SuggestBudget:     aichattools.NewSuggestBudget(suggestCallsPerTurn, suggestRequestsPerTurn),
 	}
 
 	flushTicker := time.NewTicker(w.flushInterval)

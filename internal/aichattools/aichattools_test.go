@@ -11,12 +11,12 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "web_search", "fetch_url"}) {
-		t.Fatalf("Names() = %v, want the ten served tools", names)
+	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "web_search", "get_search_suggestions", "fetch_url"}) {
+		t.Fatalf("Names() = %v, want the eleven served tools", names)
 	}
 	defs := registry.Defs()
-	if len(defs) != 10 {
-		t.Fatalf("Defs() = %d defs, want 10", len(defs))
+	if len(defs) != 11 {
+		t.Fatalf("Defs() = %d defs, want 11", len(defs))
 	}
 	for _, def := range defs {
 		if def.Name == "" || def.Label == "" || def.Description == "" || len(def.Schema) == 0 {
