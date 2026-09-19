@@ -405,8 +405,8 @@ func TestDisabledToolsAreNotSentToProvider(t *testing.T) {
 	if len(provider.requests) != 1 {
 		t.Fatalf("streams=%d, want 1", len(provider.requests))
 	}
-	if len(provider.requests[0].Tools) != 7 {
-		t.Fatalf("round tools = %+v, want the seven non-disabled tools", provider.requests[0].Tools)
+	if got, want := len(provider.requests[0].Tools), len(allowedTools([]string{"read_issues"})); got != want {
+		t.Fatalf("round tools = %d, want the %d non-disabled tools: %+v", got, want, provider.requests[0].Tools)
 	}
 	for _, def := range provider.requests[0].Tools {
 		if def.Name == "read_issues" {
@@ -441,8 +441,8 @@ func TestToolRoundCapSynthesizesFinalAnswer(t *testing.T) {
 		t.Fatalf("streams=%d, want %d", len(provider.requests), maxAgentRounds+1)
 	}
 	for i := 0; i < maxAgentRounds; i++ {
-		if len(provider.requests[i].Tools) != 8 {
-			t.Fatalf("round %d tools = %+v, want the eight registered tools", i, provider.requests[i].Tools)
+		if got, want := len(provider.requests[i].Tools), len(allowedTools(nil)); got != want {
+			t.Fatalf("round %d tools = %d, want the %d registered tools: %+v", i, got, want, provider.requests[i].Tools)
 		}
 	}
 	final := provider.requests[maxAgentRounds]
@@ -737,8 +737,8 @@ func TestUpdateBusinessProfileIntegration(t *testing.T) {
 	if jobs != 1 {
 		t.Fatalf("prompt jobs %d want 1", jobs)
 	}
-	if len(provider.requests) < 1 || len(provider.requests[0].Tools) != 8 {
-		t.Fatalf("provider tools %v want 8", provider.requests[0].Tools)
+	if len(provider.requests) < 1 || len(provider.requests[0].Tools) != len(allowedTools(nil)) {
+		t.Fatalf("provider tools = %+v, want the %d registered tools", provider.requests[0].Tools, len(allowedTools(nil)))
 	}
 }
 
