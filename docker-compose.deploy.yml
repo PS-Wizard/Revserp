@@ -6,6 +6,10 @@
 #
 # Flow on every deploy: build image once -> migrations must pass -> API and all
 # workers start on the new code.
+# 000072 adds project_setup: the API writes it on project creation and the
+# workers read/reclaim it at boot, so /app/migrate must run before any
+# new-code container starts. Coolify per-service restarts skip this; deploy
+# the whole stack (or run /app/migrate first).
 #
 # Secret VALUES live in Coolify's Environment Variables UI (this file only references
 # ${NAMES}, so no secrets are committed to git).

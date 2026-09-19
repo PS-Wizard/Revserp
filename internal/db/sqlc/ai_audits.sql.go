@@ -87,6 +87,34 @@ func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (A
 	return i, err
 }
 
+const failActiveAIAuditsForCrawl = `-- name: FailActiveAIAuditsForCrawl :execrows
+UPDATE ai_audits
+SET status = 'failed',
+    error_message = 'superseded by project setup retry',
+    completed_at = now(),
+    updated_at = now()
+WHERE project_id = $1
+  AND crawl_id = $2
+  AND status IN ('queued', 'running')
+`
+
+type FailActiveAIAuditsForCrawlParams struct {
+	ProjectID pgtype.UUID
+	CrawlID   pgtype.UUID
+}
+
+// Setup retry path: a queued/running audit orphaned by a crashed or failed
+// visibility job would otherwise block creating the fresh retry audit on the
+// one-active-per-crawl index. Terminal audits are never touched, so history
+// stays append-only and a failed run is never reused.
+func (q *Queries) FailActiveAIAuditsForCrawl(ctx context.Context, arg FailActiveAIAuditsForCrawlParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failActiveAIAuditsForCrawl, arg.ProjectID, arg.CrawlID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAIAuditByCrawlAndProject = `-- name: GetAIAuditByCrawlAndProject :one
 SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
 FROM ai_audits

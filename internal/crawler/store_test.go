@@ -388,7 +388,7 @@ func TestMarkCrawlCompletedVerifiesRecordedWork(t *testing.T) {
 	if err := store.MarkCrawlRunning(ctx, failedCrawlID); err != nil {
 		t.Fatalf("mark second crawl running: %v", err)
 	}
-	if err := store.MarkCrawlFailed(ctx, failedCrawlID, 0, 0, 0); err != nil {
+	if err := store.MarkCrawlFailed(ctx, failedCrawlID, 0, 0, 0, "boom"); err != nil {
 		t.Fatalf("mark crawl failed: %v", err)
 	}
 	var lockedAt pgtype.Timestamptz

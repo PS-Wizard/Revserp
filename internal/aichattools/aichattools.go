@@ -52,6 +52,11 @@ type Scope struct {
 	Web WebClient
 	// WebBudget caps web searches and fetches per turn. Nil means no cap.
 	WebBudget *WebBudget
+	// SuppressPromptGeneration stops update_business_profile from enqueuing its
+	// own prompt_generation follow-up. Setup chaining sets it because the setup
+	// transaction owns that enqueue once it advances setup status. Chat leaves it
+	// false, so a saved profile still triggers question generation.
+	SuppressPromptGeneration bool
 }
 
 // Budget is a thread-safe counter of rows a turn may still fetch.

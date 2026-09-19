@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/projectsetup"
 )
 
 // CrawlStatus is a typed crawl lifecycle status, used within this file for
@@ -98,16 +100,7 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	crawl, err := queries.CreateCrawl(r.Context(), sqlc.CreateCrawlParams{
-		ProjectID:         projectID,
-		RequestedByUserID: user.ID,
-		Source:            "manual",
-		Status:            "queued",
-		ConfigSnapshot:    normalizedConfigSnapshot,
-		StartedAt:         pgtype.Timestamptz{},
-		CompetitorID:      pgtype.UUID{},
-		ParentCrawlID:     pgtype.UUID{},
-	})
+	crawl, err := insertQueuedCrawl(r.Context(), queries, projectID, user.ID, "manual", normalizedConfigSnapshot)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -119,6 +112,28 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, newCrawlResponseFromCreateRow(crawl))
+}
+
+// insertQueuedCrawl creates the standard queued crawl row shared by manual
+// and setup crawls. Callers own the transaction.
+func insertQueuedCrawl(
+	ctx context.Context,
+	queries *sqlc.Queries,
+	projectID pgtype.UUID,
+	userID pgtype.UUID,
+	source string,
+	configSnapshot []byte,
+) (sqlc.CreateCrawlRow, error) {
+	return queries.CreateCrawl(ctx, sqlc.CreateCrawlParams{
+		ProjectID:         projectID,
+		RequestedByUserID: userID,
+		Source:            source,
+		Status:            "queued",
+		ConfigSnapshot:    configSnapshot,
+		StartedAt:         pgtype.Timestamptz{},
+		CompetitorID:      pgtype.UUID{},
+		ParentCrawlID:     pgtype.UUID{},
+	})
 }
 
 // handleListCrawls lists crawls for a project the user can access.
@@ -321,6 +336,13 @@ func (a *App) handleCancelCrawl(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	// A cancelled initial setup crawl fails the durable setup in the same
+	// transaction, so the setup never waits on a crawl that will not finish.
+	if err := projectsetup.OnCrawlFailed(r.Context(), queries, crawlID, "crawl cancelled"); err != nil {
+		serverError(w, r, err)
 		return
 	}
 

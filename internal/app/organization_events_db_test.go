@@ -134,7 +134,7 @@ func TestOrganizationCrawlEventMapping(t *testing.T) {
 	if _, err := queries.UpdateCrawlProgress(ctx, sqlc.UpdateCrawlProgressParams{ID: crawl.ID, UrlsCrawled: 5, UrlsDiscovered: 10}); err != nil {
 		t.Fatalf("update crawl progress: %v", err)
 	}
-	if err := queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{ID: crawl.ID, UrlsDiscovered: 10, UrlsCrawled: 10}); err != nil {
+	if _, err := queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{ID: crawl.ID, UrlsDiscovered: 10, UrlsCrawled: 10}); err != nil {
 		t.Fatalf("mark crawl completed: %v", err)
 	}
 

@@ -70,8 +70,27 @@ func executeUpdateBusinessProfile(ctx context.Context, args json.RawMessage, s S
 	if s.Queries == nil || s.DB == nil {
 		return Result{}, errors.New("update_business_profile: scope has no queries or transaction support")
 	}
-	exec := updateBusinessProfileExecutor{queries: s.Queries, db: s.DB}
+	exec := updateBusinessProfileExecutor{queries: s.Queries, db: s.DB, suppressPromptGeneration: s.SuppressPromptGeneration}
 	return exec.run(ctx, args, s.ProjectID, s.UserID)
+}
+
+// promptGenerationEnqueuer is the narrow surface the post-commit chat follow-up
+// needs, so its suppression contract is testable without a database.
+type promptGenerationEnqueuer interface {
+	EnqueueAIWorkerJob(ctx context.Context, arg sqlc.EnqueueAIWorkerJobParams) (sqlc.EnqueueAIWorkerJobRow, error)
+}
+
+// enqueuePromptGenerationAfterProfileWrite preserves the chat behavior where a
+// saved profile triggers question generation. Setup chaining sets suppress and
+// enqueues prompt_generation itself once setup status advances, so it must not
+// race a second job in from here.
+func enqueuePromptGenerationAfterProfileWrite(ctx context.Context, q promptGenerationEnqueuer, projectID pgtype.UUID, suppress bool) {
+	if suppress {
+		return
+	}
+	if _, err := q.EnqueueAIWorkerJob(ctx, sqlc.EnqueueAIWorkerJobParams{JobType: "prompt_generation", ProjectID: projectID}); err != nil {
+		log.Printf("enqueue prompt_generation job for project %s: %v", projectID.String(), err)
+	}
 }
 
 type modelError struct{ msg string }
@@ -93,8 +112,9 @@ type updateBusinessProfileQuerier interface {
 }
 
 type updateBusinessProfileExecutor struct {
-	queries *sqlc.Queries
-	db      Transactor
+	queries                  *sqlc.Queries
+	db                       Transactor
+	suppressPromptGeneration bool
 }
 
 func (e *updateBusinessProfileExecutor) run(ctx context.Context, raw json.RawMessage, projectID, userID pgtype.UUID) (Result, error) {
@@ -118,9 +138,7 @@ func (e *updateBusinessProfileExecutor) run(ctx context.Context, raw json.RawMes
 	if err := tx.Commit(ctx); err != nil {
 		return Result{}, fmt.Errorf("%s: commit: %w", updateBusinessProfileName, err)
 	}
-	if _, err := e.queries.EnqueueAIWorkerJob(ctx, sqlc.EnqueueAIWorkerJobParams{JobType: "prompt_generation", ProjectID: projectID}); err != nil {
-		log.Printf("enqueue prompt_generation job for project %s: %v", projectID.String(), err)
-	}
+	enqueuePromptGenerationAfterProfileWrite(ctx, e.queries, projectID, e.suppressPromptGeneration)
 	return res, nil
 }
 

@@ -11,9 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ps-wizard/revserp/internal/aichattools"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/mapsvisibility"
+	"github.com/ps-wizard/revserp/internal/projectsetup"
 )
 
 // Worker polls ai_worker_jobs and executes them.
@@ -23,6 +25,11 @@ type Worker struct {
 	cfg          config.Config
 	concurrency  int
 	pollInterval time.Duration
+
+	// Web is the TinyFish-backed web search and fetch client used by the
+	// bootstrap agent; nil leaves the web tools reporting an ordinary
+	// unavailable state. Orchestration wires it when a key is configured.
+	Web aichattools.WebClient
 }
 
 // New builds an AI worker.
@@ -87,6 +94,9 @@ func (w *Worker) runStaleReclaimLoop(ctx context.Context) {
 	}
 }
 
+// reclaimStale fails orphaned running rows. Reclaiming ai_worker_jobs also
+// fails the matching active setup for setup-linked job types in the same
+// statement, so a crashed worker cannot leave a setup active forever.
 func (w *Worker) reclaimStale(ctx context.Context) {
 	cutoff := pgtype.Timestamptz{Time: time.Now().UTC().Add(-staleRunningJobAge), Valid: true}
 
@@ -124,33 +134,99 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 		log.Printf("ai worker %d: claimed job id=%s type=%s project=%s", workerID, job.ID.String(), job.JobType, job.ProjectID.String())
 
 		var jobErr error
+		var visibilityStatus string
 		switch job.JobType {
-		case "prompt_generation":
+		case promptGenerationJobType:
 			jobErr = w.handlePromptGeneration(ctx, job)
-		case "visibility_run":
-			jobErr = w.handleVisibilityRun(ctx, job)
-		case "maps_visibility":
+		case visibilityRunJobType:
+			visibilityStatus, jobErr = w.handleVisibilityRun(ctx, job)
+		case mapsVisibilityJobType:
 			jobErr = mapsvisibility.HandleMapsVisibilityCheck(ctx, w.queries, w.cfg, job.ProjectID)
+		case projectsetup.BusinessProfileBootstrapJobType:
+			jobErr = w.handleBusinessProfileBootstrap(ctx, job)
 		default:
 			jobErr = fmt.Errorf("unknown job type: %s", job.JobType)
 		}
 
 		if jobErr != nil {
 			log.Printf("ai worker %d: job %s failed: %v", workerID, job.ID.String(), jobErr)
-			if markErr := w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
-				ID:           job.ID,
-				ErrorMessage: pgtype.Text{String: jobErr.Error(), Valid: true},
-			}); markErr != nil {
-				log.Printf("ai worker %d: mark failed error: %v", workerID, markErr)
+			if finalizeErr := w.finalizeJobFailure(ctx, job, jobErr); finalizeErr != nil {
+				log.Printf("ai worker %d: finalize failure error: %v", workerID, finalizeErr)
 			}
 			continue
 		}
 
-		if markErr := w.queries.MarkAIWorkerJobCompleted(ctx, job.ID); markErr != nil {
-			log.Printf("ai worker %d: mark completed error: %v", workerID, markErr)
+		if finalizeErr := w.finalizeJobSuccess(ctx, job, visibilityStatus); finalizeErr != nil {
+			log.Printf("ai worker %d: finalize success error: %v", workerID, finalizeErr)
+			continue
 		}
 		log.Printf("ai worker %d: job %s completed", workerID, job.ID.String())
 	}
+}
+
+// finalizeJobSuccess writes the terminal success state. Setup-linked jobs do it
+// in one transaction with the matching setup transition; every other job keeps
+// the plain completion.
+func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow, visibilityStatus string) error {
+	switch job.JobType {
+	case projectsetup.BusinessProfileBootstrapJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizeBootstrapSuccess(ctx, q, job)
+		})
+	case promptGenerationJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizePromptGenerationSuccess(ctx, q, job)
+		})
+	case visibilityRunJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizeVisibilitySuccess(ctx, q, job, visibilityStatus)
+		})
+	default:
+		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
+	}
+}
+
+// finalizeJobFailure writes the terminal failure state. Setup-linked jobs also
+// fail the matching setup step in the same transaction; every other job keeps
+// the plain failure.
+func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow, jobErr error) error {
+	message := jobErr.Error()
+	switch job.JobType {
+	case projectsetup.BusinessProfileBootstrapJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizeBootstrapFailure(ctx, q, job, message)
+		})
+	case promptGenerationJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizePromptGenerationFailure(ctx, q, job, message)
+		})
+	case visibilityRunJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizeVisibilityFailure(ctx, q, job, message)
+		})
+	default:
+		return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+			ID:           job.ID,
+			ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
+		})
+	}
+}
+
+// withSetupTx runs fn against a transaction-bound querier and commits only when
+// fn returns nil, so each finalization is atomic.
+func (w *Worker) withSetupTx(ctx context.Context, fn func(q setupFinalizationQueries) error) error {
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin setup finalization: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(w.queries.WithTx(tx)); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit setup finalization: %w", err)
+	}
+	return nil
 }
 
 func sleepOrCancel(ctx context.Context, d time.Duration) error {

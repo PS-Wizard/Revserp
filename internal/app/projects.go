@@ -103,6 +103,13 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, err)
 			return err
 		}
+
+		// The setup row is created in the pre-start ready status. The owner's
+		// POST starts it, so no worker or setup event fires yet.
+		if _, err := queries.CreateProjectSetup(r.Context(), newReadyProjectSetupParams(project.OrganizationID, project.ID, user.ID)); err != nil {
+			serverError(w, r, err)
+			return err
+		}
 		return nil
 	}) {
 		return

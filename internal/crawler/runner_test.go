@@ -331,7 +331,7 @@ func (store *testResultStore) MarkCrawlCompleted(_ context.Context, _ pgtype.UUI
 	return nil
 }
 
-func (store *testResultStore) MarkCrawlFailed(_ context.Context, _ pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+func (store *testResultStore) MarkCrawlFailed(_ context.Context, _ pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, _ string) error {
 	store.markedFailed = true
 	store.completedDiscovered = urlsDiscovered
 	store.completedCrawled = urlsCrawled

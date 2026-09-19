@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/projectsetup"
 )
 
 const insertCrawlLinkSQL = `
@@ -53,7 +54,9 @@ func (store *Store) MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) e
 	return nil
 }
 
-// MarkCrawlCompleted writes final crawl counters and completion status.
+// MarkCrawlCompleted writes final crawl counters and completion status, then
+// advances any project setup linked to this crawl to profile_generation and
+// enqueues the profile bootstrap job in the same transaction.
 func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, hasLlmsTxt pgtype.Bool) error {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -61,10 +64,16 @@ func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	queries := store.queries.WithTx(tx)
-	if err := queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{
+	rows, err := queries.MarkCrawlCompleted(ctx, sqlc.MarkCrawlCompletedParams{
 		ID: crawlID, UrlsDiscovered: int32(urlsDiscovered), UrlsCrawled: int32(urlsCrawled), MaxDepthReached: int32(maxDepthReached), HasLlmsTxt: hasLlmsTxt,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("mark crawl completed: %w", err)
+	}
+	if rows > 0 {
+		if err := projectsetup.OnCrawlCompleted(ctx, queries, crawlID); err != nil {
+			return fmt.Errorf("advance project setup after crawl completion: %w", err)
+		}
 	}
 	var issueWorkSchemaExists bool
 	if err := tx.QueryRow(ctx, "SELECT to_regclass('issue_work_attempts') IS NOT NULL").Scan(&issueWorkSchemaExists); err != nil {
@@ -81,18 +90,26 @@ func (store *Store) MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID,
 	return nil
 }
 
-// MarkCrawlFailed writes final crawl counters and failed status.
-func (store *Store) MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error {
+// MarkCrawlFailed writes final crawl counters and failed status, then marks any
+// project setup linked to this crawl as failed in the same transaction. The
+// error message is copied onto the setup so the failure is visible to the user.
+func (store *Store) MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, errorMessage string) error {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin crawl failure: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	queries := store.queries.WithTx(tx)
-	if err := queries.MarkCrawlFailed(ctx, sqlc.MarkCrawlFailedParams{
+	rows, err := queries.MarkCrawlFailed(ctx, sqlc.MarkCrawlFailedParams{
 		ID: crawlID, UrlsDiscovered: int32(urlsDiscovered), UrlsCrawled: int32(urlsCrawled), MaxDepthReached: int32(maxDepthReached),
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("mark crawl failed: %w", err)
+	}
+	if rows > 0 {
+		if err := projectsetup.OnCrawlFailed(ctx, queries, crawlID, capErrorMessage(errorMessage)); err != nil {
+			return fmt.Errorf("fail project setup after crawl failure: %w", err)
+		}
 	}
 	var issueWorkSchemaExists bool
 	if err := tx.QueryRow(ctx, "SELECT to_regclass('issue_work_attempts') IS NOT NULL").Scan(&issueWorkSchemaExists); err != nil {

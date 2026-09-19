@@ -519,6 +519,21 @@ type ProjectGscConnection struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
+type ProjectSetup struct {
+	ID                   pgtype.UUID
+	OrganizationID       pgtype.UUID
+	ProjectID            pgtype.UUID
+	RequestedByUserID    pgtype.UUID
+	CrawlID              pgtype.UUID
+	Status               string
+	Error                pgtype.Text
+	FailedStep           pgtype.Text
+	VisibilitySkipReason pgtype.Text
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	CompletedAt          pgtype.Timestamptz
+}
+
 type ScoringConfig struct {
 	ID              int64
 	ConfigJson      []byte

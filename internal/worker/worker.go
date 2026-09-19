@@ -480,7 +480,7 @@ func (w *Worker) runCrawlGuarded(ctx context.Context, claimed claimedCrawlRow) (
 		// Detached from ctx: the timeout may already have fired, and the status
 		// write has to land regardless.
 		finalCtx := context.WithoutCancel(ctx)
-		if failErr := crawler.NewStore(w.pool).MarkCrawlFailed(finalCtx, claimed.ID, 0, 0, 0); failErr != nil {
+		if failErr := crawler.NewStore(w.pool).MarkCrawlFailed(finalCtx, claimed.ID, 0, 0, 0, fmt.Sprintf("crawl panicked: %v", recovered)); failErr != nil {
 			log.Printf("failed to mark panicked crawl as failed: crawl_id=%s error=%v", claimed.ID.String(), failErr)
 		}
 		err = fmt.Errorf("crawl panicked: %v", recovered)
@@ -494,7 +494,7 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(claimed.BaseURL, claimed.ConfigSnapshot)
 	if err != nil {
 		store := crawler.NewStore(w.pool)
-		if failErr := store.MarkCrawlFailed(ctx, claimed.ID, 0, 0, 0); failErr != nil {
+		if failErr := store.MarkCrawlFailed(ctx, claimed.ID, 0, 0, 0, err.Error()); failErr != nil {
 			return fmt.Errorf("build crawler config: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("build crawler config: %w", err)
@@ -599,7 +599,7 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	}
 	if err != nil {
 		finalCtx := context.WithoutCancel(ctx)
-		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, err.Error()); failErr != nil {
 			return fmt.Errorf("derive issues: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("derive issues: %w", err)
@@ -615,7 +615,7 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	log.Printf("phase timing: crawl_id=%s score_crawl=%s", claimed.ID.String(), time.Since(scoreStartedAt).Round(time.Millisecond))
 	if err != nil {
 		finalCtx := context.WithoutCancel(ctx)
-		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached); failErr != nil {
+		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, err.Error()); failErr != nil {
 			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)
 		}
 		return fmt.Errorf("score crawl: %w", err)

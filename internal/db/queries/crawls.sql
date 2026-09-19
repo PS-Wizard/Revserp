@@ -131,7 +131,7 @@ SET status = 'running',
     completed_at = NULL
 WHERE id = $1;
 
--- name: MarkCrawlCompleted :exec
+-- name: MarkCrawlCompleted :execrows
 UPDATE crawls
 SET status = 'completed',
     urls_discovered = $2,
@@ -142,7 +142,7 @@ SET status = 'completed',
 WHERE id = $1
   AND status = 'running';
 
--- name: MarkCrawlFailed :exec
+-- name: MarkCrawlFailed :execrows
 UPDATE crawls
 SET status = 'failed',
     urls_discovered = $2,
@@ -242,6 +242,20 @@ WITH stale AS (
 	SET status = 'failed', completed_at = now()
 	WHERE status = 'running' AND started_at < $1
 	RETURNING id
+),
+-- Data-modifying CTEs run to completion even when unreferenced, so this
+-- fails the linked project_setup rows atomically with the reclaimed crawls.
+failed_setups AS (
+	UPDATE project_setup AS ps
+	SET status = 'failed',
+	    error = 'crawl reclaimed after worker restart',
+	    failed_step = 'crawling',
+	    updated_at = now(),
+	    completed_at = now()
+	FROM stale
+	WHERE ps.crawl_id = stale.id
+	  AND ps.status = 'crawling'
+	RETURNING ps.id
 )
 UPDATE issue_work_attempts
 	SET locked_at = NULL, verification_crawl_id = NULL

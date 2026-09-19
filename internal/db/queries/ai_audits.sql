@@ -104,3 +104,17 @@ SET used_audits = ai_workspace_monthly_usage.used_audits + 1,
     updated_at = now()
 WHERE ai_workspace_monthly_usage.used_audits < sqlc.arg(monthly_limit)::integer
 RETURNING used_audits;
+
+-- name: FailActiveAIAuditsForCrawl :execrows
+-- Setup retry path: a queued/running audit orphaned by a crashed or failed
+-- visibility job would otherwise block creating the fresh retry audit on the
+-- one-active-per-crawl index. Terminal audits are never touched, so history
+-- stays append-only and a failed run is never reused.
+UPDATE ai_audits
+SET status = 'failed',
+    error_message = 'superseded by project setup retry',
+    completed_at = now(),
+    updated_at = now()
+WHERE project_id = sqlc.arg(project_id)
+  AND crawl_id = sqlc.arg(crawl_id)
+  AND status IN ('queued', 'running');

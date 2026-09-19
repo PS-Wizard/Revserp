@@ -20,33 +20,33 @@ import (
 
 var numberedItemRe = regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`)
 
-func (w *Worker) handleVisibilityRun(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow) error {
+func (w *Worker) handleVisibilityRun(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow) (string, error) {
 	if !job.AuditID.Valid {
-		return fmt.Errorf("visibility_run job %s has no audit_id", job.ID.String())
+		return "", fmt.Errorf("visibility_run job %s has no audit_id", job.ID.String())
 	}
 
 	paq, err := w.queries.GetProjectAIQuestions(ctx, job.ProjectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no ai questions for project %s", job.ProjectID.String())
+			return "", fmt.Errorf("no ai questions for project %s", job.ProjectID.String())
 		}
-		return fmt.Errorf("load ai questions: %w", err)
+		return "", fmt.Errorf("load ai questions: %w", err)
 	}
 
 	var questions []string
 	if err := json.Unmarshal(paq.Questions, &questions); err != nil {
-		return fmt.Errorf("decode questions: %w", err)
+		return "", fmt.Errorf("decode questions: %w", err)
 	}
 	if len(questions) == 0 {
-		return fmt.Errorf("no questions for project %s", job.ProjectID.String())
+		return "", fmt.Errorf("no questions for project %s", job.ProjectID.String())
 	}
 
 	profile, err := w.queries.GetProjectBusinessProfileByProjectID(ctx, job.ProjectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no business profile for project %s", job.ProjectID.String())
+			return "", fmt.Errorf("no business profile for project %s", job.ProjectID.String())
 		}
-		return fmt.Errorf("load business profile: %w", err)
+		return "", fmt.Errorf("load business profile: %w", err)
 	}
 	businessName := profile.BrandName
 
@@ -60,12 +60,12 @@ func (w *Worker) handleVisibilityRun(ctx context.Context, job sqlc.ClaimNextPend
 		StartedAt:    pgtype.Timestamptz{Time: startedAt, Valid: true},
 		CompletedAt:  pgtype.Timestamptz{},
 	}); updateErr != nil {
-		return fmt.Errorf("mark audit running: %w", updateErr)
+		return "", fmt.Errorf("mark audit running: %w", updateErr)
 	}
 
 	models := w.cfg.AIVisibilityModels
 	if len(models) == 0 {
-		return fmt.Errorf("no AI visibility models configured")
+		return "", fmt.Errorf("no AI visibility models configured")
 	}
 
 	var mu sync.Mutex
@@ -113,10 +113,10 @@ func (w *Worker) handleVisibilityRun(ctx context.Context, job sqlc.ClaimNextPend
 		StartedAt:   pgtype.Timestamptz{Time: startedAt, Valid: true},
 		CompletedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
 	}); updateErr != nil {
-		return fmt.Errorf("mark audit %s: %w", finalStatus, updateErr)
+		return "", fmt.Errorf("mark audit %s: %w", finalStatus, updateErr)
 	}
 
-	return nil
+	return finalStatus, nil
 }
 
 func (w *Worker) runSingleVisibilityCheck(ctx context.Context, auditID pgtype.UUID, displayOrder int, questionText, modelSlug, businessName string) error {

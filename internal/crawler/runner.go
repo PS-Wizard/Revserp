@@ -23,7 +23,7 @@ type CrawlRunSummary struct {
 type resultPersister interface {
 	MarkCrawlRunning(ctx context.Context, crawlID pgtype.UUID) error
 	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, hasLlmsTxt pgtype.Bool) error
-	MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int) error
+	MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, errorMessage string) error
 	PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error
 	UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) (bool, error)
 }
@@ -349,7 +349,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 						cancelRun()
 						summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
 						finalCtx := context.WithoutCancel(ctx)
-						if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
+						if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
 							return crawlResults, summary, fmt.Errorf("persist reused crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
 						}
 						return crawlResults, summary, fmt.Errorf("persist reused crawl result for %q: %w", result.Job.URL, err)
@@ -421,7 +421,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 					// write still lands even if the parent ctx is already done
 					// (e.g. process shutdown), matching worker.go's post-crawl writes.
 					finalCtx := context.WithoutCancel(ctx)
-					if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
+					if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
 						return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
 					}
 					return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
@@ -448,7 +448,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				// cancelled (e.g. process shutdown); otherwise the row is
 				// stuck in 'running' forever.
 				finalCtx := context.WithoutCancel(ctx)
-				if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached); failErr != nil {
+				if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, runContext.Err().Error()); failErr != nil {
 					return crawlResults, summary, fmt.Errorf("crawl canceled: %w (also failed to mark crawl failed: %v)", runContext.Err(), failErr)
 				}
 			}

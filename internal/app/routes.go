@@ -81,6 +81,8 @@ func (a *App) Router() http.Handler {
 			app.Delete("/projects/{projectID}", a.handleDeleteProject)
 			app.Get("/projects/{projectID}/business-profile", a.handleProjectBusinessProfile)
 			app.Put("/projects/{projectID}/business-profile", a.handleUpsertProjectBusinessProfile)
+			app.Get("/projects/{projectID}/setup", a.handleGetProjectSetup)
+			app.Post("/projects/{projectID}/setup", a.handleStartProjectSetup)
 			app.Get("/projects/{projectID}/keywords", a.handleProjectKeywords)
 			app.Get("/projects/{projectID}/ai-questions", a.handleGetProjectAIQuestions)
 			app.Post("/projects/{projectID}/ai-questions/regenerate", a.handleRegenerateProjectAIQuestions)

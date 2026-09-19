@@ -6,11 +6,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/ps-wizard/revserp/internal/aiaudit"
 	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
+	"github.com/ps-wizard/revserp/internal/tinyfish"
 )
 
 func main() {
@@ -38,6 +40,11 @@ func run() error {
 	log.Printf("ai audit worker starting: concurrency=%d poll=%s", cfg.AIAuditWorkerConcurrency, cfg.AIAuditWorkerPollInterval)
 
 	worker := aiaudit.New(dbPool, cfg, cfg.AIAuditWorkerConcurrency, cfg.AIAuditWorkerPollInterval)
+	// The web tools stay unavailable when no key is set: the bootstrap agent
+	// reports that as an ordinary state rather than failing.
+	if strings.TrimSpace(cfg.TinyfishAPIKey) != "" {
+		worker.Web = tinyfish.NewClient(cfg.TinyfishAPIKey, cfg.TinyfishSearchEndpoint, cfg.TinyfishFetchEndpoint, 0)
+	}
 	if err := worker.Run(ctx); err != nil {
 		log.Printf("ai audit worker error: %v", err)
 	}
