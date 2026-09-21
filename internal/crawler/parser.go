@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -34,16 +35,20 @@ type ParsedBlock struct {
 
 // ParsedPage holds the basic extracted facts from one HTML page.
 type ParsedPage struct {
-	URL                     string
-	Title                   string
-	MetaDescription         string
-	Author                  string
-	CanonicalURL            string
-	Lang                    string
-	Viewport                string
-	Robots                  string
-	VisibleText             string
-	ContentBlocks           []ParsedBlock
+	URL             string
+	Title           string
+	MetaDescription string
+	Author          string
+	CanonicalURL    string
+	Lang            string
+	Viewport        string
+	Robots          string
+	VisibleText     string
+	ContentBlocks   []ParsedBlock
+	// PageTextLength is the length of the whole body text with script, style and
+	// noscript removed. The render decision uses it to tell an empty JavaScript
+	// shell from a short but complete page. It is never stored.
+	PageTextLength          int
 	ImageCount              int
 	ImagesWithoutAltCount   int
 	ImagesWithoutDimensions int
@@ -93,6 +98,7 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 		Robots:                  strings.TrimSpace(document.Find(`meta[name="robots"]`).First().AttrOr("content", "")),
 		VisibleText:             visibleText,
 		ContentBlocks:           contentBlocks,
+		PageTextLength:          extractPageTextLength(document),
 		ImageCount:              imageCount,
 		ImagesWithoutAltCount:   imagesWithoutAltCount,
 		ImagesWithoutDimensions: imagesWithoutDimensions,
@@ -400,49 +406,33 @@ func extractContentBlocks(document *goquery.Document) ([]ParsedBlock, string) {
 
 	var blocks []ParsedBlock
 	var texts []string
-	clone.Find("h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, img, pre").Each(func(_ int, selection *goquery.Selection) {
-		tag := goquery.NodeName(selection)
-		if tag == "img" {
-			src := strings.TrimSpace(selection.AttrOr("src", ""))
-			alt := normalizeWhitespace(selection.AttrOr("alt", ""))
-			if src == "" && alt == "" {
-				return
-			}
-			text := alt
-			if text == "" {
-				text = src
-			}
-			html, _ := goquery.OuterHtml(selection)
-			if html == "" {
-				html = "<img src=\"" + src + "\" alt=\"" + alt + "\">"
-			}
-			blocks = append(blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
+	clone.Find("*").Each(func(_ int, selection *goquery.Selection) {
+		// A list absorbs all of its descendants into one block, so skip anything
+		// inside a list to avoid double-counting items and nested images.
+		if selection.ParentsFiltered("ul, ol").Length() > 0 {
 			return
 		}
-		if tag == "ul" || tag == "ol" {
-			var items []string
-			selection.Find("li").Each(func(_ int, li *goquery.Selection) {
-				ttt := normalizeWhitespace(li.Text())
-				if ttt != "" {
-					items = append(items, ttt)
-				}
-			})
-			if len(items) == 0 {
+
+		tag := goquery.NodeName(selection)
+		switch {
+		case tag == "img":
+			appendImageBlock(&blocks, selection)
+		case tag == "ul" || tag == "ol":
+			text, ok := appendListBlock(&blocks, selection, tag)
+			if ok && !isNoiseVisibleText(text) {
+				texts = append(texts, text)
+			}
+		case isTextBearingBlockTag(tag) && !hasBlockChild(selection):
+			text := normalizeWhitespace(selection.Text())
+			if text == "" {
 				return
 			}
-			text := strings.Join(items, " ")
 			html, _ := selection.Html()
 			blocks = append(blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
-			texts = append(texts, text)
-			return
+			if !isNoiseVisibleText(text) {
+				texts = append(texts, text)
+			}
 		}
-		text := normalizeWhitespace(selection.Text())
-		if text == "" {
-			return
-		}
-		html, _ := selection.Html()
-		blocks = append(blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
-		texts = append(texts, text)
 	})
 
 	if len(blocks) == 0 {
@@ -450,6 +440,94 @@ func extractContentBlocks(document *goquery.Document) ([]ParsedBlock, string) {
 	}
 
 	return blocks, strings.Join(texts, "\n\n")
+}
+
+// isTextBearingBlockTag reports whether a tag can hold readable page text.
+func isTextBearingBlockTag(tag string) bool {
+	switch tag {
+	case "h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "pre", "div", "section", "td", "th", "dd", "dt", "figcaption", "address":
+		return true
+	default:
+		return false
+	}
+}
+
+// blockChildSelector matches any child that is itself a block container, so a
+// wrapper div around real blocks is skipped and its descendants are walked instead.
+const blockChildSelector = "h1, h2, h3, h4, h5, h6, p, blockquote, pre, div, section, td, th, dd, dt, figcaption, address, ul, ol, table, article, figure, header, footer, nav, aside"
+
+func hasBlockChild(selection *goquery.Selection) bool {
+	return selection.ChildrenFiltered(blockChildSelector).Length() > 0
+}
+
+func appendImageBlock(blocks *[]ParsedBlock, selection *goquery.Selection) {
+	src := strings.TrimSpace(selection.AttrOr("src", ""))
+	alt := normalizeWhitespace(selection.AttrOr("alt", ""))
+	if src == "" && alt == "" {
+		return
+	}
+	text := alt
+	if text == "" {
+		text = src
+	}
+	html, _ := goquery.OuterHtml(selection)
+	if html == "" {
+		html = "<img src=\"" + src + "\" alt=\"" + alt + "\">"
+	}
+	*blocks = append(*blocks, ParsedBlock{Tag: "img", Text: text, Html: strings.TrimSpace(html)})
+}
+
+func appendListBlock(blocks *[]ParsedBlock, selection *goquery.Selection, tag string) (string, bool) {
+	var items []string
+	selection.Find("li").Each(func(_ int, li *goquery.Selection) {
+		item := normalizeWhitespace(li.Text())
+		if item != "" {
+			items = append(items, item)
+		}
+	})
+	if len(items) == 0 {
+		return "", false
+	}
+	text := strings.Join(items, " ")
+	html, _ := selection.Html()
+	*blocks = append(*blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
+	return text, true
+}
+
+// noisyVisibleText lists link and UI labels that must not inflate the visible text.
+var noisyVisibleText = map[string]bool{
+	"read more": true, "readmore": true, "read less": true, "previous": true,
+	"next": true, "more": true, "view all": true, "click here": true,
+	"learn more": true, "search": true, "menu": true, "login": true,
+	"register": true, "back": true, "share": true,
+}
+
+// isNoiseVisibleText reports whether a block's text is UI chrome rather than content.
+// Length is deliberately not a criterion: short real titles must survive.
+// The letter test is script-agnostic: a Devanagari notice title is content, and an
+// ASCII-only test would drop every Nepali page on a bilingual site.
+func isNoiseVisibleText(text string) bool {
+	if noisyVisibleText[strings.ToLower(strings.TrimSpace(text))] {
+		return true
+	}
+	for _, character := range text {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			return false
+		}
+	}
+	return true
+}
+
+// extractPageTextLength returns the byte length of the whole body text with
+// script, style and noscript removed. It is computed once per parse.
+func extractPageTextLength(document *goquery.Document) int {
+	body := document.Find("body").First()
+	if body.Length() == 0 {
+		return 0
+	}
+	clone := body.Clone()
+	clone.Find("script, style, noscript").Remove()
+	return len(normalizeWhitespace(clone.Text()))
 }
 
 // extractVisibleText returns normalized visible text for backward compat.

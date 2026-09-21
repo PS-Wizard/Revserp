@@ -247,6 +247,7 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		InternalLinks:           nullableInt4(internalLinkCount),
 		ResponseTimeMs:          nullableInt4(int(result.Fetch.ResponseTime.Milliseconds())),
 		JavascriptRendered:      nullableBool(result.JavascriptRendered),
+		WouldHaveRendered:       result.WouldHaveRendered,
 		H2Headings:              mustMarshalJSON(h2Headings),
 		H3Headings:              mustMarshalJSON(h3Headings),
 		HeadingOutline:          mustMarshalJSON(headingOutline),

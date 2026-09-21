@@ -31,6 +31,9 @@ type CrawlConfigSnapshot struct {
 	// SkipSitemapSeed disables robots.txt / sitemap.xml frontier seeding so the
 	// crawl starts from homepage BFS only.
 	SkipSitemapSeed bool `json:"skip_sitemap_seed,omitempty"`
+	// RenderJavaScript opts this crawl into the headless JS render fallback
+	// for pages that look like JavaScript shells. Opt-in per crawl, off by default.
+	RenderJavaScript bool `json:"render_javascript,omitempty"`
 }
 
 type crawlConfigSnapshotInput struct {
@@ -42,6 +45,7 @@ type crawlConfigSnapshotInput struct {
 	ForceFullCrawl      *bool `json:"force_full_crawl"`
 	HonourRobotsTxt     *bool `json:"honour_robots_txt"`
 	SkipSitemapSeed     *bool `json:"skip_sitemap_seed"`
+	RenderJavaScript    *bool `json:"render_javascript"`
 }
 
 // NormalizeConfigSnapshot resolves defaults and validates one crawl config snapshot.
@@ -103,6 +107,10 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 		if input.SkipSitemapSeed != nil {
 			resolvedSnapshot.SkipSitemapSeed = *input.SkipSitemapSeed
 		}
+
+		if input.RenderJavaScript != nil {
+			resolvedSnapshot.RenderJavaScript = *input.RenderJavaScript
+		}
 	}
 
 	normalizedSnapshot, err := json.Marshal(resolvedSnapshot)
@@ -146,15 +154,16 @@ func ConfigFromBaseURLAndSnapshot(baseURL string, rawConfigSnapshot []byte) (Cra
 	}
 
 	return CrawlerConfig{
-		AllowedHost:     normalizeHostForScope(parsedBaseURL.Hostname()),
-		MaxDepth:        configSnapshot.MaxDepth,
-		MaxPages:        maxPages,
-		FetchTimeout:    time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
-		RequestDelay:    requestDelay,
-		RequestJitter:   requestJitter,
-		UserAgent:       defaultUserAgent,
-		ForceFullCrawl:  configSnapshot.ForceFullCrawl,
-		HonourRobotsTxt: configSnapshot.HonourRobotsTxt,
-		SkipSitemapSeed: configSnapshot.SkipSitemapSeed,
+		AllowedHost:      normalizeHostForScope(parsedBaseURL.Hostname()),
+		MaxDepth:         configSnapshot.MaxDepth,
+		MaxPages:         maxPages,
+		FetchTimeout:     time.Duration(configSnapshot.FetchTimeoutSeconds) * time.Second,
+		RequestDelay:     requestDelay,
+		RequestJitter:    requestJitter,
+		UserAgent:        defaultUserAgent,
+		ForceFullCrawl:   configSnapshot.ForceFullCrawl,
+		HonourRobotsTxt:  configSnapshot.HonourRobotsTxt,
+		SkipSitemapSeed:  configSnapshot.SkipSitemapSeed,
+		RenderJavaScript: configSnapshot.RenderJavaScript,
 	}, nil
 }

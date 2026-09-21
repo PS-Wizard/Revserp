@@ -169,7 +169,7 @@ const staleRunningCrawlAge = 2 * time.Hour
 // terminal status. Since the heartbeat was removed there is no liveness signal,
 // so "orphaned" can only be inferred from age — and a crawl still inside its
 // CrawlTimeout is legitimately running, not orphaned. The recurring sweep
-// previously used a flat 15 minutes, which is *below* the 30-minute default
+// previously used a flat 15 minutes, which is *below* the default crawl
 // timeout, so any crawl running longer than 15 minutes was marked failed while
 // its worker was still crawling it. Deriving the cutoff from CrawlTimeout keeps
 // that invariant true even when CRAWL_TIMEOUT is overridden. The cutoff also
@@ -188,7 +188,7 @@ const staleRunningCrawlGrace = 5 * time.Minute
 // It must stay under every reclaim cutoff so a timed-out crawl is marked failed
 // by its own worker rather than reclaimed as orphaned; reclaimCutoff enforces
 // that rather than leaving it to two constants drifting apart.
-const defaultCrawlTimeout = 30 * time.Minute
+const defaultCrawlTimeout = 60 * time.Minute
 
 // defaultAnalysisTimeout bounds the post-crawl analysis phase (link resolution,
 // PSI, issue derivation, scoring). It is separate from the crawl timeout so a

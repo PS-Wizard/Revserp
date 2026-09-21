@@ -15,6 +15,9 @@ func TestNormalizeConfigSnapshotAppliesDefaults(t *testing.T) {
 	if configSnapshot.MaxDepth != 2 {
 		t.Fatalf("got max depth %d", configSnapshot.MaxDepth)
 	}
+	if configSnapshot.RenderJavaScript {
+		t.Fatal("expected render_javascript to default off")
+	}
 	if configSnapshot.MaxPages != nil {
 		t.Fatalf("expected max pages to be nil")
 	}
@@ -83,6 +86,9 @@ func TestNormalizeConfigSnapshotMarshalsExpectedJSON(t *testing.T) {
 	if decoded["fetch_timeout_seconds"].(float64) != 10 {
 		t.Fatalf("got fetch_timeout_seconds %v", decoded["fetch_timeout_seconds"])
 	}
+	if _, exists := decoded["render_javascript"]; exists {
+		t.Fatalf("expected render_javascript omitted when off")
+	}
 	if _, exists := decoded["enable_javascript"]; exists {
 		t.Fatalf("did not expect enable_javascript in normalized snapshot")
 	}
@@ -113,5 +119,33 @@ func TestConfigFromBaseURLAndSnapshotCopiesSkipSitemapSeed(t *testing.T) {
 	}
 	if !crawlerConfig.SkipSitemapSeed {
 		t.Fatal("expected SkipSitemapSeed true")
+	}
+}
+
+func TestNormalizeConfigSnapshotRenderJavaScriptOptIn(t *testing.T) {
+	configSnapshot, normalizedConfigSnapshot, err := NormalizeConfigSnapshot([]byte(`{"render_javascript":true}`))
+	if err != nil {
+		t.Fatalf("normalize config snapshot: %v", err)
+	}
+	if !configSnapshot.RenderJavaScript {
+		t.Fatal("expected render_javascript true")
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(normalizedConfigSnapshot, &decoded); err != nil {
+		t.Fatalf("unmarshal normalized config snapshot: %v", err)
+	}
+	if decoded["render_javascript"].(bool) != true {
+		t.Fatalf("got render_javascript %v", decoded["render_javascript"])
+	}
+}
+
+func TestConfigFromBaseURLAndSnapshotCopiesRenderJavaScript(t *testing.T) {
+	crawlerConfig, err := ConfigFromBaseURLAndSnapshot("https://example.com", []byte(`{"render_javascript":true}`))
+	if err != nil {
+		t.Fatalf("build crawler config: %v", err)
+	}
+	if !crawlerConfig.RenderJavaScript {
+		t.Fatal("expected RenderJavaScript true")
 	}
 }

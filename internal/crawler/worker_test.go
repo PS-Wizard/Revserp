@@ -130,3 +130,25 @@ func TestProcessJobParsesFreshResponseAndNotModifiedIsFalse(t *testing.T) {
 		t.Fatalf("expected parsed page but got nil")
 	}
 }
+
+func TestProcessJobRecordsWouldHaveRenderedWithRendererDisabled(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(writer, `<!DOCTYPE html><html><head></head><body><div id="__next"></div></body></html>`)
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
+	parser := NewParser()
+	result := ProcessJob(context.Background(), fetcher, parser, nil, CrawlJob{URL: server.URL, Depth: 0})
+
+	if result.ProcessErr != nil {
+		t.Fatalf("process job: %v", result.ProcessErr)
+	}
+
+	if !result.WouldHaveRendered {
+		t.Fatalf("expected WouldHaveRendered true for an app shell page even without a renderer")
+	}
+}

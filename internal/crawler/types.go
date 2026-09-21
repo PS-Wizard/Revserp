@@ -16,6 +16,10 @@ type CrawlerConfig struct {
 	HonourRobotsTxt bool
 	// SkipSitemapSeed disables sitemap frontier seeding.
 	SkipSitemapSeed bool
+	// RenderJavaScript enables the headless JS render fallback for this crawl.
+	// When false the detector still runs and records WouldHaveRendered, but no
+	// render subprocess is started.
+	RenderJavaScript bool
 }
 
 // CrawlJob represents one URL scheduled for crawling.
@@ -49,6 +53,10 @@ type CrawlResult struct {
 	Fetch              FetchResult
 	ParsedPage         *ParsedPage
 	JavascriptRendered bool
+	// WouldHaveRendered records that the JS render detector wanted a render for
+	// this page, whether or not the fallback actually ran. It makes a disabled
+	// fallback measurable before it is switched on for a crawl.
+	WouldHaveRendered bool
 	// NotModified marks a page the origin confirmed unchanged via a conditional
 	// request. Such a result has no ParsedPage: its facts are copied forward
 	// from the baseline crawl instead of being re-derived from a fresh parse.

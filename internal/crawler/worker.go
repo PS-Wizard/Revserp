@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 )
 
 // ProcessJob fetches and parses one crawl job.
@@ -49,24 +50,32 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 	}
 
 	renderDecision := NeedsJSRender(fetchResult, &parsedPage)
-	if renderer != nil && renderDecision.NeedsRender {
-		log.Printf("js fallback triggered: url=%q reasons=%q", job.URL, renderDecision.Reasons)
-		renderedFetchResult, renderErr := renderer.RenderHTML(ctx, job.URL)
-		if renderErr != nil {
-			log.Printf("js fallback failed: url=%q error=%v", job.URL, renderErr)
+	crawlResult.WouldHaveRendered = renderDecision.NeedsRender
+
+	if renderDecision.NeedsRender {
+		if renderer == nil {
+			log.Printf("js fallback skipped (disabled): url=%q reasons=%q", job.URL, renderDecision.Reasons)
 		} else {
-			renderedParsedPage, parseRenderedErr := parser.ParseHTML(renderedFetchResult.FinalURL, renderedFetchResult.ContentType, renderedFetchResult.Body)
-			switch {
-			case parseRenderedErr != nil:
-				log.Printf("js fallback parse failed: url=%q error=%v", job.URL, parseRenderedErr)
-			case shouldPreferRenderedPage(parsedPage, renderedParsedPage):
-				log.Printf("js fallback applied: url=%q", job.URL)
-				crawlResult.Fetch = renderedFetchResult
-				crawlResult.ParsedPage = &renderedParsedPage
-				crawlResult.JavascriptRendered = true
-				return crawlResult
-			default:
-				log.Printf("js fallback discarded: url=%q", job.URL)
+			log.Printf("js fallback triggered: url=%q reasons=%q", job.URL, renderDecision.Reasons)
+			renderStarted := time.Now()
+			renderedFetchResult, renderErr := renderer.RenderHTML(ctx, job.URL)
+			renderDuration := time.Since(renderStarted).Round(time.Millisecond)
+			if renderErr != nil {
+				log.Printf("js fallback failed: url=%q duration=%s error=%v", job.URL, renderDuration, renderErr)
+			} else {
+				renderedParsedPage, parseRenderedErr := parser.ParseHTML(renderedFetchResult.FinalURL, renderedFetchResult.ContentType, renderedFetchResult.Body)
+				switch {
+				case parseRenderedErr != nil:
+					log.Printf("js fallback parse failed: url=%q error=%v", job.URL, parseRenderedErr)
+				case shouldPreferRenderedPage(parsedPage, renderedParsedPage):
+					log.Printf("js fallback applied: url=%q duration=%s", job.URL, renderDuration)
+					crawlResult.Fetch = renderedFetchResult
+					crawlResult.ParsedPage = &renderedParsedPage
+					crawlResult.JavascriptRendered = true
+					return crawlResult
+				default:
+					log.Printf("js fallback discarded: url=%q duration=%s", job.URL, renderDuration)
+				}
 			}
 		}
 	}

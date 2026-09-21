@@ -90,7 +90,8 @@ INSERT INTO crawl_pages (
     etag,
     last_modified,
     soft_404,
-    fetch_error
+    fetch_error,
+    would_have_rendered
 )
 SELECT
     $1,
@@ -132,7 +133,11 @@ SELECT
     -- A 304 means the body is unchanged, so a soft 404 stays a soft 404. The
     -- fetch itself succeeded, so no fetch error is carried forward.
     soft_404,
-    NULL
+    NULL,
+    -- The page was not re-parsed, so the render verdict carries over from the
+    -- baseline crawl. A stale verdict beats a false negative on an incremental
+    -- crawl where most pages answer 304 and the detector never runs.
+    crawl_pages.would_have_rendered
 FROM crawl_pages
 WHERE crawl_pages.crawl_id = $4
   AND crawl_pages.url = $5
@@ -274,7 +279,8 @@ INSERT INTO crawl_pages (
     etag,
     last_modified,
     soft_404,
-    fetch_error
+    fetch_error,
+    would_have_rendered
 ) VALUES (
     $1,
     $2,
@@ -313,9 +319,10 @@ INSERT INTO crawl_pages (
     $35,
     $36,
     $37,
-    $38
+    $38,
+    $39
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, content_blocks, etag, last_modified, soft_404, fetch_error, created_at
+RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, content_blocks, etag, last_modified, soft_404, fetch_error, would_have_rendered, created_at
 `
 
 type CreateCrawlPageParams struct {
@@ -357,6 +364,7 @@ type CreateCrawlPageParams struct {
 	LastModified            pgtype.Text
 	Soft404                 bool
 	FetchError              pgtype.Text
+	WouldHaveRendered       bool
 }
 
 type CreateCrawlPageRow struct {
@@ -399,6 +407,7 @@ type CreateCrawlPageRow struct {
 	LastModified            pgtype.Text
 	Soft404                 bool
 	FetchError              pgtype.Text
+	WouldHaveRendered       bool
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -442,6 +451,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.LastModified,
 		arg.Soft404,
 		arg.FetchError,
+		arg.WouldHaveRendered,
 	)
 	var i CreateCrawlPageRow
 	err := row.Scan(
@@ -484,6 +494,7 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		&i.LastModified,
 		&i.Soft404,
 		&i.FetchError,
+		&i.WouldHaveRendered,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -520,6 +531,7 @@ SELECT
     cp.internal_links,
     cp.response_time_ms,
     cp.javascript_rendered,
+    cp.would_have_rendered,
     cp.h2_headings,
     cp.h3_headings,
     cp.heading_outline,
@@ -571,6 +583,7 @@ type GetCrawlPageByIDForUserRow struct {
 	InternalLinks           pgtype.Int4
 	ResponseTimeMs          pgtype.Int4
 	JavascriptRendered      pgtype.Bool
+	WouldHaveRendered       bool
 	H2Headings              []byte
 	H3Headings              []byte
 	HeadingOutline          []byte
@@ -613,6 +626,7 @@ func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageB
 		&i.InternalLinks,
 		&i.ResponseTimeMs,
 		&i.JavascriptRendered,
+		&i.WouldHaveRendered,
 		&i.H2Headings,
 		&i.H3Headings,
 		&i.HeadingOutline,
@@ -655,6 +669,7 @@ SELECT
     cp.internal_links,
     cp.response_time_ms,
     cp.javascript_rendered,
+    cp.would_have_rendered,
     cp.h2_headings,
     cp.h3_headings,
     cp.heading_outline,
@@ -708,6 +723,7 @@ type GetCrawlPageByURLForUserRow struct {
 	InternalLinks           pgtype.Int4
 	ResponseTimeMs          pgtype.Int4
 	JavascriptRendered      pgtype.Bool
+	WouldHaveRendered       bool
 	H2Headings              []byte
 	H3Headings              []byte
 	HeadingOutline          []byte
@@ -750,6 +766,7 @@ func (q *Queries) GetCrawlPageByURLForUser(ctx context.Context, arg GetCrawlPage
 		&i.InternalLinks,
 		&i.ResponseTimeMs,
 		&i.JavascriptRendered,
+		&i.WouldHaveRendered,
 		&i.H2Headings,
 		&i.H3Headings,
 		&i.HeadingOutline,
@@ -1085,6 +1102,7 @@ SELECT
     cp.internal_links,
     cp.response_time_ms,
     cp.javascript_rendered,
+    cp.would_have_rendered,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -1132,6 +1150,7 @@ type ListCrawlPageSummariesForCrawlByUserRow struct {
 	InternalLinks           pgtype.Int4
 	ResponseTimeMs          pgtype.Int4
 	JavascriptRendered      pgtype.Bool
+	WouldHaveRendered       bool
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -1180,6 +1199,7 @@ func (q *Queries) ListCrawlPageSummariesForCrawlByUser(ctx context.Context, arg 
 			&i.InternalLinks,
 			&i.ResponseTimeMs,
 			&i.JavascriptRendered,
+			&i.WouldHaveRendered,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1277,6 +1297,7 @@ SELECT
     internal_links,
     response_time_ms,
     javascript_rendered,
+    would_have_rendered,
     soft_404,
     fetch_error,
     h2_headings,
@@ -1321,6 +1342,7 @@ type ListCrawlPagesForCrawlRow struct {
 	InternalLinks           pgtype.Int4
 	ResponseTimeMs          pgtype.Int4
 	JavascriptRendered      pgtype.Bool
+	WouldHaveRendered       bool
 	Soft404                 bool
 	FetchError              pgtype.Text
 	H2Headings              []byte
@@ -1371,6 +1393,7 @@ func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUI
 			&i.InternalLinks,
 			&i.ResponseTimeMs,
 			&i.JavascriptRendered,
+			&i.WouldHaveRendered,
 			&i.Soft404,
 			&i.FetchError,
 			&i.H2Headings,
@@ -1422,6 +1445,7 @@ SELECT
     cp.internal_links,
     cp.response_time_ms,
     cp.javascript_rendered,
+    cp.would_have_rendered,
     cp.soft_404,
     cp.fetch_error,
     cp.h2_headings,
@@ -1479,6 +1503,7 @@ type ListCrawlPagesForCrawlByUserRow struct {
 	InternalLinks           pgtype.Int4
 	ResponseTimeMs          pgtype.Int4
 	JavascriptRendered      pgtype.Bool
+	WouldHaveRendered       bool
 	Soft404                 bool
 	FetchError              pgtype.Text
 	H2Headings              []byte
@@ -1534,6 +1559,7 @@ func (q *Queries) ListCrawlPagesForCrawlByUser(ctx context.Context, arg ListCraw
 			&i.InternalLinks,
 			&i.ResponseTimeMs,
 			&i.JavascriptRendered,
+			&i.WouldHaveRendered,
 			&i.Soft404,
 			&i.FetchError,
 			&i.H2Headings,

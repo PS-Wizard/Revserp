@@ -111,8 +111,11 @@ func (renderer *Renderer) RenderHTML(ctx context.Context, targetURL string) (Fet
 
 	output, err := command.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return FetchResult{}, fmt.Errorf("render url: crawl canceled: %w", ctx.Err())
+		}
 		if renderContext.Err() != nil {
-			return FetchResult{}, fmt.Errorf("render url: %w", renderContext.Err())
+			return FetchResult{}, fmt.Errorf("render url: render timeout after %s: %w", time.Since(startedAt).Round(time.Millisecond), renderContext.Err())
 		}
 		return FetchResult{}, fmt.Errorf("render url: %w: %s", err, strings.TrimSpace(string(output)))
 	}

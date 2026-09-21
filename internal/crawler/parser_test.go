@@ -1,6 +1,9 @@
 package crawler
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParserParseHTML(t *testing.T) {
 	htmlDocument := []byte(`
@@ -270,5 +273,109 @@ func TestParserParseHTMLExtractsAuthorFromJSONLD(t *testing.T) {
 
 	if parsedPage.Author != "Avery Stone" {
 		t.Fatalf("got author %q", parsedPage.Author)
+	}
+}
+
+func TestParserExtractsTextFromDivsInMain(t *testing.T) {
+	htmlDocument := []byte(`
+	<!DOCTYPE html>
+	<html>
+	<body>
+		<main>
+			<div class="notice">Notice published 2018</div>
+			<div class="body">Full notice text lives in a plain div.</div>
+		</main>
+	</body>
+	</html>
+	`)
+
+	parser := NewParser()
+	parsedPage, err := parser.ParseHTML("https://revketer.ai/notices", "text/html", htmlDocument)
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+
+	if !strings.Contains(parsedPage.VisibleText, "Notice published 2018") {
+		t.Fatalf("expected div notice date in visible text, got %q", parsedPage.VisibleText)
+	}
+
+	if !strings.Contains(parsedPage.VisibleText, "Full notice text lives in a plain div.") {
+		t.Fatalf("expected div body text in visible text, got %q", parsedPage.VisibleText)
+	}
+}
+
+func TestParserDropsHeaderAndFooterInsideMain(t *testing.T) {
+	htmlDocument := []byte(`<main><header>Site header</header><div>Real content</div><footer>Site footer</footer></main>`)
+
+	parser := NewParser()
+	parsedPage, err := parser.ParseHTML("https://revketer.ai/page", "text/html", htmlDocument)
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+
+	if strings.Contains(parsedPage.VisibleText, "Site header") {
+		t.Fatalf("expected header text to be removed, got %q", parsedPage.VisibleText)
+	}
+
+	if strings.Contains(parsedPage.VisibleText, "Site footer") {
+		t.Fatalf("expected footer text to be removed, got %q", parsedPage.VisibleText)
+	}
+
+	if !strings.Contains(parsedPage.VisibleText, "Real content") {
+		t.Fatalf("expected main content to survive, got %q", parsedPage.VisibleText)
+	}
+}
+
+func TestParserDropsReadMoreFromVisibleTextButKeepsBlocks(t *testing.T) {
+	htmlDocument := []byte(`<main><div>Ad release 2018</div><p>Read More</p><p>Read More</p><p>Read More</p></main>`)
+
+	parser := NewParser()
+	parsedPage, err := parser.ParseHTML("https://revketer.ai/ads", "text/html", htmlDocument)
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+
+	if !strings.Contains(parsedPage.VisibleText, "Ad release 2018") {
+		t.Fatalf("expected short real title to survive, got %q", parsedPage.VisibleText)
+	}
+
+	if strings.Contains(parsedPage.VisibleText, "Read More") {
+		t.Fatalf("expected read more labels dropped from visible text, got %q", parsedPage.VisibleText)
+	}
+
+	readMoreBlocks := 0
+	for _, block := range parsedPage.ContentBlocks {
+		if block.Text == "Read More" {
+			readMoreBlocks++
+		}
+	}
+
+	if readMoreBlocks != 3 {
+		t.Fatalf("got %d read more content blocks, want 3", readMoreBlocks)
+	}
+}
+
+func TestParserKeepsImageSrcOutOfVisibleText(t *testing.T) {
+	htmlDocument := []byte(`<main><p>Real text</p><img src="/photo.jpg" alt=""></main>`)
+
+	parser := NewParser()
+	parsedPage, err := parser.ParseHTML("https://revketer.ai/gallery", "text/html", htmlDocument)
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+
+	if strings.Contains(parsedPage.VisibleText, "/photo.jpg") {
+		t.Fatalf("expected image src out of visible text, got %q", parsedPage.VisibleText)
+	}
+
+	foundImageBlock := false
+	for _, block := range parsedPage.ContentBlocks {
+		if block.Tag == "img" && block.Text == "/photo.jpg" {
+			foundImageBlock = true
+		}
+	}
+
+	if !foundImageBlock {
+		t.Fatalf("expected image src in content blocks, got %#v", parsedPage.ContentBlocks)
 	}
 }

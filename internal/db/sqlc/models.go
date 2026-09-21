@@ -292,6 +292,7 @@ type CrawlPage struct {
 	ContentBlocks           []byte
 	HealthScore             pgtype.Int2
 	HealthBreakdown         []byte
+	WouldHaveRendered       bool
 }
 
 type CrawlScoreBreakdown struct {

@@ -127,7 +127,14 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	defer cancelRun()
 
 	jobs := make(chan CrawlJob, runner.workerCount)
-	results := StartWorkerPool(runContext, runner.workerCount, runner.fetcher, runner.parser, runner.renderer, jobs, runner.config.RequestDelay, runner.config.RequestJitter)
+	// The JS render fallback is opt-in per crawl: when off, the pool gets a nil
+	// renderer and ProcessJob starts no render subprocess. The detector still runs
+	// and records WouldHaveRendered so the decision can be revisited on evidence.
+	var renderer htmlRenderer
+	if runner.config.RenderJavaScript {
+		renderer = runner.renderer
+	}
+	results := StartWorkerPool(runContext, runner.workerCount, runner.fetcher, runner.parser, renderer, jobs, runner.config.RequestDelay, runner.config.RequestJitter)
 
 	if shouldPersist {
 		if err := runner.store.MarkCrawlRunning(runContext, crawlID); err != nil {
@@ -149,6 +156,7 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	activeJobs := 0
 	urlsCrawled := 0
 	urlsRendered := 0
+	urlsWouldHaveRendered := 0
 	urlsReused := 0
 	urlsSkippedNon2xx := 0
 	urlsSoftNotFound := 0
@@ -365,8 +373,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 					}
 				}
 
-				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d reused=%d non2xx=%d soft404=%d (root=%s)",
-					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsReused, urlsSkippedNon2xx, urlsSoftNotFound, rootURL)
+				log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d reused=%d non2xx=%d soft404=%d would_have_rendered=%d (root=%s)",
+					urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsReused, urlsSkippedNon2xx, urlsSoftNotFound, urlsWouldHaveRendered, rootURL)
 				maybeWriteProgress()
 				continue
 			}
@@ -391,12 +399,15 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			if result.JavascriptRendered {
 				urlsRendered++
 			}
+			if result.WouldHaveRendered {
+				urlsWouldHaveRendered++
+			}
 			if result.Job.Depth > maxDepthReached {
 				maxDepthReached = result.Job.Depth
 			}
 
-			log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d non2xx=%d soft404=%d (root=%s)",
-				urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, urlsSoftNotFound, rootURL)
+			log.Printf("crawl progress: crawled=%d/%d in_flight=%d rendered=%d non2xx=%d soft404=%d would_have_rendered=%d (root=%s)",
+				urlsCrawled, scheduledPages, activeJobs, urlsRendered, urlsSkippedNon2xx, urlsSoftNotFound, urlsWouldHaveRendered, rootURL)
 			maybeWriteProgress()
 
 			isDuplicateProcessedPage := false
@@ -466,8 +477,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	if elapsed.Seconds() > 0 {
 		pagesPerSec = float64(urlsCrawled) / elapsed.Seconds()
 	}
-	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d non2xx=%d soft404=%d robots_skipped=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
-		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, robotsSkipped, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
+	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d non2xx=%d soft404=%d robots_skipped=%d would_have_rendered=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
+		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, robotsSkipped, urlsWouldHaveRendered, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
 
 	if shouldPersist && !runner.deferFinalStatus {
 		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, hasLlmsTxtToPGBool(summary.HasLlmsTxt)); err != nil {
