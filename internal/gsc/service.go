@@ -183,7 +183,7 @@ func (service *Service) BuildAuthURL(state string) (string, error) {
 	params.Set("client_id", service.clientID)
 	params.Set("redirect_uri", service.redirectURL)
 	params.Set("response_type", "code")
-	params.Set("scope", googleWebmastersReadOnlyScope)
+	params.Set("scope", googleWebmastersReadOnlyScope+" "+googleAnalyticsReadOnlyScope)
 	params.Set("access_type", "offline")
 	params.Set("include_granted_scopes", "true")
 	params.Set("prompt", "consent")

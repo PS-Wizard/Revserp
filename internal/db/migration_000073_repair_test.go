@@ -2,7 +2,6 @@ package db
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -162,15 +161,14 @@ func TestMigration000073ConvergesToFinal000072(t *testing.T) {
 	}
 }
 
-// TestMigration000073IsLatestMarker guards the goose ordering marker: 000073
-// must be present, numbered after 000072, and the highest-numbered migration.
-func TestMigration000073IsLatestMarker(t *testing.T) {
+// TestMigration000073Marker guards the goose ordering marker: 000073 must remain
+// present and numbered after 000072. Newer migrations may follow it.
+func TestMigration000073Marker(t *testing.T) {
 	entries, err := os.ReadDir("../../migrations")
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
 	}
 
-	latest := ""
 	count := 0
 	for _, entry := range entries {
 		name := entry.Name()
@@ -180,14 +178,8 @@ func TestMigration000073IsLatestMarker(t *testing.T) {
 		if strings.HasPrefix(name, "000073") {
 			count++
 		}
-		if name > latest {
-			latest = name
-		}
 	}
 	if count != 1 {
 		t.Fatalf("want exactly one 000073 migration, found %d", count)
-	}
-	if latest != filepath.Base(migration000073Path) {
-		t.Errorf("latest migration = %q, want %q", latest, filepath.Base(migration000073Path))
 	}
 }

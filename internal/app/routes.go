@@ -127,6 +127,12 @@ func (a *App) Router() http.Handler {
 				gated.Post("/projects/{projectID}/gsc/disconnect", a.handleDisconnectProjectGSC)
 				gated.Get("/projects/{projectID}/gsc/overview", a.handleProjectGSCOverview)
 				gated.Get("/projects/{projectID}/gsc/queries", a.handleProjectGSCQueries)
+				gated.Post("/projects/{projectID}/analytics/connect/start", a.handleStartProjectGSCConnect)
+				gated.Get("/projects/{projectID}/analytics/status", a.handleProjectGoogleAnalyticsStatus)
+				gated.Post("/projects/{projectID}/analytics/select-property", a.handleSelectProjectGoogleAnalyticsProperty)
+				gated.Post("/projects/{projectID}/analytics/disconnect", a.handleDisconnectProjectGoogleAnalytics)
+				gated.Get("/projects/{projectID}/analytics/overview", a.handleProjectGoogleAnalyticsOverview)
+				gated.Get("/projects/{projectID}/analytics/realtime", a.handleProjectGoogleAnalyticsRealtime)
 			})
 
 			app.Group(func(gated chi.Router) {

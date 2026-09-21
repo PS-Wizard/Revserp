@@ -6,6 +6,7 @@ const (
 	googleSitesURL                = "https://www.googleapis.com/webmasters/v3/sites"
 	googleSearchAnalyticsURLBase  = "https://www.googleapis.com/webmasters/v3/sites"
 	googleWebmastersReadOnlyScope = "https://www.googleapis.com/auth/webmasters.readonly"
+	googleAnalyticsReadOnlyScope  = "https://www.googleapis.com/auth/analytics.readonly"
 )
 
 var overviewWindowOptions = []int{180}

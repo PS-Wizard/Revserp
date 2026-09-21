@@ -6,6 +6,7 @@ import (
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/ga"
 	"github.com/ps-wizard/revserp/internal/gsc"
 )
 
@@ -19,6 +20,7 @@ type App struct {
 	SessionManager *internalauth.SessionManager
 	APIKeyManager  *internalauth.APIKeyManager
 	GSCService     *gsc.Service
+	GAService      *ga.Service
 	OrgEvents      *organizationEventHub
 }
 
@@ -45,6 +47,7 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		SessionManager: sessionManager,
 		APIKeyManager:  internalauth.NewAPIKeyManager(queries),
 		GSCService:     gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes),
+		GAService:      ga.NewService(cfg.MaxAPIResponseBytes),
 		OrgEvents:      newOrganizationEventHub(),
 	}
 }

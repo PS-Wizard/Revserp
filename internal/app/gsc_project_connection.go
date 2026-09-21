@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/ga"
 	"github.com/ps-wizard/revserp/internal/gsc"
 )
 
@@ -313,6 +314,11 @@ func writeGoogleAPIError(w http.ResponseWriter, err error, fallbackStatusCode in
 	var googleError *gsc.Error
 	if errors.As(err, &googleError) {
 		writeJSONError(w, fallbackStatusCode, googleError.Message)
+		return
+	}
+	var analyticsError *ga.Error
+	if errors.As(err, &analyticsError) {
+		writeJSONError(w, fallbackStatusCode, analyticsError.Message)
 		return
 	}
 	writeJSONError(w, fallbackStatusCode, fallbackMessage)

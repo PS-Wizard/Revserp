@@ -509,6 +509,17 @@ type ProjectCompetitor struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type ProjectGoogleAnalyticsConnection struct {
+	ID                  pgtype.UUID
+	ProjectID           pgtype.UUID
+	GoogleConnectionID  pgtype.UUID
+	PropertyID          string
+	PropertyDisplayName string
+	AccountDisplayName  pgtype.Text
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
 type ProjectGscConnection struct {
 	ID                 pgtype.UUID
 	ProjectID          pgtype.UUID

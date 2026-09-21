@@ -198,6 +198,9 @@ func (a *App) handleGoogleOAuthCallback(w http.ResponseWriter, r *http.Request) 
 	if scope == "" && existingConnectionFound {
 		scope = existingConnection.Scope
 	}
+	if scope == "" {
+		scope = "https://www.googleapis.com/auth/webmasters.readonly " + googleAnalyticsReadOnlyScope
+	}
 
 	_, err = queries.UpsertGoogleConnectionForOrganization(r.Context(), sqlc.UpsertGoogleConnectionForOrganizationParams{
 		OrganizationID:        oauthState.OrganizationID,
@@ -246,6 +249,7 @@ func (a *App) writeGoogleOAuthRedirect(w http.ResponseWriter, r *http.Request, o
 		return
 	}
 	frontendURL.Path = joinURLPath(frontendURL.Path, returnURL.Path)
+	frontendURL.Fragment = returnURL.Fragment
 
 	query := frontendURL.Query()
 	for key, values := range returnURL.Query() {
