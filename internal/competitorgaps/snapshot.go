@@ -66,7 +66,7 @@ func pagesFromRows(rows []sqlc.ListCrawlPagesForCrawlRow) []graphPage {
 	return pages
 }
 
-func linksFromRows(rows []sqlc.CrawlLink) []graphLink {
+func linksFromRows(rows []sqlc.ListInternalCrawlLinksForCrawlRow) []graphLink {
 	links := make([]graphLink, 0, len(rows))
 	for _, row := range rows {
 		links = append(links, graphLink{SourceURL: row.SourceUrl, TargetURL: row.TargetUrl})

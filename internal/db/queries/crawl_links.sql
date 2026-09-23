@@ -100,7 +100,13 @@ SELECT
     target_url,
     anchor_text,
     is_internal,
-    target_status,
+    -- target_status is a fact about THIS crawl's pages, not about the link.
+    -- A reused link is reused because its source page answered 304, but its
+    -- target may have changed status since, and the resolver only fills NULLs.
+    -- Copying the baseline value would freeze a stale status that nothing ever
+    -- corrects, so broken-target issues would silently vanish. Leave it NULL
+    -- for this crawl to resolve.
+    NULL,
     nofollow
 FROM crawl_links
 WHERE crawl_links.crawl_id = sqlc.arg(baseline_crawl_id)
@@ -113,18 +119,39 @@ FROM crawl_links
 WHERE crawl_id = sqlc.arg(crawl_id)
   AND is_internal = TRUE;
 
--- name: ResolveInternalLinkTargetStatuses :execrows
--- Fills target_status for this crawl's internal links from the pages actually
--- crawled. It runs once after the crawl finishes, because a link is normally
--- persisted before its target has been fetched. URLs are matched on the same
--- normalization the site graph uses: fragment stripped, lowercased scheme and
--- host, and no trailing slash except on a bare root.
+-- name: ResolveInternalLinkTargetStatusesBatch :execrows
+-- Fills target_status for one bounded slice of this crawl's internal links
+-- from the pages actually crawled. The caller loops until a pass affects no
+-- rows, so a single slow moment cannot exceed DB_STATEMENT_TIMEOUT and lose
+-- the whole resolution. Rows whose target was never crawled are excluded by
+-- the join, so they cannot stall the loop.
+--
+-- DISTINCT ON is load bearing. crawl_pages only enforces UNIQUE (crawl_id,
+-- url), so several crawled pages can share one normalized key, and a plain
+-- join returns the same link once per matching page. The caller decides to
+-- stop from the affected row count, so that fan-out would read as "no work
+-- left" while eligible links remain. Ordering by status_code also picks the
+-- same page on every run instead of leaving the choice to the planner.
+--
+-- The normalization is the one the previous inline join used: fragment
+-- stripped, the whole URL lowercased, trailing slashes trimmed. That trims
+-- the bare root slash too, so https://example.com/ and https://example.com
+-- share a key, and it lowercases the path, which normalizeGraphURL in
+-- internal/competitorgaps does not. Both predate this query.
+WITH batch AS (
+    SELECT DISTINCT ON (cl.id) cl.id, cp.status_code
+    FROM crawl_links AS cl
+    INNER JOIN crawl_pages AS cp
+        ON cp.crawl_id = cl.crawl_id
+       AND cp.url_key = cl.target_url_key
+    WHERE cl.crawl_id = sqlc.arg(crawl_id)
+      AND cl.is_internal = TRUE
+      AND cl.target_status IS NULL
+      AND cp.status_code IS NOT NULL
+    ORDER BY cl.id, cp.status_code
+    LIMIT sqlc.arg(batch_size)
+)
 UPDATE crawl_links AS cl
-SET target_status = cp.status_code
-FROM crawl_pages AS cp
-WHERE cl.crawl_id = sqlc.arg(crawl_id)
-  AND cp.crawl_id = sqlc.arg(crawl_id)
-  AND cl.is_internal = TRUE
-  AND cp.status_code IS NOT NULL
-  AND regexp_replace(lower(split_part(cl.target_url, '#', 1)), '(.)/+$', '\1') =
-      regexp_replace(lower(split_part(cp.url, '#', 1)), '(.)/+$', '\1');
+SET target_status = batch.status_code
+FROM batch
+WHERE cl.id = batch.id;

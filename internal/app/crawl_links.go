@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
@@ -104,7 +105,7 @@ func (a *App) handleCreateCrawlLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, newCrawlLinkResponse(link))
+	writeJSON(w, http.StatusCreated, newCrawlLinkResponse(crawlLinkRow(link)))
 }
 
 // handleListCrawlLinks lists link rows for a crawl the user can access.
@@ -169,7 +170,7 @@ func (a *App) handleListCrawlLinks(w http.ResponseWriter, r *http.Request) {
 
 	responses := make([]crawlLinkResponse, 0, len(links))
 	for _, link := range links {
-		responses = append(responses, newCrawlLinkResponse(link))
+		responses = append(responses, newCrawlLinkResponse(crawlLinkRow(link)))
 	}
 
 	setNoStore(w)
@@ -224,11 +225,26 @@ func (a *App) handleGetCrawlLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newCrawlLinkResponse(link))
+	writeJSON(w, http.StatusOK, newCrawlLinkResponse(crawlLinkRow(link)))
+}
+
+// crawlLinkRow is the column set newCrawlLinkResponse reads. Adding generated
+// columns to crawl_links stopped sqlc from reusing the CrawlLink model, so each
+// query now returns its own row struct and callers convert into this shape.
+type crawlLinkRow struct {
+	ID           pgtype.UUID
+	CrawlID      pgtype.UUID
+	SourceUrl    string
+	TargetUrl    string
+	AnchorText   pgtype.Text
+	IsInternal   pgtype.Bool
+	TargetStatus pgtype.Int4
+	Nofollow     pgtype.Bool
+	CreatedAt    pgtype.Timestamptz
 }
 
 // newCrawlLinkResponse converts a crawl link row into an API response.
-func newCrawlLinkResponse(link sqlc.CrawlLink) crawlLinkResponse {
+func newCrawlLinkResponse(link crawlLinkRow) crawlLinkResponse {
 	response := crawlLinkResponse{
 		ID:        link.ID.String(),
 		CrawlID:   link.CrawlID.String(),

@@ -184,17 +184,40 @@ func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, root
 	return nil
 }
 
+// resolveLinkStatusBatchSize bounds one UPDATE so a single slow statement
+// cannot exceed DB_STATEMENT_TIMEOUT and lose the whole resolution.
+const resolveLinkStatusBatchSize = 20000
+
 // ResolveInternalLinkTargetStatuses fills target_status on this crawl's internal
 // links from the pages the crawl actually fetched. It must run after the crawl
 // loop finishes: a link row is normally written before its target has been
 // fetched, so resolving inline would leave almost every value NULL. Until this
 // runs, broken-internal-link derivation has nothing to work from.
 func (store *Store) ResolveInternalLinkTargetStatuses(ctx context.Context, crawlID pgtype.UUID) (int64, error) {
-	rows, err := store.queries.ResolveInternalLinkTargetStatuses(ctx, crawlID)
-	if err != nil {
-		return 0, fmt.Errorf("resolve internal link target statuses: %w", err)
+	return store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, resolveLinkStatusBatchSize)
+}
+
+func (store *Store) resolveInternalLinkTargetStatusesInBatches(ctx context.Context, crawlID pgtype.UUID, batchSize int32) (int64, error) {
+	var resolved int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return resolved, fmt.Errorf("resolve internal link target statuses: %w", err)
+		}
+		rows, err := store.queries.ResolveInternalLinkTargetStatusesBatch(ctx, sqlc.ResolveInternalLinkTargetStatusesBatchParams{
+			CrawlID:   crawlID,
+			BatchSize: batchSize,
+		})
+		if err != nil {
+			return resolved, fmt.Errorf("resolve internal link target statuses: %w", err)
+		}
+		resolved += rows
+		// The count is rows affected, not rows the CTE returned: several crawled
+		// pages can share one normalized key, so one pass can affect fewer links
+		// than the batch size while eligible links remain. Only zero means done.
+		if rows == 0 {
+			return resolved, nil
+		}
 	}
-	return rows, nil
 }
 
 // isUniqueViolation reports whether an error is a Postgres unique constraint violation.

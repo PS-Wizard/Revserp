@@ -247,6 +247,7 @@ type CrawlLink struct {
 	TargetStatus pgtype.Int4
 	Nofollow     pgtype.Bool
 	CreatedAt    pgtype.Timestamptz
+	TargetUrlKey pgtype.Text
 }
 
 type CrawlPage struct {
@@ -293,6 +294,7 @@ type CrawlPage struct {
 	HealthScore             pgtype.Int2
 	HealthBreakdown         []byte
 	WouldHaveRendered       bool
+	UrlKey                  pgtype.Text
 }
 
 type CrawlScoreBreakdown struct {
