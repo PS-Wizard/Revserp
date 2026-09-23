@@ -541,6 +541,29 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	if phaseErr := crawlStore.UpdateCrawlPhase(crawlCtx, claimed.ID, "crawling"); phaseErr != nil {
 		log.Printf("update crawl phase to crawling failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
 	}
+	// Google PSI is an independent 15-90s third party call whose result is only
+	// needed at scoring time, so it starts here and is awaited after derivation.
+	// It needs nothing but the crawl row and the base URL, so running it across
+	// the crawl hides it behind work we are doing anyway instead of adding it to
+	// the analysis phase. It gets its own budget rather than borrowing the
+	// crawl's: the crawl may consume all of CrawlTimeout, and a slow PSI call
+	// must not be cut short by that.
+	type psiOutcome struct {
+		result *googlePSIStoredResult
+		err    error
+	}
+	psiChan := make(chan psiOutcome, 1)
+	psiCtx, psiCancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.AnalysisTimeout)
+	defer psiCancel()
+	if w.cfg.PageSpeedAPIKey != "" {
+		log.Printf("starting google psi: crawl_id=%s url=%s strategy=mobile", claimed.ID.String(), claimed.BaseURL)
+	}
+	go func() {
+		psiStartedAt := time.Now()
+		result, psiErr := w.enrichCrawlWithGooglePSI(psiCtx, claimed.ID, claimed.BaseURL)
+		log.Printf("phase timing: crawl_id=%s google_psi=%s (concurrent)", claimed.ID.String(), time.Since(psiStartedAt).Round(time.Millisecond))
+		psiChan <- psiOutcome{result: result, err: psiErr}
+	}()
 
 	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(crawlCtx, claimed.ID, claimed.BaseURL)
 	if err != nil {
@@ -566,23 +589,10 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 			claimed.ID.String(), time.Since(resolveStartedAt).Round(time.Millisecond), resolvedLinks)
 	}
 
-	// Google PSI is an independent ~15-90s network call whose result is only
-	// needed at scoring time, so run it concurrently with issue derivation
-	// (different tables, no shared rows) instead of serially before it.
-	if w.cfg.PageSpeedAPIKey != "" {
-		log.Printf("starting google psi: crawl_id=%s url=%s strategy=mobile", claimed.ID.String(), claimed.BaseURL)
-	}
-	type psiOutcome struct {
-		result *googlePSIStoredResult
-		err    error
-	}
-	psiChan := make(chan psiOutcome, 1)
-	go func() {
-		psiStartedAt := time.Now()
-		result, psiErr := w.enrichCrawlWithGooglePSI(analysisCtx, claimed.ID, claimed.BaseURL)
-		log.Printf("phase timing: crawl_id=%s google_psi=%s (concurrent)", claimed.ID.String(), time.Since(psiStartedAt).Round(time.Millisecond))
-		psiChan <- psiOutcome{result: result, err: psiErr}
-	}()
+	// Google PSI has been running since before the crawl loop, so by now it has
+	// almost always finished. Its result is consumed after derivation because
+	// derivation replaces this crawl's issue rows, and the PSI issues are
+	// persisted after that.
 
 	if phaseErr := crawlStore.UpdateCrawlPhase(analysisCtx, claimed.ID, "analyzing"); phaseErr != nil {
 		log.Printf("update crawl phase to analyzing failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
