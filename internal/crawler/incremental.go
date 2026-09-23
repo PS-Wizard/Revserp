@@ -154,9 +154,17 @@ func (baseline *Baseline) internalTargets(jobURL string) []string {
 // every PageSpeed score on re-crawls. Only depth (this crawl's link position)
 // and a freshly-issued ETag override the baseline values.
 func (store *Store) PersistReusedResult(ctx context.Context, crawlID pgtype.UUID, baseline *Baseline, result CrawlResult) error {
-	page, ok := baseline.lookup(result.Job.URL)
-	if !ok {
-		return fmt.Errorf("no baseline page for reused url %q", result.Job.URL)
+	return store.PersistReusedResults(ctx, crawlID, baseline, []CrawlResult{result})
+}
+
+// PersistReusedResults copies a batch of unchanged pages from the baseline crawl
+// into this crawl in one transaction. The reused path writes one transaction per
+// page today, and the commit fsync dominates, so it batches exactly like the
+// fetched path does. It needs no conflict work: both copy statements already end
+// in ON CONFLICT DO NOTHING.
+func (store *Store) PersistReusedResults(ctx context.Context, crawlID pgtype.UUID, baseline *Baseline, results []CrawlResult) error {
+	if len(results) == 0 {
+		return nil
 	}
 
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -166,31 +174,38 @@ func (store *Store) PersistReusedResult(ctx context.Context, crawlID pgtype.UUID
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	txQueries := store.queries.WithTx(tx)
-	copiedPageRows, err := txQueries.CopyCrawlPageFromBaseline(ctx, sqlc.CopyCrawlPageFromBaselineParams{
-		CrawlID:         crawlID,
-		Depth:           nullableInt4(result.Job.Depth),
-		FreshEtag:       nullableText(result.Fetch.ETag),
-		BaselineCrawlID: baseline.CrawlID,
-		Url:             page.storedURL,
-	})
-	if err != nil {
-		return fmt.Errorf("copy crawl page from baseline: %w", err)
-	}
-	// Zero rows has two causes: the page is already present in this crawl (a
-	// benign replay, absorbed by ON CONFLICT), or the baseline row was removed
-	// mid-crawl and the page is now silently missing from this crawl. Report the
-	// fact without asserting which, since only the second is a problem and
-	// distinguishing them would cost another query on the hot path.
-	if copiedPageRows == 0 {
-		log.Printf("reused page copy affected no rows (already present, or baseline row removed): url=%q baseline_crawl_id=%s", page.storedURL, baseline.CrawlID.String())
-	}
+	for _, result := range results {
+		page, ok := baseline.lookup(result.Job.URL)
+		if !ok {
+			return fmt.Errorf("no baseline page for reused url %q", result.Job.URL)
+		}
 
-	if _, err := txQueries.CopyCrawlLinksFromBaseline(ctx, sqlc.CopyCrawlLinksFromBaselineParams{
-		CrawlID:         crawlID,
-		BaselineCrawlID: baseline.CrawlID,
-		SourceUrl:       page.storedURL,
-	}); err != nil {
-		return fmt.Errorf("copy crawl links from baseline: %w", err)
+		copiedPageRows, err := txQueries.CopyCrawlPageFromBaseline(ctx, sqlc.CopyCrawlPageFromBaselineParams{
+			CrawlID:         crawlID,
+			Depth:           nullableInt4(result.Job.Depth),
+			FreshEtag:       nullableText(result.Fetch.ETag),
+			BaselineCrawlID: baseline.CrawlID,
+			Url:             page.storedURL,
+		})
+		if err != nil {
+			return fmt.Errorf("copy crawl page from baseline: %w", err)
+		}
+		// Zero rows has two causes: the page is already present in this crawl (a
+		// benign replay, absorbed by ON CONFLICT), or the baseline row was removed
+		// mid-crawl and the page is now silently missing from this crawl. Report the
+		// fact without asserting which, since only the second is a problem and
+		// distinguishing them would cost another query on the hot path.
+		if copiedPageRows == 0 {
+			log.Printf("reused page copy affected no rows (already present, or baseline row removed): url=%q baseline_crawl_id=%s", page.storedURL, baseline.CrawlID.String())
+		}
+
+		if _, err := txQueries.CopyCrawlLinksFromBaseline(ctx, sqlc.CopyCrawlLinksFromBaselineParams{
+			CrawlID:         crawlID,
+			BaselineCrawlID: baseline.CrawlID,
+			SourceUrl:       page.storedURL,
+		}); err != nil {
+			return fmt.Errorf("copy crawl links from baseline: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -250,6 +250,104 @@ func TestStorePersistResultWithProcessErrorStillStoresPage(t *testing.T) {
 	}
 }
 
+func TestStorePersistResultsSkipsDuplicatePageInBatch(t *testing.T) {
+	loadCrawlerTestEnv(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	crawlID, cleanup := createTestCrawl(t, ctx, pool)
+	defer cleanup()
+
+	store := NewStore(pool)
+	buildResult := func(finalURL string, linkTargets ...string) CrawlResult {
+		links := make([]ParsedLink, 0, len(linkTargets))
+		for _, target := range linkTargets {
+			links = append(links, ParsedLink{TargetURL: target, AnchorText: "link", IsInternal: true})
+		}
+
+		return CrawlResult{
+			Job: CrawlJob{URL: finalURL},
+			Fetch: FetchResult{
+				FinalURL:     finalURL,
+				StatusCode:   200,
+				ContentType:  "text/html; charset=utf-8",
+				ResponseTime: 10 * time.Millisecond,
+			},
+			ParsedPage: &ParsedPage{
+				URL:   finalURL,
+				Title: "Page",
+				Links: links,
+			},
+		}
+	}
+
+	resultA := buildResult("https://example.com/a", "https://example.com/link-a1", "https://example.com/link-a2")
+	resultB := buildResult("https://example.com/b", "https://example.com/link-b1")
+	resultC := buildResult("https://example.com/c", "https://example.com/link-c1", "https://example.com/link-c2")
+
+	// Persist the first page on its own, then persist it again inside a batch
+	// with two fresh pages. The duplicate must be skipped without aborting the
+	// transaction, so the other two pages and their links still land.
+	if err := store.PersistResult(ctx, crawlID, "https://example.com/", resultA); err != nil {
+		t.Fatalf("persist first result: %v", err)
+	}
+
+	if err := store.PersistResults(ctx, crawlID, "https://example.com/", []CrawlResult{resultA, resultB, resultC}); err != nil {
+		t.Fatalf("persist batch with duplicate: %v", err)
+	}
+
+	for _, pageURL := range []string{"https://example.com/a", "https://example.com/b", "https://example.com/c"} {
+		var pageCount int
+		if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM crawl_pages WHERE crawl_id = $1 AND url = $2`, crawlID, pageURL).Scan(&pageCount); err != nil {
+			t.Fatalf("count crawl pages for %q: %v", pageURL, err)
+		}
+		if pageCount != 1 {
+			t.Fatalf("got %d crawl_pages rows for %q, want 1", pageCount, pageURL)
+		}
+	}
+
+	// Five distinct links across the three results. The duplicate page's two
+	// links are not re-inserted.
+	var linkCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM crawl_links WHERE crawl_id = $1`, crawlID).Scan(&linkCount); err != nil {
+		t.Fatalf("count crawl links: %v", err)
+	}
+	if linkCount != 5 {
+		t.Fatalf("got %d crawl links, want 5", linkCount)
+	}
+
+	// A batch that contains only the duplicate must be a clean no-op.
+	if err := store.PersistResults(ctx, crawlID, "https://example.com/", []CrawlResult{resultA}); err != nil {
+		t.Fatalf("persist duplicate-only batch: %v", err)
+	}
+
+	var totalPages int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM crawl_pages WHERE crawl_id = $1`, crawlID).Scan(&totalPages); err != nil {
+		t.Fatalf("count crawl pages: %v", err)
+	}
+	if totalPages != 3 {
+		t.Fatalf("got %d crawl pages after duplicate-only batch, want 3", totalPages)
+	}
+
+	var linkCountAfter int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM crawl_links WHERE crawl_id = $1`, crawlID).Scan(&linkCountAfter); err != nil {
+		t.Fatalf("count crawl links after duplicate-only batch: %v", err)
+	}
+	if linkCountAfter != 5 {
+		t.Fatalf("got %d crawl links after duplicate-only batch, want 5", linkCountAfter)
+	}
+}
+
 func loadCrawlerTestEnv(t *testing.T) {
 	t.Helper()
 

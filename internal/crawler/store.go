@@ -154,8 +154,25 @@ func (store *Store) UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID
 	return rows > 0, nil
 }
 
-// PersistResult stores one processed crawl result and its discovered links.
+// PersistResult stores one processed crawl result. It is a one element wrapper
+// around PersistResults so single result callers and existing tests keep working.
 func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error {
+	return store.PersistResults(ctx, crawlID, rootURL, []CrawlResult{result})
+}
+
+// PersistResults stores a batch of processed crawl results in one transaction.
+// One transaction for many pages instead of one per page is what makes this
+// fast: the commit fsync dominates the per page write cost.
+//
+// A page whose (crawl_id, url) already exists is skipped and contributes
+// nothing, including its links, which matches the old per page behaviour. That
+// is deliberately not an error path, because an error would abort the whole
+// transaction and lose the rest of the batch.
+func (store *Store) PersistResults(ctx context.Context, crawlID pgtype.UUID, rootURL string, results []CrawlResult) error {
+	if len(results) == 0 {
+		return nil
+	}
+
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin crawl result transaction: %w", err)
@@ -163,17 +180,21 @@ func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, root
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	txQueries := store.queries.WithTx(tx)
-	if _, err := txQueries.CreateCrawlPage(ctx, buildCreateCrawlPageParams(crawlID, rootURL, result)); err != nil {
-		if isUniqueViolation(err) {
-			return nil
+	for _, result := range results {
+		created, err := txQueries.CreateCrawlPage(ctx, buildCreateCrawlPageParams(crawlID, rootURL, result))
+		if err != nil {
+			return fmt.Errorf("create crawl page %q: %w", crawlPageURL(result), err)
+		}
+		if created == 0 {
+			// Already present for this crawl: a benign replay. Skip this page and
+			// its links, and keep the rest of the batch.
+			continue
 		}
 
-		return fmt.Errorf("create crawl page: %w", err)
-	}
-
-	if result.ProcessErr == nil {
-		if err := store.insertCrawlLinksBatch(ctx, tx, crawlID, result, dedupeParsedLinks(result.ParsedPage)); err != nil {
-			return fmt.Errorf("create crawl links batch: %w", err)
+		if result.ProcessErr == nil {
+			if err := store.insertCrawlLinksBatch(ctx, tx, crawlID, result, dedupeParsedLinks(result.ParsedPage)); err != nil {
+				return fmt.Errorf("create crawl links for %q: %w", crawlPageURL(result), err)
+			}
 		}
 	}
 
@@ -218,16 +239,6 @@ func (store *Store) resolveInternalLinkTargetStatusesInBatches(ctx context.Conte
 			return resolved, nil
 		}
 	}
-}
-
-// isUniqueViolation reports whether an error is a Postgres unique constraint violation.
-func isUniqueViolation(err error) bool {
-	var postgresError *pgconn.PgError
-	if !errors.As(err, &postgresError) {
-		return false
-	}
-
-	return postgresError.Code == "23505"
 }
 
 // buildCreateCrawlPageParams maps one crawl result into crawl_pages insert params.

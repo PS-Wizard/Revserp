@@ -240,7 +240,7 @@ func (q *Queries) CountCrawlPagesSearchForUser(ctx context.Context, arg CountCra
 	return column_1, err
 }
 
-const createCrawlPage = `-- name: CreateCrawlPage :one
+const createCrawlPage = `-- name: CreateCrawlPage :execrows
 INSERT INTO crawl_pages (
     crawl_id,
     url,
@@ -322,7 +322,7 @@ INSERT INTO crawl_pages (
     $38,
     $39
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, content_blocks, etag, last_modified, soft_404, fetch_error, would_have_rendered, created_at
+ON CONFLICT (crawl_id, url) DO NOTHING
 `
 
 type CreateCrawlPageParams struct {
@@ -367,52 +367,8 @@ type CreateCrawlPageParams struct {
 	WouldHaveRendered       bool
 }
 
-type CreateCrawlPageRow struct {
-	ID                      pgtype.UUID
-	CrawlID                 pgtype.UUID
-	Url                     string
-	StatusCode              pgtype.Int4
-	ContentType             pgtype.Text
-	SizeBytes               pgtype.Int4
-	IsInternal              pgtype.Bool
-	Depth                   pgtype.Int4
-	Title                   pgtype.Text
-	MetaDescription         pgtype.Text
-	H1                      pgtype.Text
-	H1Count                 pgtype.Int4
-	H2Count                 pgtype.Int4
-	H3Count                 pgtype.Int4
-	WordCount               pgtype.Int4
-	VisibleText             pgtype.Text
-	ContentSha256           pgtype.Text
-	Author                  pgtype.Text
-	CanonicalUrl            pgtype.Text
-	Lang                    pgtype.Text
-	Viewport                pgtype.Text
-	Robots                  pgtype.Text
-	ImageCount              pgtype.Int4
-	ImagesWithoutAltCount   pgtype.Int4
-	ImagesWithoutDimensions pgtype.Int4
-	ExternalLinks           pgtype.Int4
-	InternalLinks           pgtype.Int4
-	ResponseTimeMs          pgtype.Int4
-	JavascriptRendered      pgtype.Bool
-	H2Headings              []byte
-	H3Headings              []byte
-	HeadingOutline          []byte
-	OgTags                  []byte
-	JsonLd                  []byte
-	ContentBlocks           []byte
-	Etag                    pgtype.Text
-	LastModified            pgtype.Text
-	Soft404                 bool
-	FetchError              pgtype.Text
-	WouldHaveRendered       bool
-	CreatedAt               pgtype.Timestamptz
-}
-
-func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams) (CreateCrawlPageRow, error) {
-	row := q.db.QueryRow(ctx, createCrawlPage,
+func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createCrawlPage,
 		arg.CrawlID,
 		arg.Url,
 		arg.StatusCode,
@@ -453,51 +409,10 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.FetchError,
 		arg.WouldHaveRendered,
 	)
-	var i CreateCrawlPageRow
-	err := row.Scan(
-		&i.ID,
-		&i.CrawlID,
-		&i.Url,
-		&i.StatusCode,
-		&i.ContentType,
-		&i.SizeBytes,
-		&i.IsInternal,
-		&i.Depth,
-		&i.Title,
-		&i.MetaDescription,
-		&i.H1,
-		&i.H1Count,
-		&i.H2Count,
-		&i.H3Count,
-		&i.WordCount,
-		&i.VisibleText,
-		&i.ContentSha256,
-		&i.Author,
-		&i.CanonicalUrl,
-		&i.Lang,
-		&i.Viewport,
-		&i.Robots,
-		&i.ImageCount,
-		&i.ImagesWithoutAltCount,
-		&i.ImagesWithoutDimensions,
-		&i.ExternalLinks,
-		&i.InternalLinks,
-		&i.ResponseTimeMs,
-		&i.JavascriptRendered,
-		&i.H2Headings,
-		&i.H3Headings,
-		&i.HeadingOutline,
-		&i.OgTags,
-		&i.JsonLd,
-		&i.ContentBlocks,
-		&i.Etag,
-		&i.LastModified,
-		&i.Soft404,
-		&i.FetchError,
-		&i.WouldHaveRendered,
-		&i.CreatedAt,
-	)
-	return i, err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getCrawlPageByIDForUser = `-- name: GetCrawlPageByIDForUser :one

@@ -11,6 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// persistBatchSize is how many results are written per transaction. The commit
+// fsync dominates the per page write cost, so amortising it over a batch is the
+// difference between a crawl loop that is persistence bound and one that is not.
+const persistBatchSize = 50
+
 // CrawlRunSummary holds final crawl counters for one run.
 type CrawlRunSummary struct {
 	URLsDiscovered  int
@@ -25,6 +30,7 @@ type resultPersister interface {
 	MarkCrawlCompleted(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, hasLlmsTxt pgtype.Bool) error
 	MarkCrawlFailed(ctx context.Context, crawlID pgtype.UUID, urlsDiscovered int, urlsCrawled int, maxDepthReached int, errorMessage string) error
 	PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error
+	PersistResults(ctx context.Context, crawlID pgtype.UUID, rootURL string, results []CrawlResult) error
 	UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID, urlsCrawled int, urlsDiscovered int) (bool, error)
 }
 
@@ -34,6 +40,7 @@ type resultPersister interface {
 // fakes) keep compiling without an incremental code path.
 type baselineReuser interface {
 	PersistReusedResult(ctx context.Context, crawlID pgtype.UUID, baseline *Baseline, result CrawlResult) error
+	PersistReusedResults(ctx context.Context, crawlID pgtype.UUID, baseline *Baseline, results []CrawlResult) error
 }
 
 // Runner coordinates an in-memory BFS crawl over the worker pool.
@@ -274,6 +281,31 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 		pendingQueue = append(pendingQueue, CrawlJob{URL: normalizedLinkURL.String(), Depth: childDepth})
 	}
 
+	var pendingFetched []CrawlResult
+	var pendingReused []CrawlResult
+
+	flushFetched := func() error {
+		if len(pendingFetched) == 0 {
+			return nil
+		}
+		startedAt := time.Now()
+		err := runner.store.PersistResults(runContext, crawlID, normalizedRootURL.String(), pendingFetched)
+		persistElapsed += time.Since(startedAt)
+		pendingFetched = nil
+		return err
+	}
+
+	flushReused := func() error {
+		if len(pendingReused) == 0 {
+			return nil
+		}
+		startedAt := time.Now()
+		err := runner.baselineStore.PersistReusedResults(runContext, crawlID, runner.baseline, pendingReused)
+		persistElapsed += time.Since(startedAt)
+		pendingReused = nil
+		return err
+	}
+
 	for len(pendingQueue) > 0 || activeJobs > 0 {
 		var nextJob CrawlJob
 		var jobsChannel chan<- CrawlJob
@@ -299,7 +331,19 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			activeJobs++
 		case result, ok := <-results:
 			if !ok {
-				return crawlResults, CrawlRunSummary{}, fmt.Errorf("worker pool closed unexpectedly")
+				// The pool closed while work was still outstanding. In practice the
+				// workers stopped because runContext was cancelled, so this is a
+				// cancellation in disguise. Mark the crawl failed exactly like the
+				// cancellation case below does: returning without it leaves the row
+				// in 'crawling' until stale reclaim eventually notices.
+				summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+				if shouldPersist {
+					finalCtx := context.WithoutCancel(ctx)
+					if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, "worker pool closed unexpectedly"); failErr != nil {
+						return crawlResults, summary, fmt.Errorf("worker pool closed unexpectedly (also failed to mark crawl failed: %v)", failErr)
+					}
+				}
+				return crawlResults, summary, fmt.Errorf("worker pool closed unexpectedly")
 			}
 
 			activeJobs--
@@ -350,17 +394,17 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 				}
 
 				if shouldPersist {
-					persistStartedAt := time.Now()
-					err := runner.baselineStore.PersistReusedResult(runContext, crawlID, runner.baseline, result)
-					persistElapsed += time.Since(persistStartedAt)
-					if err != nil {
-						cancelRun()
-						summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
-						finalCtx := context.WithoutCancel(ctx)
-						if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
-							return crawlResults, summary, fmt.Errorf("persist reused crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
+					pendingReused = append(pendingReused, result)
+					if len(pendingReused) >= persistBatchSize {
+						if err := flushReused(); err != nil {
+							cancelRun()
+							summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+							finalCtx := context.WithoutCancel(ctx)
+							if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
+								return crawlResults, summary, fmt.Errorf("persist reused crawl results: %w (also failed to mark crawl failed: %v)", err, failErr)
+							}
+							return crawlResults, summary, fmt.Errorf("persist reused crawl results: %w", err)
 						}
-						return crawlResults, summary, fmt.Errorf("persist reused crawl result for %q: %w", result.Job.URL, err)
 					}
 				}
 
@@ -422,20 +466,25 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			}
 
 			if !isDuplicateProcessedPage && shouldPersist {
-				persistStartedAt := time.Now()
-				err := runner.store.PersistResult(runContext, crawlID, normalizedRootURL.String(), result)
-				persistElapsed += time.Since(persistStartedAt)
-				if err != nil {
-					cancelRun()
-					summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
-					// Use a ctx detached from cancellation so this terminal status
-					// write still lands even if the parent ctx is already done
-					// (e.g. process shutdown), matching worker.go's post-crawl writes.
-					finalCtx := context.WithoutCancel(ctx)
-					if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
-						return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w (also failed to mark crawl failed: %v)", result.Job.URL, err, failErr)
+				// The body was only needed to parse and fingerprint the page: the write
+				// path reads facts, never the raw HTML. Drop it before buffering so a
+				// full batch holds 50 pages of facts instead of 50 page bodies, which
+				// is the same reason crawlResults above keeps a light copy.
+				result.Fetch.Body = nil
+				pendingFetched = append(pendingFetched, result)
+				if len(pendingFetched) >= persistBatchSize {
+					if err := flushFetched(); err != nil {
+						cancelRun()
+						summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+						// Use a ctx detached from cancellation so this terminal status
+						// write still lands even if the parent ctx is already done
+						// (e.g. process shutdown), matching worker.go's post-crawl writes.
+						finalCtx := context.WithoutCancel(ctx)
+						if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
+							return crawlResults, summary, fmt.Errorf("persist crawl results: %w (also failed to mark crawl failed: %v)", err, failErr)
+						}
+						return crawlResults, summary, fmt.Errorf("persist crawl results: %w", err)
 					}
-					return crawlResults, summary, fmt.Errorf("persist crawl result for %q: %w", result.Job.URL, err)
 				}
 			}
 
@@ -469,6 +518,30 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 
 	close(jobs)
 	for range results {
+	}
+
+	// Flush any results still buffered when the frontier drained. A failure here
+	// must not be swallowed: mark the crawl failed exactly like the in-loop path
+	// and return, otherwise the final partial batch is silently lost.
+	if shouldPersist {
+		if err := flushFetched(); err != nil {
+			cancelRun()
+			summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+			finalCtx := context.WithoutCancel(ctx)
+			if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
+				return crawlResults, summary, fmt.Errorf("persist crawl results: %w (also failed to mark crawl failed: %v)", err, failErr)
+			}
+			return crawlResults, summary, fmt.Errorf("persist crawl results: %w", err)
+		}
+		if err := flushReused(); err != nil {
+			cancelRun()
+			summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached}
+			finalCtx := context.WithoutCancel(ctx)
+			if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, err.Error()); failErr != nil {
+				return crawlResults, summary, fmt.Errorf("persist reused crawl results: %w (also failed to mark crawl failed: %v)", err, failErr)
+			}
+			return crawlResults, summary, fmt.Errorf("persist reused crawl results: %w", err)
+		}
 	}
 
 	summary := CrawlRunSummary{URLsDiscovered: scheduledPages, URLsCrawled: urlsCrawled, MaxDepthReached: maxDepthReached, HasLlmsTxt: hasLlmsTxt}

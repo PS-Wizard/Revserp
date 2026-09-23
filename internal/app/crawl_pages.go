@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
@@ -170,7 +169,7 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, err := queries.CreateCrawlPage(r.Context(), sqlc.CreateCrawlPageParams{
+	rows, err := queries.CreateCrawlPage(r.Context(), sqlc.CreateCrawlPageParams{
 		CrawlID:                 crawlID,
 		Url:                     url,
 		StatusCode:              nullableInt4(requestBody.StatusCode),
@@ -205,12 +204,16 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 		JsonLd:                  nullableJSON(requestBody.JSONLD),
 	})
 	if err != nil {
-		var pgError *pgconn.PgError
-		if errors.As(err, &pgError) && pgError.Code == "23505" {
-			writeJSONError(w, http.StatusConflict, "crawl page already exists")
-			return
-		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if rows == 0 {
+		writeJSONError(w, http.StatusConflict, "crawl page already exists")
+		return
+	}
 
+	page, err := queries.GetCrawlPageByURLForUser(r.Context(), sqlc.GetCrawlPageByURLForUserParams{CrawlID: crawlID, Url: url, UserID: user.ID})
+	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -389,7 +392,7 @@ func (a *App) handleGetCrawlPageByURL(w http.ResponseWriter, r *http.Request) {
 }
 
 // newCrawlPageResponseFromCreateRow converts a created crawl page row into an API response.
-func newCrawlPageResponseFromCreateRow(page sqlc.CreateCrawlPageRow) crawlPageResponse {
+func newCrawlPageResponseFromCreateRow(page sqlc.GetCrawlPageByURLForUserRow) crawlPageResponse {
 	return buildCrawlPageResponse(crawlPageRowData{
 		ID:                      page.ID,
 		CrawlID:                 page.CrawlID,

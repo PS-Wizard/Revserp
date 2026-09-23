@@ -1,4 +1,4 @@
--- name: CreateCrawlPage :one
+-- name: CreateCrawlPage :execrows
 INSERT INTO crawl_pages (
     crawl_id,
     url,
@@ -80,7 +80,7 @@ INSERT INTO crawl_pages (
     $38,
     $39
 )
-RETURNING id, crawl_id, url, status_code, content_type, size_bytes, is_internal, depth, title, meta_description, h1, h1_count, h2_count, h3_count, word_count, visible_text, content_sha256, author, canonical_url, lang, viewport, robots, image_count, images_without_alt_count, images_without_dimensions, external_links, internal_links, response_time_ms, javascript_rendered, h2_headings, h3_headings, heading_outline, og_tags, json_ld, content_blocks, etag, last_modified, soft_404, fetch_error, would_have_rendered, created_at;
+ON CONFLICT (crawl_id, url) DO NOTHING;
 
 -- name: GetCrawlPageByIDForUser :one
 SELECT

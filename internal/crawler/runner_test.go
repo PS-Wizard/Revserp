@@ -305,6 +305,108 @@ func TestRunnerRunAndPersistFailsOnStoreError(t *testing.T) {
 	}
 }
 
+func TestRunnerRunAndPersistFlushesTailBatch(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+		switch request.URL.Path {
+		case "/":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>home</title></head><body><a href="/one">One</a><a href="/two">Two</a></body></html>`)
+		case "/one", "/two":
+			fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>child</title></head><body></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
+	parser := NewParser()
+	store := &testResultStore{}
+	runner := NewRunner(CrawlerConfig{
+		AllowedHost: mustParseURL(t, server.URL).Host,
+		MaxDepth:    1,
+		MaxPages:    3,
+	}, 2, fetcher, parser).WithStore(store)
+
+	results, err := runner.RunAndPersist(context.Background(), pgtype.UUID{}, server.URL)
+	if err != nil {
+		t.Fatalf("run and persist crawler: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+
+	// Three pages is not a multiple of persistBatchSize, so the last partial
+	// batch is only persisted by the tail flush.
+	if store.persistedCount != 3 {
+		t.Fatalf("got persisted count %d, want 3", store.persistedCount)
+	}
+}
+
+// cancellingStore cancels the crawl context from inside a batch write and then
+// waits long enough for the worker pool to shut down and close its results
+// channel. That is the only way to put the runner into the state where it can
+// take the pool-closed exit: it is busy inside the store call while the pool
+// closes, so when it next selects, the closed channel and the cancellation
+// signal are both ready and it picks between them at random. Cancelling while
+// the runner sits idle in its select always loses that race to the cancellation
+// signal, which is why a plain cancel test never reaches this branch.
+type cancellingStore struct {
+	testResultStore
+	cancel context.CancelFunc
+}
+
+func (store *cancellingStore) PersistResults(ctx context.Context, crawlID pgtype.UUID, rootURL string, results []CrawlResult) error {
+	store.cancel()
+	// Let the workers unwind and the pool close the results channel while the
+	// runner is still inside this call.
+	time.Sleep(30 * time.Millisecond)
+	return store.testResultStore.PersistResults(ctx, crawlID, rootURL, results)
+}
+
+func TestRunnerRunAndPersistMarksFailedWhenPoolClosesWithWorkOutstanding(t *testing.T) {
+	allowLoopbackDialsForTest(t)
+
+	// Every page links to 200 fresh internal URLs, so the frontier never drains
+	// and the crawl is still running when the batch write cancels it.
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(writer, `<!DOCTYPE html><html><head><title>page</title></head><body>`)
+		for index := range 200 {
+			fmt.Fprintf(writer, `<a href="%sc%d">child</a>`, request.URL.Path, index)
+		}
+		fmt.Fprint(writer, `</body></html>`)
+	}))
+	defer server.Close()
+
+	fetcher := NewFetcher(5*time.Second, "", 0, time.Second, 15*time.Second)
+	parser := NewParser()
+
+	// Which exit the runner takes out of that select is a coin flip, so one
+	// iteration proves little. The iterations are independent, and the missing
+	// failed mark shows up on every one that loses the flip.
+	for attempt := range 20 {
+		ctx, cancel := context.WithCancel(context.Background())
+		store := &cancellingStore{cancel: cancel}
+		runner := NewRunner(CrawlerConfig{
+			AllowedHost: mustParseURL(t, server.URL).Host,
+			MaxDepth:    2,
+			MaxPages:    500,
+		}, 4, fetcher, parser).WithStore(store)
+
+		_, _ = runner.RunAndPersist(ctx, pgtype.UUID{}, server.URL)
+		cancel()
+
+		if !store.markedFailed {
+			t.Fatalf("attempt %d: expected crawl to be marked failed when the pool closed with work outstanding", attempt)
+		}
+	}
+}
+
 type testResultStore struct {
 	persistedCount      int
 	persistErr          error
@@ -339,12 +441,29 @@ func (store *testResultStore) MarkCrawlFailed(_ context.Context, _ pgtype.UUID, 
 	return nil
 }
 
-func (store *testResultStore) PersistResult(_ context.Context, _ pgtype.UUID, _ string, _ CrawlResult) error {
+func (store *testResultStore) PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error {
+	return store.PersistResults(ctx, crawlID, rootURL, []CrawlResult{result})
+}
+
+func (store *testResultStore) PersistResults(_ context.Context, _ pgtype.UUID, _ string, results []CrawlResult) error {
 	if store.persistErr != nil {
 		return store.persistErr
 	}
 
-	store.persistedCount++
+	store.persistedCount += len(results)
+	return nil
+}
+
+func (store *testResultStore) PersistReusedResult(ctx context.Context, crawlID pgtype.UUID, baseline *Baseline, result CrawlResult) error {
+	return store.PersistReusedResults(ctx, crawlID, baseline, []CrawlResult{result})
+}
+
+func (store *testResultStore) PersistReusedResults(_ context.Context, _ pgtype.UUID, _ *Baseline, results []CrawlResult) error {
+	if store.persistErr != nil {
+		return store.persistErr
+	}
+
+	store.persistedCount += len(results)
 	return nil
 }
 
