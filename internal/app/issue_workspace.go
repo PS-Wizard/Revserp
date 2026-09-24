@@ -324,12 +324,12 @@ func (a *App) handleListIssueWorkspaceChanges(w http.ResponseWriter, r *http.Req
 	}
 	rows, err := a.loadWorkspaceDiff(r, baseline.ID, current.ID, userID, nil)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		serverError(w, r, err)
 		return
 	}
 	work, err := a.loadWorkspaceWork(r, current.ID, nil)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		serverError(w, r, err)
 		return
 	}
 	rows = applyWorkspaceWork(rows, work, current.ID.String())
