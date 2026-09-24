@@ -352,7 +352,7 @@ SELECT
     CASE
         WHEN base.id IS NULL THEN 'new'
         WHEN cur.id IS NOT NULL THEN 'still_open'
-        WHEN cp.id IS NULL OR cp.fetch_error IS NOT NULL OR cp.soft_404 OR cp.status_code NOT BETWEEN 200 AND 299 THEN 'not_verified'
+        WHEN cp.id IS NULL OR cp.fetch_error IS NOT NULL OR cp.soft_404 OR (cp.status_code BETWEEN 200 AND 299) IS NOT TRUE THEN 'not_verified'
         WHEN i.bucket = 'psi_cwv' AND NOT EXISTS (SELECT 1 FROM crawls evidence_crawl WHERE evidence_crawl.id = sqlc.arg(current_id) AND COALESCE(evidence_crawl.google_psi_results #>> '{0,mobile,success}', 'false') = 'true') THEN 'not_verified'
         WHEN i.issue_type IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
             SELECT 1 FROM crawl_pages baseline_coverage
@@ -373,7 +373,7 @@ SELECT
         ) THEN 'not_verified'
         ELSE 'no_longer_detected'
     END::text AS change_type,
-    (cp.id IS NOT NULL AND cp.fetch_error IS NULL AND NOT cp.soft_404 AND cp.status_code BETWEEN 200 AND 299)::boolean AS current_page_seen
+    (cp.id IS NOT NULL AND cp.fetch_error IS NULL AND NOT cp.soft_404 AND (cp.status_code BETWEEN 200 AND 299) IS TRUE)::boolean AS current_page_seen
 FROM identities i
 LEFT JOIN baseline base USING (url, pillar, bucket, issue_type)
 LEFT JOIN current cur USING (url, pillar, bucket, issue_type)
