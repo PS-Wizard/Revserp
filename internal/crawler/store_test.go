@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -552,4 +554,25 @@ func createTestCrawl(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (pgt
 	}
 
 	return crawlID, cleanup
+}
+
+func TestCapErrorMessageKeepsValidUTF8(t *testing.T) {
+	if got := capErrorMessage("fetch url: connection refused"); got != "fetch url: connection refused" {
+		t.Fatalf("short ascii message changed: %q", got)
+	}
+
+	// A 500-byte cut landing inside a multi-byte rune must back off to the
+	// rune boundary instead of storing invalid UTF-8 (SQLSTATE 22021).
+	long := strings.Repeat("\u092b", 200) // 600 bytes of Devanagari
+	capped := capErrorMessage(long)
+	if !utf8.ValidString(capped) {
+		t.Fatalf("capped message is not valid UTF-8: %q", capped)
+	}
+	if len(capped) > 500 {
+		t.Fatalf("capped message is %d bytes, want <= 500", len(capped))
+	}
+
+	if got := capErrorMessage("bad \xff bytes"); !utf8.ValidString(got) {
+		t.Fatalf("invalid input not sanitized: %q", got)
+	}
 }

@@ -3,6 +3,7 @@ package crawler
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestParserParseHTML(t *testing.T) {
@@ -377,5 +378,143 @@ func TestParserKeepsImageSrcOutOfVisibleText(t *testing.T) {
 
 	if !foundImageBlock {
 		t.Fatalf("expected image src in content blocks, got %#v", parsedPage.ContentBlocks)
+	}
+}
+
+func TestParserParseHTMLSanitizesInvalidUTF8(t *testing.T) {
+	const nepali = "जीवन बीमा"
+
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+		check       func(t *testing.T, parsed ParsedPage)
+	}{
+		{
+			name:        "truncated utf8 meta description mirrors nationallife failure",
+			contentType: "text/html; charset=UTF-8",
+			// Declared UTF-8 with a meta description ending mid-sequence
+			// (\xe0\xa4\xab\xe0) exactly like the live page at byte 649.
+			body: "<!DOCTYPE html><html lang=\"ne\"><head>" +
+				"<meta charset=\"UTF-8\"><title>Buy Insurance Policy</title>" +
+				"<meta name=\"description\" content=\"National Life " + nepali + " policy \xe0\xa4\xab\xe0\">" +
+				"<link rel=\"canonical\" href=\"/buy-insurance-policy\"></head>" +
+				"<body><main><h1>Buy Insurance</h1><p>" + nepali + " details</p><a href=\"/buy\">" + nepali + " \xe0</a></main></body></html>",
+			check: func(t *testing.T, parsed ParsedPage) {
+				t.Helper()
+				if !strings.Contains(parsed.MetaDescription, nepali) {
+					t.Fatalf("expected valid surrounding Nepali to survive, got %q", parsed.MetaDescription)
+				}
+				if !strings.Contains(parsed.MetaDescription, "\uFFFD") {
+					t.Fatalf("expected corrupt bytes to become U+FFFD, got %q", parsed.MetaDescription)
+				}
+				if !strings.Contains(parsed.VisibleText, nepali) {
+					t.Fatalf("expected Nepali body text to survive, got %q", parsed.VisibleText)
+				}
+				if len(parsed.Links) != 1 {
+					t.Fatalf("got %d links, want 1", len(parsed.Links))
+				}
+				if !strings.Contains(parsed.Links[0].AnchorText, nepali) {
+					t.Fatalf("expected Nepali anchor text to survive, got %q", parsed.Links[0].AnchorText)
+				}
+			},
+		},
+		{
+			name:        "valid utf8 passes through unchanged",
+			contentType: "text/html; charset=UTF-8",
+			body: "<!DOCTYPE html><html><head><title>Valid</title>" +
+				"<meta name=\"description\" content=\"A valid description with Nepali " + nepali + ".\"></head>" +
+				"<body><main><p>Body " + nepali + ".</p></main></body></html>",
+			check: func(t *testing.T, parsed ParsedPage) {
+				t.Helper()
+				want := "A valid description with Nepali " + nepali + "."
+				if parsed.MetaDescription != want {
+					t.Fatalf("got meta description %q, want %q", parsed.MetaDescription, want)
+				}
+			},
+		},
+		{
+			name:        "valid utf8 after ASCII prefix without a charset",
+			contentType: "text/html",
+			body: "<html><head><title>Valid</title>" + strings.Repeat(" ", 1100) +
+				"<meta name=\"description\" content=\"" + nepali + "\"></head><body></body></html>",
+			check: func(t *testing.T, parsed ParsedPage) {
+				t.Helper()
+				if parsed.MetaDescription != nepali {
+					t.Fatalf("got meta description %q, want %q", parsed.MetaDescription, nepali)
+				}
+			},
+		},
+		{
+			name:        "declared windows-1252 decodes latin1",
+			contentType: "text/html; charset=windows-1252",
+			body: "<!DOCTYPE html><html><head><title>Legacy</title>" +
+				"<meta name=\"description\" content=\"caf\xe9 plan\"></head>" +
+				"<body><main><p>Body text.</p></main></body></html>",
+			check: func(t *testing.T, parsed ParsedPage) {
+				t.Helper()
+				if parsed.MetaDescription != "caf\u00e9 plan" {
+					t.Fatalf("got meta description %q, want %q", parsed.MetaDescription, "caf\u00e9 plan")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := NewParser().ParseHTML("https://example.com/buy-insurance-policy", tc.contentType, []byte(tc.body))
+			if err != nil {
+				t.Fatalf("parse html: %v", err)
+			}
+			assertParsedPageValidUTF8(t, parsed)
+			tc.check(t, parsed)
+		})
+	}
+}
+
+// assertParsedPageValidUTF8 fails the test if any parsed string field that
+// reaches crawl_pages or crawl_links is not valid UTF-8.
+func assertParsedPageValidUTF8(t *testing.T, parsed ParsedPage) {
+	t.Helper()
+
+	fields := map[string]string{
+		"title":            parsed.Title,
+		"meta description": parsed.MetaDescription,
+		"author":           parsed.Author,
+		"canonical url":    parsed.CanonicalURL,
+		"lang":             parsed.Lang,
+		"viewport":         parsed.Viewport,
+		"robots":           parsed.Robots,
+		"visible text":     parsed.VisibleText,
+		"h1":               parsed.H1,
+	}
+	for _, heading := range parsed.H2Headings {
+		fields["h2 "+heading] = heading
+	}
+	for _, heading := range parsed.H3Headings {
+		fields["h3 "+heading] = heading
+	}
+	for _, heading := range parsed.HeadingOutline {
+		fields["outline"] = heading.Text
+	}
+	for key, value := range parsed.OGTags {
+		fields["og:"+key] = value
+	}
+	for _, block := range parsed.JSONLDBlocks {
+		fields["jsonld"] = block
+	}
+	for _, block := range parsed.ContentBlocks {
+		fields["block "+block.Tag+" text"] = block.Text
+		fields["block "+block.Tag+" html"] = block.Html
+	}
+	for _, link := range parsed.Links {
+		fields["link target "+link.TargetURL] = link.TargetURL
+		fields["link anchor "+link.AnchorText] = link.AnchorText
+	}
+
+	for name, value := range fields {
+		if !utf8.ValidString(value) {
+			t.Fatalf("field %s is not valid UTF-8: %q", name, value)
+		}
 	}
 }

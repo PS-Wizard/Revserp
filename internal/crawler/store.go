@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -317,10 +318,18 @@ func fetchErrorMessage(result CrawlResult) string {
 
 func capErrorMessage(message string) string {
 	const maxFetchErrorLength = 500
-	if len(message) > maxFetchErrorLength {
-		return message[:maxFetchErrorLength]
+	message = toValidUTF8String(message)
+	if len(message) <= maxFetchErrorLength {
+		return message
 	}
-	return message
+	// Cut back to a rune boundary so the truncation itself cannot create
+	// invalid UTF-8 (and a fresh SQLSTATE 22021 on the fetch_error column).
+	cut := maxFetchErrorLength
+	for cut > 0 && !utf8.ValidString(message[:cut]) {
+		cut--
+	}
+
+	return message[:cut]
 }
 
 // crawlPageURL returns the best available URL to persist for one crawl result.

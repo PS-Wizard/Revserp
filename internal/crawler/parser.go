@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/net/html/charset"
 )
 
 // ParsedLink holds one extracted anchor from a page.
@@ -70,6 +73,52 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
+// utf8Replacement substitutes one undecodable byte run in fetched HTML.
+var utf8Replacement = []byte("\uFFFD")
+
+// normalizeHTMLBytes decodes one fetched HTML body to UTF-8 following its
+// declared charset, replacing any undecodable bytes with U+FFFD.
+//
+// A truncated multi-byte sequence (as served by nationallife.com.np, which
+// declares UTF-8 but ends its meta description mid-sequence) would otherwise
+// flow through goquery into crawl_pages/crawl_links and abort the insert
+// with Postgres SQLSTATE 22021. Correctly encoded bodies are returned
+// unchanged; the fetch response body itself is never mutated.
+func normalizeHTMLBytes(body []byte, contentType string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	_, name, certain := charset.DetermineEncoding(body, contentType)
+	// The charset sniffer samples only the first 1024 bytes. If those are all
+	// ASCII, it can guess Windows-1252 for a valid UTF-8 page with no header.
+	if utf8.Valid(body) && (name == "utf-8" || (name == "windows-1252" && !certain)) {
+		return body
+	}
+	decodedReader, err := charset.NewReader(bytes.NewReader(body), contentType)
+	if err != nil {
+		return bytes.ToValidUTF8(body, utf8Replacement)
+	}
+	decoded, err := io.ReadAll(decodedReader)
+	if err != nil {
+		return bytes.ToValidUTF8(body, utf8Replacement)
+	}
+	if !utf8.Valid(decoded) {
+		decoded = bytes.ToValidUTF8(decoded, utf8Replacement)
+	}
+	return decoded
+}
+
+// toValidUTF8String replaces any invalid UTF-8 in value with U+FFFD.
+// It is the string-level companion to normalizeHTMLBytes for short
+// already-parsed values (such as truncated error messages) that reach the store.
+func toValidUTF8String(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+
+	return strings.ToValidUTF8(value, string(utf8.RuneError))
+}
+
 // ParseHTML extracts page facts and links from one fetched HTML response.
 func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte) (ParsedPage, error) {
 	if !strings.Contains(strings.ToLower(contentType), "text/html") {
@@ -80,6 +129,8 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 	if err != nil {
 		return ParsedPage{}, fmt.Errorf("normalize page url: %w", err)
 	}
+
+	body = normalizeHTMLBytes(body, contentType)
 
 	document, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
