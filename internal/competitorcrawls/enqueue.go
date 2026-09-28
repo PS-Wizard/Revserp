@@ -11,7 +11,6 @@ import (
 
 	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
-	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
 const competitorMaxDepth = 32
@@ -43,23 +42,18 @@ func EnqueueMissing(ctx context.Context, queries *sqlc.Queries, parentCrawlID, r
 		return nil, nil
 	}
 
-	breakdownRow, err := queries.GetCrawlScoreBreakdownByCrawl(ctx, parentCrawlID)
+	pageCount, err := queries.CountCrawlPagesForCrawl(ctx, parentCrawlID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-
-	var breakdown shared.ScoreBreakdownSnapshot
-	if err := json.Unmarshal(breakdownRow.BreakdownJson, &breakdown); err != nil {
-		return nil, err
-	}
-	if breakdown.TotalScoredPages <= 0 {
+	if pageCount <= 0 {
 		return nil, nil
 	}
 
-	configSnapshot, err := competitorConfigSnapshot(parent.ConfigSnapshot, breakdown.TotalScoredPages)
+	configSnapshot, err := competitorConfigSnapshot(parent.ConfigSnapshot, int32(pageCount))
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +104,7 @@ func competitorConfigSnapshot(parentConfig []byte, maxPages int32) ([]byte, erro
 	snapshot := crawler.CrawlConfigSnapshot{
 		MaxDepth:        competitorMaxDepth,
 		MaxPages:        &maxPagesInt,
-		SkipSitemapSeed: true,
+		SkipSitemapSeed: parentSnapshot.SkipSitemapSeed,
 		HonourRobotsTxt: parentSnapshot.HonourRobotsTxt,
 	}
 	if parentSnapshot.FetchTimeoutSeconds > 0 {

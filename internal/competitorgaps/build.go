@@ -131,20 +131,28 @@ func buildReport(parent, competitor crawlSnapshot) Report {
 	return buildReportWithConfig(parent, competitor, issueengine.DefaultScoringConfig())
 }
 
-func buildReportWithConfig(parent, competitor crawlSnapshot, scoringConfig shared.ScoringConfig) Report {
-	competitorHops := hopsFromHome(competitor.Pages, competitor.Links, competitor.SeedURL)
-	radius := maxHop(competitorHops)
-	if len(competitorHops) == 0 {
-		radius = 0
+// ponytail: full scoreable set, no hop cut
+func allScoreablePages(pages []graphPage) []graphPage {
+	sliced := make([]graphPage, 0, len(pages))
+	for _, page := range pages {
+		if !pageIsScoreable(page) {
+			continue
+		}
+		sliced = append(sliced, page)
 	}
+	return sliced
+}
+
+func buildReportWithConfig(parent, competitor crawlSnapshot, scoringConfig shared.ScoringConfig) Report {
+	parentSlice := allScoreablePages(parent.Pages)
+	competitorSlice := allScoreablePages(competitor.Pages)
 
 	parentHops := hopsFromHome(parent.Pages, parent.Links, parent.SeedURL)
-	parentSlice := slicePages(parent.Pages, parentHops, radius)
-	competitorSlice := slicePages(competitor.Pages, competitorHops, radius)
+	competitorHops := hopsFromHome(competitor.Pages, competitor.Links, competitor.SeedURL)
 
 	return Report{
 		Version:       ReportVersion,
-		Radius:        radius,
+		Radius:        0,
 		YourPages:     len(parentSlice),
 		TheirPages:    len(competitorSlice),
 		YouBreakdown:  scoreSlice(parent.ID, parentSlice, parent.Issues, parent.PSIResults, scoringConfig),

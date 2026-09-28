@@ -40,6 +40,7 @@ type crawlResponse struct {
 	ConfigSnapshot   json.RawMessage `json:"config_snapshot,omitempty"`
 	URLsDiscovered   int32           `json:"urls_discovered"`
 	URLsCrawled      int32           `json:"urls_crawled"`
+	PageCount        int32           `json:"page_count"` // stored crawl_pages rows (dedupe truth; CompetitorCap uses this)
 	MaxDepthReached  int32           `json:"max_depth_reached"`
 	GooglePSIResults json.RawMessage `json:"google_psi_results,omitempty"`
 	HasLLMsTxt       *bool           `json:"has_llms_txt,omitempty"`
@@ -191,7 +192,14 @@ func (a *App) handleListCrawls(w http.ResponseWriter, r *http.Request) {
 
 	responses := make([]crawlResponse, 0, len(crawls))
 	for _, crawl := range crawls {
-		responses = append(responses, newCrawlResponseFromListRow(crawl))
+		resp := newCrawlResponseFromListRow(crawl)
+		count, err := a.Queries.CountCrawlPagesForCrawl(r.Context(), crawl.ID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		resp.PageCount = int32(count)
+		responses = append(responses, resp)
 	}
 
 	setNoStore(w)
@@ -234,12 +242,20 @@ func (a *App) handleGetCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	count, err := a.Queries.CountCrawlPagesForCrawl(r.Context(), crawl.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	resp := newCrawlResponseFromGetRow(crawl)
+	resp.PageCount = int32(count)
+
 	if isCrawlStatusTerminal(crawl.Status) {
 		setImmutableCache(w)
 	} else {
 		setNoStore(w)
 	}
-	writeJSON(w, http.StatusOK, newCrawlResponseFromGetRow(crawl))
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleDeleteCrawl deletes a completed or failed crawl the user can access.

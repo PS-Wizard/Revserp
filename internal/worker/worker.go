@@ -134,6 +134,39 @@ func (w *Worker) unregisterCrawlCancel(crawlID pgtype.UUID) {
 	w.cancelsMu.Unlock()
 }
 
+// min/maxCrawlPageWorkerCount bound the admin override range. The database
+// CHECK constraint enforces the same range; this is defense in depth.
+const (
+	minCrawlPageWorkerCount = 1
+	maxCrawlPageWorkerCount = 100
+)
+
+// effectiveCrawlPageWorkerCount validates a saved admin override. An
+// out-of-range stored value is an error rather than a silent fallback, so a
+// corrupt row fails loudly instead of changing crawl behavior invisibly.
+func effectiveCrawlPageWorkerCount(stored int32) (int, error) {
+	if stored < minCrawlPageWorkerCount || stored > maxCrawlPageWorkerCount {
+		return 0, fmt.Errorf("saved crawl page worker count %d out of range [%d, %d]", stored, minCrawlPageWorkerCount, maxCrawlPageWorkerCount)
+	}
+	return int(stored), nil
+}
+
+// resolveCrawlPageWorkerCount reads the admin DB override for this newly
+// claimed crawl. No override row means the boot-time configured count wins.
+// A real DB error is returned so the caller can fail the crawl instead of
+// silently crawling with the wrong pool size. It never mutates w.cfg, which
+// is shared across concurrent crawl loops.
+func (w *Worker) resolveCrawlPageWorkerCount(ctx context.Context) (int, error) {
+	row, err := w.queries.GetCrawlPageWorkerConfig(ctx)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return w.cfg.CrawlPageWorkerCount, nil
+		}
+		return 0, err
+	}
+	return effectiveCrawlPageWorkerCount(row.WorkerCount)
+}
+
 // CancelCrawl trips the in-memory cancel func for crawlID if this worker
 // process is the one running it, and reports whether it found one.
 //
@@ -519,7 +552,16 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(w.pool)
 	issueStore := issues.NewStore(w.pool)
-	runner := crawler.NewRunner(crawlConfig, w.cfg.CrawlPageWorkerCount, fetcher, parser).
+	pageWorkerCount, err := w.resolveCrawlPageWorkerCount(ctx)
+	if err != nil {
+		store := crawler.NewStore(w.pool)
+		if failErr := store.MarkCrawlFailed(ctx, claimed.ID, 0, 0, 0, fmt.Sprintf("resolve crawl page worker count: %v", err)); failErr != nil {
+			return fmt.Errorf("resolve crawl page worker count: %w (also failed to mark crawl failed: %v)", err, failErr)
+		}
+		return fmt.Errorf("resolve crawl page worker count: %w", err)
+	}
+	log.Printf("crawl page workers: crawl_id=%s effective=%d env=%d", claimed.ID.String(), pageWorkerCount, w.cfg.CrawlPageWorkerCount)
+	runner := crawler.NewRunner(crawlConfig, pageWorkerCount, fetcher, parser).
 		WithRenderer(w.renderer).
 		WithStore(crawlStore).
 		WithDeferredFinalStatus()

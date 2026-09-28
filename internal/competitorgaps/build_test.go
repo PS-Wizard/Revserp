@@ -92,11 +92,11 @@ func TestRadiusComesFromCompetitorNotParent(t *testing.T) {
 	}
 
 	report := buildReport(parent, competitor)
-	if report.Radius != 1 {
-		t.Fatalf("radius = %d, want 1 from competitor max hop", report.Radius)
+	if report.Radius != 0 {
+		t.Fatalf("radius = %d, want 0 (full scoreable set, no hop cut)", report.Radius)
 	}
-	if report.YourPages != 2 {
-		t.Fatalf("your_pages = %d, want 2 (parent hops 0 and 1 only)", report.YourPages)
+	if report.YourPages != 4 {
+		t.Fatalf("your_pages = %d, want 4 (full scoreable set)", report.YourPages)
 	}
 	if report.TheirPages != 2 {
 		t.Fatalf("their_pages = %d, want 2", report.TheirPages)
@@ -423,17 +423,17 @@ func TestSliceRescoreDropsPagesPastCompetitorRadius(t *testing.T) {
 	}
 
 	report := buildReport(parent, competitor)
-	if report.YouBreakdown.TotalScoredPages != 2 {
-		t.Fatalf("you total_scored_pages = %d, want 2 hop-matched pages", report.YouBreakdown.TotalScoredPages)
+	if report.YouBreakdown.TotalScoredPages != 4 {
+		t.Fatalf("you total_scored_pages = %d, want 4 full-set pages", report.YouBreakdown.TotalScoredPages)
 	}
 	if report.ThemBreakdown.TotalScoredPages != 2 {
 		t.Fatalf("them total_scored_pages = %d, want 2", report.ThemBreakdown.TotalScoredPages)
 	}
-	if len(report.YourSlice) != 2 || report.YourSlice[0].Hop != 0 {
-		t.Fatalf("your_slice = %#v, want 2 pages starting at hop 0", report.YourSlice)
+	if len(report.YourSlice) != 4 || report.YourSlice[0].Hop != 0 {
+		t.Fatalf("your_slice = %#v, want 4 pages starting at hop 0", report.YourSlice)
 	}
-	if breakdownHasIssue(report.YouBreakdown, "missing_title") {
-		t.Fatalf("deep-page missing_title leaked into hop-1 slice score")
+	if !breakdownHasIssue(report.YouBreakdown, "missing_title") {
+		t.Fatalf("deep-page missing_title must appear in full-set slice score")
 	}
 }
 

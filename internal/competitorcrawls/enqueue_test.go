@@ -17,8 +17,8 @@ func TestCompetitorConfigSnapshotSetsFrontierFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NormalizeConfigSnapshot: %v", err)
 	}
-	if !snapshot.SkipSitemapSeed {
-		t.Fatal("expected skip_sitemap_seed true")
+	if snapshot.SkipSitemapSeed {
+		t.Fatal("expected skip_sitemap_seed false (copied from parent)")
 	}
 	if snapshot.ForceFullCrawl {
 		t.Fatal("expected force_full_crawl false so later competitor crawls can reuse a baseline")
@@ -37,8 +37,20 @@ func TestCompetitorConfigSnapshotSetsFrontierFlags(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("unmarshal snapshot: %v", err)
 	}
-	if decoded["skip_sitemap_seed"].(bool) != true {
+	if v, ok := decoded["skip_sitemap_seed"]; ok && v != false {
 		t.Fatalf("raw skip_sitemap_seed = %v", decoded["skip_sitemap_seed"])
+	}
+
+	rawSeed, err := competitorConfigSnapshot([]byte(`{"honour_robots_txt":true,"skip_sitemap_seed":true}`), 15)
+	if err != nil {
+		t.Fatalf("competitorConfigSnapshot seeded: %v", err)
+	}
+	seeded, _, err := crawler.NormalizeConfigSnapshot(rawSeed)
+	if err != nil {
+		t.Fatalf("NormalizeConfigSnapshot seeded: %v", err)
+	}
+	if !seeded.SkipSitemapSeed {
+		t.Fatal("expected skip_sitemap_seed true copied from parent")
 	}
 }
 

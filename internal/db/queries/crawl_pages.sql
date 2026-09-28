@@ -234,6 +234,9 @@ LIMIT $3
 OFFSET $4;
 
 
+-- name: CountCrawlPagesForCrawl :one
+SELECT COUNT(*) FROM crawl_pages WHERE crawl_id = $1;
+
 -- name: ListCrawlPagesForCrawl :many
 SELECT
     id,

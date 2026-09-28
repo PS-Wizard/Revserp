@@ -297,6 +297,13 @@ type CrawlPage struct {
 	UrlKey                  pgtype.Text
 }
 
+type CrawlPageWorkerConfig struct {
+	ID              bool
+	WorkerCount     int32
+	UpdatedByUserID pgtype.UUID
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type CrawlScoreBreakdown struct {
 	CrawlID        pgtype.UUID
 	ScoringVersion string

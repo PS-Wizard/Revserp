@@ -4,7 +4,7 @@ import "github.com/ps-wizard/revserp/internal/issues/shared"
 
 // ReportVersion is stored with every persisted snapshot so we can rebuild
 // without recrawling when the comparison rules change.
-const ReportVersion = "v4"
+const ReportVersion = "v5"
 
 // Report is the competitor gap snapshot. JSON keys are the API contract.
 type Report struct {
@@ -25,7 +25,7 @@ type Report struct {
 	Content       ContentCompare                `json:"content"`
 }
 
-// SlicePage is one hop-matched scoreable page used for slice scoring and
+// SlicePage is one compared scoreable page used for slice scoring and
 // issue drilldown. Hop is BFS distance from that site's homepage.
 type SlicePage struct {
 	URL string `json:"url"`
@@ -39,7 +39,7 @@ type IssueRow struct {
 	Them  int    `json:"them"`
 }
 
-// SpreadRow is one issue type's prevalence on the hop-matched slice.
+// SpreadRow is one issue type's prevalence on the compared slice.
 // You/Them are 0–100 percents of that side's slice pages.
 type SpreadRow struct {
 	ID     string  `json:"id"`

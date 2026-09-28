@@ -190,6 +190,17 @@ func (q *Queries) CountCrawlPagesFilteredForUser(ctx context.Context, arg CountC
 	return count, err
 }
 
+const countCrawlPagesForCrawl = `-- name: CountCrawlPagesForCrawl :one
+SELECT COUNT(*) FROM crawl_pages WHERE crawl_id = $1
+`
+
+func (q *Queries) CountCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrawlPagesForCrawl, crawlID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countCrawlPagesForCrawlByUser = `-- name: CountCrawlPagesForCrawlByUser :one
 SELECT COUNT(*)
 FROM crawl_pages AS cp

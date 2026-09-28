@@ -125,7 +125,14 @@ func (a *App) handleAppBootstrap(w http.ResponseWriter, r *http.Request) {
 
 			resp.Crawls = make([]crawlResponse, 0, len(crawls))
 			for _, c := range crawls {
-				resp.Crawls = append(resp.Crawls, newCrawlResponseFromListRow(c))
+				crawl := newCrawlResponseFromListRow(c)
+				count, err := queries.CountCrawlPagesForCrawl(r.Context(), c.ID)
+				if err != nil {
+					serverError(w, r, err)
+					return err
+				}
+				crawl.PageCount = int32(count)
+				resp.Crawls = append(resp.Crawls, crawl)
 			}
 
 			// Step 5: pick selected completed crawl, mirroring loader logic.

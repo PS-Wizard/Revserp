@@ -50,7 +50,7 @@ func run() error {
 		AnalysisTimeout:       cfg.AnalysisTimeout,
 		MaxAPIResponseBytes:   cfg.MaxAPIResponseBytes,
 	}, renderer)
-	log.Printf("worker listening for queued crawls: manual_concurrency=%d manual_poll=%s auto_concurrency=%d auto_poll=%s auto_scheduler=%s crawl_page_worker_count=%d renderer_concurrency=%d obscura_path=%q obscura_timeout=%s obscura_kill_timeout=%s crawl_max_retries=%d crawl_retry_base=%s crawl_retry_max=%s crawl_timeout=%s analysis_timeout=%s max_api_response_bytes=%d", cfg.WorkerConcurrency, cfg.WorkerPollInterval, cfg.AutoCrawlConcurrency, cfg.AutoCrawlPollInterval, cfg.AutoCrawlSchedulerInterval, cfg.CrawlPageWorkerCount, cfg.RendererConcurrency, cfg.ObscuraPath, cfg.ObscuraTimeout, cfg.ObscuraKillTimeout, cfg.CrawlMaxRetries, cfg.CrawlRetryBase, cfg.CrawlRetryMax, cfg.CrawlTimeout, cfg.AnalysisTimeout, cfg.MaxAPIResponseBytes)
+	log.Printf("worker listening for queued crawls: manual_concurrency=%d manual_poll=%s auto_concurrency=%d auto_poll=%s auto_scheduler=%s crawl_page_worker_count_env=%d renderer_concurrency=%d obscura_path=%q obscura_timeout=%s obscura_kill_timeout=%s crawl_max_retries=%d crawl_retry_base=%s crawl_retry_max=%s crawl_timeout=%s analysis_timeout=%s max_api_response_bytes=%d", cfg.WorkerConcurrency, cfg.WorkerPollInterval, cfg.AutoCrawlConcurrency, cfg.AutoCrawlPollInterval, cfg.AutoCrawlSchedulerInterval, cfg.CrawlPageWorkerCount, cfg.RendererConcurrency, cfg.ObscuraPath, cfg.ObscuraTimeout, cfg.ObscuraKillTimeout, cfg.CrawlMaxRetries, cfg.CrawlRetryBase, cfg.CrawlRetryMax, cfg.CrawlTimeout, cfg.AnalysisTimeout, cfg.MaxAPIResponseBytes)
 	if err := crawlWorker.Run(ctx); err != nil {
 		log.Printf("worker error: %v", err)
 	}
