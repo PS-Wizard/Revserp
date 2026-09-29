@@ -18,7 +18,6 @@ type App struct {
 	AuthVerifier   *internalauth.Verifier
 	SupabaseClient *internalauth.SupabaseClient
 	SessionManager *internalauth.SessionManager
-	APIKeyManager  *internalauth.APIKeyManager
 	GSCService     *gsc.Service
 	GAService      *ga.Service
 	OrgEvents      *organizationEventHub
@@ -45,7 +44,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		AuthVerifier:   authVerifier,
 		SupabaseClient: supabaseClient,
 		SessionManager: sessionManager,
-		APIKeyManager:  internalauth.NewAPIKeyManager(queries),
 		GSCService:     gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes),
 		GAService:      ga.NewService(cfg.MaxAPIResponseBytes),
 		OrgEvents:      newOrganizationEventHub(),

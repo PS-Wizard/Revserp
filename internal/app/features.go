@@ -22,7 +22,7 @@ const (
 	FeatureGSCConnector Feature = "gsc_connector"
 	// FeatureAIChat remains the workspace switch for the future chat rewrite.
 	FeatureAIChat Feature = "ai_chat"
-	// FeatureIntegrations gates the Integrations tab, API keys, and OAuth consent.
+	// FeatureIntegrations gates the Integrations tab, MCP tools, and OAuth consent.
 	FeatureIntegrations Feature = "integrations"
 	// FeatureCompetitors gates competitor roster and crawl enqueue.
 	FeatureCompetitors Feature = "competitors"

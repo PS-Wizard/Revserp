@@ -119,7 +119,7 @@ func TestIntegrationsFeatureGateUsesForbidden(t *testing.T) {
 	response := httptest.NewRecorder()
 	app.requireFeature(FeatureIntegrations, resolver)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("disabled feature reached handler")
-	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api-keys", nil))
+	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/oauth/authorizations/test", nil))
 
 	if response.Code != http.StatusForbidden || response.Body.String() != "{\"error\":\"feature not enabled for this workspace\"}\n" {
 		t.Fatalf("feature response = %d %q", response.Code, response.Body.String())

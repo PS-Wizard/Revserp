@@ -8,16 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type AgentSetupCode struct {
-	ID         pgtype.UUID
-	UserID     pgtype.UUID
-	Name       string
-	CodeHash   string
-	ExpiresAt  pgtype.Timestamptz
-	RedeemedAt pgtype.Timestamptz
-	CreatedAt  pgtype.Timestamptz
-}
-
 type AiAudit struct {
 	ID           pgtype.UUID
 	ProjectID    pgtype.UUID
@@ -152,17 +142,6 @@ type AiWorkspaceMonthlyUsage struct {
 	UsedMessages   int32
 	UpdatedAt      pgtype.Timestamptz
 	UsedAudits     int32
-}
-
-type ApiKey struct {
-	ID          pgtype.UUID
-	UserID      pgtype.UUID
-	Name        string
-	TokenPrefix string
-	TokenHash   string
-	CreatedAt   pgtype.Timestamptz
-	LastUsedAt  pgtype.Timestamptz
-	RevokedAt   pgtype.Timestamptz
 }
 
 type CompetitorGapReport struct {

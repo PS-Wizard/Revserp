@@ -87,21 +87,7 @@ func (a *App) mcpAttachIdentity(next http.Handler) http.Handler {
 	})
 }
 
-func (a *App) verifyMCPToken(ctx context.Context, token string, _ *http.Request) (*mcpauth.TokenInfo, error) {
-	if internalauth.IsLiveAPIKey(token) {
-		if a.APIKeyManager == nil {
-			return nil, fmt.Errorf("%w", mcpauth.ErrInvalidToken)
-		}
-		identity, meta, err := a.APIKeyManager.Authenticate(ctx, token)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", mcpauth.ErrInvalidToken, err)
-		}
-		return &mcpauth.TokenInfo{
-			UserID: meta.UserID,
-			Extra:  map[string]any{mcpIdentityExtraKey: identity},
-		}, nil
-	}
-
+func (a *App) verifyMCPToken(_ context.Context, token string, _ *http.Request) (*mcpauth.TokenInfo, error) {
 	if a.AuthVerifier == nil {
 		return nil, fmt.Errorf("%w", mcpauth.ErrInvalidToken)
 	}

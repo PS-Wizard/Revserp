@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,7 +94,7 @@ func TestHandlerMissingPrincipalReturns500(t *testing.T) {
 
 func TestPrincipalFromSessionRouter(t *testing.T) {
 	f := newSessionFixture(t)
-	rec := get(t, f.app.Router(), "/me", "", f.rawCookie)
+	rec := get(t, f.app.Router(), "/me", f.rawCookie)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /me with valid session status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
@@ -108,26 +107,6 @@ func TestPrincipalFromSessionRouter(t *testing.T) {
 	}
 	if len(body.Organizations) == 0 {
 		t.Error("expected at least one organization for new user fixture")
-	}
-}
-
-func TestPrincipalForV1Me(t *testing.T) {
-	f := newAPIKeyFixture(t)
-	raw, _ := f.createKey(t, "principal-v1")
-	rec := v1Get(t, f.app.Router(), "/v1/me", raw)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /v1/me with API key status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		User struct {
-			ID string `json:"id"`
-		} `json:"user"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.User.ID != f.userID.String() {
-		t.Fatalf("user id = %q, want %q", body.User.ID, f.userID.String())
 	}
 }
 
@@ -201,28 +180,13 @@ func TestRenewalDoesNotProvisionPrincipal(t *testing.T) {
 }
 
 func TestSuspendedPrincipalReturns403(t *testing.T) {
-	f := newAPIKeyFixture(t)
+	f := newSessionFixture(t)
 	if _, err := f.pool.Exec(f.ctx, `UPDATE users SET status='suspended' WHERE id=$1`, f.userID); err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = f.pool.Exec(context.Background(), `UPDATE users SET status='active' WHERE id=$1`, f.userID)
-	})
-	raw, _ := f.createKey(t, "suspended-principal")
-	rec := v1Get(t, f.app.Router(), "/v1/me", raw)
+	rec := get(t, f.app.Router(), "/me", f.rawCookie)
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("suspended should be 403, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "account suspended") {
-		t.Fatalf("body should contain account suspended, got %q", rec.Body.String())
-	}
-	f2 := newSessionFixture(t)
-	if _, err := f2.pool.Exec(f2.ctx, `UPDATE users SET status='suspended' WHERE id=$1`, f2.userID); err != nil {
-		t.Fatalf("suspend2: %v", err)
-	}
-	rec2 := get(t, f2.app.Router(), "/me", "", f2.rawCookie)
-	if rec2.Code != http.StatusForbidden {
-		t.Fatalf("suspended session should be 403, got %d body=%s", rec2.Code, rec2.Body.String())
+		t.Fatalf("suspended session should be 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

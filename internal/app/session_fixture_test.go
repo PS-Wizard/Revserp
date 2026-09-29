@@ -18,12 +18,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
-	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-// Regression tests for the auth split: bearer API keys must not open browser
-// (session-cookie) routes, and browser cookies must not open /v1 routes.
-// The Supabase JWKS is faked with a local signing key so no external calls happen.
+// Shared cookie-session fixture for app tests. The Supabase JWKS is faked
+// with a local signing key so no external calls happen.
 
 const (
 	testJWTIssuer    = "https://test-jwks.example/auth/v1"
@@ -84,7 +82,6 @@ func newSessionFixture(t *testing.T) sessionFixture {
 		VALUES ($1, $2, $3) RETURNING id`, testAuthProvider, name, email).Scan(&userID); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	// sessions and api_keys both reference users(id) ON DELETE CASCADE.
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, userID)
 	})
@@ -105,7 +102,6 @@ func newSessionFixture(t *testing.T) sessionFixture {
 		DB:             pool,
 		Queries:        queries,
 		SessionManager: sessionManager,
-		APIKeyManager:  internalauth.NewAPIKeyManager(queries),
 	}
 	return sessionFixture{
 		app:        app,
@@ -141,95 +137,13 @@ func mintTestAccessToken(t *testing.T, key *ecdsa.PrivateKey, subject, email str
 	return signed
 }
 
-func (f sessionFixture) createAPIKey(t *testing.T, name string) string {
-	t.Helper()
-	manager := internalauth.NewAPIKeyManager(f.app.Queries)
-	rawKey, prefix, hash, err := manager.GenerateAPIKey()
-	if err != nil {
-		t.Fatalf("generate api key: %v", err)
-	}
-	if _, err := f.app.Queries.CreateAPIKey(f.ctx, sqlc.CreateAPIKeyParams{
-		UserID:      f.userID,
-		Name:        name,
-		TokenPrefix: prefix,
-		TokenHash:   hash,
-	}); err != nil {
-		t.Fatalf("insert api key: %v", err)
-	}
-	return rawKey
-}
-
-func get(t *testing.T, handler http.Handler, path, rawAPIKey, rawCookie string) *httptest.ResponseRecorder {
+func get(t *testing.T, handler http.Handler, path, rawCookie string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	if rawAPIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+rawAPIKey)
-	}
 	if rawCookie != "" {
 		req.AddCookie(&http.Cookie{Name: "revserp_session", Value: rawCookie})
 	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
-}
-
-// The new auth must not let a bearer API key open browser-only routes.
-func TestAPIKeyCannotOpenBrowserRoutesIntegration(t *testing.T) {
-	f := newSessionFixture(t)
-	raw := f.createAPIKey(t, "browser-route-probe")
-	rec := get(t, f.app.Router(), "/api-keys", raw, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api-keys with bearer API key status = %d, want 401, body = %s",
-			rec.Code, rec.Body.String())
-	}
-}
-
-// The new auth must not let a browser cookie open /v1 API routes.
-func TestBrowserCookieCannotOpenV1RoutesIntegration(t *testing.T) {
-	f := newSessionFixture(t)
-	rec := get(t, f.app.Router(), "/v1/me", "", f.rawCookie)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /v1/me with browser cookie status = %d, want 401, body = %s",
-			rec.Code, rec.Body.String())
-	}
-}
-
-// An existing valid browser session must keep working on browser routes.
-func TestValidBrowserSessionStillWorksIntegration(t *testing.T) {
-	f := newSessionFixture(t)
-	f.createAPIKey(t, "listed-via-cookie")
-	rec := get(t, f.app.Router(), "/api-keys", "", f.rawCookie)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api-keys with valid session cookie status = %d, want 200, body = %s",
-			rec.Code, rec.Body.String())
-	}
-	var parsed struct {
-		APIKeys []map[string]json.RawMessage `json:"api_keys"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
-		t.Fatalf("decode list: %v", err)
-	}
-	if len(parsed.APIKeys) == 0 {
-		t.Error("valid browser session listed no API keys despite one existing")
-	}
-}
-
-func TestAPIKeysForbiddenWhenIntegrationsOff(t *testing.T) {
-	f := newSessionFixture(t)
-	orgID := createFeaturesTestOrg(t, f.ctx, f.pool)
-	if _, err := f.pool.Exec(f.ctx, `INSERT INTO organization_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, orgID, f.userID); err != nil {
-		t.Fatalf("add membership: %v", err)
-	}
-	if err := f.app.Queries.UpsertOrganizationFeatures(f.ctx, sqlc.UpsertOrganizationFeaturesParams{
-		OrgID: orgID, AutoCrawl: true, GscConnector: true, AiChat: true, Integrations: false,
-		AiMonthlyMessageLimit: 50, AiConcurrentTurnLimitPerUser: 2,
-		AiVisibilityAuditMonthlyLimit: 10, MaxCompetitors: 3,
-		AiAllowedReasoningEfforts: canonicalAIReasoningEfforts,
-	}); err != nil {
-		t.Fatalf("disable integrations: %v", err)
-	}
-	rec := get(t, f.app.Router(), "/api-keys", "", f.rawCookie)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("GET /api-keys with integrations off status = %d, want 403, body = %s", rec.Code, rec.Body.String())
-	}
 }
