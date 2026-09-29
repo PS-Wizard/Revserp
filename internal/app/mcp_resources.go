@@ -523,7 +523,10 @@ func mcpCrawlRowFromParts(
 		OverallScore:    mcpInt32Ptr(overall),
 		CreatedAt:       formatTimestamp(createdAt),
 	}
-	if phase.Valid {
+	// Phase is only a sub-phase of running; terminal crawls must not expose
+	// a stale phase (including historical rows written before phase was
+	// cleared in SQL).
+	if status == string(CrawlStatusRunning) && phase.Valid {
 		row.Phase = phase.String
 	}
 	if startedAt.Valid {

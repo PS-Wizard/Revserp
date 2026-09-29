@@ -86,7 +86,7 @@ func TestBusinessProfileDefaultsExcludeSeedPrompts(t *testing.T) {
 func TestBusinessProfileIncludeSeedPrompts(t *testing.T) {
 	fake := &fakeBusinessProfileReader{profile: makeProfile()}
 	response := decodeBusinessProfile(t, runBusinessProfile(t, fake, `{"include_seed_prompts":true}`))
-	if len(response.SeedPrompts) != 2 || response.SeedPrompts[0] != "who buys acme gear" {
+	if response.SeedPrompts == nil || len(*response.SeedPrompts) != 2 || (*response.SeedPrompts)[0] != "who buys acme gear" {
 		t.Fatalf("SeedPrompts = %+v, want the two configured prompts", response.SeedPrompts)
 	}
 }
@@ -120,10 +120,10 @@ func TestBusinessProfileCaps(t *testing.T) {
 	if want := strings.Repeat("d", 500) + "\u2026"; response.BusinessDescription != want {
 		t.Fatalf("description = %q, want capped at 500 with marker", response.BusinessDescription)
 	}
-	if len(response.SeedPrompts) != businessProfileMaxPromptCount {
-		t.Fatalf("SeedPrompts = %d entries, want capped at %d", len(response.SeedPrompts), businessProfileMaxPromptCount)
+	if response.SeedPrompts == nil || len(*response.SeedPrompts) != businessProfileMaxPromptCount {
+		t.Fatalf("SeedPrompts = %d entries, want capped at %d", len(*response.SeedPrompts), businessProfileMaxPromptCount)
 	}
-	if want := strings.Repeat("p", 200) + "\u2026"; response.SeedPrompts[0] != want {
+	if want := strings.Repeat("p", 200) + "\u2026"; (*response.SeedPrompts)[0] != want {
 		t.Fatalf("seed prompt[0] not capped at 200 with marker")
 	}
 }
@@ -198,5 +198,50 @@ func TestBusinessProfileToolDef(t *testing.T) {
 	}
 	if _, ok := properties["include_seed_prompts"]; !ok {
 		t.Fatal("schema must accept include_seed_prompts")
+	}
+}
+
+func TestBusinessProfileSeedPromptsOmittedVsEmptyVsValues(t *testing.T) {
+	// Omitted by default even when stored prompts exist.
+	result := runBusinessProfile(t, &fakeBusinessProfileReader{profile: makeProfile()}, `{}`)
+	if strings.Contains(result.Content, `"seed_prompts"`) {
+		t.Fatalf("default content should omit seed_prompts, got: %s", result.Content)
+	}
+	if got := decodeBusinessProfile(t, result); got.SeedPrompts != nil {
+		t.Fatalf("default SeedPrompts = %v, want nil (omitted)", got.SeedPrompts)
+	}
+
+	// Explicit false also omits.
+	result = runBusinessProfile(t, &fakeBusinessProfileReader{profile: makeProfile()}, `{"include_seed_prompts":false}`)
+	if strings.Contains(result.Content, `"seed_prompts"`) {
+		t.Fatalf("explicit false should omit seed_prompts, got: %s", result.Content)
+	}
+
+	// Explicit true with no stored prompts returns [].
+	empty := makeProfile()
+	empty.SeedPrompts = nil
+	result = runBusinessProfile(t, &fakeBusinessProfileReader{profile: empty}, `{"include_seed_prompts":true}`)
+	if !strings.Contains(result.Content, `"seed_prompts":[]`) {
+		t.Fatalf("empty prompts should encode as [], got: %s", result.Content)
+	}
+	if got := decodeBusinessProfile(t, result); got.SeedPrompts == nil || len(*got.SeedPrompts) != 0 {
+		t.Fatalf("empty SeedPrompts = %v, want non-nil empty", got.SeedPrompts)
+	}
+
+	// Explicit true with corrupt stored JSON falls back to [] like the empty case.
+	corrupt := makeProfile()
+	corrupt.SeedPrompts = []byte(`not json`)
+	result = runBusinessProfile(t, &fakeBusinessProfileReader{profile: corrupt}, `{"include_seed_prompts":true}`)
+	if !strings.Contains(result.Content, `"seed_prompts":[]`) {
+		t.Fatalf("corrupt prompts should encode as [], got: %s", result.Content)
+	}
+
+	// Explicit true with values returns the capped list.
+	result = runBusinessProfile(t, &fakeBusinessProfileReader{profile: makeProfile()}, `{"include_seed_prompts":true}`)
+	if !strings.Contains(result.Content, `"seed_prompts":["who buys acme gear"`) {
+		t.Fatalf("values should encode seed_prompts array, got: %s", result.Content)
+	}
+	if got := decodeBusinessProfile(t, result); got.SeedPrompts == nil || len(*got.SeedPrompts) != 2 {
+		t.Fatalf("SeedPrompts = %v, want 2 values", got.SeedPrompts)
 	}
 }

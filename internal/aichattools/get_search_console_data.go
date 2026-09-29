@@ -40,9 +40,9 @@ const getSearchConsoleDataSchema = `{
   "type": "object",
   "properties": {
     "reports": {"type": "array", "items": {"type": "string", "enum": ["summary", "top_queries", "question_queries", "top_pages", "countries", "devices", "opportunities"]}, "minItems": 1, "maxItems": 7, "description": "The report or reports to return, in order. summary: headline clicks/impressions/CTR/position vs the previous period. top_queries: highest-traffic search queries. question_queries: queries phrased as questions or comparisons. top_pages: highest-traffic landing pages. countries: traffic split by country. devices: traffic split by desktop/mobile/tablet. opportunities: low-CTR and striking-distance queries plus question queries worth optimizing. Several reports come back as one result with one labeled section per report; request one report at a time to page deep with offset."},
-    "days": {"type": "integer", "minimum": 7, "maximum": 480, "description": "Reporting window in days (default 180). Applies to top_queries, question_queries, top_pages, countries, and devices. Ignored when start_date and end_date are supplied. Search Console data lags roughly 3 days."},
-    "start_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Optional exact start date (YYYY-MM-DD). Applies to row reports (top_queries, question_queries, top_pages, countries, devices). Must be supplied together with end_date and overrides days."},
-    "end_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Optional exact end date (YYYY-MM-DD). Applies to row reports. Must be supplied together with start_date and overrides days."},
+    "days": {"type": "integer", "minimum": 7, "maximum": 480, "description": "Reporting window in days (default 180). Applies to summary and to row reports (top_queries, question_queries, top_pages, countries, devices). The summary compares this window against the previous window of the same length. Ignored by row reports when start_date and end_date are supplied. Search Console data lags roughly 3 days."},
+    "start_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Optional exact start date (YYYY-MM-DD). Applies to row reports only (top_queries, question_queries, top_pages, countries, devices); the summary always uses days. Must be supplied together with end_date and overrides days for row reports."},
+    "end_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Optional exact end date (YYYY-MM-DD). Applies to row reports only; the summary always uses days. Must be supplied together with start_date and overrides days for row reports."},
     "search": {"type": "string", "description": "Case-insensitive substring filter on the query text. Only applies to top_queries and question_queries."},
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Max rows per report section (default 25, max 100). When several reports are requested, the limit is reduced so the combined response stays bounded (150 rows total)."},
     "offset": {"type": "integer", "minimum": 0, "maximum": 25000, "description": "Page position applied to each report section (default 0)."}
@@ -61,6 +61,7 @@ type GSCFetcher interface {
 	RefreshAccessToken(ctx context.Context, refreshToken string) (gsc.TokenResponse, error)
 	FetchQueriesCached(ctx context.Context, accessToken, organizationID, siteURL string, options gsc.QueryPageOptions) (gsc.QueryPage, error)
 	FetchOverviewCached(ctx context.Context, accessToken, organizationID, siteURL string) (gsc.OverviewPayload, error)
+	FetchSummaryCached(ctx context.Context, accessToken, organizationID, siteURL string, days int) (gsc.SummaryPayload, error)
 }
 
 // gscFeatureReader reads the organization feature flags for a project.
@@ -95,7 +96,7 @@ func getSearchConsoleDataTool() Tool {
 		Def: Def{
 			Name:        gscToolName,
 			Label:       "Get search console data",
-			Description: "Read Google Search Console performance for the current project: headline clicks/impressions/CTR/position, the real queries people find the site through, question-style queries, top landing pages, country and device breakdowns, and ranking opportunities. This is actual search demand, not crawl data — use it for keyword research, query intent, audience geography, mobile-vs-desktop questions, and traffic questions. reports accepts up to seven report names; request several reports together when useful and each report comes back as its own labeled section. summary and opportunities share one fetch, so request them together. Each paged section carries its own next_offset and has_more; page one section by calling again with only that report and its next offset. days sets the date window (default 180); for row reports (top_queries, question_queries, top_pages, countries, devices) start_date and end_date (YYYY-MM-DD) request an exact range instead, must be supplied together, must span 7 to 480 days, and override days. search filters query reports by matching text. The row limit is shared across requested sections so the response stays bounded. Request one report at a time when you want to page deep through many rows with offset. Returns a plain explanation when Search Console is not connected; repeat it honestly and never pretend traffic data exists.",
+			Description: "Read Google Search Console performance for the current project: headline clicks/impressions/CTR/position, the real queries people find the site through, question-style queries, top landing pages, country and device breakdowns, and ranking opportunities. This is actual search demand, not crawl data — use it for keyword research, query intent, audience geography, mobile-vs-desktop questions, and traffic questions. reports accepts up to seven report names; request several reports together when useful and each report comes back as its own labeled section. opportunities always covers the fixed 180-day overview window; request it together with summary only when that fixed window is what you want. Each paged section carries its own next_offset and has_more; page one section by calling again with only that report and its next offset. days sets the date window (default 180) for the summary (current window vs the previous window of the same length) and for row reports (top_queries, question_queries, top_pages, countries, devices); start_date and end_date (YYYY-MM-DD) request an exact range for row reports only, must be supplied together, must span 7 to 480 days, and override days for row reports while the summary keeps using days. search filters query reports by matching text. The row limit is shared across requested sections so the response stays bounded. Request one report at a time when you want to page deep through many rows with offset. Returns a plain explanation when Search Console is not connected; repeat it honestly and never pretend traffic data exists.",
 			Schema:      json.RawMessage(getSearchConsoleDataSchema),
 			Feature:     "gsc_connector",
 		},
@@ -231,10 +232,12 @@ func (e *gscExecutor) run(ctx context.Context, raw json.RawMessage, projectID, u
 		return Result{}, err
 	}
 
-	// Fan out: one section per requested report. summary and opportunities
-	// share a single overview fetch; query-style reports fetch their own page.
-	// The row limit is shared across reports so the combined response stays
-	// bounded.
+	// Fan out: one section per requested report. The summary honors days via
+	// its own days-scoped cached fetch (reusing the fixed 180-day overview
+	// fetch when days is 180 so summary+opportunities still costs one fetch);
+	// opportunities always uses the fixed 180-day overview fetch; query-style
+	// reports fetch their own page. The row limit is shared across reports so
+	// the combined response stays bounded.
 	effectiveLimit := args.Limit
 	if len(args.Reports) > 1 {
 		effectiveLimit = min(args.Limit, gscMaxTotalRows/len(args.Reports))
@@ -252,7 +255,7 @@ func (e *gscExecutor) run(ctx context.Context, raw json.RawMessage, projectID, u
 		var err error
 		switch report {
 		case "summary":
-			section, summary, err = e.summarySection(ctx, &overview, projectID, projectConnection, accessToken)
+			section, summary, err = e.summarySection(ctx, &overview, projectID, projectConnection, accessToken, args.Days)
 		case "opportunities":
 			section, summary, err = e.opportunitiesSection(ctx, &overview, projectID, projectConnection, accessToken)
 		case "top_queries", "question_queries", "top_pages", "countries", "devices":
@@ -376,23 +379,44 @@ func (e *gscExecutor) cachedOverview(ctx context.Context, cache **gsc.OverviewPa
 }
 
 // summarySection returns the summary report section JSON and its chip summary.
-func (e *gscExecutor) summarySection(ctx context.Context, overviewCache **gsc.OverviewPayload, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string) (json.RawMessage, string, error) {
-	overview, err := e.cachedOverview(ctx, overviewCache, projectID, projectConnection, accessToken)
+// The summary honors days (7..480, default 180): the current window vs the
+// previous window of the same length, with the same 3-day Search Console lag
+// as row reports. Exact start_date/end_date never apply to the summary; they
+// select an exact range for row reports only. When days is the fixed overview
+// window the summary reuses the shared overview fetch so a combined
+// summary+opportunities call still costs one fetch; otherwise it uses the
+// days-scoped cached summary fetch.
+func (e *gscExecutor) summarySection(ctx context.Context, overviewCache **gsc.OverviewPayload, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string, days int) (json.RawMessage, string, error) {
+	if days == gscOverviewWindowDays {
+		overview, err := e.cachedOverview(ctx, overviewCache, projectID, projectConnection, accessToken)
+		if err != nil {
+			return nil, "", err
+		}
+		window, ok := overview.Windows[strconv.Itoa(gscOverviewWindowDays)]
+		if !ok {
+			return nil, "", fmt.Errorf("%s: overview window %d missing", gscToolName, gscOverviewWindowDays)
+		}
+		return marshalGSCSummary(window.Range.CurrentStart, window.Range.CurrentEnd, window.Summary)
+	}
+	summary, err := e.fetcher.FetchSummaryCached(ctx, accessToken, projectID.String(), projectConnection.SiteUrl, days)
 	if err != nil {
-		return nil, "", err
+		if gscReauthError(err) {
+			return nil, "", &gscUnavailableError{reason: "Search Console needs reauthorization. Reconnect the Google account in the workspace settings."}
+		}
+		return nil, "", fmt.Errorf("%s: summary: %w", gscToolName, err)
 	}
-	window, ok := overview.Windows[strconv.Itoa(gscOverviewWindowDays)]
-	if !ok {
-		return nil, "", fmt.Errorf("%s: overview window %d missing", gscToolName, gscOverviewWindowDays)
-	}
+	return marshalGSCSummary(summary.Range.CurrentStart, summary.Range.CurrentEnd, summary.Summary)
+}
+
+func marshalGSCSummary(startDate, endDate string, summary gsc.OverviewSummary) (json.RawMessage, string, error) {
 	response := gscSummaryResponse{
 		Report:      "summary",
-		StartDate:   window.Range.CurrentStart,
-		EndDate:     window.Range.CurrentEnd,
-		Clicks:      gscMetricSummary{Current: round2(window.Summary.Clicks.Current), Previous: round2(window.Summary.Clicks.Previous)},
-		Impressions: gscMetricSummary{Current: round2(window.Summary.Impressions.Current), Previous: round2(window.Summary.Impressions.Previous)},
-		CTR:         gscMetricSummary{Current: round2(window.Summary.CTR.Current), Previous: round2(window.Summary.CTR.Previous)},
-		Position:    gscMetricSummary{Current: round2(window.Summary.Position.Current), Previous: round2(window.Summary.Position.Previous)},
+		StartDate:   startDate,
+		EndDate:     endDate,
+		Clicks:      gscMetricSummary{Current: round2(summary.Clicks.Current), Previous: round2(summary.Clicks.Previous)},
+		Impressions: gscMetricSummary{Current: round2(summary.Impressions.Current), Previous: round2(summary.Impressions.Previous)},
+		CTR:         gscMetricSummary{Current: round2(summary.CTR.Current), Previous: round2(summary.CTR.Previous)},
+		Position:    gscMetricSummary{Current: round2(summary.Position.Current), Previous: round2(summary.Position.Previous)},
 	}
 	content, err := json.Marshal(response)
 	if err != nil {
@@ -401,8 +425,9 @@ func (e *gscExecutor) summarySection(ctx context.Context, overviewCache **gsc.Ov
 	return content, fmt.Sprintf("summary: %s clicks vs %s previous (position %s)", formatGSCPercent(response.Clicks.Current), formatGSCPercent(response.Clicks.Previous), formatGSCPercent(response.Position.Current)), nil
 }
 
-// opportunitiesSection returns the three suggestion lists from the overview
-// window as one section, plus its chip summary.
+// opportunitiesSection returns the three suggestion lists from the fixed
+// 180-day overview window as one section, plus its chip summary. It does not
+// follow days or exact dates.
 func (e *gscExecutor) opportunitiesSection(ctx context.Context, overviewCache **gsc.OverviewPayload, projectID pgtype.UUID, projectConnection sqlc.ProjectGscConnection, accessToken string) (json.RawMessage, string, error) {
 	overview, err := e.cachedOverview(ctx, overviewCache, projectID, projectConnection, accessToken)
 	if err != nil {
@@ -513,7 +538,9 @@ func formatGSCPercent(value float64) string {
 	return fmt.Sprintf("%.0f", value)
 }
 
-// gscOverviewWindowDays is the fixed window the overview uses.
+// gscOverviewWindowDays is the fixed window the overview (and therefore the
+// opportunities report) uses. The summary honors days and only reuses this
+// window when days equals it.
 const gscOverviewWindowDays = 180
 
 // gscReauthError reports whether an upstream error means the connection needs

@@ -65,7 +65,7 @@ func (a *App) registerMCPTools(server *mcp.Server) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "read_issues",
-		Description: "Read crawl issues with optional filters and paging. Same tool as in-app AI chat: matching totals, a breakdown of top buckets and issue types, and issue rows with deterministic recommended_fix. " +
+		Description: "Read crawl issues with optional filters and paging. Same tool as in-app AI chat: matching totals, a breakdown of top buckets and issue types, and issue rows with deterministic recommended_fix. Each row carries issue_id (UUID string; pass it as issue_id to get_issue for full details). " +
 			"Requires project_id (latest completed crawl) or crawl_id. " +
 			"Filters: pillars (seo, aeo, pagespeed), bucket, issue_type, severity, urls. limit defaults to 25 and maxes at 50 (30 when several pillars). Follow next_offset to page. " +
 			"If the project has no completed crawl yet, call start_crawl, poll get_crawl, then call this again. Do not invent issues.",

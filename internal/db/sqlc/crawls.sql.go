@@ -14,6 +14,7 @@ import (
 const cancelCrawlByIDForUser = `-- name: CancelCrawlByIDForUser :one
 UPDATE crawls AS c
 SET status = 'cancelled',
+    phase = NULL,
     completed_at = now()
 FROM projects AS p, organization_members AS om
 WHERE c.id = $1
@@ -55,6 +56,7 @@ WITH candidate AS (
 )
 UPDATE crawls AS c
 SET status = 'running',
+    phase = NULL,
     started_at = now(),
     completed_at = NULL
 FROM candidate, projects AS p
@@ -105,6 +107,7 @@ WITH candidate AS (
 )
 UPDATE crawls AS c
 SET status = 'running',
+    phase = NULL,
     started_at = now(),
     completed_at = NULL
 FROM candidate, projects AS p
@@ -642,6 +645,7 @@ func (q *Queries) ListCrawlsForProject(ctx context.Context, arg ListCrawlsForPro
 const markCrawlCompleted = `-- name: MarkCrawlCompleted :execrows
 UPDATE crawls
 SET status = 'completed',
+    phase = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -676,6 +680,7 @@ func (q *Queries) MarkCrawlCompleted(ctx context.Context, arg MarkCrawlCompleted
 const markCrawlFailed = `-- name: MarkCrawlFailed :execrows
 UPDATE crawls
 SET status = 'failed',
+    phase = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -707,6 +712,7 @@ func (q *Queries) MarkCrawlFailed(ctx context.Context, arg MarkCrawlFailedParams
 const markCrawlRunning = `-- name: MarkCrawlRunning :exec
 UPDATE crawls
 SET status = 'running',
+    phase = NULL,
     started_at = now(),
     completed_at = NULL
 WHERE id = $1
@@ -720,7 +726,7 @@ func (q *Queries) MarkCrawlRunning(ctx context.Context, id pgtype.UUID) error {
 const reclaimStaleRunningCrawls = `-- name: ReclaimStaleRunningCrawls :exec
 WITH stale AS (
 	UPDATE crawls
-	SET status = 'failed', completed_at = now()
+	SET status = 'failed', phase = NULL, completed_at = now()
 	WHERE status = 'running' AND started_at < $1
 	RETURNING id
 ),

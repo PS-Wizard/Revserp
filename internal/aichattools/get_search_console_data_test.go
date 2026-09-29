@@ -21,6 +21,8 @@ import (
 type fakeGSCFetcher struct {
 	overview      gsc.OverviewPayload
 	overviewErr   error
+	summaries     map[int]gsc.SummaryPayload
+	summaryErr    error
 	pages         map[string]gsc.QueryPage
 	queryErr      error
 	refreshToken  gsc.TokenResponse
@@ -29,8 +31,10 @@ type fakeGSCFetcher struct {
 	decryptErr    error
 	fetchCalls    int
 	overviewCalls int
+	summaryCalls  int
 	lastOptions   gsc.QueryPageOptions
 	lastSiteURL   string
+	lastDays      int
 }
 
 func (f *fakeGSCFetcher) DecryptSecret(string) (string, error) { return f.decryptToken, f.decryptErr }
@@ -62,6 +66,18 @@ func (f *fakeGSCFetcher) FetchQueriesCached(_ context.Context, _, _, siteURL str
 func (f *fakeGSCFetcher) FetchOverviewCached(context.Context, string, string, string) (gsc.OverviewPayload, error) {
 	f.overviewCalls++
 	return f.overview, f.overviewErr
+}
+
+func (f *fakeGSCFetcher) FetchSummaryCached(_ context.Context, _, _, _ string, days int) (gsc.SummaryPayload, error) {
+	f.summaryCalls++
+	f.lastDays = days
+	if f.summaryErr != nil {
+		return gsc.SummaryPayload{}, f.summaryErr
+	}
+	if summary, ok := f.summaries[days]; ok {
+		return summary, nil
+	}
+	return gsc.SummaryPayload{}, nil
 }
 
 // fakeGSCConnections implements the connection readers.
@@ -664,5 +680,137 @@ func TestGSCExactDateErrorsAreToolErrors(t *testing.T) {
 		if fetcher.fetchCalls != 0 {
 			t.Fatalf("fetch should not be called on parse error")
 		}
+	}
+}
+
+func fakeSummary(days int, curStart, curEnd string, cur, prev float64) gsc.SummaryPayload {
+	return gsc.SummaryPayload{
+		Days:  days,
+		Range: gsc.OverviewRange{CurrentStart: curStart, CurrentEnd: curEnd, PreviousStart: "prev-start", PreviousEnd: "prev-end"},
+		Summary: gsc.OverviewSummary{
+			Clicks:      gsc.MetricSummary{Current: cur, Previous: prev},
+			Impressions: gsc.MetricSummary{Current: cur * 10, Previous: prev * 10},
+			CTR:         gsc.MetricSummary{Current: 0.02, Previous: 0.019},
+			Position:    gsc.MetricSummary{Current: 8.1, Previous: 9.2},
+		},
+	}
+}
+
+// TestGSCSummaryHonorsDays is the regression test for the bug where the
+// summary always reported the fixed 180-day overview window even when the
+// caller passed days:28.
+func TestGSCSummaryHonorsDays(t *testing.T) {
+	fetcher := &fakeGSCFetcher{
+		overview:  fakeOverview(),
+		summaries: map[int]gsc.SummaryPayload{28: fakeSummary(28, "2026-07-19", "2026-08-15", 28, 20)},
+	}
+	connections := connectedFake(fetcher)
+	result := runGSC(t, connections, fetcher, `{"reports":["summary"],"days":28}`)
+	var response gscSummaryResponse
+	if err := json.Unmarshal(firstGSCSection(t, result), &response); err != nil {
+		t.Fatalf("section not summary JSON: %v\n%s", err, result.Content)
+	}
+	if response.StartDate != "2026-07-19" || response.EndDate != "2026-08-15" {
+		t.Fatalf("dates = %s..%s, want 2026-07-19..2026-08-15 (28-day window, not 180)", response.StartDate, response.EndDate)
+	}
+	if response.Clicks.Current != 28 || response.Clicks.Previous != 20 {
+		t.Fatalf("clicks = %+v, want 28/20 previous-period comparison", response.Clicks)
+	}
+	if fetcher.lastDays != 28 {
+		t.Fatalf("summary days = %d, want 28", fetcher.lastDays)
+	}
+	if fetcher.summaryCalls != 1 || fetcher.overviewCalls != 0 {
+		t.Fatalf("summaryCalls/overviewCalls = %d/%d, want 1/0", fetcher.summaryCalls, fetcher.overviewCalls)
+	}
+}
+
+// TestGSCSummaryDefaultReusesOverview keeps the practical no-duplicate-fetch
+// behavior: days:180 (the default) still shares the single overview fetch
+// with opportunities.
+func TestGSCSummaryDefaultReusesOverview(t *testing.T) {
+	fetcher := &fakeGSCFetcher{overview: fakeOverview()}
+	connections := connectedFake(fetcher)
+	result := runGSC(t, connections, fetcher, `{"reports":["summary","opportunities"]}`)
+	var multi gscMultiReportResponse
+	if err := json.Unmarshal([]byte(result.Content), &multi); err != nil {
+		t.Fatal(err)
+	}
+	if len(multi.Reports) != 2 {
+		t.Fatalf("Reports = %d, want 2", len(multi.Reports))
+	}
+	var summary gscSummaryResponse
+	if err := json.Unmarshal(multi.Reports[0], &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.StartDate != "2026-02-17" {
+		t.Fatalf("default summary StartDate = %q, want 180-day overview start", summary.StartDate)
+	}
+	if fetcher.overviewCalls != 1 || fetcher.summaryCalls != 0 {
+		t.Fatalf("overviewCalls/summaryCalls = %d/%d, want 1/0", fetcher.overviewCalls, fetcher.summaryCalls)
+	}
+}
+
+// TestGSCSummarySplitFromOpportunities documents the post-fix split: a
+// non-180 summary uses its own days-scoped fetch while opportunities stays
+// on the fixed 180-day overview.
+func TestGSCSummarySplitFromOpportunities(t *testing.T) {
+	fetcher := &fakeGSCFetcher{
+		overview:  fakeOverview(),
+		summaries: map[int]gsc.SummaryPayload{28: fakeSummary(28, "2026-07-19", "2026-08-15", 28, 20)},
+	}
+	connections := connectedFake(fetcher)
+	result := runGSC(t, connections, fetcher, `{"reports":["summary","opportunities"],"days":28}`)
+	var multi gscMultiReportResponse
+	if err := json.Unmarshal([]byte(result.Content), &multi); err != nil {
+		t.Fatal(err)
+	}
+	var summary gscSummaryResponse
+	if err := json.Unmarshal(multi.Reports[0], &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.StartDate != "2026-07-19" {
+		t.Fatalf("summary StartDate = %q, want 28-day window", summary.StartDate)
+	}
+	var opp gscOpportunitiesResponse
+	if err := json.Unmarshal(multi.Reports[1], &opp); err != nil {
+		t.Fatal(err)
+	}
+	if len(opp.StrikingDistanceQueries) != 1 {
+		t.Fatalf("opportunities lost fixed-window rows: %+v", opp)
+	}
+	if fetcher.summaryCalls != 1 || fetcher.overviewCalls != 1 {
+		t.Fatalf("summaryCalls/overviewCalls = %d/%d, want 1/1", fetcher.summaryCalls, fetcher.overviewCalls)
+	}
+}
+
+// TestGSCSummaryIgnoresExactDates pins the documented contract: exact
+// start_date/end_date select a range for row reports only; the summary keeps
+// using days.
+func TestGSCSummaryIgnoresExactDates(t *testing.T) {
+	fetcher := &fakeGSCFetcher{
+		overview: fakeOverview(),
+		pages: map[string]gsc.QueryPage{
+			"query|false|": {Rows: []gsc.SearchAnalyticsRow{{Query: "a"}}, StartDate: "2025-08-22", EndDate: "2025-09-10", Days: 20},
+		},
+	}
+	connections := connectedFake(fetcher)
+	result := runGSC(t, connections, fetcher, `{"reports":["summary","top_queries"],"start_date":"2025-08-22","end_date":"2025-09-10"}`)
+	var multi gscMultiReportResponse
+	if err := json.Unmarshal([]byte(result.Content), &multi); err != nil {
+		t.Fatal(err)
+	}
+	var summary gscSummaryResponse
+	if err := json.Unmarshal(multi.Reports[0], &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.StartDate != "2026-02-17" || summary.EndDate != "2026-08-15" {
+		t.Fatalf("summary dates = %s..%s, want days-based 2026-02-17..2026-08-15, not the exact row range", summary.StartDate, summary.EndDate)
+	}
+	var rows gscReportResponse
+	if err := json.Unmarshal(multi.Reports[1], &rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows.StartDate != "2025-08-22" || rows.EndDate != "2025-09-10" {
+		t.Fatalf("row dates = %s..%s, want exact 2025-08-22..2025-09-10", rows.StartDate, rows.EndDate)
 	}
 }

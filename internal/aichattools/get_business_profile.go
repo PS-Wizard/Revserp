@@ -69,18 +69,18 @@ type businessProfileArgs struct {
 
 // businessProfileResponse is the JSON the model sees.
 type businessProfileResponse struct {
-	BrandName           string   `json:"brand_name"`
-	WebsiteURL          string   `json:"website_url"`
-	PrimaryCategory     string   `json:"primary_category,omitempty"`
-	PrimaryLocation     string   `json:"primary_location,omitempty"`
-	BusinessDescription string   `json:"business_description,omitempty"`
-	ProductDescription  string   `json:"product_description,omitempty"`
-	TargetAudience      string   `json:"target_audience,omitempty"`
-	BusinessCompetitors []string `json:"business_competitors"`
-	BrandedKeywords     []string `json:"branded_keywords"`
-	NonBrandedKeywords  []string `json:"non_branded_keywords"`
-	SeedPrompts         []string `json:"seed_prompts,omitempty"`
-	TargetKeywords      []string `json:"target_keywords"`
+	BrandName           string    `json:"brand_name"`
+	WebsiteURL          string    `json:"website_url"`
+	PrimaryCategory     string    `json:"primary_category,omitempty"`
+	PrimaryLocation     string    `json:"primary_location,omitempty"`
+	BusinessDescription string    `json:"business_description,omitempty"`
+	ProductDescription  string    `json:"product_description,omitempty"`
+	TargetAudience      string    `json:"target_audience,omitempty"`
+	BusinessCompetitors []string  `json:"business_competitors"`
+	BrandedKeywords     []string  `json:"branded_keywords"`
+	NonBrandedKeywords  []string  `json:"non_branded_keywords"`
+	SeedPrompts         *[]string `json:"seed_prompts,omitempty"`
+	TargetKeywords      []string  `json:"target_keywords"`
 }
 
 // run executes one get_business_profile call. The payload is one bounded
@@ -144,11 +144,18 @@ func (e *businessProfileExecutor) run(ctx context.Context, raw json.RawMessage, 
 		response.NonBrandedKeywords = []string{}
 	}
 
-	if args.IncludeSeedPrompts && len(profile.SeedPrompts) > 0 {
-		var prompts []string
-		if err := json.Unmarshal(profile.SeedPrompts, &prompts); err == nil {
-			response.SeedPrompts = capBusinessProfilePrompts(prompts)
+	if args.IncludeSeedPrompts {
+		prompts := []string{}
+		if len(profile.SeedPrompts) > 0 {
+			var stored []string
+			if err := json.Unmarshal(profile.SeedPrompts, &stored); err == nil {
+				prompts = capBusinessProfilePrompts(stored)
+				if prompts == nil {
+					prompts = []string{}
+				}
+			}
 		}
+		response.SeedPrompts = &prompts
 	}
 
 	content, err := json.Marshal(response)

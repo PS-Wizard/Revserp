@@ -471,7 +471,9 @@ func buildCrawlResponse(
 		CreatedAt:       formatTimestamp(createdAt),
 	}
 
-	if phase.Valid {
+	// Phase is only meaningful while running; mask it on terminal crawls so
+	// historical rows with a stale phase do not leak into API responses.
+	if status == string(CrawlStatusRunning) && phase.Valid {
 		response.Phase = phase.String
 	}
 	if len(configSnapshot) > 0 {
@@ -560,7 +562,7 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 			CreatedAt:      formatTimestamp(c.CreatedAt),
 			Source:         c.Source,
 		}
-		if c.Phase.Valid {
+		if c.Status == string(CrawlStatusRunning) && c.Phase.Valid {
 			response.Phase = c.Phase.String
 		}
 		if label := strings.TrimSpace(c.CompetitorLabel); label != "" {

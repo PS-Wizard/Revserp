@@ -584,3 +584,40 @@ func TestExecuteReadIssuesRequiresQueries(t *testing.T) {
 		t.Fatalf("executeReadIssues error = %v, want no-queries error", err)
 	}
 }
+
+func TestReadIssuesIssueIDSurvivesToJSON(t *testing.T) {
+	idA := pgtype.UUID{Bytes: [16]byte{0x11, 0x22, 0x33}, Valid: true}
+	idB := pgtype.UUID{Bytes: [16]byte{0xaa, 0xbb, 0xcc}, Valid: true}
+	rows := []sqlc.ListCrawlIssuesFilteredForUserRow{
+		{ID: idA, Url: "https://example.com/a", Pillar: "seo", Bucket: "meta_tags", IssueType: "missing_title", Severity: "high", Message: "m", Details: "d"},
+		{ID: idB, Url: "https://example.com/b", Pillar: "seo", Bucket: "content", IssueType: "thin_content", Severity: "low", Message: "m", Details: "d"},
+	}
+
+	shaped := shapeReadIssuesIssues(rows)
+	if len(shaped) != 2 {
+		t.Fatalf("shaped = %d rows, want 2", len(shaped))
+	}
+	if shaped[0].IssueID != idA.String() || shaped[1].IssueID != idB.String() {
+		t.Fatalf("shaped issue_id = %q/%q, want %q/%q", shaped[0].IssueID, shaped[1].IssueID, idA.String(), idB.String())
+	}
+
+	fake := &fakeIssueReader{total: 2, dimensionRows: defaultDimensions(), rows: rows}
+	result := runReadIssues(t, fake, `{}`, nil)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result.Content), &raw); err != nil {
+		t.Fatalf("content is not JSON object: %v", err)
+	}
+	var issues []map[string]any
+	if err := json.Unmarshal(raw["issues"], &issues); err != nil {
+		t.Fatalf("issues is not an array: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("issues = %d rows, want 2", len(issues))
+	}
+	if got := issues[0]["issue_id"]; got != idA.String() {
+		t.Fatalf("issues[0].issue_id = %v, want %q", got, idA.String())
+	}
+	if got := issues[1]["issue_id"]; got != idB.String() {
+		t.Fatalf("issues[1].issue_id = %v, want %q", got, idB.String())
+	}
+}

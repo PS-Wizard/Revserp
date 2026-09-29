@@ -81,6 +81,7 @@ RETURNING c.id;
 -- name: CancelCrawlByIDForUser :one
 UPDATE crawls AS c
 SET status = 'cancelled',
+    phase = NULL,
     completed_at = now()
 FROM projects AS p, organization_members AS om
 WHERE c.id = $1
@@ -127,6 +128,7 @@ OFFSET $4;
 -- name: MarkCrawlRunning :exec
 UPDATE crawls
 SET status = 'running',
+    phase = NULL,
     started_at = now(),
     completed_at = NULL
 WHERE id = $1;
@@ -134,6 +136,7 @@ WHERE id = $1;
 -- name: MarkCrawlCompleted :execrows
 UPDATE crawls
 SET status = 'completed',
+    phase = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -145,6 +148,7 @@ WHERE id = $1
 -- name: MarkCrawlFailed :execrows
 UPDATE crawls
 SET status = 'failed',
+    phase = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -184,6 +188,7 @@ WITH candidate AS (
 )
 UPDATE crawls AS c
 SET status = 'running',
+    phase = NULL,
     started_at = now(),
     completed_at = NULL
 FROM candidate, projects AS p
@@ -215,6 +220,7 @@ WITH candidate AS (
 )
 UPDATE crawls AS c
 SET status = 'running',
+    phase = NULL,
     started_at = now(),
     completed_at = NULL
 FROM candidate, projects AS p
@@ -239,7 +245,7 @@ WHERE id = $1;
 -- name: ReclaimStaleRunningCrawls :exec
 WITH stale AS (
 	UPDATE crawls
-	SET status = 'failed', completed_at = now()
+	SET status = 'failed', phase = NULL, completed_at = now()
 	WHERE status = 'running' AND started_at < $1
 	RETURNING id
 ),
