@@ -88,7 +88,16 @@ type mcpUpdateBusinessProfileInput struct {
 	BrandedKeywords     []string `json:"branded_keywords,omitempty"`
 	NonBrandedKeywords  []string `json:"non_branded_keywords,omitempty"`
 	SeedPrompts         []string `json:"seed_prompts,omitempty"`
-	TargetKeywords      []string `json:"target_keywords,omitempty"`
+}
+
+type mcpGetProjectKeywordsInput struct {
+	ProjectID string `json:"project_id"`
+}
+
+type mcpUpdateProjectKeywordsInput struct {
+	ProjectID        string   `json:"project_id"`
+	BrandKeywords    []string `json:"brand_keywords,omitempty"`
+	NonBrandKeywords []string `json:"non_brand_keywords,omitempty"`
 }
 
 func (a *App) mcpGetScoreSummary(ctx context.Context, _ *mcp.CallToolRequest, in mcpGetScoreSummaryInput) (*mcp.CallToolResult, mcpAIChatOutput, error) {
@@ -117,6 +126,14 @@ func (a *App) mcpReadIssues(ctx context.Context, _ *mcp.CallToolRequest, in mcpR
 
 func (a *App) mcpUpdateBusinessProfile(ctx context.Context, _ *mcp.CallToolRequest, in mcpUpdateBusinessProfileInput) (*mcp.CallToolResult, mcpAIChatOutput, error) {
 	return a.mcpInvokeAIChat(ctx, "update_business_profile", in.ProjectID, "", false, in)
+}
+
+func (a *App) mcpGetProjectKeywords(ctx context.Context, _ *mcp.CallToolRequest, in mcpGetProjectKeywordsInput) (*mcp.CallToolResult, mcpAIChatOutput, error) {
+	return a.mcpInvokeAIChat(ctx, "get_project_keywords", in.ProjectID, "", false, in)
+}
+
+func (a *App) mcpUpdateProjectKeywords(ctx context.Context, _ *mcp.CallToolRequest, in mcpUpdateProjectKeywordsInput) (*mcp.CallToolResult, mcpAIChatOutput, error) {
+	return a.mcpInvokeAIChat(ctx, "update_project_keywords", in.ProjectID, "", false, in)
 }
 
 func (a *App) mcpInvokeAIChat(ctx context.Context, name, projectID, crawlID string, needCrawl bool, args any) (*mcp.CallToolResult, mcpAIChatOutput, error) {

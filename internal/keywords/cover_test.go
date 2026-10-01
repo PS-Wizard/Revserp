@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestBuildSeedsAddsLocationOnceAndSkipsShort(t *testing.T) {
+func TestBuildSeedsAddsLocationOnceAndKeepsShortKeywords(t *testing.T) {
 	specs := buildSeeds([]string{"  Plumber ", "plumber", "ab", "emergency plumber"}, "Midtown")
 	got := make([]string, 0, len(specs))
 	geoCount := 0
@@ -16,7 +16,7 @@ func TestBuildSeedsAddsLocationOnceAndSkipsShort(t *testing.T) {
 			geoCount++
 		}
 	}
-	want := []string{"Plumber", "emergency plumber", "Midtown"}
+	want := []string{"Plumber", "ab", "emergency plumber", "Midtown"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("seeds = %v, want %v", got, want)
 	}
@@ -227,14 +227,10 @@ func TestCoverSubstringMatchIsIntentionalNotTokenMatch(t *testing.T) {
 	}
 }
 
-func TestBuildSeedsRuneLengthUnicode(t *testing.T) {
-	// Minimum seed length is runes, not bytes: 3-rune CJK kept, 2-rune dropped.
+func TestBuildSeedsKeepsShortUnicodeKeywords(t *testing.T) {
 	specs := buildSeeds([]string{"水管工", "水管"}, "")
-	if len(specs) != 1 {
-		t.Fatalf("len = %d, want 1 (3-rune CJK kept, 2-rune dropped)", len(specs))
-	}
-	if specs[0].keyword != "水管工" {
-		t.Fatalf("keyword = %q, want 水管工", specs[0].keyword)
+	if len(specs) != 2 || specs[0].keyword != "水管工" || specs[1].keyword != "水管" {
+		t.Fatalf("short Unicode keywords were dropped: %#v", specs)
 	}
 }
 
@@ -251,5 +247,47 @@ func TestCoverNoLandingPageMatchesNonNil(t *testing.T) {
 	}
 	if len(seeds[0].Matches) != 0 {
 		t.Fatalf("matches = %#v, want empty", seeds[0].Matches)
+	}
+}
+
+func TestCoverKeepsLegacyScaleUnion(t *testing.T) {
+	// Pre-migration worst case: three full 50-entry legacy lists, all
+	// disjoint. The combined union is 150 phrases; coverage must keep every
+	// one well under MaxSeeds.
+	keywords := make([]string, 0, 150)
+	for i := 0; i < 150; i++ {
+		keywords = append(keywords, "legacy keyword "+strconv.Itoa(i))
+	}
+	seeds := Cover(nil, keywords, "")
+	if len(seeds) != 150 {
+		t.Fatalf("len = %d, want 150", len(seeds))
+	}
+	seen := make(map[string]bool, 150)
+	for _, seed := range seeds {
+		seen[seed.Keyword] = true
+	}
+	for _, keyword := range keywords {
+		if !seen[keyword] {
+			t.Fatalf("missing seed %q", keyword)
+		}
+	}
+}
+
+func TestShortKeywordCoverageUsesWordBoundaries(t *testing.T) {
+	pages := []Page{
+		{URL: "https://example.test/contact", Title: "Contact us", H1: "Paid plans"},
+		{URL: "https://example.test/tools", Title: "AI and X tools", H1: "Our tools"},
+	}
+	seeds := Cover(pages, []string{"AI", "X"}, "")
+	if len(seeds) != 2 {
+		t.Fatalf("coverage has %d rows, want both short keywords", len(seeds))
+	}
+	for _, seed := range seeds {
+		if seed.State != StateLikelyTargeted || len(seed.Matches) != 1 || seed.Matches[0].URL != pages[1].URL {
+			t.Fatalf("short keyword %q matched unrelated content: %#v", seed.Keyword, seed)
+		}
+	}
+	if matchesCoverageKeyword("बीमा", "ब") {
+		t.Fatal("short keyword matched inside a word with combining marks")
 	}
 }

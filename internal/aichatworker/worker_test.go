@@ -25,8 +25,8 @@ func TestComposeSystemContext(t *testing.T) {
 
 func TestAllowedTools(t *testing.T) {
 	all := allowedTools(nil)
-	if len(all) != 11 {
-		t.Fatalf("allowedTools(nil) has %d tools, want 11: %+v", len(all), all)
+	if len(all) != 14 {
+		t.Fatalf("allowedTools(nil) has %d tools, want 14: %+v", len(all), all)
 	}
 	names := map[string]bool{}
 	for _, def := range all {
@@ -35,19 +35,22 @@ func TestAllowedTools(t *testing.T) {
 			t.Fatalf("tool %s missing description or schema: %+v", def.Name, def)
 		}
 	}
-	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "web_search", "get_search_suggestions", "fetch_url"} {
+	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage"} {
 		if !names[name] {
 			t.Fatalf("allowedTools(nil) missing %s: %+v", name, all)
 		}
 	}
-	if got := allowedTools([]string{"read_issues"}); len(got) != 10 {
-		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other ten", got)
+	if got := allowedTools([]string{"read_issues"}); len(got) != 13 {
+		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other thirteen", got)
 	}
-	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "web_search", "get_search_suggestions", "fetch_url"}); len(got) != 0 {
+	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage"}); len(got) != 0 {
 		t.Fatalf("allowedTools(all disabled) = %+v, want none", got)
 	}
-	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 10 {
-		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other ten", got)
+	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 13 {
+		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other thirteen", got)
+	}
+	if got := allowedTools([]string{"update_project_keywords"}); len(got) != 13 {
+		t.Fatalf("allowedTools(disabled update_project_keywords) = %+v, want the other thirteen", got)
 	}
 }
 
@@ -79,11 +82,11 @@ func TestCapToolResultContent(t *testing.T) {
 		t.Fatalf("cap changed short content: %q", got)
 	}
 	got := capToolResultContent(strings.Repeat("x", toolResultContentCap+100))
-	if want := toolResultContentCap + len("\u2026"); len(got) != want {
+	if want := toolResultContentCap + len("\u2026[truncated]"); len(got) != want {
 		t.Fatalf("cap length = %d, want %d", len(got), want)
 	}
-	if !strings.HasSuffix(got, "\u2026") {
-		t.Fatalf("cap missing truncation marker: %q", got[len(got)-16:])
+	if !strings.HasSuffix(got, "\u2026[truncated]") {
+		t.Fatal("cap missing truncation marker")
 	}
 }
 
@@ -117,5 +120,14 @@ func TestNormalizeToolCallResult(t *testing.T) {
 	})
 	if status != "completed" || result.Summary != "0 issues shown (0 matching total)" {
 		t.Fatalf("success path changed: status=%q summary=%q", status, result.Summary)
+	}
+}
+
+func TestMessageStatusForOutput(t *testing.T) {
+	if got := messageStatusForOutput(true); got != "partial" {
+		t.Fatalf("output=true status=%q, want partial", got)
+	}
+	if got := messageStatusForOutput(false); got != "failed" {
+		t.Fatalf("output=false status=%q, want failed", got)
 	}
 }

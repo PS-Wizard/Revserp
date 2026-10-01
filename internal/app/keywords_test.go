@@ -92,8 +92,14 @@ func TestHandleProjectKeywordsFailOpenAndCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO project_business_profile (project_id, brand_name, website_url, primary_location, target_keywords)
-		VALUES ($1, 'Brand', 'https://seeded.example', 'Midtown', '["plumber"]'::jsonb)
+		INSERT INTO project_business_profile (project_id, brand_name, website_url, primary_location)
+		VALUES ($1, 'Brand', 'https://seeded.example', 'Midtown')
+	`, seededProject); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO project_keywords (project_id, keyword, normalized_keyword, kind, source)
+		VALUES ($1, 'plumber', 'plumber', 'non_brand', 'user')
 	`, seededProject); err != nil {
 		t.Fatal(err)
 	}

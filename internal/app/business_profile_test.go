@@ -11,56 +11,6 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-func TestNormalizeTargetKeywordsTrimming(t *testing.T) {
-	got := normalizeTargetKeywords([]string{"  seo  ", "\tmaps ", " keyword"})
-	want := []string{"seo", "maps", "keyword"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("trimming: got %v want %v", got, want)
-	}
-}
-
-func TestNormalizeTargetKeywordsEmptyRemoval(t *testing.T) {
-	got := normalizeTargetKeywords([]string{"seo", "   ", "", "\t", "maps", " "})
-	want := []string{"seo", "maps"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("empty removal: got %v want %v", got, want)
-	}
-}
-
-func TestNormalizeTargetKeywordsCaseInsensitiveDedupe(t *testing.T) {
-	got := normalizeTargetKeywords([]string{"SEO", "seo", "Seo", "Maps", "maps", " MAPS "})
-	want := []string{"SEO", "Maps"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("dedupe: got %v want %v", got, want)
-	}
-}
-
-func TestNormalizeTargetKeywordsPreservesFirstSpellingAndOrder(t *testing.T) {
-	got := normalizeTargetKeywords([]string{"  Hello World ", "hello world", "HELLO WORLD", "  Go  ", "go"})
-	want := []string{"Hello World", "Go"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("preserve: got %v want %v", got, want)
-	}
-}
-
-func TestNormalizeTargetKeywordsEmptyArray(t *testing.T) {
-	got := normalizeTargetKeywords(nil)
-	if got == nil || len(got) != 0 {
-		t.Fatalf("nil input: got %v want empty non-nil slice", got)
-	}
-	// Ensure JSON marshals to [] not null
-	raw, _ := json.Marshal(got)
-	if string(raw) != "[]" {
-		t.Fatalf("empty marshal: got %s want []", string(raw))
-	}
-
-	got = normalizeTargetKeywords([]string{})
-	raw, _ = json.Marshal(got)
-	if string(raw) != "[]" {
-		t.Fatalf("empty slice marshal: got %s want []", string(raw))
-	}
-}
-
 func TestDecodeTargetKeywords(t *testing.T) {
 	tests := []struct {
 		name string
@@ -205,9 +155,11 @@ func TestNewProjectBusinessProfileResponseNewFields(t *testing.T) {
 	}
 }
 
-// The profile tests above are all struct-in/struct-out, so the 13-parameter
-// upsert was never exercised against Postgres. A wrong column mapping or a
-// JSONB encoding mistake would pass every one of them. This closes that gap.
+// The profile tests above are all struct-in/struct-out, so the upsert was
+// never exercised against Postgres. This closes that gap for the new shape:
+// the profile upsert carries no keyword columns, and keyword lists round-trip
+// through project_keywords with the read aliases projecting the combined
+// union (user display/classification wins).
 func TestProjectBusinessProfileRoundTripsNewFieldsAgainstDB(t *testing.T) {
 	queries, pool, ctx := newFeaturesTestQueries(t)
 	orgID := createFeaturesTestOrg(t, ctx, pool)
@@ -229,14 +181,27 @@ func TestProjectBusinessProfileRoundTripsNewFieldsAgainstDB(t *testing.T) {
 		ProductDescription:  pgtype.Text{String: "Trail widgets and boots.", Valid: true},
 		TargetAudience:      pgtype.Text{String: "Weekend hikers", Valid: true},
 		BusinessCompetitors: []byte(`["CorpA","CorpB"]`),
-		BrandedKeywords:     []byte(`["roundtrip co"]`),
-		NonBrandedKeywords:  []byte(`["trail widgets"]`),
 		SeedPrompts:         []byte(`["best trail widgets"]`),
-		TargetKeywords:      []byte(`["target kw"]`),
 	}
 	if _, err := queries.UpsertProjectBusinessProfile(ctx, params); err != nil {
 		t.Fatalf("upsert (insert path): %v", err)
 	}
+	seedProjectKeyword := func(keyword, normalized, kind, source string) {
+		t.Helper()
+		if _, err := queries.InsertProjectKeyword(ctx, sqlc.InsertProjectKeywordParams{
+			ProjectID:         projectID,
+			Keyword:           keyword,
+			NormalizedKeyword: normalized,
+			Kind:              kind,
+			Source:            source,
+		}); err != nil {
+			t.Fatalf("insert %s %s keyword: %v", source, kind, err)
+		}
+	}
+	seedProjectKeyword("Roundtrip Co", "roundtrip co", "brand", "user")
+	seedProjectKeyword("trail widgets", "trail widgets", "non_brand", "user")
+	seedProjectKeyword("Roundtrip", "roundtrip", "brand", "revserp")
+	seedProjectKeyword("hiking gear", "hiking gear", "non_brand", "revserp")
 
 	row, err := queries.GetProjectBusinessProfileByProjectID(ctx, projectID)
 	if err != nil {
@@ -254,9 +219,9 @@ func TestProjectBusinessProfileRoundTripsNewFieldsAgainstDB(t *testing.T) {
 		want []string
 	}{
 		{"business_competitors", row.BusinessCompetitors, []string{"CorpA", "CorpB"}},
-		{"branded_keywords", row.BrandedKeywords, []string{"roundtrip co"}},
-		{"non_branded_keywords", row.NonBrandedKeywords, []string{"trail widgets"}},
-		{"target_keywords (must stay untouched)", row.TargetKeywords, []string{"target kw"}},
+		{"branded_keywords combined alias", row.BrandedKeywords, []string{"Roundtrip", "Roundtrip Co"}},
+		{"non_branded_keywords combined alias", row.NonBrandedKeywords, []string{"hiking gear", "trail widgets"}},
+		{"target_keywords combined alias", row.TargetKeywords, []string{"hiking gear", "Roundtrip", "Roundtrip Co", "trail widgets"}},
 	} {
 		var got []string
 		if err := json.Unmarshal(tc.raw, &got); err != nil {
@@ -268,11 +233,10 @@ func TestProjectBusinessProfileRoundTripsNewFieldsAgainstDB(t *testing.T) {
 		}
 	}
 
-	// ON CONFLICT path: every new column must be overwritten, not stale.
+	// ON CONFLICT path: profile columns are overwritten while keyword rows
+	// are untouched, because the upsert writes no keyword columns.
 	params.ProductDescription = pgtype.Text{String: "Changed products.", Valid: true}
 	params.TargetAudience = pgtype.Text{}
-	params.BrandedKeywords = []byte(`["new brand"]`)
-	params.NonBrandedKeywords = []byte(`["changed non branded"]`)
 	params.BusinessCompetitors = []byte(`[]`)
 	if _, err := queries.UpsertProjectBusinessProfile(ctx, params); err != nil {
 		t.Fatalf("upsert (conflict path): %v", err)
@@ -289,15 +253,11 @@ func TestProjectBusinessProfileRoundTripsNewFieldsAgainstDB(t *testing.T) {
 		t.Errorf("target_audience should have been cleared, got %+v", updated.TargetAudience)
 	}
 	var branded []string
-	if err := json.Unmarshal(updated.BrandedKeywords, &branded); err != nil || !reflect.DeepEqual(branded, []string{"new brand"}) {
-		t.Errorf("branded_keywords not overwritten: %v (%q)", err, string(updated.BrandedKeywords))
+	if err := json.Unmarshal(updated.BrandedKeywords, &branded); err != nil || !reflect.DeepEqual(branded, []string{"Roundtrip", "Roundtrip Co"}) {
+		t.Errorf("branded_keywords alias changed by profile upsert: %v (%q)", err, string(updated.BrandedKeywords))
 	}
 	var competitors []string
 	if err := json.Unmarshal(updated.BusinessCompetitors, &competitors); err != nil || len(competitors) != 0 {
 		t.Errorf("business_competitors not cleared: %v (%q)", err, string(updated.BusinessCompetitors))
-	}
-	var nonBranded []string
-	if err := json.Unmarshal(updated.NonBrandedKeywords, &nonBranded); err != nil || !reflect.DeepEqual(nonBranded, []string{"changed non branded"}) {
-		t.Errorf("non_branded_keywords not overwritten: %v (%q)", err, string(updated.NonBrandedKeywords))
 	}
 }

@@ -2,15 +2,16 @@ package keywords
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ps-wizard/revserp/internal/businessprofile"
 )
 
 const (
-	// MaxSeeds caps the matrix so a huge profile cannot turn GET into a scan.
-	MaxSeeds = 50
-	// MinSeedLength drops 1–2 character tokens that match almost every URL.
-	MinSeedLength = 3
+	// MaxSeeds caps the matrix so a huge keyword set cannot turn GET into a
+	// scan. Sized for the combined user plus revserp union, not one legacy list.
+	MaxSeeds = 250
 )
 
 type Field string
@@ -55,11 +56,9 @@ type seedSpec struct {
 	needle  string
 }
 
-// buildSeeds returns the coverage row list: profile keywords as-is, plus at
-// most one geo string from primary_location as written. No "keyword + city"
-// combos. Drops empty / short seeds. Caps at MaxSeeds (keywords first).
 func buildSeeds(targetKeywords []string, primaryLocation string) []seedSpec {
-	normalized := businessprofile.NormalizeTargetKeywords(targetKeywords)
+	// Coverage honors the combined union size, not the single legacy list cap.
+	normalized := businessprofile.NormalizeStringList(targetKeywords, MaxSeeds)
 	specs := make([]seedSpec, 0, min(len(normalized)+1, MaxSeeds))
 	seen := make(map[string]struct{}, MaxSeeds)
 
@@ -90,7 +89,7 @@ func newSeedSpec(keyword string, geo bool, seen map[string]struct{}) (seedSpec, 
 		return seedSpec{}, false
 	}
 	needle := strings.ToLower(trimmed)
-	if len([]rune(needle)) < MinSeedLength {
+	if geo && utf8.RuneCountInString(needle) < 3 {
 		return seedSpec{}, false
 	}
 	if _, exists := seen[needle]; exists {
@@ -136,15 +135,15 @@ func coverSeed(pages []indexedPage, spec seedSpec) Seed {
 	titleOrH1 := make(map[string]struct{})
 
 	for _, page := range pages {
-		if strings.Contains(page.title, spec.needle) {
+		if matchesCoverageKeyword(page.title, spec.needle) {
 			matches = append(matches, Match{URL: page.url, Field: FieldTitle})
 			titleOrH1[page.url] = struct{}{}
 		}
-		if strings.Contains(page.h1, spec.needle) {
+		if matchesCoverageKeyword(page.h1, spec.needle) {
 			matches = append(matches, Match{URL: page.url, Field: FieldH1})
 			titleOrH1[page.url] = struct{}{}
 		}
-		if strings.Contains(page.urlL, spec.needle) {
+		if matchesCoverageKeyword(page.urlL, spec.needle) {
 			matches = append(matches, Match{URL: page.url, Field: FieldURL})
 		}
 	}
@@ -162,4 +161,32 @@ func coverSeed(pages []indexedPage, spec seedSpec) Seed {
 		State:   state,
 		Matches: matches,
 	}
+}
+
+func matchesCoverageKeyword(text, keyword string) bool {
+	if keyword == "" {
+		return false
+	}
+	if utf8.RuneCountInString(keyword) >= 3 {
+		return strings.Contains(text, keyword)
+	}
+	for offset := 0; offset < len(text); {
+		relative := strings.Index(text[offset:], keyword)
+		if relative < 0 {
+			return false
+		}
+		start := offset + relative
+		end := start + len(keyword)
+		before, _ := utf8.DecodeLastRuneInString(text[:start])
+		after, _ := utf8.DecodeRuneInString(text[end:])
+		if (start == 0 || !isCoverageWordRune(before)) && (end == len(text) || !isCoverageWordRune(after)) {
+			return true
+		}
+		offset = end
+	}
+	return false
+}
+
+func isCoverageWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsMark(r)
 }

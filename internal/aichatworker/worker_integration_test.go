@@ -665,15 +665,19 @@ func TestToolRoundSearchConsoleUnavailable(t *testing.T) {
 func TestUpdateBusinessProfileIntegration(t *testing.T) {
 	a, _, user, project := testWorker(t)
 	ctx := context.Background()
-	if _, err := a.pool.Exec(ctx, `INSERT INTO project_business_profile(project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords) VALUES($1,'OldBrand','https://old.example','Cat','Loc','Desc','["s1"]','["k1","k2"]')`, project); err != nil {
+	if _, err := a.pool.Exec(ctx, `INSERT INTO project_business_profile(project_id, brand_name, website_url, primary_category, primary_location, business_description, seed_prompts) VALUES($1,'OldBrand','https://old.example','Cat','Loc','Desc','["s1"]')`, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.pool.Exec(ctx, `INSERT INTO project_keywords (project_id, keyword, normalized_keyword, kind, source) VALUES ($1,'k1','k1','non_brand','user'), ($1,'k2','k2','non_brand','user')`, project); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM project_keywords WHERE project_id=$1`, project)
 		_, _ = a.pool.Exec(context.Background(), `DELETE FROM project_business_profile WHERE project_id=$1`, project)
 		_, _ = a.pool.Exec(context.Background(), `DELETE FROM ai_worker_jobs WHERE project_id=$1 AND job_type='prompt_generation'`, project)
 	})
 	provider := &roundProvider{rounds: [][]ai.Event{
-		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: "update_business_profile", Args: `{"brand_name":"NewBrand","target_keywords":["  NEW ","new","  Another "]}`}}},
+		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: "update_business_profile", Args: `{"brand_name":"NewBrand","branded_keywords":["  NEW "],"non_branded_keywords":[" Another "]}`}}},
 		{{Text: "done"}},
 	}}
 	a.provider = provider
@@ -692,8 +696,8 @@ func TestUpdateBusinessProfileIntegration(t *testing.T) {
 	}
 	var brandQ, websiteQ string
 	var catQ, locQ, descQ pgtype.Text
-	var seed, kw []byte
-	if err := a.pool.QueryRow(ctx, `SELECT brand_name, website_url, primary_category, primary_location, business_description, seed_prompts, target_keywords FROM project_business_profile WHERE project_id=$1`, project).Scan(&brandQ, &websiteQ, &catQ, &locQ, &descQ, &seed, &kw); err != nil {
+	var seed []byte
+	if err := a.pool.QueryRow(ctx, `SELECT brand_name, website_url, primary_category, primary_location, business_description, seed_prompts FROM project_business_profile WHERE project_id=$1`, project).Scan(&brandQ, &websiteQ, &catQ, &locQ, &descQ, &seed); err != nil {
 		t.Fatal(err)
 	}
 	if brandQ != "NewBrand" {
@@ -712,12 +716,43 @@ func TestUpdateBusinessProfileIntegration(t *testing.T) {
 	if len(seedVals) != 1 || seedVals[0] != "s1" {
 		t.Fatalf("seed preserved %v", seedVals)
 	}
-	var kwVals []string
-	if err := json.Unmarshal(kw, &kwVals); err != nil {
+	var kwVals []struct {
+		Keyword string `json:"keyword"`
+		Kind    string `json:"kind"`
+		Source  string `json:"source"`
+	}
+	rows, err := a.pool.Query(ctx, `SELECT keyword, kind, source FROM project_keywords WHERE project_id=$1 ORDER BY keyword`, project)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kwVals) != 2 || kwVals[0] != "NEW" || kwVals[1] != "Another" {
-		t.Fatalf("keywords normalized %v", kwVals)
+	for rows.Next() {
+		var kw struct {
+			Keyword string `json:"keyword"`
+			Kind    string `json:"kind"`
+			Source  string `json:"source"`
+		}
+		if err := rows.Scan(&kw.Keyword, &kw.Kind, &kw.Source); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		kwVals = append(kwVals, kw)
+	}
+	rows.Close()
+	if len(kwVals) != 4 {
+		t.Fatalf("project_keywords rows = %v, want 2 user k1/k2 plus revserp NEW/Another", kwVals)
+	}
+	byKeyword := map[string]struct{ kind, source string }{}
+	for _, kw := range kwVals {
+		byKeyword[kw.Keyword] = struct{ kind, source string }{kw.Kind, kw.Source}
+	}
+	if byKeyword["NEW"].kind != "brand" || byKeyword["NEW"].source != "revserp" {
+		t.Fatalf("NEW entry = %v, want brand/revserp", byKeyword["NEW"])
+	}
+	if byKeyword["Another"].kind != "non_brand" || byKeyword["Another"].source != "revserp" {
+		t.Fatalf("Another entry = %v, want non_brand/revserp", byKeyword["Another"])
+	}
+	if byKeyword["k1"].source != "user" || byKeyword["k2"].source != "user" {
+		t.Fatalf("user keywords not preserved: %v", kwVals)
 	}
 	var calls int
 	var name, callStatus, summary string
@@ -727,7 +762,7 @@ func TestUpdateBusinessProfileIntegration(t *testing.T) {
 	if calls != 1 || name != "update_business_profile" || callStatus != "completed" {
 		t.Fatalf("tool rows %d %q %q %q", calls, name, callStatus, summary)
 	}
-	if !strings.Contains(summary, "brand_name") || !strings.Contains(summary, "target_keywords") {
+	if !strings.Contains(summary, "brand_name") || !strings.Contains(summary, "branded_keywords") {
 		t.Fatalf("summary %q should name changed fields", summary)
 	}
 	var jobs int
@@ -747,11 +782,12 @@ func TestUpdateBusinessProfileIntegrationMissingCreation(t *testing.T) {
 	ctx := context.Background()
 	_, _ = a.pool.Exec(ctx, `DELETE FROM project_business_profile WHERE project_id=$1`, project)
 	t.Cleanup(func() {
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM project_keywords WHERE project_id=$1`, project)
 		_, _ = a.pool.Exec(context.Background(), `DELETE FROM project_business_profile WHERE project_id=$1`, project)
 		_, _ = a.pool.Exec(context.Background(), `DELETE FROM ai_worker_jobs WHERE project_id=$1`, project)
 	})
 	provider := &roundProvider{rounds: [][]ai.Event{
-		{{ToolCall: &ai.ToolCall{ID: "c1", Name: "update_business_profile", Args: `{"brand_name":"Acme","website_url":"https://acme.example","target_keywords":["a","b"]}`}}},
+		{{ToolCall: &ai.ToolCall{ID: "c1", Name: "update_business_profile", Args: `{"brand_name":"Acme","website_url":"https://acme.example","branded_keywords":["Acme"],"non_branded_keywords":["widgets"]}`}}},
 		{{Text: "created"}},
 	}}
 	a.provider = provider
@@ -775,11 +811,69 @@ func TestUpdateBusinessProfileIntegrationMissingCreation(t *testing.T) {
 	if brand != "Acme" {
 		t.Fatalf("brand %q", brand)
 	}
+	var kwCount int
+	if err := a.pool.QueryRow(ctx, `SELECT count(*) FROM project_keywords WHERE project_id=$1 AND source='revserp'`, project).Scan(&kwCount); err != nil {
+		t.Fatal(err)
+	}
+	if kwCount != 2 {
+		t.Fatalf("revserp keyword rows = %d, want creation to persist both lists atomically", kwCount)
+	}
 	var jobs int
 	if err := a.pool.QueryRow(ctx, `SELECT count(*) FROM ai_worker_jobs WHERE project_id=$1 AND job_type='prompt_generation'`, project).Scan(&jobs); err != nil {
 		t.Fatal(err)
 	}
 	if jobs != 1 {
 		t.Fatalf("jobs %d", jobs)
+	}
+}
+
+func TestTruncatedToolArgsContinueTurn(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	provider := &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "bad-1", Name: "read_issues", Args: `{"limit": 5, "oops": "unterminated`}}},
+		{toolCallEvent("call-2")},
+		{{Text: "answer"}},
+	}}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	var status, content string
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status, m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id = t.id AND m.role = 'assistant' WHERE t.id = $1`, id).Scan(&status, &content); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || content != "answer" {
+		t.Fatalf("turn=%q content=%q, want completed/answer (malformed call must not kill the turn)", status, content)
+	}
+	var rows int
+	if err := a.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_tool_calls WHERE turn_id = $1`, id).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("tool rows=%d, want 1 (broken payload must not be inserted)", rows)
+	}
+	var name, callStatus string
+	if err := a.pool.QueryRow(context.Background(), `SELECT name, status FROM ai_tool_calls WHERE turn_id = $1`, id).Scan(&name, &callStatus); err != nil {
+		t.Fatal(err)
+	}
+	if name != "read_issues" || callStatus != "completed" {
+		t.Fatalf("stored row name=%q status=%q, want the subsequent valid call completed", name, callStatus)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("streams=%d, want 3 (turn continues past the malformed call)", len(provider.requests))
+	}
+	// The failed result for the malformed call must reach the model as a tool message.
+	found := false
+	for _, message := range provider.requests[1].Messages {
+		if message.Role == ai.RoleTool && message.ToolCallID == "bad-1" && strings.Contains(message.Content, "SHORTER") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("round 2 messages lack the failed truncated-args tool result: %+v", provider.requests[1].Messages)
 	}
 }

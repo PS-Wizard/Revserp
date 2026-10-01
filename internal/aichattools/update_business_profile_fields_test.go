@@ -68,25 +68,25 @@ func TestUpdateBusinessProfileCompetitorCap(t *testing.T) {
 
 func TestUpdateBusinessProfileKeywordCap(t *testing.T) {
 	store := newFakeUpdateStore("owner", newProfileWithContext())
-	many := make([]string, 51)
+	many := make([]string, 11)
 	for i := range many {
 		many[i] = "keyword-" + string(rune('a'+i%26)) + string(rune('0'+(i/26)%10)) + "z"
 	}
-	raw, _ := json.Marshal(map[string]any{"branded_keywords": many})
-	res, err := runPatch(t, store, string(raw))
-	if err != nil {
-		t.Fatalf("patch: %v", err)
+	raw, _ := json.Marshal(map[string]any{"branded_keywords": many, "non_branded_keywords": []string{"widgets"}})
+	svc := newFakeProjectKeywordService()
+	_, err := runPatchWithKeywords(t, store, svc, string(raw))
+	if err == nil || !isModelError(err) {
+		t.Fatalf("11 unique phrases should be a model-visible limit error, got %v", err)
 	}
-	m := parseUpdateResult(t, res)
-	kw, _ := m["branded_keywords"].([]any)
-	if len(kw) != 50 {
-		t.Fatalf("branded len = %d, want 50", len(kw))
+	if svc.replaceCalls != 0 {
+		t.Fatalf("rejected oversized patch must not write, calls = %d", svc.replaceCalls)
 	}
 }
 
 func TestUpdateBusinessProfileCrossListDedupeNonBrandedWins(t *testing.T) {
 	store := newFakeUpdateStore("owner", newProfileWithContext())
-	res, err := runPatch(t, store, `{"branded_keywords":["Acme Shoes","Trail Boots"],"non_branded_keywords":["acme shoes","Maps"]}`)
+	svc := newFakeProjectKeywordService().withRevserp([]string{"acme"}, []string{"widgets"})
+	res, err := runPatchWithKeywords(t, store, svc, `{"branded_keywords":["Acme Shoes","Trail Boots"],"non_branded_keywords":["acme shoes","Maps"]}`)
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
@@ -101,23 +101,25 @@ func TestUpdateBusinessProfileCrossListDedupeNonBrandedWins(t *testing.T) {
 	}
 }
 
-func TestUpdateBusinessProfileCrossListAppliesWhenOnlyOneSideSupplied(t *testing.T) {
+func TestUpdateBusinessProfileRequiresBothKeywordListsTogether(t *testing.T) {
 	profile := newProfileWithContext()
-	profile.BrandedKeywords = []byte(`["Acme Shoes","Trail Boots"]`)
-	profile.NonBrandedKeywords = []byte(`["widgets"]`)
 	store := newFakeUpdateStore("owner", profile)
-	// Supplying only non-branded with an overlap must still strip branded.
-	res, err := runPatch(t, store, `{"non_branded_keywords":["widgets","ACME SHOES"]}`)
-	if err != nil {
-		t.Fatalf("patch: %v", err)
+	svc := newFakeProjectKeywordService().withRevserp([]string{"Acme Shoes", "Trail Boots"}, []string{"widgets"})
+	// Supplying only one side must fail instead of merging with stored state.
+	for _, raw := range []string{
+		`{"non_branded_keywords":["widgets","ACME SHOES"]}`,
+		`{"branded_keywords":["Acme"]}`,
+	} {
+		_, err := runPatchWithKeywords(t, store, svc, raw)
+		if err == nil || !strings.Contains(err.Error(), "together") {
+			t.Fatalf("raw %s should demand both lists, got %v", raw, err)
+		}
+		if !isModelError(err) {
+			t.Fatalf("raw %s should be a model error", raw)
+		}
 	}
-	m := parseUpdateResult(t, res)
-	branded, _ := m["branded_keywords"].([]any)
-	if len(branded) != 1 || branded[0] != "Trail Boots" {
-		t.Fatalf("branded after one-sided patch = %v, want [Trail Boots]", branded)
-	}
-	if !strings.Contains(res.Summary, "branded_keywords") {
-		t.Fatalf("summary %q should note the cross-list branded change", res.Summary)
+	if svc.replaceCalls != 0 {
+		t.Fatalf("rejected one-sided patch must not write, calls = %d", svc.replaceCalls)
 	}
 }
 

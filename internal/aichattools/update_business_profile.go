@@ -16,6 +16,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/businessprofile"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/pgnull"
+	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
 
 const updateBusinessProfileName = "update_business_profile"
@@ -31,10 +32,9 @@ const updateBusinessProfileSchema = `{
     "product_description": {"type": "string", "description": "Product description. Trimmed; empty string clears the field."},
     "target_audience": {"type": "string", "description": "Target audience. Trimmed; empty string clears the field."},
     "business_competitors": {"type": "array", "items": {"type": "string"}, "description": "Competitor names; replaces the complete list. Empty array clears. Max 20, trimmed, empty dropped, case-insensitive dedupe preserving first spelling/order."},
-    "branded_keywords": {"type": "array", "items": {"type": "string"}, "description": "Branded keywords; replaces the complete list. Empty array clears. Max 50 per keyword list. Trimmed, empty dropped, case-insensitive dedupe; entries also present in non_branded_keywords are dropped from this list."},
-    "non_branded_keywords": {"type": "array", "items": {"type": "string"}, "description": "Non-branded keywords; replaces the complete list. Empty array clears. Max 50 per keyword list. Trimmed, empty dropped, case-insensitive dedupe; wins over branded_keywords on overlap."},
-    "seed_prompts": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "Seed prompts; replaces the complete list. Empty array clears. Max 5, no empty values."},
-    "target_keywords": {"type": "array", "items": {"type": "string"}, "description": "Target keywords; replaces the complete list. Empty array clears. Trimmed, empty dropped, case-insensitive dedupe preserving first spelling/order."}
+    "branded_keywords": {"type": "array", "items": {"type": "string", "maxLength": 200}, "maxItems": 10, "description": "Legacy Revserp-suggested brand keywords; replaces the complete suggested brand list and never touches user-defined keywords. Both branded_keywords and non_branded_keywords are required together as complete non-empty lists whenever either is supplied, and both are required on creation. Keyword management is separate from the profile: prefer update_project_keywords for the Find Keywords flow (it enforces both lists by schema and runtime validation)."},
+    "non_branded_keywords": {"type": "array", "items": {"type": "string", "maxLength": 200}, "maxItems": 10, "description": "Legacy Revserp-suggested non-brand keywords; replaces the complete suggested non-brand list and never touches user-defined keywords. Both branded_keywords and non_branded_keywords are required together as complete non-empty lists whenever either is supplied, and both are required on creation. Keyword management is separate from the profile: prefer update_project_keywords for the Find Keywords flow (it enforces both lists by schema and runtime validation)."},
+    "seed_prompts": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "Seed prompts; replaces the complete list. Empty array clears. Max 5, no empty values."}
   },
   "additionalProperties": false
 }`
@@ -51,7 +51,6 @@ type updateBusinessProfileArgs struct {
 	BrandedKeywords     *[]string
 	NonBrandedKeywords  *[]string
 	SeedPrompts         *[]string
-	TargetKeywords      *[]string
 }
 
 func updateBusinessProfileTool() Tool {
@@ -59,7 +58,7 @@ func updateBusinessProfileTool() Tool {
 		Def: Def{
 			Name:        updateBusinessProfileName,
 			Label:       "Update business profile",
-			Description: "Update the business profile for the current project (PATCH). May be called only after the user clearly asks to save or change the profile. Provide only fields to change; omitted fields are preserved atomically. Arrays replace the complete list and [] clears. Requires organization owner; non-owners are denied. For creation when no profile exists, brand_name and website_url are required. Server authorization is the real boundary, not model instructions.",
+			Description: "Update the business profile for the current project (PATCH). May be called only after the user clearly asks to save or change the profile. Provide only fields to change; omitted fields are preserved atomically. Arrays replace the complete list and [] clears. Requires organization owner; non-owners are denied. For creation when no profile exists, brand_name and website_url are required plus complete branded_keywords and non_branded_keywords lists. Keyword management is separate from the profile and never blocks manual profile editing: read lists with get_project_keywords and refresh REVSerp suggestions with update_project_keywords. Server authorization is the real boundary, not model instructions.",
 			Schema:      json.RawMessage(updateBusinessProfileSchema),
 		},
 		Execute: executeUpdateBusinessProfile,
@@ -70,7 +69,7 @@ func executeUpdateBusinessProfile(ctx context.Context, args json.RawMessage, s S
 	if s.Queries == nil || s.DB == nil {
 		return Result{}, errors.New("update_business_profile: scope has no queries or transaction support")
 	}
-	exec := updateBusinessProfileExecutor{queries: s.Queries, db: s.DB, suppressPromptGeneration: s.SuppressPromptGeneration}
+	exec := updateBusinessProfileExecutor{queries: s.Queries, db: s.DB, suppressPromptGeneration: s.SuppressPromptGeneration, keywords: contractProjectKeywordService{}}
 	return exec.run(ctx, args, s.ProjectID, s.UserID)
 }
 
@@ -93,6 +92,26 @@ func enqueuePromptGenerationAfterProfileWrite(ctx context.Context, q promptGener
 	}
 }
 
+// shouldEnqueuePromptGenerationAfterProfileWrite keeps the existing workflow
+// for real profile changes but never triggers question generation for
+// keyword-only edits or no-change saves: refreshing Revserp suggestions or
+// resubmitting identical keywords must not enqueue prompt_generation.
+// Creation always enqueues; mixed real profile changes still do.
+func shouldEnqueuePromptGenerationAfterProfileWrite(exists bool, changed []string) bool {
+	if !exists {
+		return true
+	}
+	if len(changed) == 0 {
+		return false
+	}
+	for _, field := range changed {
+		if field != "branded_keywords" && field != "non_branded_keywords" {
+			return true
+		}
+	}
+	return false
+}
+
 type modelError struct{ msg string }
 
 func (e *modelError) Error() string { return e.msg }
@@ -100,6 +119,15 @@ func (e *modelError) Error() string { return e.msg }
 func isModelError(err error) bool {
 	var m *modelError
 	return errors.As(err, &m)
+}
+
+// isProjectKeywordValidationError reports service-side keyword validation
+// failures (blank, overlong, or capped lists) so they stay model-visible
+// instead of surfacing as infrastructure errors.
+func isProjectKeywordValidationError(err error) bool {
+	return errors.Is(err, projectkeywords.ErrProjectKeywordInvalid) ||
+		errors.Is(err, projectkeywords.ErrProjectKeywordLimit) ||
+		errors.Is(err, projectkeywords.ErrProjectKeywordConflict)
 }
 
 // querier for the tool, implemented by *sqlc.Queries and fakes.
@@ -115,6 +143,14 @@ type updateBusinessProfileExecutor struct {
 	queries                  *sqlc.Queries
 	db                       Transactor
 	suppressPromptGeneration bool
+	keywords                 projectKeywordService
+}
+
+func (e *updateBusinessProfileExecutor) keywordService() projectKeywordService {
+	if e.keywords != nil {
+		return e.keywords
+	}
+	return contractProjectKeywordService{}
 }
 
 func (e *updateBusinessProfileExecutor) run(ctx context.Context, raw json.RawMessage, projectID, userID pgtype.UUID) (Result, error) {
@@ -128,7 +164,7 @@ func (e *updateBusinessProfileExecutor) run(ctx context.Context, raw json.RawMes
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := e.queries.WithTx(tx)
-	res, err := e.patch(ctx, args, projectID, userID, qtx)
+	res, changed, existed, err := e.patch(ctx, args, projectID, userID, qtx, qtx)
 	if err != nil {
 		if isModelError(err) {
 			return Result{Content: updateBusinessProfileName + " error: " + err.Error()}, nil
@@ -138,28 +174,33 @@ func (e *updateBusinessProfileExecutor) run(ctx context.Context, raw json.RawMes
 	if err := tx.Commit(ctx); err != nil {
 		return Result{}, fmt.Errorf("%s: commit: %w", updateBusinessProfileName, err)
 	}
-	enqueuePromptGenerationAfterProfileWrite(ctx, e.queries, projectID, e.suppressPromptGeneration)
+	suppress := e.suppressPromptGeneration || !shouldEnqueuePromptGenerationAfterProfileWrite(existed, changed)
+	enqueuePromptGenerationAfterProfileWrite(ctx, e.queries, projectID, suppress)
 	return res, nil
 }
 
-func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBusinessProfileArgs, projectID, userID pgtype.UUID, q updateBusinessProfileQuerier) (Result, error) {
+// patch applies one update and returns the model-facing result, the changed
+// field names, and whether the profile already existed. run needs changed and
+// existed to decide the prompt_generation follow-up: creation always keeps
+// it, keyword-only edits never trigger it.
+func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBusinessProfileArgs, projectID, userID pgtype.UUID, q updateBusinessProfileQuerier, qtx *sqlc.Queries) (Result, []string, bool, error) {
 	// Lock project row to serialize concurrent profile writes (including creation).
 	project, err := q.GetProjectByIDForUserForBusinessProfileUpdate(ctx, sqlc.GetProjectByIDForUserForBusinessProfileUpdateParams{ID: projectID, UserID: userID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Result{}, &modelError{msg: "project not found or access denied"}
+			return Result{}, nil, false, &modelError{msg: "project not found or access denied"}
 		}
-		return Result{}, fmt.Errorf("%s: lock project: %w", updateBusinessProfileName, err)
+		return Result{}, nil, false, fmt.Errorf("%s: lock project: %w", updateBusinessProfileName, err)
 	}
 	member, err := q.GetOrganizationMember(ctx, sqlc.GetOrganizationMemberParams{OrgID: project.OrganizationID, UserID: userID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Result{}, &modelError{msg: "only organization owners can update the business profile"}
+			return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
 		}
-		return Result{}, fmt.Errorf("%s: get membership: %w", updateBusinessProfileName, err)
+		return Result{}, nil, false, fmt.Errorf("%s: get membership: %w", updateBusinessProfileName, err)
 	}
 	if member.Role != "owner" {
-		return Result{}, &modelError{msg: "only organization owners can update the business profile"}
+		return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
 	}
 
 	existing, err := q.GetProjectBusinessProfileByProjectID(ctx, projectID)
@@ -168,21 +209,24 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		if errors.Is(err, pgx.ErrNoRows) {
 			exists = false
 		} else {
-			return Result{}, fmt.Errorf("%s: read profile: %w", updateBusinessProfileName, err)
+			return Result{}, nil, false, fmt.Errorf("%s: read profile: %w", updateBusinessProfileName, err)
 		}
 	}
 	if !exists {
 		if args.BrandName == nil || strings.TrimSpace(*args.BrandName) == "" || args.WebsiteURL == nil || strings.TrimSpace(*args.WebsiteURL) == "" {
-			return Result{}, &modelError{msg: "no business profile exists yet; to create one, provide non-empty brand_name and website_url"}
+			return Result{}, nil, false, &modelError{msg: "no business profile exists yet; to create one, provide non-empty brand_name and website_url"}
+		}
+		if args.BrandedKeywords == nil || args.NonBrandedKeywords == nil {
+			return Result{}, nil, false, &modelError{msg: "no business profile exists yet; to create one, also provide complete branded_keywords and non_branded_keywords lists (each non-empty)"}
 		}
 	}
 
-	var existingSeed, existingKeywords, existingCompetitors, existingBranded, existingNonBranded []string
+	var existingSeed, existingCompetitors []string
 	if exists {
 		if args.SeedPrompts == nil {
 			v, err := businessprofile.DecodeSeedPrompts(existing.SeedPrompts)
 			if err != nil {
-				return Result{}, fmt.Errorf("%s: decode seed_prompts: %w", updateBusinessProfileName, err)
+				return Result{}, nil, true, fmt.Errorf("%s: decode seed_prompts: %w", updateBusinessProfileName, err)
 			}
 			existingSeed = v
 		} else {
@@ -192,23 +236,10 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 				existingSeed = []string{}
 			}
 		}
-		if args.TargetKeywords == nil {
-			v, err := businessprofile.DecodeTargetKeywords(existing.TargetKeywords)
-			if err != nil {
-				return Result{}, fmt.Errorf("%s: decode target_keywords: %w", updateBusinessProfileName, err)
-			}
-			existingKeywords = v
-		} else {
-			if v, err := businessprofile.DecodeTargetKeywords(existing.TargetKeywords); err == nil {
-				existingKeywords = v
-			} else {
-				existingKeywords = []string{}
-			}
-		}
 		if args.BusinessCompetitors == nil {
 			v, err := businessprofile.DecodeBusinessCompetitors(existing.BusinessCompetitors)
 			if err != nil {
-				return Result{}, fmt.Errorf("%s: decode business_competitors: %w", updateBusinessProfileName, err)
+				return Result{}, nil, true, fmt.Errorf("%s: decode business_competitors: %w", updateBusinessProfileName, err)
 			}
 			existingCompetitors = v
 		} else {
@@ -218,47 +249,29 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 				existingCompetitors = []string{}
 			}
 		}
-		if args.BrandedKeywords == nil && args.NonBrandedKeywords == nil {
-			v, err := businessprofile.DecodeBrandedKeywords(existing.BrandedKeywords)
-			if err != nil {
-				return Result{}, fmt.Errorf("%s: decode branded_keywords: %w", updateBusinessProfileName, err)
-			}
-			existingBranded = v
-			v, err = businessprofile.DecodeNonBrandedKeywords(existing.NonBrandedKeywords)
-			if err != nil {
-				return Result{}, fmt.Errorf("%s: decode non_branded_keywords: %w", updateBusinessProfileName, err)
-			}
-			existingNonBranded = v
-		} else {
-			if v, err := businessprofile.DecodeBrandedKeywords(existing.BrandedKeywords); err == nil {
-				existingBranded = v
-			} else {
-				existingBranded = []string{}
-			}
-			if v, err := businessprofile.DecodeNonBrandedKeywords(existing.NonBrandedKeywords); err == nil {
-				existingNonBranded = v
-			} else {
-				existingNonBranded = []string{}
-			}
-		}
 	} else {
 		existingSeed = []string{}
-		existingKeywords = []string{}
 		existingCompetitors = []string{}
-		existingBranded = []string{}
-		existingNonBranded = []string{}
+	}
+
+	// Revserp-suggested baseline always comes from the keyword service, never
+	// the combined read aliases: feeding the union back into a suggested-only
+	// replace would copy user-defined terms into the suggested source.
+	baselineBrand, baselineNonBrand, err := e.loadSuggestedBaseline(ctx, qtx, projectID)
+	if err != nil {
+		return Result{}, nil, exists, err
 	}
 
 	var finalBrand, finalWebsite string
 	var finalCategory, finalLocation, finalDesc, finalProduct, finalAudience pgtype.Text
-	var finalSeed, finalKeywords, finalCompetitors, finalBranded, finalNonBranded []string
+	var finalSeed, finalCompetitors, finalBranded, finalNonBranded []string
 	changed := []string{}
 
 	// brand_name
 	if args.BrandName != nil {
 		trim := strings.TrimSpace(*args.BrandName)
 		if trim == "" {
-			return Result{}, &modelError{msg: "brand_name cannot be empty"}
+			return Result{}, nil, exists, &modelError{msg: "brand_name cannot be empty"}
 		}
 		finalBrand = trim
 		if !exists || trim != existing.BrandName {
@@ -273,7 +286,7 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 	if args.WebsiteURL != nil {
 		trim := strings.TrimSpace(*args.WebsiteURL)
 		if trim == "" {
-			return Result{}, &modelError{msg: "website_url cannot be empty"}
+			return Result{}, nil, exists, &modelError{msg: "website_url cannot be empty"}
 		}
 		finalWebsite = trim
 		if !exists || trim != existing.WebsiteUrl {
@@ -287,7 +300,7 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 	if exists {
 		// brand/site must be non-empty after merge
 		if strings.TrimSpace(finalBrand) == "" || strings.TrimSpace(finalWebsite) == "" {
-			return Result{}, &modelError{msg: "brand_name and website_url are required"}
+			return Result{}, nil, exists, &modelError{msg: "brand_name and website_url are required"}
 		}
 	} else {
 		// creation already validated both provided, so they are set
@@ -378,7 +391,7 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 	if args.SeedPrompts != nil {
 		norm, err := businessprofile.NormalizeSeedPrompts(*args.SeedPrompts)
 		if err != nil {
-			return Result{}, &modelError{msg: err.Error()}
+			return Result{}, nil, exists, &modelError{msg: err.Error()}
 		}
 		finalSeed = norm
 		if !reflect.DeepEqual(norm, existingSeed) {
@@ -386,16 +399,6 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		}
 	} else {
 		finalSeed = existingSeed
-	}
-	// target_keywords
-	if args.TargetKeywords != nil {
-		norm := businessprofile.NormalizeTargetKeywords(*args.TargetKeywords)
-		finalKeywords = norm
-		if !reflect.DeepEqual(norm, existingKeywords) {
-			changed = append(changed, "target_keywords")
-		}
-	} else {
-		finalKeywords = existingKeywords
 	}
 	// business_competitors
 	if args.BusinessCompetitors != nil {
@@ -407,32 +410,42 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 	} else {
 		finalCompetitors = existingCompetitors
 	}
-	// branded_keywords / non_branded_keywords: merged pair must stay disjoint,
-	// non-branded wins, even when only one side was supplied.
-	{
-		brandedRaw := existingBranded
-		if args.BrandedKeywords != nil {
-			brandedRaw = businessprofile.NormalizeStringList(*args.BrandedKeywords, businessprofile.MaxTargetKeywords)
+	// branded_keywords / non_branded_keywords route to the Revserp-suggested
+	// source only: both lists are required together, each non-empty, and the
+	// user-defined source is never read or written here.
+	if !exists || args.BrandedKeywords != nil || args.NonBrandedKeywords != nil {
+		if exists && (args.BrandedKeywords == nil || args.NonBrandedKeywords == nil) {
+			return Result{}, nil, exists, &modelError{msg: "branded_keywords and non_branded_keywords must be provided together as complete non-empty lists"}
 		}
-		nonBrandedRaw := existingNonBranded
-		if args.NonBrandedKeywords != nil {
-			nonBrandedRaw = businessprofile.NormalizeStringList(*args.NonBrandedKeywords, businessprofile.MaxTargetKeywords)
+		brand, nonBrand, err := projectkeywords.NormalizeSuggestedProjectKeywords(derefStringList(args.BrandedKeywords), derefStringList(args.NonBrandedKeywords))
+		if err != nil {
+			if isProjectKeywordValidationError(err) {
+				return Result{}, nil, exists, &modelError{msg: err.Error()}
+			}
+			return Result{}, nil, exists, fmt.Errorf("%s: normalize suggested keywords: %w", updateBusinessProfileName, err)
 		}
-		finalBranded, finalNonBranded = businessprofile.NormalizeKeywordLists(brandedRaw, nonBrandedRaw)
-		if args.BrandedKeywords != nil || args.NonBrandedKeywords != nil {
-			if !reflect.DeepEqual(finalBranded, existingBranded) {
+		if !exists || !equalProjectKeywordSets(brand, baselineBrand) || !equalProjectKeywordSets(nonBrand, baselineNonBrand) {
+			if err := e.keywordService().ReplaceSuggestedKeywords(ctx, qtx, projectID, brand, nonBrand); err != nil {
+				if isProjectKeywordValidationError(err) {
+					return Result{}, nil, exists, &modelError{msg: err.Error()}
+				}
+				return Result{}, nil, exists, fmt.Errorf("%s: replace suggested keywords: %w", updateBusinessProfileName, err)
+			}
+			finalBranded, finalNonBranded = brand, nonBrand
+			if !reflect.DeepEqual(brand, baselineBrand) {
 				changed = append(changed, "branded_keywords")
 			}
-			if !reflect.DeepEqual(finalNonBranded, existingNonBranded) {
+			if !reflect.DeepEqual(nonBrand, baselineNonBrand) {
 				changed = append(changed, "non_branded_keywords")
 			}
+		} else {
+			finalBranded, finalNonBranded = baselineBrand, baselineNonBrand
 		}
+	} else {
+		finalBranded, finalNonBranded = baselineBrand, baselineNonBrand
 	}
 	if finalSeed == nil {
 		finalSeed = []string{}
-	}
-	if finalKeywords == nil {
-		finalKeywords = []string{}
 	}
 	if finalCompetitors == nil {
 		finalCompetitors = []string{}
@@ -446,25 +459,15 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 
 	seedJSON, err := json.Marshal(finalSeed)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal seed: %w", updateBusinessProfileName, err)
-	}
-	kwJSON, err := json.Marshal(finalKeywords)
-	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal keywords: %w", updateBusinessProfileName, err)
+		return Result{}, nil, exists, fmt.Errorf("%s: marshal seed: %w", updateBusinessProfileName, err)
 	}
 	competitorsJSON, err := json.Marshal(finalCompetitors)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal competitors: %w", updateBusinessProfileName, err)
-	}
-	brandedJSON, err := json.Marshal(finalBranded)
-	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal branded: %w", updateBusinessProfileName, err)
-	}
-	nonBrandedJSON, err := json.Marshal(finalNonBranded)
-	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal non-branded: %w", updateBusinessProfileName, err)
+		return Result{}, nil, exists, fmt.Errorf("%s: marshal competitors: %w", updateBusinessProfileName, err)
 	}
 
+	// The profile upsert carries no keyword columns: suggested keywords persist
+	// through the keyword service in this same transaction, atomically.
 	upserted, err := q.UpsertProjectBusinessProfile(ctx, sqlc.UpsertProjectBusinessProfileParams{
 		ProjectID:           projectID,
 		BrandName:           finalBrand,
@@ -475,13 +478,10 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		ProductDescription:  finalProduct,
 		TargetAudience:      finalAudience,
 		BusinessCompetitors: competitorsJSON,
-		BrandedKeywords:     brandedJSON,
-		NonBrandedKeywords:  nonBrandedJSON,
 		SeedPrompts:         seedJSON,
-		TargetKeywords:      kwJSON,
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: upsert: %w", updateBusinessProfileName, err)
+		return Result{}, nil, exists, fmt.Errorf("%s: upsert: %w", updateBusinessProfileName, err)
 	}
 
 	resp := map[string]interface{}{
@@ -496,11 +496,10 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		"branded_keywords":     finalBranded,
 		"non_branded_keywords": finalNonBranded,
 		"seed_prompts":         finalSeed,
-		"target_keywords":      finalKeywords,
 	}
 	content, err := json.Marshal(resp)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: marshal response: %w", updateBusinessProfileName, err)
+		return Result{}, nil, exists, fmt.Errorf("%s: marshal response: %w", updateBusinessProfileName, err)
 	}
 	sort.Strings(changed)
 	summary := "no changes"
@@ -512,7 +511,60 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 	} else if !exists {
 		summary = "created business profile"
 	}
-	return Result{Content: string(content), Summary: summary}, nil
+	return Result{Content: string(content), Summary: summary}, changed, exists, nil
+}
+
+// loadSuggestedBaseline reads the current Revserp-suggested lists for diffing
+// and responses. User-defined keywords stay out of this path entirely.
+func (e *updateBusinessProfileExecutor) loadSuggestedBaseline(ctx context.Context, qtx *sqlc.Queries, projectID pgtype.UUID) (brand, nonBrand []string, err error) {
+	lists, err := e.keywordService().LoadProjectKeywordLists(ctx, qtx, projectID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: load suggested keywords: %w", updateBusinessProfileName, err)
+	}
+	brand, nonBrand = splitRevserpSuggested(lists)
+	return brand, nonBrand, nil
+}
+
+// splitRevserpSuggested splits suggested rows into brand and non-brand display
+// phrases for keyword set comparison.
+func splitRevserpSuggested(lists projectkeywords.KeywordLists) (brand, nonBrand []string) {
+	brand = []string{}
+	nonBrand = []string{}
+	for _, entry := range lists.RevserpSuggested {
+		if entry.Kind == projectkeywords.ProjectKeywordKindBrand {
+			brand = append(brand, entry.Keyword)
+		} else {
+			nonBrand = append(nonBrand, entry.Keyword)
+		}
+	}
+	return brand, nonBrand
+}
+
+// equalProjectKeywordSets compares keyword phrases as normalized sets so row
+// ordering or display-only drift never triggers a spurious suggested replace.
+func equalProjectKeywordSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, phrase := range a {
+		counts[projectkeywords.NormalizeProjectKeywordKey(phrase)]++
+	}
+	for _, phrase := range b {
+		key := projectkeywords.NormalizeProjectKeywordKey(phrase)
+		if counts[key] == 0 {
+			return false
+		}
+		counts[key]--
+	}
+	return true
+}
+
+func derefStringList(values *[]string) []string {
+	if values == nil {
+		return nil
+	}
+	return *values
 }
 
 func parseUpdateBusinessProfileArgs(raw json.RawMessage) (updateBusinessProfileArgs, error) {
@@ -522,14 +574,17 @@ func parseUpdateBusinessProfileArgs(raw json.RawMessage) (updateBusinessProfileA
 		return args, err
 	}
 	if len(fields) == 0 {
-		return args, errors.New("no fields provided; provide at least one of brand_name, website_url, primary_category, primary_location, business_description, product_description, target_audience, business_competitors, branded_keywords, non_branded_keywords, seed_prompts, target_keywords")
+		return args, errors.New("no fields provided; provide at least one of brand_name, website_url, primary_category, primary_location, business_description, product_description, target_audience, business_competitors, branded_keywords, non_branded_keywords, seed_prompts")
 	}
 	for key, value := range fields {
+		if key == "target_keywords" {
+			return args, errors.New(`argument "target_keywords" is no longer supported as a profile write; manage Revserp-suggested keywords with update_project_keywords and read all lists with get_project_keywords`)
+		}
 		trimmedVal := strings.TrimSpace(string(value))
 		if trimmedVal == "null" {
 			// JSON null is never allowed: scalars must be string, arrays must be array
 			switch key {
-			case "seed_prompts", "target_keywords", "business_competitors", "branded_keywords", "non_branded_keywords":
+			case "seed_prompts", "business_competitors", "branded_keywords", "non_branded_keywords":
 				return args, fmt.Errorf("argument %q must be an array of strings", key)
 			default:
 				return args, fmt.Errorf("argument %q must be a string", key)
@@ -614,15 +669,6 @@ func parseUpdateBusinessProfileArgs(raw json.RawMessage) (updateBusinessProfileA
 				v = []string{}
 			}
 			args.SeedPrompts = &v
-		case "target_keywords":
-			var v []string
-			if err := json.Unmarshal(value, &v); err != nil {
-				return args, fmt.Errorf("argument %q must be an array of strings", key)
-			}
-			if v == nil {
-				v = []string{}
-			}
-			args.TargetKeywords = &v
 		default:
 			return args, fmt.Errorf("unknown argument %q", key)
 		}

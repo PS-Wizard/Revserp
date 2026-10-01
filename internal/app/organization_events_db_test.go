@@ -297,10 +297,7 @@ func TestOrganizationProfileCompetitorMapsEventMapping(t *testing.T) {
 		BrandName:           "Acme",
 		WebsiteUrl:          "https://example.com",
 		BusinessCompetitors: []byte("[]"),
-		BrandedKeywords:     []byte("[]"),
-		NonBrandedKeywords:  []byte("[]"),
 		SeedPrompts:         []byte("[]"),
-		TargetKeywords:      []byte("[]"),
 	}); err != nil {
 		t.Fatalf("upsert business profile: %v", err)
 	}

@@ -118,7 +118,10 @@ func TestHandlePromptGenerationWithoutSeedsProceeds(t *testing.T) {
 	if err := pool.QueryRow(ctx, `INSERT INTO projects (organization_id, name, base_url) VALUES ($1,'prompt-gen-no-seeds','https://noseeds.example') RETURNING id`, orgID).Scan(&projectID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO project_business_profile (project_id, brand_name, website_url, business_description, product_description, target_audience, business_competitors, branded_keywords, non_branded_keywords, seed_prompts, target_keywords) VALUES ($1,'NoSeeds','https://noseeds.example','Sells gear.','Trail widgets.','Hikers.','["CorpA"]','["noseeds"]','["trail widgets"]','[]','["trail widgets"]')`, projectID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO project_business_profile (project_id, brand_name, website_url, business_description, product_description, target_audience, business_competitors, seed_prompts) VALUES ($1,'NoSeeds','https://noseeds.example','Sells gear.','Trail widgets.','Hikers.','["CorpA"]','[]')`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO project_keywords (project_id, keyword, normalized_keyword, kind, source) VALUES ($1,'noseeds','noseeds','brand','revserp'), ($1,'trail widgets','trail widgets','non_brand','revserp')`, projectID); err != nil {
 		t.Fatal(err)
 	}
 

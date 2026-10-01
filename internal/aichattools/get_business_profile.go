@@ -47,7 +47,7 @@ func getBusinessProfileTool() Tool {
 		Def: Def{
 			Name:        businessProfileName,
 			Label:       "Get business profile",
-			Description: "Read the business profile configured for the current project: brand name, website, primary category, primary location, business description, product description, target audience, business competitors, branded keywords, non-branded keywords, target keywords (always returned), and optionally the seed prompts. Use it for who/what the business is, where it operates, what it sells, who it serves, and to ground brand-aware answers. This is one record per project — no filters, no paging. Returns a plain explanation when no profile is configured.",
+			Description: "Read the business profile configured for the current project: brand name, website, primary category, primary location, business description, product description, target audience, business competitors, and optionally the seed prompts. The branded_keywords, non_branded_keywords, and target_keywords fields are read-only combined projections of all keyword sources (always returned, never written here) for compatibility and context. Use it for who/what the business is, where it operates, what it sells, who it serves, and to ground brand-aware answers. Keyword management is separate: read full lists with source badges via get_project_keywords and refresh REVSerp suggestions with update_project_keywords. This is one record per project — no filters, no paging. Returns a plain explanation when no profile is configured.",
 			Schema:      json.RawMessage(getBusinessProfileSchema),
 		},
 		Execute: executeGetBusinessProfile,
@@ -67,7 +67,9 @@ type businessProfileArgs struct {
 	IncludeSeedPrompts bool
 }
 
-// businessProfileResponse is the JSON the model sees.
+// businessProfileResponse is the JSON the model sees. The keyword fields are
+// read-only combined projections across user-defined and REVSerp-suggested
+// sources; writes go through update_project_keywords, never here.
 type businessProfileResponse struct {
 	BrandName           string    `json:"brand_name"`
 	WebsiteURL          string    `json:"website_url"`

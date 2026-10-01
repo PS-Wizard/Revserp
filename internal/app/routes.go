@@ -80,6 +80,9 @@ func (a *App) Router() http.Handler {
 			app.Get("/projects/{projectID}/setup", a.handleGetProjectSetup)
 			app.Post("/projects/{projectID}/setup", a.handleStartProjectSetup)
 			app.Get("/projects/{projectID}/keywords", a.handleProjectKeywords)
+			app.Get("/projects/{projectID}/keyword-lists", a.handleGetProjectKeywordLists)
+			app.Post("/projects/{projectID}/keyword-lists", a.handleAddProjectKeyword)
+			app.Delete("/projects/{projectID}/keyword-lists/{keywordID}", a.handleDeleteProjectKeyword)
 			app.Get("/projects/{projectID}/ai-questions", a.handleGetProjectAIQuestions)
 			app.Post("/projects/{projectID}/ai-questions/regenerate", a.handleRegenerateProjectAIQuestions)
 			app.Get("/projects/{projectID}/ai-questions/status", a.handleGetAIQuestionsGenerationStatus)
@@ -129,6 +132,14 @@ func (a *App) Router() http.Handler {
 				gated.Post("/projects/{projectID}/analytics/disconnect", a.handleDisconnectProjectGoogleAnalytics)
 				gated.Get("/projects/{projectID}/analytics/overview", a.handleProjectGoogleAnalyticsOverview)
 				gated.Get("/projects/{projectID}/analytics/realtime", a.handleProjectGoogleAnalyticsRealtime)
+			})
+
+			app.Group(func(gated chi.Router) {
+				gated.Use(a.requireFeature(FeatureIntegrations, featuresByProjectParam))
+				gated.Get("/projects/{projectID}/rune/status", a.handleRuneStatus)
+				gated.Post("/projects/{projectID}/rune/connect", a.handleRuneConnect)
+				gated.Post("/projects/{projectID}/rune/check", a.handleRuneCheck)
+				gated.Post("/projects/{projectID}/rune/disconnect", a.handleRuneDisconnect)
 			})
 
 			app.Group(func(gated chi.Router) {

@@ -99,7 +99,6 @@ var businessProfileBootstrapArrayFields = []string{
 	"branded_keywords",
 	"non_branded_keywords",
 	"seed_prompts",
-	"target_keywords",
 }
 
 const businessProfileBootstrapSystemPrompt = `You are an automated business-profile bootstrap agent. The organization owner already asked for this project's setup and gave standing authorization to create the business profile. You are not having a conversation and nobody will answer you.
@@ -122,9 +121,8 @@ Populate every field in that one call. Never leave a string or array empty:
 - product_description: what the business sells or offers.
 - target_audience: the main customer segment.
 - business_competitors: 3-8 real, named competitors.
-- branded_keywords: the brand name plus obvious brand variants.
-- non_branded_keywords: 5-10 category and need keywords with no brand terms.
-- target_keywords: 5-10 search phrases the business should rank for.
+- branded_keywords: up to 10 brand terms: the brand name plus obvious brand variants. Both keyword lists are required and non-empty: this one call persists them as the REVSerp-suggested source, and user-defined keywords are never touched.
+- non_branded_keywords: 5-10 category and need keywords with no brand terms. Both keyword lists are required and non-empty.
 - seed_prompts: up to 5 short, natural seed questions a potential customer might ask.
 
 Inference is expected. When crawl or web evidence is thin, infer sensible values from the project name, domain, category, products, and likely market. A plausible, specific value is required and is better than an empty one. Never use generic placeholder tokens such as "Unknown", "N/A", "TBD", or "Not specified". Every list must be non-empty.

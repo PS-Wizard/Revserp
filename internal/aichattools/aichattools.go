@@ -6,6 +6,9 @@ package aichattools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -190,7 +193,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool()}}
 }
 
 // CatalogDefs lists every implemented tool definition in catalog order,
@@ -198,7 +201,8 @@ func NewRegistry() *Registry {
 // validation run against the full catalog, so a tool can be gateable (and
 // shown in the admin AI tools drawer) before the model can call it.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def}
+	defs := []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def}
+	return append(defs, runeStaticDefs()...)
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag
@@ -229,6 +233,19 @@ func (r *Registry) Defs() []Def {
 		defs[i] = tool.Def
 	}
 	return defs
+}
+
+// Add registers one per-turn tool, rejecting empty or duplicate names so a
+// dynamic CMS tool can never shadow or duplicate a native tool.
+func (r *Registry) Add(tool Tool) error {
+	if strings.TrimSpace(tool.Def.Name) == "" {
+		return errors.New("aichattools: tool name must not be empty")
+	}
+	if _, ok := r.Get(tool.Def.Name); ok {
+		return fmt.Errorf("aichattools: tool %q is already registered", tool.Def.Name)
+	}
+	r.tools = append(r.tools, tool)
+	return nil
 }
 
 // Get returns the named tool and whether it is registered.

@@ -17,6 +17,11 @@ import (
 )
 
 type upsertProjectBusinessProfileRequest struct {
+	// Keyword inputs are gone on purpose: keyword management lives in the
+	// keyword lists API (user-defined) and update_project_keywords
+	// (REVSerp-suggested). Unknown JSON fields are ignored so older editors
+	// keep saving during the transition. The GET response retains read-only
+	// combined keyword aliases for context.
 	BrandName           string   `json:"brand_name"`
 	WebsiteURL          string   `json:"website_url"`
 	PrimaryCategory     string   `json:"primary_category"`
@@ -25,10 +30,7 @@ type upsertProjectBusinessProfileRequest struct {
 	ProductDescription  string   `json:"product_description"`
 	TargetAudience      string   `json:"target_audience"`
 	BusinessCompetitors []string `json:"business_competitors"`
-	BrandedKeywords     []string `json:"branded_keywords"`
-	NonBrandedKeywords  []string `json:"non_branded_keywords"`
 	SeedPrompts         []string `json:"seed_prompts"`
-	TargetKeywords      []string `json:"target_keywords"`
 }
 
 type projectBusinessProfileResponse struct {
@@ -158,8 +160,6 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	targetKeywords := businessprofile.NormalizeTargetKeywords(requestBody.TargetKeywords)
-	brandedKeywords, nonBrandedKeywords := businessprofile.NormalizeKeywordLists(requestBody.BrandedKeywords, requestBody.NonBrandedKeywords)
 	businessCompetitors := businessprofile.NormalizeBusinessCompetitors(requestBody.BusinessCompetitors)
 	if brandName == "" || websiteURL == "" {
 		writeJSONError(w, http.StatusBadRequest, "brand_name and website_url are required")
@@ -167,21 +167,6 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 	}
 
 	seedPromptsJSON, err := json.Marshal(seedPrompts)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	targetKeywordsJSON, err := json.Marshal(targetKeywords)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	brandedKeywordsJSON, err := json.Marshal(brandedKeywords)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	nonBrandedKeywordsJSON, err := json.Marshal(nonBrandedKeywords)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -226,6 +211,8 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// No keyword columns are written here: the upsert carries profile fields
+	// only, and suggested keywords persist through the keyword service.
 	profile, err := queries.UpsertProjectBusinessProfile(r.Context(), sqlc.UpsertProjectBusinessProfileParams{
 		ProjectID:           project.ID,
 		BrandName:           brandName,
@@ -236,10 +223,7 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		ProductDescription:  pgText(productDescription),
 		TargetAudience:      pgText(targetAudience),
 		BusinessCompetitors: businessCompetitorsJSON,
-		BrandedKeywords:     brandedKeywordsJSON,
-		NonBrandedKeywords:  nonBrandedKeywordsJSON,
 		SeedPrompts:         seedPromptsJSON,
-		TargetKeywords:      targetKeywordsJSON,
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -405,8 +389,4 @@ func decodeBusinessCompetitors(raw []byte) ([]string, error) {
 
 func decodeStringSlice(raw []byte) ([]string, error) {
 	return businessprofile.DecodeStringSlice(raw)
-}
-
-func normalizeTargetKeywords(keywords []string) []string {
-	return businessprofile.NormalizeTargetKeywords(keywords)
 }

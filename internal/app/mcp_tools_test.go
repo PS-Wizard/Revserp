@@ -524,15 +524,39 @@ func TestMCPWrappedAIChatTools(t *testing.T) {
 	}
 
 	updated, err := callMCPTool(t, a.mcpUpdateBusinessProfile, ctx, mcpUpdateBusinessProfileInput{
-		ProjectID:  projectID.String(),
-		BrandName:  "Revketer",
-		WebsiteURL: "https://example.com",
+		ProjectID:          projectID.String(),
+		BrandName:          "Revketer",
+		WebsiteURL:         "https://example.com",
+		BrandedKeywords:    []string{"Revketer"},
+		NonBrandedKeywords: []string{"trail widgets"},
 	})
 	if err != nil {
 		t.Fatalf("update_business_profile: %v", err)
 	}
 	if strings.Contains(updated.Content, "error:") {
 		t.Fatalf("profile update failed: %q", updated.Content)
+	}
+
+	lists, err := callMCPTool(t, a.mcpGetProjectKeywords, ctx, mcpGetProjectKeywordsInput{
+		ProjectID: projectID.String(),
+	})
+	if err != nil {
+		t.Fatalf("get_project_keywords: %v", err)
+	}
+	if !strings.Contains(lists.Content, "revserp_suggested") {
+		t.Fatalf("keyword lists missing suggested set: %q", lists.Content)
+	}
+
+	refreshed, err := callMCPTool(t, a.mcpUpdateProjectKeywords, ctx, mcpUpdateProjectKeywordsInput{
+		ProjectID:        projectID.String(),
+		BrandKeywords:    []string{"Revketer Pro"},
+		NonBrandKeywords: []string{"hiking gear"},
+	})
+	if err != nil {
+		t.Fatalf("update_project_keywords: %v", err)
+	}
+	if strings.Contains(refreshed.Content, "error:") {
+		t.Fatalf("keyword update failed: %q", refreshed.Content)
 	}
 }
 

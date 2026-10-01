@@ -7,10 +7,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/ps-wizard/revserp/internal/businessprofile"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 	"github.com/ps-wizard/revserp/internal/keywords"
+	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
 
 type projectKeywordsResponse struct {
@@ -19,8 +19,9 @@ type projectKeywordsResponse struct {
 	Seeds     []keywords.Seed `json:"seeds"`
 }
 
-// handleProjectKeywords returns the crawl × profile coverage matrix.
-// Always recomputed. Never reads GSC. Missing profile or crawl is 200, not 404.
+// handleProjectKeywords returns the crawl × keyword coverage matrix.
+// Always recomputed. Never reads GSC. Missing keywords, profile, or crawl is
+// 200, not 404: terms come from the keyword store, location stays optional.
 func (a *App) handleProjectKeywords(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -45,20 +46,18 @@ func (a *App) handleProjectKeywords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetKeywords := []string{}
-	primaryLocation := ""
-	profile, hasProfile, err := getProjectBusinessProfileByProjectID(r.Context(), a.Queries, projectID)
+	lists, err := projectkeywords.LoadProjectKeywordLists(r.Context(), a.Queries, projectID)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	if hasProfile {
-		decoded, decodeErr := businessprofile.DecodeTargetKeywords(profile.TargetKeywords)
-		if decodeErr != nil {
-			serverError(w, r, decodeErr)
-			return
-		}
-		targetKeywords = decoded
+	targetKeywords := projectkeywords.CombinedKeywordTexts(lists)
+
+	primaryLocation := ""
+	if profile, hasProfile, err := getProjectBusinessProfileByProjectID(r.Context(), a.Queries, projectID); err != nil {
+		serverError(w, r, err)
+		return
+	} else if hasProfile {
 		primaryLocation = textValue(profile.PrimaryLocation)
 	}
 

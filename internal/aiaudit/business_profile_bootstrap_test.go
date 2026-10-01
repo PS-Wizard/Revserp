@@ -41,11 +41,14 @@ func TestBusinessProfileBootstrapPrompt(t *testing.T) {
 		"brand_name", "website_url", "primary_category", "primary_location",
 		"business_description", "product_description", "target_audience",
 		"business_competitors", "branded_keywords", "non_branded_keywords",
-		"target_keywords", "seed_prompts",
+		"seed_prompts",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+	if strings.Contains(prompt, "target_keywords") {
+		t.Error("prompt still names target_keywords, which is no longer a profile write input")
 	}
 	lower := strings.ToLower(prompt)
 	for _, gone := range []string{"omit that field", "leave that field empty", "unknown optional", "leave unknown"} {
@@ -171,7 +174,6 @@ func validBootstrapProfileFields() map[string]any {
 		"branded_keywords":     []string{"acme"},
 		"non_branded_keywords": []string{"trail widgets", "hiking gear"},
 		"seed_prompts":         []string{"best trail widgets?", "where to buy hiking gear?"},
-		"target_keywords":      []string{"trail widgets", "hiking gear"},
 	}
 }
 
@@ -196,7 +198,10 @@ func TestValidateBusinessProfileBootstrapArgs(t *testing.T) {
 		{"blank scalar", func(f map[string]any) { f["primary_category"] = "   " }, `argument "primary_category" must not be blank`},
 		{"placeholder scalar", func(f map[string]any) { f["primary_location"] = "N/A" }, `argument "primary_location" must not be a placeholder value`},
 		{"empty array", func(f map[string]any) { f["branded_keywords"] = []string{} }, `argument "branded_keywords" must not be empty`},
-		{"blank array value", func(f map[string]any) { f["target_keywords"] = []string{"ok", "  "} }, `argument "target_keywords" must not contain blank values`},
+		{"blank array value", func(f map[string]any) { f["non_branded_keywords"] = []string{"ok", "  "} }, `argument "non_branded_keywords" must not contain blank values`},
+		{"missing non-branded keywords", func(f map[string]any) { delete(f, "non_branded_keywords") }, `missing required argument "non_branded_keywords"`},
+		{"missing branded keywords", func(f map[string]any) { delete(f, "branded_keywords") }, `missing required argument "branded_keywords"`},
+		{"stale target keywords rejected", func(f map[string]any) { f["target_keywords"] = []string{"trail widgets"} }, `unknown argument "target_keywords"`},
 		{"placeholder array value", func(f map[string]any) { f["business_competitors"] = []string{"Unknown"} }, `argument "business_competitors" must not contain placeholder values`},
 		{"seed prompts too many", func(f map[string]any) { f["seed_prompts"] = []string{"1", "2", "3", "4", "5", "6"} }, `argument "seed_prompts" must have at most 5 values`},
 		{"unknown field", func(f map[string]any) { f["hacked"] = "yes" }, `unknown argument "hacked"`},
@@ -464,4 +469,29 @@ func historyContainsToolContent(messages []ai.Message, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestBusinessProfileBootstrapArgsCarryBothKeywordLists pins the create-path
+// contract: the single bootstrap update call must carry both complete keyword
+// lists, so the profile tool CREATE persists suggested keywords atomically
+// and a retry never loses keyword data.
+func TestBusinessProfileBootstrapArgsCarryBothKeywordLists(t *testing.T) {
+	fields := validBootstrapProfileFields()
+	if err := validateBusinessProfileBootstrapArgs(marshalBootstrapFields(t, fields)); err != nil {
+		t.Fatalf("valid bootstrap fields rejected: %v", err)
+	}
+	for _, key := range []string{"branded_keywords", "non_branded_keywords"} {
+		list, ok := fields[key].([]string)
+		if !ok || len(list) == 0 {
+			t.Fatalf("bootstrap fields %q = %v, want a non-empty list", key, fields[key])
+		}
+		for _, phrase := range list {
+			if strings.TrimSpace(phrase) == "" {
+				t.Fatalf("bootstrap fields %q contains a blank phrase", key)
+			}
+		}
+	}
+	if _, ok := fields["target_keywords"]; ok {
+		t.Fatal("bootstrap fields must not carry target_keywords")
+	}
 }

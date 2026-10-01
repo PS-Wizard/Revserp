@@ -20,7 +20,11 @@ type App struct {
 	SessionManager *internalauth.SessionManager
 	GSCService     *gsc.Service
 	GAService      *ga.Service
-	OrgEvents      *organizationEventHub
+	// RuneConnect wraps runecms.Connect (initialize + tools/list discovery).
+	// Wired by default in New; tests may replace it with a fake. A nil value
+	// answers 503 so handlers degrade safely.
+	RuneConnect RuneConnectFunc
+	OrgEvents   *organizationEventHub
 }
 
 // New builds an application with shared dependencies.
@@ -47,5 +51,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		GSCService:     gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes),
 		GAService:      ga.NewService(cfg.MaxAPIResponseBytes),
 		OrgEvents:      newOrganizationEventHub(),
+		RuneConnect:    defaultRuneConnect,
 	}
 }

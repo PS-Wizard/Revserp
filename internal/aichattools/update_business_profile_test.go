@@ -57,6 +57,9 @@ func (f *fakeUpdateStore) GetProjectBusinessProfileByProjectID(_ context.Context
 }
 
 func (f *fakeUpdateStore) UpsertProjectBusinessProfile(_ context.Context, arg sqlc.UpsertProjectBusinessProfileParams) (sqlc.UpsertProjectBusinessProfileRow, error) {
+	// The profile upsert carries no keyword columns: suggested keywords persist
+	// through the keyword service, and the patch never reads keyword bytes off
+	// the upserted row (they become read-only combined aliases).
 	row := sqlc.GetProjectBusinessProfileByProjectIDRow{
 		ID:                  pgtype.UUID{Bytes: [16]byte{5}, Valid: true},
 		ProjectID:           arg.ProjectID,
@@ -68,10 +71,7 @@ func (f *fakeUpdateStore) UpsertProjectBusinessProfile(_ context.Context, arg sq
 		ProductDescription:  arg.ProductDescription,
 		TargetAudience:      arg.TargetAudience,
 		BusinessCompetitors: arg.BusinessCompetitors,
-		BrandedKeywords:     arg.BrandedKeywords,
-		NonBrandedKeywords:  arg.NonBrandedKeywords,
 		SeedPrompts:         arg.SeedPrompts,
-		TargetKeywords:      arg.TargetKeywords,
 	}
 	f.profile = &row
 	return sqlc.UpsertProjectBusinessProfileRow{
@@ -85,10 +85,7 @@ func (f *fakeUpdateStore) UpsertProjectBusinessProfile(_ context.Context, arg sq
 		ProductDescription:  row.ProductDescription,
 		TargetAudience:      row.TargetAudience,
 		BusinessCompetitors: row.BusinessCompetitors,
-		BrandedKeywords:     row.BrandedKeywords,
-		NonBrandedKeywords:  row.NonBrandedKeywords,
 		SeedPrompts:         row.SeedPrompts,
-		TargetKeywords:      row.TargetKeywords,
 	}, nil
 }
 
@@ -100,12 +97,26 @@ func (f *fakeUpdateStore) EnqueueAIWorkerJob(_ context.Context, arg sqlc.Enqueue
 // helper that tests pure patch logic via fake querier without transaction.
 func runPatch(t *testing.T, store *fakeUpdateStore, raw string) (Result, error) {
 	t.Helper()
-	exec := updateBusinessProfileExecutor{queries: &sqlc.Queries{}, db: &fakeTransactor{}}
+	res, _, _, err := runPatchOutcome(t, store, newFakeProjectKeywordService(), raw)
+	return res, err
+}
+
+// runPatchWithKeywords tests patch logic against a seeded keyword service.
+func runPatchWithKeywords(t *testing.T, store *fakeUpdateStore, svc *fakeProjectKeywordService, raw string) (Result, error) {
+	t.Helper()
+	res, _, _, err := runPatchOutcome(t, store, svc, raw)
+	return res, err
+}
+
+func runPatchOutcome(t *testing.T, store *fakeUpdateStore, svc *fakeProjectKeywordService, raw string) (Result, []string, bool, error) {
+	t.Helper()
+	exec := updateBusinessProfileExecutor{queries: &sqlc.Queries{}, db: &fakeTransactor{}, keywords: svc}
 	args, err := parseUpdateBusinessProfileArgs(json.RawMessage(raw))
 	if err != nil {
-		return Result{Content: updateBusinessProfileName + " error: " + err.Error()}, nil
+		return Result{Content: updateBusinessProfileName + " error: " + err.Error()}, nil, false, nil
 	}
-	return exec.patch(context.Background(), args, testProjectID, testUserID, store)
+	res, changed, existed, err := exec.patch(context.Background(), args, testProjectID, testUserID, store, &sqlc.Queries{})
+	return res, changed, existed, err
 }
 
 type fakeTransactor struct{}
@@ -145,8 +156,8 @@ func TestUpdateBusinessProfileRejectsNullArrays(t *testing.T) {
 		t.Fatalf("seed null should be rejected, got %v", err)
 	}
 	_, err = parseUpdateBusinessProfileArgs(json.RawMessage(`{"target_keywords":null}`))
-	if err == nil || !strings.Contains(err.Error(), "must be an array") {
-		t.Fatalf("keywords null should be rejected, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no longer supported") {
+		t.Fatalf("target keywords null should be rejected as stale, got %v", err)
 	}
 }
 
@@ -218,14 +229,26 @@ func TestUpdateBusinessProfileMissingCreationRequirements(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "provide non-empty brand_name and website_url") {
 		t.Fatalf("missing website error = %v", err)
 	}
-	// success
-	res, err := runPatch(t, store, `{"brand_name":"Acme","website_url":"https://acme.example"}`)
+	// Brand and site alone no longer create: both keyword lists are required.
+	_, err = runPatch(t, store, `{"brand_name":"Acme","website_url":"https://acme.example"}`)
+	if err == nil || !strings.Contains(err.Error(), "branded_keywords and non_branded_keywords") {
+		t.Fatalf("keywordless create error = %v, want both-lists requirement", err)
+	}
+	// success with both complete lists
+	svc := newFakeProjectKeywordService()
+	res, err := runPatchWithKeywords(t, store, svc, `{"brand_name":"Acme","website_url":"https://acme.example","branded_keywords":["Acme"],"non_branded_keywords":["trail widgets"]}`)
 	if err != nil {
 		t.Fatalf("creation failed: %v", err)
 	}
 	m := parseUpdateResult(t, res)
 	if m["brand_name"] != "Acme" {
 		t.Fatalf("created %v", m)
+	}
+	if svc.replaceCalls != 1 {
+		t.Fatalf("create replace calls = %d, want atomic keyword persist", svc.replaceCalls)
+	}
+	if len(svc.lastReplaceBrand) != 1 || len(svc.lastReplaceNonBrand) != 1 {
+		t.Fatalf("create replace = %v / %v, want both lists persisted", svc.lastReplaceBrand, svc.lastReplaceNonBrand)
 	}
 }
 
@@ -267,7 +290,7 @@ func TestUpdateBusinessProfileClearingWithEmptyArray(t *testing.T) {
 		TargetKeywords: []byte(`["seo","maps"]`),
 	}
 	store := newFakeUpdateStore("owner", profile)
-	res, err := runPatch(t, store, `{"seed_prompts":[],"target_keywords":[]}`)
+	res, err := runPatch(t, store, `{"seed_prompts":[]}`)
 	if err != nil {
 		t.Fatalf("clear %v", err)
 	}
@@ -279,41 +302,53 @@ func TestUpdateBusinessProfileClearingWithEmptyArray(t *testing.T) {
 
 func TestUpdateBusinessProfileKeywordNormalization(t *testing.T) {
 	profile := &sqlc.GetProjectBusinessProfileByProjectIDRow{
-		ProjectID:      testProjectID,
-		BrandName:      "Acme",
-		WebsiteUrl:     "https://acme.example",
-		TargetKeywords: []byte(`[]`),
-		SeedPrompts:    []byte(`[]`),
+		ProjectID:   testProjectID,
+		BrandName:   "Acme",
+		WebsiteUrl:  "https://acme.example",
+		SeedPrompts: []byte(`[]`),
 	}
 	store := newFakeUpdateStore("owner", profile)
-	res, err := runPatch(t, store, `{"target_keywords":["  SEO  ","seo","Seo","  Maps ","","  ","maps"," Go "]}`)
+	svc := newFakeProjectKeywordService()
+	res, err := runPatchWithKeywords(t, store, svc, `{"branded_keywords":["  Acme  ","acme","ACME"],"non_branded_keywords":["  Maps ","","  ","maps"," Go "]}`)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
+	if len(svc.lastReplaceBrand) != 1 || svc.lastReplaceBrand[0] != "Acme" {
+		t.Fatalf("brand replace = %v, want deduped [Acme]", svc.lastReplaceBrand)
+	}
+	if len(svc.lastReplaceNonBrand) != 2 || svc.lastReplaceNonBrand[0] != "Maps" {
+		t.Fatalf("non-brand replace = %v, want [Maps Go]", svc.lastReplaceNonBrand)
+	}
 	m := parseUpdateResult(t, res)
-	kw, _ := m["target_keywords"].([]interface{})
-	if len(kw) != 3 || kw[0] != "SEO" || kw[1] != "Maps" {
-		t.Fatalf("kw %v", kw)
+	branded, _ := m["branded_keywords"].([]interface{})
+	if len(branded) != 1 || branded[0] != "Acme" {
+		t.Fatalf("branded %v", branded)
 	}
 }
 
 func TestUpdateBusinessProfileKeywordReplacement(t *testing.T) {
 	profile := &sqlc.GetProjectBusinessProfileByProjectIDRow{
-		ProjectID:      testProjectID,
-		BrandName:      "Acme",
-		WebsiteUrl:     "https://acme.example",
-		TargetKeywords: []byte(`["old1","old2"]`),
-		SeedPrompts:    []byte(`[]`),
+		ProjectID:   testProjectID,
+		BrandName:   "Acme",
+		WebsiteUrl:  "https://acme.example",
+		SeedPrompts: []byte(`[]`),
 	}
 	store := newFakeUpdateStore("owner", profile)
-	res, err := runPatch(t, store, `{"target_keywords":["new1","new2"]}`)
+	svc := newFakeProjectKeywordService().withRevserp([]string{"old1", "old2"}, []string{"old3"})
+	res, err := runPatchWithKeywords(t, store, svc, `{"branded_keywords":["new1","new2"],"non_branded_keywords":["new3"]}`)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
+	if svc.replaceCalls != 1 {
+		t.Fatalf("replace calls = %d, want 1", svc.replaceCalls)
+	}
 	m := parseUpdateResult(t, res)
-	kw, _ := m["target_keywords"].([]interface{})
-	if len(kw) != 2 || kw[0] != "new1" {
-		t.Fatalf("%v", kw)
+	branded, _ := m["branded_keywords"].([]interface{})
+	if len(branded) != 2 || branded[0] != "new1" {
+		t.Fatalf("%v", branded)
+	}
+	if _, ok := m["target_keywords"]; ok {
+		t.Fatalf("response %v must not carry target_keywords", m)
 	}
 }
 
@@ -419,5 +454,137 @@ func TestBusinessProfileTargetKeywordsAlwaysReturned(t *testing.T) {
 	}
 	if len(resp.TargetKeywords) != 2 {
 		t.Fatalf("%v", resp.TargetKeywords)
+	}
+}
+
+func TestUpdateBusinessProfileRejectsStaleTargetKeywords(t *testing.T) {
+	for _, raw := range []string{
+		`{"brand_name":"Acme","target_keywords":["seo"]}`,
+		`{"target_keywords":[]}`,
+		`{"target_keywords":null}`,
+	} {
+		_, err := parseUpdateBusinessProfileArgs(json.RawMessage(raw))
+		if err == nil || !strings.Contains(err.Error(), "no longer supported") || !strings.Contains(err.Error(), "update_project_keywords") {
+			t.Fatalf("raw %s should be rejected as stale with keyword-tool guidance, got %v", raw, err)
+		}
+	}
+}
+
+func TestShouldEnqueuePromptGenerationAfterProfileWrite(t *testing.T) {
+	cases := []struct {
+		name    string
+		exists  bool
+		changed []string
+		want    bool
+	}{
+		{"creation always enqueues", false, []string{"brand_name"}, true},
+		{"creation with keywords enqueues", false, []string{"brand_name", "branded_keywords", "non_branded_keywords"}, true},
+		{"profile change enqueues", true, []string{"brand_name"}, true},
+		{"mixed keyword and profile change enqueues", true, []string{"branded_keywords", "non_branded_keywords", "target_audience"}, true},
+		{"keyword-only edit never enqueues", true, []string{"branded_keywords", "non_branded_keywords"}, false},
+		{"single suggested side never enqueues", true, []string{"non_branded_keywords"}, false},
+		{"no-change save enqueues nothing", true, nil, false},
+		{"empty changed slice enqueues nothing", true, []string{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldEnqueuePromptGenerationAfterProfileWrite(tc.exists, tc.changed); got != tc.want {
+				t.Fatalf("shouldEnqueue(exists=%v, changed=%v) = %v, want %v", tc.exists, tc.changed, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUpdateBusinessProfileKeywordWritePreservesUserSource(t *testing.T) {
+	profile := &sqlc.GetProjectBusinessProfileByProjectIDRow{
+		ProjectID:   testProjectID,
+		BrandName:   "Acme",
+		WebsiteUrl:  "https://acme.example",
+		SeedPrompts: []byte(`[]`),
+	}
+	store := newFakeUpdateStore("owner", profile)
+	svc := newFakeProjectKeywordService().
+		withUser([]string{"Acme"}, []string{"user kept term"}).
+		withRevserp([]string{"Old"}, []string{"old term"})
+	res, err := runPatchWithKeywords(t, store, svc, `{"branded_keywords":["New Brand"],"non_branded_keywords":["new need"]}`)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	if svc.replaceCalls != 1 {
+		t.Fatalf("replace calls = %d, want 1", svc.replaceCalls)
+	}
+	lists, err := svc.LoadProjectKeywordLists(context.Background(), &sqlc.Queries{}, testProjectID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(lists.UserDefined) != 2 {
+		t.Fatalf("user-defined = %+v, want both user entries preserved", lists.UserDefined)
+	}
+	for _, entry := range lists.RevserpSuggested {
+		for _, user := range []string{"Acme", "user kept term"} {
+			if entry.Keyword == user {
+				t.Fatalf("suggested entry %q overlaps a user term; user text must not leak into the suggested source", entry.Keyword)
+			}
+		}
+	}
+	m := parseUpdateResult(t, res)
+	if _, ok := m["target_keywords"]; ok {
+		t.Fatalf("response %v must not carry target_keywords", m)
+	}
+	branded, _ := m["branded_keywords"].([]interface{})
+	if len(branded) != 1 || branded[0] != "New Brand" {
+		t.Fatalf("branded = %v, want stored suggested list", branded)
+	}
+}
+
+func TestUpdateBusinessProfileIdenticalKeywordsSkipReplace(t *testing.T) {
+	profile := &sqlc.GetProjectBusinessProfileByProjectIDRow{
+		ProjectID:   testProjectID,
+		BrandName:   "Acme",
+		WebsiteUrl:  "https://acme.example",
+		SeedPrompts: []byte(`[]`),
+	}
+	store := newFakeUpdateStore("owner", profile)
+	svc := newFakeProjectKeywordService().withRevserp([]string{"Acme"}, []string{"trail widgets"})
+	_, changed, _, err := runPatchOutcome(t, store, svc, `{"branded_keywords":["acme"],"non_branded_keywords":["trail widgets"]}`)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	if svc.replaceCalls != 0 {
+		t.Fatalf("identical keyword sets must skip the replace, calls = %d", svc.replaceCalls)
+	}
+	for _, field := range changed {
+		if field == "branded_keywords" || field == "non_branded_keywords" {
+			t.Fatalf("changed = %v, want no keyword churn for identical sets", changed)
+		}
+	}
+}
+
+func TestUpdateBusinessProfileRepeatedKeywordsDoNotEnqueue(t *testing.T) {
+	profile := &sqlc.GetProjectBusinessProfileByProjectIDRow{
+		ProjectID:   testProjectID,
+		BrandName:   "Acme",
+		WebsiteUrl:  "https://acme.example",
+		SeedPrompts: []byte(`[]`),
+	}
+	store := newFakeUpdateStore("owner", profile)
+	svc := newFakeProjectKeywordService().withRevserp([]string{"Acme"}, []string{"trail widgets"})
+	for i := 0; i < 2; i++ {
+		_, changed, existed, err := runPatchOutcome(t, store, svc, `{"branded_keywords":["Acme"],"non_branded_keywords":["trail widgets"]}`)
+		if err != nil {
+			t.Fatalf("repeat %d patch: %v", i, err)
+		}
+		if !existed {
+			t.Fatal("existed = false, want existing profile")
+		}
+		if len(changed) != 0 {
+			t.Fatalf("repeat %d changed = %v, want no actual changes", i, changed)
+		}
+		if shouldEnqueuePromptGenerationAfterProfileWrite(existed, changed) {
+			t.Fatalf("repeat %d should not enqueue prompt_generation for identical keywords", i)
+		}
+	}
+	if svc.replaceCalls != 0 {
+		t.Fatalf("replace calls = %d, want no suggested rewrite for identical keywords", svc.replaceCalls)
 	}
 }

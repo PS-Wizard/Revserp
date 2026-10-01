@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -30,7 +31,7 @@ const (
 	defaultAttempts        = 2
 	maxWorkerSlots         = 20
 	contextBudgetBytes     = 64 << 10
-	maxAgentRounds         = 8
+	maxAgentRounds         = 20
 	toolRowBudget          = 200
 	pageContentBudgetBytes = 96 << 10
 	pageContentBudgetPages = 5
@@ -76,6 +77,11 @@ type Worker struct {
 	// worker could not be wired to the endpoint (tools report it as an ordinary
 	// unavailable state).
 	Suggest aichattools.SuggestClient
+
+	// RuneDial connects one Rune CMS session per turn; nil when no
+	// connector is wired (tests inject a fake). A nil connector leaves
+	// CMS tools disconnected and native chat working.
+	RuneDial RuneConnector
 
 	lease         time.Duration
 	heartbeat     time.Duration
@@ -264,8 +270,19 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	}
 
 	queries := sqlc.New(w.pool)
-	registry := aichattools.NewRegistry()
-	allowed := allowedTools(claimed.DisabledTools)
+	// One registry per turn drives both the provider-facing defs and the
+	// executor, so the model cannot run a disabled or unexposed tool by
+	// guessing its name. CMS tools join the same registry for this turn
+	// only; nothing is shared across turns.
+	registry := aichattools.NewFilteredRegistry(claimed.DisabledTools)
+	cmsStatus, closeCMS := w.setupRune(ctx, scope, claimed.DisabledTools, registry)
+	if closeCMS != nil {
+		defer closeCMS()
+	}
+	if cmsStatus != "" && len(messages) > 0 {
+		messages[0].Content += "\n\n--- CMS context ---\n" + cmsStatus
+	}
+	allowed := allowedToolsFromRegistry(registry)
 	toolScope := aichattools.Scope{
 		UserID:            scope.UserID,
 		ProjectID:         scope.ProjectID,
@@ -325,6 +342,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 			if flushErr := flush(true); flushErr != nil {
 				log.Printf("ai chat shutdown flush failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), flushErr)
 			}
+			log.Printf("ai chat turn abandoned: worker_id=%s turn_id=%s reason=parent_gone", w.cfg.ID, claimed.ID.String())
 			return true, true
 		}
 		timed := ctx.Err() != nil
@@ -333,6 +351,12 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		}
 		cancel()
 		return true, !timed
+	}
+
+	failTurn := func(reason string, err error) {
+		log.Printf("ai chat turn failed: worker_id=%s turn_id=%s reason=%s error=%v", w.cfg.ID, claimed.ID.String(), reason, err)
+		w.finalizeAndLog(claimed, "failed", "worker_interrupted", messageStatusForOutput(output), usage)
+		cancel()
 	}
 
 	live := messages
@@ -401,7 +425,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 				if event.Thinking && !thinking {
 					if !cancelRequested {
 						if err := w.event(ctx, claimed, "phase", map[string]string{"phase": "thinking"}); err != nil {
-							cancel()
+							failTurn("phase_event", err)
 							return
 						}
 					}
@@ -411,7 +435,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 					if !writing {
 						if !cancelRequested {
 							if err := w.event(ctx, claimed, "phase", map[string]string{"phase": "writing"}); err != nil {
-								cancel()
+								failTurn("phase_event", err)
 								return
 							}
 						}
@@ -421,7 +445,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 					buffer.WriteString(event.Text)
 					if buffer.Len() >= 4096 {
 						if err := flush(cancelRequested); err != nil {
-							cancel()
+							failTurn("flush", err)
 							return
 						}
 					}
@@ -431,7 +455,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 				result = nil
 			case <-flushTicker.C:
 				if err := flush(cancelRequested); err != nil {
-					cancel()
+					failTurn("flush", err)
 					return
 				}
 			case <-heartbeatTicker.C:
@@ -440,7 +464,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 				}
 				requested, err := w.refreshLease(ctx, claimed)
 				if err != nil {
-					cancel()
+					failTurn("refresh_lease", err)
 					return
 				}
 				if requested {
@@ -465,6 +489,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		}
 
 		if err := flush(cancelRequested || timedOut); err != nil {
+			failTurn("flush", err)
 			return
 		}
 		if cancelRequested || timedOut || providerErr != nil || final || len(roundCalls) == 0 {
@@ -479,7 +504,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 
 		var nextSeq int32
 		if err := w.pool.QueryRow(ctx, `SELECT COALESCE(MAX(seq), -1) + 1 FROM ai_tool_calls WHERE turn_id = $1`, claimed.ID).Scan(&nextSeq); err != nil {
-			cancel()
+			failTurn("next_seq", err)
 			return
 		}
 
@@ -511,16 +536,33 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 			if first {
 				first = false
 				if err := w.event(ctx, claimed, "phase", map[string]string{"phase": "working"}); err != nil {
-					cancel()
+					failTurn("phase_event", err)
 					return
 				}
 				if _, err := w.pool.Exec(ctx, `
 UPDATE ai_turns
 SET output_started_at = COALESCE(output_started_at, now()), updated_at = now()
 WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > now()`, claimed.ID, w.cfg.ID); err != nil {
-					cancel()
+					failTurn("output_started", err)
 					return
 				}
+			}
+			if !json.Valid([]byte(call.Args)) {
+				// Truncated streams (output budget cut a large payload
+				// mid-string) are not valid JSON, and the jsonb cast
+				// below would fail the turn. Skip the row and hand the
+				// model a failed result it can recover from instead.
+				nextSeq++
+				toolStart := time.Now()
+				status, result := truncatedToolArgsResult(call)
+				result.Content = capToolResultContent(result.Content)
+				if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
+					failTurn("tool_result_event", err)
+					return
+				}
+				log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
+				live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
+				continue
 			}
 			rowID, err := queries.InsertAIToolCall(ctx, sqlc.InsertAIToolCallParams{
 				TurnID: claimed.ID,
@@ -539,11 +581,11 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 			}
 			nextSeq++
 			if err := w.event(ctx, claimed, "tool_call", map[string]any{"id": call.ID, "name": call.Name, "args": json.RawMessage(call.Args)}); err != nil {
-				cancel()
+				failTurn("tool_call_event", err)
 				return
 			}
 			toolStart := time.Now()
-			log.Printf("ai chat tool call started: worker_id=%s turn_id=%s call_id=%s name=%s args=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, truncateToolLog(call.Args))
+			log.Printf("ai chat tool call started: worker_id=%s turn_id=%s call_id=%s name=%s args=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, toolArgsForLog(call.Name, call.Args))
 			status, result := executeToolCall(ctx, registry, call, toolScope)
 			status, result = normalizeToolCallResult(call.Name, status, result)
 			result.Content = capToolResultContent(result.Content)
@@ -562,7 +604,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				}
 			}
 			if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
-				cancel()
+				failTurn("tool_result_event", err)
 				return
 			}
 			log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
@@ -574,6 +616,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 	}
 
 	if err := flush(cancelRequested || timedOut); err != nil {
+		failTurn("flush", err)
 		return
 	}
 	if cancelRequested {
@@ -1000,15 +1043,15 @@ func sleep(ctx context.Context, duration time.Duration) error {
 // allowedTools maps the registry catalog minus the turn's denylist snapshot to
 // provider-facing tool definitions. An empty result keeps text-only behavior.
 func allowedTools(disabled []string) []ai.ToolDef {
-	blocked := make(map[string]bool, len(disabled))
-	for _, name := range disabled {
-		blocked[name] = true
-	}
+	return allowedToolsFromRegistry(aichattools.NewFilteredRegistry(disabled))
+}
+
+// allowedToolsFromRegistry maps one per-turn registry to provider-facing
+// tool definitions. The executing registry and the offered defs always derive
+// from the same per-turn registry.
+func allowedToolsFromRegistry(registry *aichattools.Registry) []ai.ToolDef {
 	defs := make([]ai.ToolDef, 0)
-	for _, def := range aichattools.NewRegistry().Defs() {
-		if blocked[def.Name] {
-			continue
-		}
+	for _, def := range registry.Defs() {
 		defs = append(defs, ai.ToolDef{Name: def.Name, Description: def.Description, Schema: def.Schema})
 	}
 	return defs
@@ -1069,7 +1112,20 @@ func capToolResultContent(content string) string {
 	if len(content) <= toolResultContentCap {
 		return content
 	}
-	return content[:toolResultContentCap] + "\u2026"
+	cut := toolResultContentCap
+	for cut > 0 && !utf8.RuneStart(content[cut]) {
+		cut--
+	}
+	return content[:cut] + "\u2026[truncated]"
+}
+
+// truncatedToolArgsResult maps streamed tool-call arguments that are not valid
+// JSON (truncated mid-string when a large payload exhausted the output
+// budget) to a failed result, so the model retries with a smaller payload
+// instead of the turn dying on the jsonb cast. No tool-call row is stored.
+func truncatedToolArgsResult(call ai.ToolCall) (string, aichattools.Result) {
+	content := fmt.Sprintf("tool %q call %q failed: the arguments were truncated or malformed (not valid JSON), so the call was not executed. The payload was too large. Resend a SHORTER payload: for CMS writes, shorten the body or split the write across several smaller update calls.", call.Name, call.ID)
+	return "failed", aichattools.Result{Content: content, Summary: "arguments truncated or malformed"}
 }
 
 // executeToolCall runs one call through the registry, mapping unknown tools and
@@ -1086,6 +1142,16 @@ func executeToolCall(ctx context.Context, registry *aichattools.Registry, call a
 	return "completed", result
 }
 
+// toolArgsForLog bounds a tool argument string for log output, redacting
+// CMS record arguments entirely: record payloads are user content, not
+// diagnostics. Persisted tool-call rows and user activity still keep args.
+func toolArgsForLog(name, args string) string {
+	if aichattools.IsRuneToolName(name) {
+		return "[redacted]"
+	}
+	return truncateToolLog(args)
+}
+
 // truncateToolLog bounds a tool argument string for log output.
 func truncateToolLog(value string) string {
 	const maxLogArgs = 200
@@ -1093,4 +1159,11 @@ func truncateToolLog(value string) string {
 		return value
 	}
 	return value[:maxLogArgs] + "..."
+}
+
+func messageStatusForOutput(output bool) string {
+	if output {
+		return "partial"
+	}
+	return "failed"
 }

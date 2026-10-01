@@ -75,8 +75,22 @@ func (a *App) registerMCPTools(server *mcp.Server) {
 		Name: "update_business_profile",
 		Description: "Patch the business profile for project_id. Same tool as in-app AI chat. " +
 			"Call only when the user clearly asks to save or change the profile. Provide only fields to change. " +
-			"Requires organization owner. For a new profile, brand_name and website_url are required.",
+			"Requires organization owner. For a new profile, brand_name and website_url plus complete branded_keywords and non_branded_keywords lists are required. " +
+			"Keyword management is separate: use get_project_keywords and update_project_keywords.",
 	}, a.mcpUpdateBusinessProfile)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "get_project_keywords",
+		Description: "Keyword lists for project_id: user-defined keywords, REVSerp-suggested brand/non-brand keywords, and the combined union with source badges. " +
+			"Same tool as in-app AI chat. Use for keyword research context before refreshing suggestions.",
+	}, a.mcpGetProjectKeywords)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "update_project_keywords",
+		Description: "Refresh the REVSerp-suggested keyword lists for project_id. Same tool as in-app AI chat. " +
+			"Call only when the user clearly asks to find, refresh, or save keywords. Both brand_keywords and non_brand_keywords are required as complete, non-empty lists; " +
+			"each call replaces the suggested source atomically and preserves user-defined keywords. Requires organization owner. Never invent search volume or rank numbers.",
+	}, a.mcpUpdateProjectKeywords)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_issue",

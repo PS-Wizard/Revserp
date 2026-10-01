@@ -482,12 +482,9 @@ type ProjectBusinessProfile struct {
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
 	SeedPrompts         []byte
-	TargetKeywords      []byte
 	ProductDescription  pgtype.Text
 	TargetAudience      pgtype.Text
 	BusinessCompetitors []byte
-	BrandedKeywords     []byte
-	NonBrandedKeywords  []byte
 }
 
 type ProjectCompetitor struct {
@@ -517,6 +514,28 @@ type ProjectGscConnection struct {
 	PermissionLevel    pgtype.Text
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
+}
+
+type ProjectKeyword struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	Keyword           string
+	NormalizedKeyword string
+	Kind              string
+	Source            string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
+type ProjectRuneConnection struct {
+	ProjectID      pgtype.UUID
+	EndpointUrl    string
+	EncryptedToken string
+	Revision       pgtype.UUID
+	Tools          []byte
+	LastCheckedAt  pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
 }
 
 type ProjectSetup struct {

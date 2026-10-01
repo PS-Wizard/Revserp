@@ -18,7 +18,8 @@ import (
 const (
 	defaultDeepSeekBaseURL = "https://api.deepseek.com"
 	defaultDeepSeekModel   = "deepseek-flash"
-	defaultChatMaxTokens   = 4096
+	// CMS write tool calls carry whole article bodies and reasoning shares the same output budget, so 4096 truncated tool-call JSON.
+	defaultChatMaxTokens = 16384
 )
 
 // Image is one user-attached image. Data is raw base64 without a data: prefix.
