@@ -206,7 +206,7 @@ const listActiveTurnsForConversations = `-- name: ListActiveTurnsForConversation
 SELECT t.id AS turn_id, t.conversation_id, t.status
 FROM ai_turns AS t
 WHERE conversation_id = ANY($1::uuid[])
-  AND status IN ('queued', 'running', 'waiting')
+  AND status IN ('queued', 'running', 'waiting', 'waiting_for_user')
 `
 
 type ListActiveTurnsForConversationsRow struct {

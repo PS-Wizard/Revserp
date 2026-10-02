@@ -444,6 +444,49 @@ func recoverExpiredAITurnsForConversation(ctx context.Context, queries *sqlc.Que
 		if err := queries.CreateFailedAITurnEvent(ctx, turn.ID); err != nil {
 			return fmt.Errorf("create failed ai turn event: %w", err)
 		}
+		// An approved CMS call caught mid-execution fails as unknown (paired
+		// with an unknown tool result) and is never retried, mirroring the
+		// worker recovery path.
+		if err := failExecutingCMSApprovalsForTurn(ctx, queries, turn.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// failExecutingCMSApprovalsForTurn marks executing approvals of one
+// recovered-failed turn as failed with an unknown outcome, pairs each with
+// an unknown tool result event, and never executes anything.
+func failExecutingCMSApprovalsForTurn(ctx context.Context, queries *sqlc.Queries, turnID pgtype.UUID) error {
+	approvals, err := queries.FailExecutingCMSApprovalsForTurn(ctx, turnID)
+	if err != nil {
+		return fmt.Errorf("fail executing ai approvals: %w", err)
+	}
+	for _, approval := range approvals {
+		payload, err := json.Marshal(map[string]any{"approval": map[string]any{
+			"id": approval.ID.String(), "turn_id": approval.TurnID.String(),
+			"tool_call_id": approval.ToolCallID, "tool_name": approval.ToolName, "provider": approval.Provider,
+			"status": approval.Status, "summary": "cms write outcome unknown, do not retry",
+		}})
+		if err != nil {
+			return fmt.Errorf("encode unknown ai approval event: %w", err)
+		}
+		if err := queries.InsertAITurnEvent(ctx, sqlc.InsertAITurnEventParams{TurnID: turnID, EventType: "approval_decided", Payload: payload}); err != nil {
+			return fmt.Errorf("create unknown ai approval event: %w", err)
+		}
+	}
+	calls, err := queries.FailUnknownAIToolCallsForTurn(ctx, turnID)
+	if err != nil {
+		return fmt.Errorf("fail unknown ai tool calls: %w", err)
+	}
+	for _, call := range calls {
+		payload, err := json.Marshal(map[string]string{"id": call.CallID, "name": call.Name, "summary": "cms write outcome unknown, do not retry", "status": "failed"})
+		if err != nil {
+			return fmt.Errorf("encode unknown ai tool event: %w", err)
+		}
+		if err := queries.InsertAITurnEvent(ctx, sqlc.InsertAITurnEventParams{TurnID: turnID, EventType: "tool_result", Payload: payload}); err != nil {
+			return fmt.Errorf("create unknown ai tool event: %w", err)
+		}
 	}
 	return nil
 }

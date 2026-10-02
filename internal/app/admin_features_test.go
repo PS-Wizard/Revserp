@@ -53,9 +53,16 @@ func TestValidateDisabledAITools(t *testing.T) {
 	}{
 		{"empty allowed", []string{}, true, []string{}, ""},
 		{"known tool", []string{"read_issues"}, true, []string{"read_issues"}, ""},
+		{"wordpress tool", []string{"wp__list_content"}, true, []string{"wp__list_content"}, ""},
 		{"dupes normalized", []string{"read_issues", "read_issues"}, true, []string{"read_issues"}, ""},
 		{"gsc flag off force-disables", []string{}, false, []string{"get_search_console_data"}, ""},
-		{"unknown tool rejected", []string{"bogus"}, true, nil, `unknown ai tool "bogus"; valid tools: read_issues, get_score_summary, get_search_console_data, get_business_profile, read_issue_work, read_page, render_chart, update_business_profile, get_project_keywords, update_project_keywords, web_search, get_search_suggestions, fetch_url, get_keyword_coverage, cms__list_collections, cms__get_collection_schema, cms__list_records, cms__read_record, cms__create_record, cms__update_record`},
+		{"unknown tool rejected", []string{"bogus"}, true, nil, `unknown ai tool "bogus"; valid tools: ` + strings.Join(aiToolCatalogNames(), ", ")},
+		{"dynamic cms tool accepted", []string{"cms__brand_new_thing"}, true, []string{"cms__brand_new_thing"}, ""},
+		{"dynamic wp tool accepted", []string{"wp__brand_new_thing"}, true, []string{"wp__brand_new_thing"}, ""},
+		{"dynamic cms tool sorted after catalog", []string{"wp__zeta", "cms__alpha", "read_issues"}, true, []string{"read_issues", "cms__alpha", "wp__zeta"}, ""},
+		{"guessed native name rejected", []string{"read_everything"}, true, nil, `unknown ai tool "read_everything"; valid tools: ` + strings.Join(aiToolCatalogNames(), ", ")},
+		{"namespace injection rejected", []string{"cms__a__b"}, true, nil, `unknown ai tool "cms__a__b"; valid tools: ` + strings.Join(aiToolCatalogNames(), ", ")},
+		{"empty suffix rejected", []string{"wp__"}, true, nil, `unknown ai tool "wp__"; valid tools: ` + strings.Join(aiToolCatalogNames(), ", ")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

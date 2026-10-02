@@ -134,15 +134,21 @@ func TestBuildRuneToolsUsesLiveSchemasNotRemoteText(t *testing.T) {
 	session := &fakeRuneSession{}
 	writes := &RuneWriteState{}
 	tools := BuildRuneTools(liveRuneSpecs(), session, nil, writes)
-	if len(tools) != 5 {
-		t.Fatalf("built %d tools, want 5 (unknown and duplicate dropped)", len(tools))
+	if len(tools) != 6 {
+		t.Fatalf("built %d tools, want 6 (the duplicate dropped, the unknown kept)", len(tools))
 	}
 	seen := map[string]bool{}
 	for _, tool := range tools {
 		if !strings.HasPrefix(tool.Def.Name, RuneToolPrefix) {
 			t.Errorf("tool %q is not namespaced", tool.Def.Name)
 		}
-		if strings.Contains(tool.Def.Description, "REMOTE") {
+		if tool.Def.Name == "cms__bogus_tool" {
+			// An unreviewed tool has no local description, so it carries the
+			// bounded live text in the definition only.
+			if tool.Def.Description != liveToolDescription("REMOTE") {
+				t.Errorf("unknown tool description = %q", tool.Def.Description)
+			}
+		} else if strings.Contains(tool.Def.Description, "REMOTE") {
 			t.Errorf("tool %q uses remote description text: %q", tool.Def.Name, tool.Def.Description)
 		}
 		if tool.Def.Feature != RuneFeature {
@@ -311,7 +317,9 @@ func TestRuneNilSessionStaysNative(t *testing.T) {
 }
 
 func TestRuneNames(t *testing.T) {
-	if !IsRuneToolName("cms__read_record") || IsRuneToolName("read_issues") || IsRuneToolName("cms__bogus") {
+	// Dynamic names are accepted so admin validation works; only the session
+	// registry decides whether a name exists.
+	if !IsRuneToolName("cms__read_record") || !IsRuneToolName("cms__brand_new_tool") || IsRuneToolName("read_issues") || IsRuneToolName("cms__bad name") || IsRuneToolName("cms__cms__read_record") {
 		t.Error("IsRuneToolName misclassifies names")
 	}
 	if !IsRuneWriteName("cms__create_record") || !IsRuneWriteName("cms__update_record") || IsRuneWriteName("cms__read_record") || IsRuneWriteName("read_issues") {
@@ -348,5 +356,83 @@ func TestRuneMultibyteContentPassesThroughIntact(t *testing.T) {
 	}
 	if !utf8.ValidString(result.Content) {
 		t.Fatal("CMS content is not valid UTF-8")
+	}
+}
+
+// A discovered tool with no catalogue entry runs without approval, keeps the
+// membership guard, and never claims a static build happened.
+func TestRuneUnknownToolBypassesApprovalWithoutStaticBuildClaims(t *testing.T) {
+	session := &fakeRuneSession{onCall: func(name string, _ json.RawMessage) (RuneCallResult, error) {
+		if name != "brand_new_tool" {
+			t.Fatalf("unexpected call %q", name)
+		}
+		return RuneCallResult{Content: `{"ok":true}`}, nil
+	}}
+	writes := &RuneWriteState{}
+	specs := []RuneToolDef{
+		{Name: "list_records", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "brand_new_tool", Description: "does something new", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	proposal, err := PrepareCMSApproval(context.Background(), session, "rune", "cms__brand_new_tool", json.RawMessage(`{}`))
+	if err != nil || proposal.Required {
+		t.Fatalf("an unclassified tool must not require approval: %+v err=%v", proposal, err)
+	}
+	tools := BuildRuneTools(specs, session, nil, writes)
+	status, result := executeRune(t, tools, "cms__brand_new_tool", `{}`)
+	if status != "completed" || !strings.HasPrefix(result.Content, `{"ok":true}`) {
+		t.Fatalf("status=%q content=%q", status, result.Content)
+	}
+	if strings.Contains(result.Content, "static build") || result.Summary != "" {
+		t.Fatalf("unknown tool must not claim static-build semantics: %q / %q", result.Content, result.Summary)
+	}
+	// The membership guard still runs.
+	guarded := BuildRuneTools(specs, session, func(context.Context) error { return errors.New("stale") }, writes)
+	status, blocked := executeRune(t, guarded, "cms__brand_new_tool", `{}`)
+	if status != "failed" || !strings.Contains(blocked.Content, "no longer available") {
+		t.Fatalf("unknown tool must honour the guard: %q", blocked.Content)
+	}
+}
+
+// A transport failure on an unknown tool marks the turn uncertain: it may have
+// written, so later writes stop.
+func TestRuneUnknownToolTransportFailureMarksUncertain(t *testing.T) {
+	session := &fakeRuneSession{onCall: func(string, json.RawMessage) (RuneCallResult, error) {
+		return RuneCallResult{}, errors.New("timeout after dispatch")
+	}}
+	writes := &RuneWriteState{}
+	tools := BuildRuneTools([]RuneToolDef{
+		{Name: "brand_new_tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "create_record", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}, session, nil, writes)
+	if status, _ := executeRune(t, tools, "cms__brand_new_tool", `{}`); status != "failed" {
+		t.Fatalf("status=%q, want failed", status)
+	}
+	if !writes.Uncertain() {
+		t.Fatal("an unknown tool may write: its transport failure must mark the turn uncertain")
+	}
+	if status, res := executeRune(t, tools, "cms__create_record", `{}`); status != "failed" || !strings.Contains(res.Content, "unknown outcome") {
+		t.Fatalf("known write must be blocked afterwards: %q", res.Content)
+	}
+}
+
+// Only discovered tools are built, so a guessed name is never registered.
+func TestBuildRuneToolsRegistersOnlyDiscoveredNames(t *testing.T) {
+	session := &fakeRuneSession{}
+	tools := BuildRuneTools([]RuneToolDef{
+		{Name: "list_records", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "brand_new_tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "bad name", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}, session, nil, &RuneWriteState{})
+	registry := NewRegistry()
+	for _, tool := range tools {
+		if err := registry.Add(tool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := registry.Get("cms__delete_content"); ok {
+		t.Error("a name absent from the session was registered")
+	}
+	if _, ok := registry.Get("cms__bad name"); ok {
+		t.Error("an invalid dynamic name was registered")
 	}
 }

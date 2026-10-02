@@ -127,8 +127,8 @@ func validToolPage(names []string, next string) *mcp.ListToolsResult {
 }
 
 func TestDiscoveryCountsAllAdvertised(t *testing.T) {
-	evil := make([]string, 0, maxListedTools+1)
-	for i := 0; i < maxListedTools+1; i++ {
+	evil := make([]string, 0, MaxDiscoveredTools+1)
+	for i := 0; i < MaxDiscoveredTools+1; i++ {
 		evil = append(evil, "evil_tool")
 	}
 	fl := &fakeLister{fn: func(cursor string) (*mcp.ListToolsResult, error) {

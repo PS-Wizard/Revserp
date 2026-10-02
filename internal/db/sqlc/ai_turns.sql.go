@@ -301,7 +301,7 @@ SELECT EXISTS(
     SELECT 1
     FROM ai_turns
     WHERE conversation_id = $1
-      AND status IN ('queued', 'running')
+      AND status IN ('queued', 'running', 'waiting', 'waiting_for_user')
 )
 `
 

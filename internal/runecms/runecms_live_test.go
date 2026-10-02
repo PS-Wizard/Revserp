@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,8 +79,12 @@ func TestLiveRuneReadOnly(t *testing.T) {
 	}
 	t.Logf("live discovery ok: %d tools: %s", len(names), strings.Join(names, ","))
 
-	if len(tools) != len(allowedTools) {
-		t.Fatal("live Rune must expose all six supported tools")
+	// Discovery is dynamic: the six known tools must be present, and any other
+	// valid tool the live server advertises is exposed too.
+	for _, want := range []string{"list_collections", "get_collection_schema", "list_records", "read_record", "create_record", "update_record"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("live Rune is missing %s: %v", want, names)
+		}
 	}
 	// Read-only calls only. Never create/update. Never log content or token.
 	read := func(name string, args any, target any) {

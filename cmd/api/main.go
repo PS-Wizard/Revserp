@@ -43,6 +43,11 @@ func run() error {
 	}
 
 	application := app.New(cfg, dbPool, authVerifier)
+	// CMS validation dials through the provider-aware connector (Rune via
+	// runecms.Connect, WordPress via the transport-owned
+	// runecms.ConnectWordPress) with the shared encryption requirement.
+	// Tests replace it with a fake; a nil value answers 503.
+	application.CMSConnect = app.DefaultCMSConnect
 	application.StartOrganizationEventHub(ctx)
 	application.StartOrganizationEventsCleanup(ctx)
 

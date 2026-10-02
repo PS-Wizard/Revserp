@@ -105,6 +105,18 @@ func (b *SuggestBudget) SpendRequests(n int) error {
 	return nil
 }
 
+// Remaining reports how many suggestion calls and upstream requests the turn
+// may still spend. A nil budget reports zero so a durable snapshot of a turn
+// without a cap resumes spent instead of fresh.
+func (b *SuggestBudget) Remaining() (calls, requests int) {
+	if b == nil {
+		return 0, 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.callsLeft, b.requestsLeft
+}
+
 func getSearchSuggestionsTool() Tool {
 	return Tool{
 		Def: Def{

@@ -70,3 +70,15 @@ func (b *WebBudget) SpendFetch() error {
 	b.fetchesLeft--
 	return nil
 }
+
+// Remaining reports how many searches and fetches the turn may still spend.
+// A nil budget reports zero so a durable snapshot of a turn without a cap
+// resumes spent instead of fresh.
+func (b *WebBudget) Remaining() (searches, fetches int) {
+	if b == nil {
+		return 0, 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.searchesLeft, b.fetchesLeft
+}

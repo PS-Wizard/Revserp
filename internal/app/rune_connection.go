@@ -83,9 +83,10 @@ func runeErrorCode(err error) string {
 const (
 	runeMaxEndpointLen     = 2048
 	runeMaxTokenLen        = 8192
-	runeMaxTools           = 64
+	runeMaxTools           = runecms.MaxDiscoveredTools
 	runeMaxToolNameLen     = 256
 	runeMaxToolDescLen     = 8192
+	runeMaxToolGroupLen    = 256
 	runeMaxToolSchemaBytes = 64 << 10
 )
 
@@ -123,6 +124,7 @@ type runeConnectRequest struct {
 type runeToolResponse struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Group       string `json:"group,omitempty"`
 }
 
 type runeStatusResponse struct {
@@ -132,11 +134,12 @@ type runeStatusResponse struct {
 	Tools         []runeToolResponse `json:"tools"`
 }
 
-// runeStoredTool is the only shape persisted in project_rune_connections.tools:
+// runeStoredTool is the only shape persisted in project_cms_connections.tools:
 // name/description/input_schema, no secrets.
 type runeStoredTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
+	Group       string          `json:"group,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
@@ -186,7 +189,9 @@ func normalizeRuneTools(tools []RuneTool) ([]byte, []runeToolResponse, error) {
 	invalid := func() ([]byte, []runeToolResponse, error) {
 		return nil, nil, runeCodedError{code: "invalid_tools"}
 	}
-	if len(tools) == 0 || len(tools) > runeMaxTools {
+	// An empty accepted list is a valid connected state (every advertised
+	// tool can be exposure-excluded); only an oversized one is malformed.
+	if len(tools) > runeMaxTools {
 		return invalid()
 	}
 	seen := make(map[string]struct{}, len(tools))
@@ -196,7 +201,7 @@ func normalizeRuneTools(tools []RuneTool) ([]byte, []runeToolResponse, error) {
 		if tool.Name == "" || len(tool.Name) > runeMaxToolNameLen {
 			return invalid()
 		}
-		if len(tool.Description) > runeMaxToolDescLen {
+		if len(tool.Description) > runeMaxToolDescLen || len(tool.Group) > runeMaxToolGroupLen {
 			return invalid()
 		}
 		if _, dup := seen[tool.Name]; dup {
@@ -213,9 +218,10 @@ func normalizeRuneTools(tools []RuneTool) ([]byte, []runeToolResponse, error) {
 		stored = append(stored, runeStoredTool{
 			Name:        tool.Name,
 			Description: tool.Description,
+			Group:       tool.Group,
 			InputSchema: schema,
 		})
-		response = append(response, runeToolResponse{Name: tool.Name, Description: tool.Description})
+		response = append(response, runeToolResponse{Name: tool.Name, Description: tool.Description, Group: tool.Group})
 	}
 	raw, err := json.Marshal(stored)
 	if err != nil {
@@ -237,7 +243,7 @@ func parseRuneStoredTools(raw []byte) ([]runeToolResponse, error) {
 	}
 	response := make([]runeToolResponse, 0, len(stored))
 	for _, tool := range stored {
-		response = append(response, runeToolResponse{Name: tool.Name, Description: tool.Description})
+		response = append(response, runeToolResponse{Name: tool.Name, Description: tool.Description, Group: tool.Group})
 	}
 	return response, nil
 }
@@ -343,13 +349,19 @@ func (a *App) handleRuneStatus(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	connection, err := a.Queries.GetProjectRuneConnectionByProjectID(r.Context(), project.ID)
+	connection, err := a.Queries.GetProjectCMSConnectionByProjectID(r.Context(), project.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusOK, newRuneStatusResponse(false, "", time.Time{}, nil))
 			return
 		}
 		serverError(w, r, err)
+		return
+	}
+	// The legacy rune surface only sees rune connections; a WordPress
+	// connection reports disconnected here by design (one active CMS).
+	if connection.Provider != string(CMSProviderRune) {
+		writeJSON(w, http.StatusOK, newRuneStatusResponse(false, "", time.Time{}, nil))
 		return
 	}
 	tools, err := parseRuneStoredTools(connection.Tools)
@@ -362,7 +374,8 @@ func (a *App) handleRuneStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleRuneConnect discovers the endpoint, closes the session, then
 // atomically upserts encrypted credentials + tools + a new revision. A failed
-// replacement leaves any existing connection unchanged.
+// replacement leaves any existing connection unchanged. Kept as a
+// backward-compatible wrapper: it always stores provider rune.
 func (a *App) handleRuneConnect(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -409,13 +422,18 @@ func (a *App) handleRuneConnect(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	connection, err := a.Queries.UpsertProjectRuneConnection(r.Context(), sqlc.UpsertProjectRuneConnectionParams{
+	connection, err := a.Queries.UpsertProjectCMSConnection(r.Context(), sqlc.UpsertProjectCMSConnectionParams{
 		ProjectID:      project.ID,
+		Provider:       string(CMSProviderRune),
 		EndpointUrl:    endpoint,
 		EncryptedToken: encrypted,
 		Tools:          toolsRaw,
 	})
 	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if err := a.invalidateProjectCMSApprovals(r.Context(), project.ID, "cms connection replaced"); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -441,13 +459,17 @@ func (a *App) handleRuneCheck(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRuneConnector(w, r) {
 		return
 	}
-	connection, err := a.Queries.GetProjectRuneConnectionByProjectID(r.Context(), project.ID)
+	connection, err := a.Queries.GetProjectCMSConnectionByProjectID(r.Context(), project.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "rune is not connected")
 			return
 		}
 		serverError(w, r, err)
+		return
+	}
+	if connection.Provider != string(CMSProviderRune) {
+		writeJSONError(w, http.StatusNotFound, "rune is not connected")
 		return
 	}
 	token, err := a.GSCService.DecryptSecret(connection.EncryptedToken)
@@ -470,7 +492,7 @@ func (a *App) handleRuneCheck(w http.ResponseWriter, r *http.Request) {
 		runeConnectFailure(w, r, err)
 		return
 	}
-	updated, err := a.Queries.UpdateProjectRuneConnectionChecked(r.Context(), sqlc.UpdateProjectRuneConnectionCheckedParams{
+	updated, err := a.Queries.UpdateProjectCMSConnectionChecked(r.Context(), sqlc.UpdateProjectCMSConnectionCheckedParams{
 		ProjectID: project.ID,
 		Tools:     toolsRaw,
 		Revision:  connection.Revision,
@@ -501,13 +523,26 @@ func (a *App) handleRuneDisconnect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	deleted, err := a.Queries.DeleteProjectRuneConnectionByProjectID(r.Context(), project.ID)
+	connection, err := a.Queries.GetProjectCMSConnectionByProjectID(r.Context(), project.ID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		serverError(w, r, err)
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) || connection.Provider != string(CMSProviderRune) {
+		writeJSONError(w, http.StatusNotFound, "rune is not connected")
+		return
+	}
+	deleted, err := a.Queries.DeleteProjectCMSConnectionByProjectID(r.Context(), project.ID)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 	if deleted == 0 {
 		writeJSONError(w, http.StatusNotFound, "rune is not connected")
+		return
+	}
+	if err := a.invalidateProjectCMSApprovals(r.Context(), project.ID, "cms connection removed"); err != nil {
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, newRuneStatusResponse(false, "", time.Time{}, nil))

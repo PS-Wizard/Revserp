@@ -105,17 +105,27 @@ func mustConnect(t *testing.T, ctx context.Context, endpoint, bearer string) *Se
 	return s
 }
 
-func TestConnectDiscoversOnlyAllowedTools(t *testing.T) {
+// newMCPGarbageServer answers every request with 200 and a body that is not
+// MCP JSON, so a malformed protocol is rejected at connect time.
+func newMCPGarbageServer(t *testing.T) string {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("<html>not mcp</html>"))
+	}))
+	t.Cleanup(ts.Close)
+	return ts.URL
+}
+
+func TestConnectDiscoversDynamicTools(t *testing.T) {
 	var calls atomic.Int64
 	ts := newRuneTestServer(t, testBearer, append(sixDefs(echoOK("ok")),
-		toolDef{name: "evil_tool", schema: objSchema(""), handler: echoOK("pwned")},
+		toolDef{name: "brand_new_tool", schema: objSchema(""), handler: echoOK("pwned")},
+		toolDef{name: "read_file", schema: objSchema(""), handler: echoOK("pwned")},
 	), &calls)
 
 	s := mustConnect(t, testCtx(t), ts.URL, testBearer)
 	tools := s.Tools()
-	if len(tools) != 6 {
-		t.Fatalf("got %d tools, want 6", len(tools))
-	}
 	seen := map[string]bool{}
 	for _, tl := range tools {
 		seen[tl.Name] = true
@@ -132,10 +142,18 @@ func TestConnectDiscoversOnlyAllowedTools(t *testing.T) {
 			t.Errorf("missing tool %s", name)
 		}
 	}
-	if seen["evil_tool"] {
-		t.Error("unrecognized tool was enabled")
+	// A tool the client has never heard of is discovered and executable.
+	if !seen["brand_new_tool"] {
+		t.Error("a newly advertised tool must be discovered")
 	}
-	if n := calls.Load(); n != 0 {
+	if res, err := s.Call(testCtx(t), "brand_new_tool", json.RawMessage(`{}`)); err != nil || res.IsError || res.Content != "pwned" {
+		t.Errorf("new tool call: res=%+v err=%v", res, err)
+	}
+	// Filesystem access stays excluded.
+	if seen["read_file"] {
+		t.Error("restricted tool was enabled")
+	}
+	if n := calls.Load(); n != 1 {
 		t.Errorf("Connect executed %d tools; discovery must never execute tools", n)
 	}
 }

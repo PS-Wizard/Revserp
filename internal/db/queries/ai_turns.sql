@@ -55,7 +55,7 @@ SELECT EXISTS(
     SELECT 1
     FROM ai_turns
     WHERE conversation_id = sqlc.arg(conversation_id)
-      AND status IN ('queued', 'running')
+      AND status IN ('queued', 'running', 'waiting', 'waiting_for_user')
 );
 
 -- name: ReserveAIWorkspaceMonthlyMessage :one

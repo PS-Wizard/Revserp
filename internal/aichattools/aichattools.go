@@ -174,6 +174,41 @@ func (b *PageContentBudget) TryRegisterPage(key string) bool {
 	return true
 }
 
+// PageContentState is the durable form of one PageContentBudget: the byte
+// remainder plus the unique-page limit and the keys already registered.
+type PageContentState struct {
+	BytesLeft   int
+	UniqueLimit int
+	SeenKeys    []string
+}
+
+// State reports the budget as a resumable snapshot. A nil budget reports a
+// spent state so a restored turn is never handed fresh page allowance.
+func (b *PageContentBudget) State() PageContentState {
+	if b == nil {
+		return PageContentState{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	keys := make([]string, 0, len(b.pages))
+	for key := range b.pages {
+		keys = append(keys, key)
+	}
+	return PageContentState{BytesLeft: b.remaining, UniqueLimit: b.uniqueLimit, SeenKeys: keys}
+}
+
+// RestorePageContentBudget rebuilds a budget from a snapshot. Keys already
+// registered stay registered, so a resumed turn cannot claim fresh unique
+// pages for content it already paid for; keys beyond the restored limit are
+// dropped and the limit stays authoritative.
+func RestorePageContentBudget(state PageContentState) *PageContentBudget {
+	budget := NewPageContentBudget(state.BytesLeft, state.UniqueLimit)
+	for _, key := range state.SeenKeys {
+		budget.TryRegisterPage(key)
+	}
+	return budget
+}
+
 // Result is one completed tool call: model-facing content plus a UI one-liner.
 type Result struct {
 	Content string
@@ -202,7 +237,7 @@ func NewRegistry() *Registry {
 // shown in the admin AI tools drawer) before the model can call it.
 func CatalogDefs() []Def {
 	defs := []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def}
-	return append(defs, runeStaticDefs()...)
+	return append(append(defs, runeStaticDefs()...), wordpressStaticDefs()...)
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag

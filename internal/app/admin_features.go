@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,8 +68,18 @@ func adminAIToolCatalog() []adminAIToolInfo {
 	return infos
 }
 
+// dynamicCMSToolName reports whether name is a valid namespaced-provider CMS
+// identifier (cms__ / wp__ plus a validated suffix). It accepts names this
+// build's static catalogue has never seen, so a newly discovered tool can be
+// disabled; it grants nothing, because the executing registry still comes
+// only from the session's discovered tools.
+func dynamicCMSToolName(name string) bool {
+	return aichattools.IsRuneToolName(name) || aichattools.IsWordPressToolName(name)
+}
+
 // normalizeDisabledAITools drops empty and unknown names, dedupes, orders the
-// result by catalog order, and force-disables tools whose feature flag is off.
+// catalog entries first and any valid dynamic CMS name after them, and
+// force-disables tools whose feature flag is off.
 func normalizeDisabledAITools(tools []string, gscConnector bool) []string {
 	disabled := make(map[string]bool, len(tools))
 	for _, tool := range tools {
@@ -82,19 +93,30 @@ func normalizeDisabledAITools(tools []string, gscConnector bool) []string {
 		}
 	}
 	normalized := make([]string, 0, len(tools))
+	seen := make(map[string]bool, len(tools))
 	for _, name := range aiToolCatalogNames() {
 		if disabled[name] {
 			normalized = append(normalized, name)
+			seen[name] = true
 		}
 	}
-	return normalized
+	dynamic := make([]string, 0, len(tools))
+	for name := range disabled {
+		if !seen[name] && dynamicCMSToolName(name) {
+			dynamic = append(dynamic, name)
+		}
+	}
+	sort.Strings(dynamic)
+	return append(normalized, dynamic...)
 }
 
 // validateDisabledAITools rejects names outside the registry catalog and
-// returns the normalized list (feature-off tools force-disabled).
+// returns the normalized list (feature-off tools force-disabled). Valid
+// dynamic cms__/wp__ identifiers are accepted too; a guessed native name
+// still fails.
 func validateDisabledAITools(tools []string, gscConnector bool) ([]string, error) {
 	for _, tool := range tools {
-		if tool != "" && !containsString(aiToolCatalogNames(), tool) {
+		if tool != "" && !containsString(aiToolCatalogNames(), tool) && !dynamicCMSToolName(tool) {
 			return nil, fmt.Errorf("unknown ai tool %q; valid tools: %s", tool, strings.Join(aiToolCatalogNames(), ", "))
 		}
 	}

@@ -20,6 +20,7 @@ import (
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/gsc"
+	"github.com/ps-wizard/revserp/internal/runecms"
 )
 
 const runeTestEncryptionSecret = "rune-test-encryption-secret-not-a-real-secret"
@@ -102,8 +103,6 @@ func TestNormalizeRuneToolsStoresOnlyPublicFields(t *testing.T) {
 
 func TestNormalizeRuneToolsRejectsBadRemoteData(t *testing.T) {
 	bad := [][]RuneTool{
-		nil,
-		{},
 		{{Name: "", InputSchema: json.RawMessage(`{}`)}},
 		{
 			{Name: "dup", InputSchema: json.RawMessage(`{}`)},
@@ -111,11 +110,38 @@ func TestNormalizeRuneToolsRejectsBadRemoteData(t *testing.T) {
 		},
 		{{Name: "bad-schema", InputSchema: json.RawMessage(`{oops`)}},
 		{{Name: strings.Repeat("n", runeMaxToolNameLen+1), InputSchema: json.RawMessage(`{}`)}},
+		{{Name: strings.Repeat("g", runeMaxToolGroupLen+1), InputSchema: json.RawMessage(`{}`)}},
 	}
 	for i, tools := range bad {
 		if _, _, err := normalizeRuneTools(tools); runeErrorCode(err) != "invalid_tools" {
 			t.Errorf("case %d: err = %v, want invalid_tools code", i, err)
 		}
+	}
+}
+
+// TestNormalizeRuneToolsAcceptsLiveDiscoverySize is the regression for the
+// reported connect failure: a live server advertising its real tool set must
+// normalize, while the shared transport bound still rejects one entry more.
+func TestNormalizeRuneToolsAcceptsLiveDiscoverySize(t *testing.T) {
+	for _, count := range []int{0, 1, 89, 90, runecms.MaxDiscoveredTools} {
+		tools := make([]RuneTool, 0, count)
+		for i := range count {
+			tools = append(tools, RuneTool{Name: fmt.Sprintf("tool_%d", i), Description: "d", InputSchema: json.RawMessage(`{"type":"object"}`)})
+		}
+		_, response, err := normalizeRuneTools(tools)
+		if err != nil {
+			t.Fatalf("%d tools: %v", count, err)
+		}
+		if len(response) != count {
+			t.Errorf("%d tools: response has %d", count, len(response))
+		}
+	}
+	over := make([]RuneTool, 0, runecms.MaxDiscoveredTools+1)
+	for i := range runecms.MaxDiscoveredTools + 1 {
+		over = append(over, RuneTool{Name: fmt.Sprintf("tool_%d", i), InputSchema: json.RawMessage(`{"type":"object"}`)})
+	}
+	if _, _, err := normalizeRuneTools(over); runeErrorCode(err) != "invalid_tools" {
+		t.Errorf("oversized discovery accepted: %v", err)
 	}
 }
 
@@ -493,7 +519,7 @@ func TestRuneConnectRevisionBumpsIncludingABA(t *testing.T) {
 		return decodeRuneStatus(t, rec)
 	}
 	connect("https://rune.example/mcp")
-	first, err := f.queries.GetProjectRuneConnectionByProjectID(f.ctx, f.projectID)
+	first, err := f.queries.GetProjectCMSConnectionByProjectID(f.ctx, f.projectID)
 	if err != nil {
 		t.Fatalf("load connection: %v", err)
 	}
@@ -510,7 +536,7 @@ func TestRuneConnectRevisionBumpsIncludingABA(t *testing.T) {
 	}
 
 	connect("https://rune2.example/mcp")
-	second, err := f.queries.GetProjectRuneConnectionByProjectID(f.ctx, f.projectID)
+	second, err := f.queries.GetProjectCMSConnectionByProjectID(f.ctx, f.projectID)
 	if err != nil {
 		t.Fatalf("load connection: %v", err)
 	}
@@ -519,11 +545,11 @@ func TestRuneConnectRevisionBumpsIncludingABA(t *testing.T) {
 	}
 
 	// ABA: delete then reconnect must still mint a fresh revision.
-	if _, err := f.queries.DeleteProjectRuneConnectionByProjectID(f.ctx, f.projectID); err != nil {
+	if _, err := f.queries.DeleteProjectCMSConnectionByProjectID(f.ctx, f.projectID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	connect("https://rune.example/mcp")
-	third, err := f.queries.GetProjectRuneConnectionByProjectID(f.ctx, f.projectID)
+	third, err := f.queries.GetProjectCMSConnectionByProjectID(f.ctx, f.projectID)
 	if err != nil {
 		t.Fatalf("load connection: %v", err)
 	}
@@ -548,7 +574,7 @@ func TestRuneConnectFailurePreservesOld(t *testing.T) {
 	if seedRec.Code != http.StatusOK {
 		t.Fatalf("seed connect: %d (%s)", seedRec.Code, seedRec.Body.String())
 	}
-	before, err := f.queries.GetProjectRuneConnectionByProjectID(f.ctx, f.projectID)
+	before, err := f.queries.GetProjectCMSConnectionByProjectID(f.ctx, f.projectID)
 	if err != nil {
 		t.Fatalf("load connection: %v", err)
 	}
@@ -565,7 +591,7 @@ func TestRuneConnectFailurePreservesOld(t *testing.T) {
 	if body := decodeRuneStatus(t, failRec); body["error"] != "rune endpoint unreachable" {
 		t.Fatalf("failed connect body = %v", body)
 	}
-	after, err := f.queries.GetProjectRuneConnectionByProjectID(f.ctx, f.projectID)
+	after, err := f.queries.GetProjectCMSConnectionByProjectID(f.ctx, f.projectID)
 	if err != nil {
 		t.Fatalf("load connection: %v", err)
 	}
@@ -644,7 +670,7 @@ func TestRuneCheckConflictsOnConcurrentReplacement(t *testing.T) {
 	var closed bool
 	f.app.RuneConnect = func(ctx context.Context, endpoint, token string) (RuneSession, error) {
 		// Simulate a concurrent replacement racing this check.
-		if _, err := f.pool.Exec(ctx, `UPDATE project_rune_connections SET revision = gen_random_uuid() WHERE project_id = $1`, f.projectID); err != nil {
+		if _, err := f.pool.Exec(ctx, `UPDATE project_cms_connections SET revision = gen_random_uuid() WHERE project_id = $1`, f.projectID); err != nil {
 			return nil, err
 		}
 		return &fakeRuneSession{
@@ -652,8 +678,9 @@ func TestRuneCheckConflictsOnConcurrentReplacement(t *testing.T) {
 			closed: &closed,
 		}, nil
 	}
-	seed, err := f.queries.UpsertProjectRuneConnection(f.ctx, sqlc.UpsertProjectRuneConnectionParams{
+	seed, err := f.queries.UpsertProjectCMSConnection(f.ctx, sqlc.UpsertProjectCMSConnectionParams{
 		ProjectID:      f.projectID,
+		Provider:       "rune",
 		EndpointUrl:    "https://rune.example/mcp",
 		EncryptedToken: mustEncryptRuneToken(t, f.app, "rune-secret-token"),
 		Tools:          json.RawMessage(`[{"name":"get_posts","description":"d","input_schema":{}}]`),
@@ -667,7 +694,7 @@ func TestRuneCheckConflictsOnConcurrentReplacement(t *testing.T) {
 	if checkRec.Code != http.StatusConflict {
 		t.Fatalf("conflicting check: %d (%s), want 409", checkRec.Code, checkRec.Body.String())
 	}
-	current, err := f.queries.GetProjectRuneConnectionByProjectID(f.ctx, f.projectID)
+	current, err := f.queries.GetProjectCMSConnectionByProjectID(f.ctx, f.projectID)
 	if err != nil {
 		t.Fatalf("load connection: %v", err)
 	}
@@ -708,7 +735,7 @@ func TestRuneDisconnectDeletes(t *testing.T) {
 			t.Fatalf("malformed disconnect %q: %d, want 400", payload, badRec.Code)
 		}
 	}
-	if _, err := f.queries.GetProjectRuneConnectionByProjectID(f.ctx, f.projectID); err != nil {
+	if _, err := f.queries.GetProjectCMSConnectionByProjectID(f.ctx, f.projectID); err != nil {
 		t.Fatalf("malformed disconnect deleted the connection: %v", err)
 	}
 	disconnectReq := runeHandlerRequest(t, http.MethodPost, f.projectID.String(), "", userID)

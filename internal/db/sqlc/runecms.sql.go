@@ -11,31 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteProjectRuneConnectionByProjectID = `-- name: DeleteProjectRuneConnectionByProjectID :execrows
-DELETE FROM project_rune_connections
+const deleteProjectCMSConnectionByProjectID = `-- name: DeleteProjectCMSConnectionByProjectID :execrows
+DELETE FROM project_cms_connections
 WHERE project_id = $1
 `
 
-func (q *Queries) DeleteProjectRuneConnectionByProjectID(ctx context.Context, projectID pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteProjectRuneConnectionByProjectID, projectID)
+func (q *Queries) DeleteProjectCMSConnectionByProjectID(ctx context.Context, projectID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteProjectCMSConnectionByProjectID, projectID)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const getProjectRuneConnectionByProjectID = `-- name: GetProjectRuneConnectionByProjectID :one
-SELECT project_id, endpoint_url, encrypted_token, revision, tools, last_checked_at, created_at, updated_at
-FROM project_rune_connections
+const getProjectCMSConnectionByProjectID = `-- name: GetProjectCMSConnectionByProjectID :one
+SELECT project_id, provider, endpoint_url, encrypted_token, revision, tools, last_checked_at, created_at, updated_at
+FROM project_cms_connections
 WHERE project_id = $1
 LIMIT 1
 `
 
-func (q *Queries) GetProjectRuneConnectionByProjectID(ctx context.Context, projectID pgtype.UUID) (ProjectRuneConnection, error) {
-	row := q.db.QueryRow(ctx, getProjectRuneConnectionByProjectID, projectID)
-	var i ProjectRuneConnection
+type GetProjectCMSConnectionByProjectIDRow struct {
+	ProjectID      pgtype.UUID
+	Provider       string
+	EndpointUrl    string
+	EncryptedToken string
+	Revision       pgtype.UUID
+	Tools          []byte
+	LastCheckedAt  pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) GetProjectCMSConnectionByProjectID(ctx context.Context, projectID pgtype.UUID) (GetProjectCMSConnectionByProjectIDRow, error) {
+	row := q.db.QueryRow(ctx, getProjectCMSConnectionByProjectID, projectID)
+	var i GetProjectCMSConnectionByProjectIDRow
 	err := row.Scan(
 		&i.ProjectID,
+		&i.Provider,
 		&i.EndpointUrl,
 		&i.EncryptedToken,
 		&i.Revision,
@@ -47,27 +60,40 @@ func (q *Queries) GetProjectRuneConnectionByProjectID(ctx context.Context, proje
 	return i, err
 }
 
-const updateProjectRuneConnectionChecked = `-- name: UpdateProjectRuneConnectionChecked :one
-UPDATE project_rune_connections
+const updateProjectCMSConnectionChecked = `-- name: UpdateProjectCMSConnectionChecked :one
+UPDATE project_cms_connections
 SET tools = $2,
     last_checked_at = now(),
     updated_at = now()
 WHERE project_id = $1
   AND revision = $3
-RETURNING project_id, endpoint_url, encrypted_token, revision, tools, last_checked_at, created_at, updated_at
+RETURNING project_id, provider, endpoint_url, encrypted_token, revision, tools, last_checked_at, created_at, updated_at
 `
 
-type UpdateProjectRuneConnectionCheckedParams struct {
+type UpdateProjectCMSConnectionCheckedParams struct {
 	ProjectID pgtype.UUID
 	Tools     []byte
 	Revision  pgtype.UUID
 }
 
-func (q *Queries) UpdateProjectRuneConnectionChecked(ctx context.Context, arg UpdateProjectRuneConnectionCheckedParams) (ProjectRuneConnection, error) {
-	row := q.db.QueryRow(ctx, updateProjectRuneConnectionChecked, arg.ProjectID, arg.Tools, arg.Revision)
-	var i ProjectRuneConnection
+type UpdateProjectCMSConnectionCheckedRow struct {
+	ProjectID      pgtype.UUID
+	Provider       string
+	EndpointUrl    string
+	EncryptedToken string
+	Revision       pgtype.UUID
+	Tools          []byte
+	LastCheckedAt  pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateProjectCMSConnectionChecked(ctx context.Context, arg UpdateProjectCMSConnectionCheckedParams) (UpdateProjectCMSConnectionCheckedRow, error) {
+	row := q.db.QueryRow(ctx, updateProjectCMSConnectionChecked, arg.ProjectID, arg.Tools, arg.Revision)
+	var i UpdateProjectCMSConnectionCheckedRow
 	err := row.Scan(
 		&i.ProjectID,
+		&i.Provider,
 		&i.EndpointUrl,
 		&i.EncryptedToken,
 		&i.Revision,
@@ -79,9 +105,10 @@ func (q *Queries) UpdateProjectRuneConnectionChecked(ctx context.Context, arg Up
 	return i, err
 }
 
-const upsertProjectRuneConnection = `-- name: UpsertProjectRuneConnection :one
-INSERT INTO project_rune_connections (
+const upsertProjectCMSConnection = `-- name: UpsertProjectCMSConnection :one
+INSERT INTO project_cms_connections (
     project_id,
+    provider,
     endpoint_url,
     encrypted_token,
     tools,
@@ -91,35 +118,52 @@ INSERT INTO project_rune_connections (
     $2,
     $3,
     $4,
+    $5,
     now()
 )
 ON CONFLICT (project_id) DO UPDATE SET
+    provider = excluded.provider,
     endpoint_url = excluded.endpoint_url,
     encrypted_token = excluded.encrypted_token,
     revision = gen_random_uuid(),
     tools = excluded.tools,
     last_checked_at = excluded.last_checked_at,
     updated_at = now()
-RETURNING project_id, endpoint_url, encrypted_token, revision, tools, last_checked_at, created_at, updated_at
+RETURNING project_id, provider, endpoint_url, encrypted_token, revision, tools, last_checked_at, created_at, updated_at
 `
 
-type UpsertProjectRuneConnectionParams struct {
+type UpsertProjectCMSConnectionParams struct {
 	ProjectID      pgtype.UUID
+	Provider       string
 	EndpointUrl    string
 	EncryptedToken string
 	Tools          []byte
 }
 
-func (q *Queries) UpsertProjectRuneConnection(ctx context.Context, arg UpsertProjectRuneConnectionParams) (ProjectRuneConnection, error) {
-	row := q.db.QueryRow(ctx, upsertProjectRuneConnection,
+type UpsertProjectCMSConnectionRow struct {
+	ProjectID      pgtype.UUID
+	Provider       string
+	EndpointUrl    string
+	EncryptedToken string
+	Revision       pgtype.UUID
+	Tools          []byte
+	LastCheckedAt  pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertProjectCMSConnection(ctx context.Context, arg UpsertProjectCMSConnectionParams) (UpsertProjectCMSConnectionRow, error) {
+	row := q.db.QueryRow(ctx, upsertProjectCMSConnection,
 		arg.ProjectID,
+		arg.Provider,
 		arg.EndpointUrl,
 		arg.EncryptedToken,
 		arg.Tools,
 	)
-	var i ProjectRuneConnection
+	var i UpsertProjectCMSConnectionRow
 	err := row.Scan(
 		&i.ProjectID,
+		&i.Provider,
 		&i.EndpointUrl,
 		&i.EncryptedToken,
 		&i.Revision,

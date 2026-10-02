@@ -83,8 +83,17 @@ type Worker struct {
 	// CMS tools disconnected and native chat working.
 	RuneDial RuneConnector
 
-	lease         time.Duration
-	heartbeat     time.Duration
+	// WordPressDial connects one WordPress CMS session per turn through
+	// the transport-owned runecms.ConnectWordPress; nil keeps WordPress
+	// turns working without CMS tools (fail closed). Wired in
+	// cmd/ai-chat-worker.
+	WordPressDial RuneConnector
+
+	lease     time.Duration
+	heartbeat time.Duration
+	// approvalWait bounds how long one tool call waits in this process for a
+	// user decision; past it the call is denied.
+	approvalWait  time.Duration
 	flushInterval time.Duration
 	recovery      time.Duration
 	shutdownGrace time.Duration
@@ -119,6 +128,7 @@ func New(pool *pgxpool.Pool, provider ai.Streamer, cfg Config) *Worker {
 		cfg:           cfg,
 		lease:         defaultLease,
 		heartbeat:     defaultHeartbeat,
+		approvalWait:  defaultApprovalWait,
 		flushInterval: defaultFlush,
 		recovery:      defaultRecovery,
 		shutdownGrace: defaultShutdownGrace,
@@ -275,7 +285,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	// guessing its name. CMS tools join the same registry for this turn
 	// only; nothing is shared across turns.
 	registry := aichattools.NewFilteredRegistry(claimed.DisabledTools)
-	cmsStatus, closeCMS := w.setupRune(ctx, scope, claimed.DisabledTools, registry)
+	cmsStatus, cmsHandle, closeCMS := w.setupCMS(ctx, scope, claimed.DisabledTools, registry)
 	if closeCMS != nil {
 		defer closeCMS()
 	}
@@ -564,6 +574,92 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
 				continue
 			}
+			// CMS writes consult PrepareCMSApproval BEFORE any remote
+			// sensitive call. A required approval parks this run in place:
+			// the approval row and its event are committed, then the
+			// same process waits for the decision with the lease held and
+			// the transcript in memory. A helper error blocks the call as
+			// a failed result; the write never runs either way. The gate
+			// only covers a tool this turn's active registry still serves:
+			// a disabled or unknown tool must fall through to the
+			// unknown-tool result instead of becoming a pending approval.
+			var approval pgtype.UUID
+			_, registered := registry.Get(call.Name)
+			if registered && cmsApprovalRequired(call.Name) && cmsHandle != nil {
+				proposal, proposalErr := aichattools.PrepareCMSApproval(ctx, cmsHandle.session, cmsHandle.provider, call.Name, json.RawMessage(call.Args))
+				if proposalErr != nil {
+					nextSeq++
+					toolStart := time.Now()
+					status, result := blockedCMSCallResult(call)
+					result.Content = capToolResultContent(result.Content)
+					if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
+						failTurn("tool_result_event", err)
+						return
+					}
+					log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
+					live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
+					continue
+				}
+				// Cleared by policy (a read, dry run, or proven-draft edit):
+				// fall through to direct execution with no approval row.
+				if proposal.Required {
+					if err := flush(false); err != nil {
+						failTurn("flush", err)
+						return
+					}
+					requested, err := w.requestCMSApproval(ctx, claimed, call, proposalSummary(cmsHandle.provider, proposal), cmsHandle.revision)
+					if stop, abandon := fail(err); stop {
+						if abandon {
+							return
+						}
+						toolStop = true
+						break
+					}
+					decision, err := w.waitForApprovalDecision(ctx, claimed, requested)
+					if stop, abandon := fail(err); stop {
+						if abandon {
+							return
+						}
+						toolStop = true
+						break
+					}
+					switch decision {
+					case approvalCancelled:
+						cancelRequested = true
+						cancel()
+						ctxDone = nil
+						toolStop = true
+					case approvalDenied:
+						if err := w.denyToolCall(ctx, claimed, call, &live); err != nil {
+							failTurn("deny_approved_call", err)
+							return
+						}
+					case approvalTimedOut:
+						w.closeApproval(ctx, claimed, requested, "rejected", approvalTimeoutSummary)
+						if err := w.denyToolCall(ctx, claimed, call, &live); err != nil {
+							failTurn("deny_approved_call", err)
+							return
+						}
+					case approvalApproved:
+						if !w.approvedCallUnchanged(ctx, cmsHandle, scope, proposal, call) {
+							w.closeApproval(ctx, claimed, requested, "invalidated", "connection changed while waiting for approval")
+							w.finalizeAndLog(claimed, "failed", "cms_connection_changed", messageStatusForOutput(output), usage)
+							return
+						}
+						if changed, err := queries.MarkCMSApprovalExecuting(ctx, requested); err != nil || changed != 1 {
+							failTurn("approval_executing", err)
+							return
+						}
+						approval = requested
+					}
+					if toolStop {
+						break
+					}
+					if !approval.Valid {
+						continue
+					}
+				}
+			}
 			rowID, err := queries.InsertAIToolCall(ctx, sqlc.InsertAIToolCallParams{
 				TurnID: claimed.ID,
 				Seq:    nextSeq,
@@ -608,6 +704,19 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				return
 			}
 			log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
+			live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
+			if approval.Valid {
+				approvalStatus := "completed"
+				if status == "failed" {
+					approvalStatus = "failed"
+				}
+				if _, err := queries.CompleteCMSApproval(ctx, sqlc.CompleteCMSApprovalParams{
+					ApprovalID: approval, Status: approvalStatus, Summary: result.Summary,
+				}); err != nil {
+					failTurn("approval_complete", err)
+					return
+				}
+			}
 			live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
 		}
 		if toolStop {
@@ -1021,8 +1130,53 @@ INSERT INTO ai_turn_events(turn_id, event_type, payload)
 VALUES ($1, 'failed', '{"error_code":"worker_interrupted"}'::jsonb)`, item.id); err != nil {
 			return err
 		}
+		// An approved CMS call caught mid-execution by the crash may have
+		// applied remotely while its result was never saved. Fail it as
+		// unknown (paired with an unknown tool result) and never retry it.
+		if err := w.failRecoveredApprovals(ctx, tx, item.id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
+}
+
+// failRecoveredApprovals marks executing approvals of a recovered-failed
+// turn as failed with an unknown outcome and pairs each with an unknown
+// tool result. It executes nothing: the remote call may already have
+// applied, so automatic retry is forbidden.
+func (w *Worker) failRecoveredApprovals(ctx context.Context, tx pgx.Tx, turnID pgtype.UUID) error {
+	queries := sqlc.New(tx)
+	approvals, err := queries.FailExecutingCMSApprovalsForTurn(ctx, turnID)
+	if err != nil {
+		return err
+	}
+	for _, approval := range approvals {
+		payload, err := json.Marshal(map[string]any{"approval": map[string]any{
+			"id": approval.ID.String(), "turn_id": approval.TurnID.String(),
+			"tool_call_id": approval.ToolCallID, "tool_name": approval.ToolName, "provider": approval.Provider,
+			"status": approval.Status, "summary": "cms write outcome unknown, do not retry",
+		}})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO ai_turn_events(turn_id, event_type, payload) VALUES ($1, 'approval_decided', $2::jsonb)`, turnID, string(payload)); err != nil {
+			return err
+		}
+	}
+	calls, err := queries.FailUnknownAIToolCallsForTurn(ctx, turnID)
+	if err != nil {
+		return err
+	}
+	for _, call := range calls {
+		payload, err := json.Marshal(map[string]string{"id": call.CallID, "name": call.Name, "summary": "cms write outcome unknown, do not retry", "status": "failed"})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO ai_turn_events(turn_id, event_type, payload) VALUES ($1, 'tool_result', $2::jsonb)`, turnID, string(payload)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (w *Worker) persistenceContext() (context.Context, context.CancelFunc) {
@@ -1123,6 +1277,14 @@ func capToolResultContent(content string) string {
 // JSON (truncated mid-string when a large payload exhausted the output
 // budget) to a failed result, so the model retries with a smaller payload
 // instead of the turn dying on the jsonb cast. No tool-call row is stored.
+// blockedCMSCallResult maps a call the approval helper refused to clear to
+// a failed result, so the model sees the block and the turn continues. No
+// tool-call row is stored and no remote call ran.
+func blockedCMSCallResult(call ai.ToolCall) (string, aichattools.Result) {
+	content := fmt.Sprintf("tool %q call %q failed: the requested CMS change was blocked before execution and was not performed. Do not retry the same call; explain what approval or safer alternative is needed instead.", call.Name, call.ID)
+	return "failed", aichattools.Result{Content: content, Summary: "cms change blocked before execution"}
+}
+
 func truncatedToolArgsResult(call ai.ToolCall) (string, aichattools.Result) {
 	content := fmt.Sprintf("tool %q call %q failed: the arguments were truncated or malformed (not valid JSON), so the call was not executed. The payload was too large. Resend a SHORTER payload: for CMS writes, shorten the body or split the write across several smaller update calls.", call.Name, call.ID)
 	return "failed", aichattools.Result{Content: content, Summary: "arguments truncated or malformed"}
@@ -1146,7 +1308,7 @@ func executeToolCall(ctx context.Context, registry *aichattools.Registry, call a
 // CMS record arguments entirely: record payloads are user content, not
 // diagnostics. Persisted tool-call rows and user activity still keep args.
 func toolArgsForLog(name, args string) string {
-	if aichattools.IsRuneToolName(name) {
+	if aichattools.IsRuneToolName(name) || aichattools.IsWordPressToolName(name) {
 		return "[redacted]"
 	}
 	return truncateToolLog(args)

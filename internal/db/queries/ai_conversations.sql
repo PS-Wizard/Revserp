@@ -86,4 +86,4 @@ WHERE ac.id = sqlc.arg(conversation_id)
 SELECT t.id AS turn_id, t.conversation_id, t.status
 FROM ai_turns AS t
 WHERE conversation_id = ANY(sqlc.arg(conversation_ids)::uuid[])
-  AND status IN ('queued', 'running', 'waiting');
+  AND status IN ('queued', 'running', 'waiting', 'waiting_for_user');

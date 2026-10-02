@@ -40,6 +40,26 @@ type AiAuditRun struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
+type AiCmsApproval struct {
+	ID                 pgtype.UUID
+	TurnID             pgtype.UUID
+	ToolCallID         string
+	ToolName           string
+	Provider           string
+	Target             string
+	BeforeText         string
+	AfterText          string
+	Snapshot           []byte
+	ProposedArgs       []byte
+	ConnectionRevision pgtype.UUID
+	Status             string
+	DecidedAt          pgtype.Timestamptz
+	DecidedBy          pgtype.UUID
+	Summary            string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
 type AiConversation struct {
 	ID              pgtype.UUID
 	ProjectID       pgtype.UUID
@@ -487,6 +507,18 @@ type ProjectBusinessProfile struct {
 	BusinessCompetitors []byte
 }
 
+type ProjectCmsConnection struct {
+	ProjectID      pgtype.UUID
+	EndpointUrl    string
+	EncryptedToken string
+	Revision       pgtype.UUID
+	Tools          []byte
+	LastCheckedAt  pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	Provider       string
+}
+
 type ProjectCompetitor struct {
 	ID        pgtype.UUID
 	ProjectID pgtype.UUID
@@ -525,17 +557,6 @@ type ProjectKeyword struct {
 	Source            string
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
-}
-
-type ProjectRuneConnection struct {
-	ProjectID      pgtype.UUID
-	EndpointUrl    string
-	EncryptedToken string
-	Revision       pgtype.UUID
-	Tools          []byte
-	LastCheckedAt  pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
 }
 
 type ProjectSetup struct {

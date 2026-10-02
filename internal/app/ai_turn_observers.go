@@ -260,6 +260,65 @@ func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
 	}
 	turn := snapshotFromLockedAITurn(locked)
 	switch turn.Status {
+	case "waiting_for_user":
+		// Cancelling a paused turn invalidates its pending approvals
+		// atomically with the stop, so no later decision can queue it again
+		// and continuation becomes impossible.
+		invalidated, err := queries.InvalidatePendingCMSApprovalsForTurn(r.Context(), sqlc.InvalidatePendingCMSApprovalsForTurnParams{
+			TurnID:  turnID,
+			Summary: "turn cancelled while waiting for approval",
+		})
+		if err != nil {
+			serverError(w, r, fmt.Errorf("invalidate waiting ai approvals: %w", err))
+			return
+		}
+		for _, approval := range invalidated {
+			payload, err := json.Marshal(map[string]any{"approval": newCMSApprovalJSON(cmsApprovalData{
+				ID: approval.ID, TurnID: approval.TurnID, ToolCallID: approval.ToolCallID, ToolName: approval.ToolName,
+				Provider: approval.Provider, Target: approval.Target, BeforeText: approval.BeforeText, AfterText: approval.AfterText,
+				Snapshot: approval.Snapshot, ProposedArgs: approval.ProposedArgs, ConnectionRevision: approval.ConnectionRevision,
+				Status: approval.Status, CreatedAt: approval.CreatedAt, DecidedAt: approval.DecidedAt, DecidedBy: approval.DecidedBy,
+				Summary: approval.Summary,
+			})})
+			if err != nil {
+				serverError(w, r, fmt.Errorf("encode invalidated ai approval: %w", err))
+				return
+			}
+			if _, err := tx.Exec(r.Context(), `INSERT INTO ai_turn_events(turn_id, event_type, payload) VALUES ($1, 'approval_decided', $2::jsonb)`, turnID, string(payload)); err != nil {
+				serverError(w, r, fmt.Errorf("create invalidated ai approval event: %w", err))
+				return
+			}
+		}
+		stopped, err := queries.StopWaitingAITurn(r.Context(), turnID)
+		if err != nil {
+			serverError(w, r, fmt.Errorf("stop waiting ai turn: %w", err))
+			return
+		}
+		if stopped == 1 {
+			if err := queries.MarkCancelledAssistantMessage(r.Context(), turnID); err != nil {
+				serverError(w, r, fmt.Errorf("mark cancelled ai message: %w", err))
+				return
+			}
+			if err := queries.CreateCancelledAITurnEvent(r.Context(), turnID); err != nil {
+				serverError(w, r, fmt.Errorf("create cancelled ai event: %w", err))
+				return
+			}
+		}
+	case "running":
+		if _, err := queries.RequestCancelRunningAITurn(r.Context(), turnID); err != nil {
+			serverError(w, r, fmt.Errorf("request ai turn cancellation: %w", err))
+			return
+		}
+		// A pause racing this cancel finds cancel_requested_at set and
+		// finalizes stopped instead; invalidating here covers an approval
+		// row committed just before the worker observed the cancel.
+		if _, err := queries.InvalidatePendingCMSApprovalsForTurn(r.Context(), sqlc.InvalidatePendingCMSApprovalsForTurnParams{
+			TurnID:  turnID,
+			Summary: "turn cancelled while running",
+		}); err != nil {
+			serverError(w, r, fmt.Errorf("invalidate running ai approvals: %w", err))
+			return
+		}
 	case "queued":
 		changed, err := queries.StopQueuedAITurn(r.Context(), turnID)
 		if err != nil {
@@ -275,11 +334,6 @@ func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
 				serverError(w, r, fmt.Errorf("create cancelled ai event: %w", err))
 				return
 			}
-		}
-	case "running":
-		if _, err := queries.RequestCancelRunningAITurn(r.Context(), turnID); err != nil {
-			serverError(w, r, fmt.Errorf("request ai turn cancellation: %w", err))
-			return
 		}
 	}
 	updated, err := queries.GetAITurnForUser(r.Context(), sqlc.GetAITurnForUserParams{UserID: user.ID, TurnID: turnID})
@@ -417,8 +471,11 @@ func (a *App) handleGetAITurnEvents(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			if aiTurnStatusIsTerminal(latest.Status) {
-				// Preserve the final drain before closing on terminal status.
+			if aiTurnStreamClosesOnStatus(latest.Status) {
+				// Preserve the final drain before closing. waiting_for_user
+				// closes the stream on the CURRENT status only: the historical
+				// waiting event replays as ordinary data on a resumed turn, so
+				// it must never close a resubscribed stream early.
 				tail, err := a.listAITurnEvents(r.Context(), user.ID, turnID, cursor)
 				if err != nil || len(tail) == 0 {
 					return
@@ -443,6 +500,16 @@ func aiTurnEventIsTerminal(eventType string) bool {
 
 func aiTurnStatusIsTerminal(status string) bool {
 	return status == "completed" || status == "stopped" || status == "failed"
+}
+
+// aiTurnStreamClosesOnStatus reports whether the SSE stream must close once
+// drained. Terminal statuses close it, and so does the current
+// waiting_for_user status (the worker released the turn; the approval card
+// stays durable and a resume resubscribes to the same turn). The historical
+// waiting_for_user event itself is NOT terminal: aiTurnEventIsTerminal
+// deliberately excludes it so replay on a resumed turn keeps streaming.
+func aiTurnStreamClosesOnStatus(status string) bool {
+	return aiTurnStatusIsTerminal(status) || status == "waiting_for_user"
 }
 
 func (a *App) listAITurnEvents(ctx context.Context, userID, turnID pgtype.UUID, cursor int64) ([]sqlc.ListAITurnEventsForUserRow, error) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -88,19 +89,20 @@ func liveRuneSession() *fakeRuneSession {
 	}}
 }
 
-// ensureRuneTable creates the pending contract table only when migration 82
-// has not landed yet, and drops it afterwards only in that case. Rows for the
-// test project are always removed.
+// ensureRuneTable creates the pending CMS connection table only when
+// migrations have not landed yet, and drops it afterwards only in that
+// case. Rows for the test project are always removed.
 func ensureRuneTable(t *testing.T, w *Worker, project pgtype.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	var existed bool
-	if err := w.pool.QueryRow(ctx, `SELECT to_regclass('project_rune_connections') IS NOT NULL`).Scan(&existed); err != nil {
+	if err := w.pool.QueryRow(ctx, `SELECT to_regclass('project_cms_connections') IS NOT NULL`).Scan(&existed); err != nil {
 		t.Fatal(err)
 	}
 	if !existed {
-		if _, err := w.pool.Exec(ctx, `CREATE TABLE project_rune_connections (
+		if _, err := w.pool.Exec(ctx, `CREATE TABLE project_cms_connections (
 	project_id UUID PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+	provider TEXT NOT NULL DEFAULT 'rune' CHECK (provider IN ('rune', 'wordpress')),
 	endpoint_url TEXT NOT NULL,
 	encrypted_token TEXT NOT NULL,
 	revision UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -114,17 +116,17 @@ func ensureRuneTable(t *testing.T, w *Worker, project pgtype.UUID) {
 	}
 	t.Cleanup(func() {
 		ctx := context.Background()
-		_, _ = w.pool.Exec(ctx, `DELETE FROM project_rune_connections WHERE project_id = $1`, project)
+		_, _ = w.pool.Exec(ctx, `DELETE FROM project_cms_connections WHERE project_id = $1`, project)
 		if !existed {
-			_, _ = w.pool.Exec(ctx, `DROP TABLE project_rune_connections`)
+			_, _ = w.pool.Exec(ctx, `DROP TABLE project_cms_connections`)
 		}
 	})
 }
 
 func insertRuneConnection(t *testing.T, w *Worker, project pgtype.UUID, revision string) {
 	t.Helper()
-	if _, err := w.pool.Exec(context.Background(), `INSERT INTO project_rune_connections(project_id, endpoint_url, encrypted_token, revision, last_checked_at) VALUES($1, $2, $3, $4::uuid, now())
-ON CONFLICT (project_id) DO UPDATE SET endpoint_url = EXCLUDED.endpoint_url, encrypted_token = EXCLUDED.encrypted_token, revision = EXCLUDED.revision, updated_at = now()`,
+	if _, err := w.pool.Exec(context.Background(), `INSERT INTO project_cms_connections(project_id, provider, endpoint_url, encrypted_token, revision, last_checked_at) VALUES($1, 'rune', $2, $3, $4::uuid, now())
+ON CONFLICT (project_id) DO UPDATE SET provider = EXCLUDED.provider, endpoint_url = EXCLUDED.endpoint_url, encrypted_token = EXCLUDED.encrypted_token, revision = EXCLUDED.revision, updated_at = now()`,
 		project, "https://cms.example.test/mcp", "enc:secret-token", revision); err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +283,7 @@ func TestRuneGuardRejectsReplacementAndDisconnect(t *testing.T) {
 	if err := guard(context.Background()); err == nil {
 		t.Fatal("replaced revision still accepted: stale calls must be rejected")
 	}
-	if _, err := a.pool.Exec(context.Background(), `DELETE FROM project_rune_connections WHERE project_id = $1`, project); err != nil {
+	if _, err := a.pool.Exec(context.Background(), `DELETE FROM project_cms_connections WHERE project_id = $1`, project); err != nil {
 		t.Fatal(err)
 	}
 	if err := guard(context.Background()); err == nil {
@@ -325,7 +327,12 @@ func TestRuneWritePersistsGuardBeforeDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	decideWhenPending(t, a, id, "approved", 100*time.Millisecond)
 	a.run(context.Background(), claimed)
+
+	if session.calls != 1 {
+		t.Fatalf("approved Rune write dispatched %d times, want 1", session.calls)
+	}
 
 	if dialEndpoint != "https://cms.example.test/mcp" || dialToken != "live-token" {
 		t.Fatalf("dialed endpoint=%q token=%q", dialEndpoint, dialToken)
@@ -415,6 +422,49 @@ func TestRuneDisabledToolCannotRunByGuessing(t *testing.T) {
 	}
 	if session.calls != 0 {
 		t.Fatal("disabled tool reached the CMS session")
+	}
+}
+
+// A discovered tool the turn denylist names is dropped from the registry, so
+// a guessed call for it fails as an unknown tool and never reaches the CMS.
+func TestDisabledUnknownDiscoveredToolCannotRunByGuessing(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	ensureRuneTable(t, a, project)
+	insertRuneConnection(t, a, project, "55555555-5555-5555-5555-555555555555")
+	a.GSC = &fakeRuneDecryptor{token: "live-token"}
+	session := &fakeRuneSession{tools: []aichattools.RuneToolDef{
+		{Name: "brand_new_thing", Description: "server supplied", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}}
+	a.RuneDial = func(context.Context, string, string) (aichattools.RuneSession, error) { return session, nil }
+	provider := &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "cms-guess", Name: "cms__brand_new_thing", Args: `{}`}}},
+		{{Text: "answered without the call"}},
+	}}
+	a.provider = provider
+	id := queued(t, a, user, project)
+	if _, err := a.pool.Exec(context.Background(), `UPDATE ai_turns SET disabled_ai_tools = '{cms__brand_new_thing}' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := a.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.run(context.Background(), claimed)
+
+	for _, def := range provider.requests[0].Tools {
+		if def.Name == "cms__brand_new_thing" {
+			t.Fatalf("disabled discovered tool offered to the provider: %v", provider.requests[0].Tools)
+		}
+	}
+	var callStatus, result string
+	if err := a.pool.QueryRow(context.Background(), `SELECT status, result_content FROM ai_tool_calls WHERE turn_id = $1`, id).Scan(&callStatus, &result); err != nil {
+		t.Fatal(err)
+	}
+	if callStatus != "failed" || !strings.Contains(result, "unknown tool") {
+		t.Fatalf("guessed disabled call = %q/%q, want failed unknown tool", callStatus, result)
+	}
+	if session.calls != 0 {
+		t.Fatal("disabled discovered tool reached the CMS session")
 	}
 }
 

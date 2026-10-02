@@ -24,7 +24,12 @@ type App struct {
 	// Wired by default in New; tests may replace it with a fake. A nil value
 	// answers 503 so handlers degrade safely.
 	RuneConnect RuneConnectFunc
-	OrgEvents   *organizationEventHub
+	// CMSConnect dials one provider session for CMS validation. Wired by
+	// default in New (Rune via runecms.Connect, WordPress via
+	// runecms.ConnectWordPress); tests may replace it with a fake. Both
+	// providers share the same encryption service requirement.
+	CMSConnect CMSConnectFunc
+	OrgEvents  *organizationEventHub
 }
 
 // New builds an application with shared dependencies.
@@ -52,5 +57,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		GAService:      ga.NewService(cfg.MaxAPIResponseBytes),
 		OrgEvents:      newOrganizationEventHub(),
 		RuneConnect:    defaultRuneConnect,
+		CMSConnect:     DefaultCMSConnect,
 	}
 }

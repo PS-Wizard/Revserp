@@ -1,10 +1,12 @@
-// Package runecms is a reusable outbound client for the Rune CMS
-// Streamable HTTP MCP endpoint.
+// Package runecms is a reusable outbound client for a CMS MCP endpoint
+// (Rune or WordPress).
 //
 // One Session serves one chat job; cancel the call context to abort.
 // Connect performs MCP initialization plus tools/list pagination only and
-// never executes tools. Only the six known Rune tools are ever exposed;
-// anything else the server advertises is excluded.
+// never executes tools. Every advertised tool is kept: names are checked
+// against the dynamic name policy and the exposure exclusions, not against
+// a static allowlist, so a new server tool or capability group works without
+// a client release.
 //
 // Security properties (production path, Connect):
 //
@@ -81,7 +83,7 @@ const (
 	// has no readable form.
 	CodeUnsupportedTransport Code = "unsupported_transport"
 	// CodeInvalidTools covers discovery failures, unusable tool schemas,
-	// unknown tool names, and malformed tool arguments.
+	// invalid discovered names, and malformed tool arguments.
 	CodeInvalidTools Code = "invalid_tools"
 	// CodeTooLarge covers oversized arguments and oversized tool results.
 	CodeTooLarge Code = "too_large"
@@ -122,10 +124,12 @@ func ErrorCode(err error) string {
 	return ""
 }
 
-// Tool is a Rune tool discovered at connect time.
+// Tool is one CMS tool discovered at connect time. Group is the server
+// capability group when the server supplies one; it is display metadata.
 type Tool struct {
 	Name        string
 	Description string
+	Group       string
 	InputSchema json.RawMessage
 }
 
@@ -144,8 +148,8 @@ const (
 
 	maxBearerLen   = 8192
 	maxArgsBytes   = 64 * 1024
-	maxSchemaBytes = 32 * 1024
-	maxSchemaProps = 64
+	maxSchemaBytes = 64 * 1024
+	maxSchemaProps = 128
 	maxDescription = 4 * 1024
 
 	// maxResultBytes caps marshaled structuredContent; oversized results
@@ -160,20 +164,93 @@ const (
 	// so plain JSON bodies need their own limit.
 	maxHTTPBodyBytes = 1 << 20
 
-	maxListPages   = 10
-	maxListedTools = 100
-	maxEventBytes  = 1 << 20
+	// maxListPages and MaxDiscoveredTools bound discovery. The WordPress MCP
+	// server ships 165 tools and keeps growing, so the ceilings sit well above
+	// that and are still finite.
+	maxListPages  = 20
+	maxEventBytes = 1 << 20
+	// maxToolName bounds one discovered name; it is also charset-checked.
+	maxToolName = 128
 )
 
-// allowedTools is the exact set of Rune tools this client may expose.
-// Anything else advertised by the server is excluded, never enabled.
-var allowedTools = map[string]struct{}{
-	"list_collections":      {},
-	"get_collection_schema": {},
-	"list_records":          {},
-	"read_record":           {},
-	"create_record":         {},
-	"update_record":         {},
+// IsValidToolName reports whether name is a usable namespaced-provider tool
+// suffix: bounded length, ASCII letters, digits, underscores and dashes, first
+// character alphanumeric, and no doubled underscore, so a name can never
+// smuggle a second namespace (cms__ / wp__) into a model-facing name. The
+// aichattools name checks reuse it, so both providers accept the same dynamic
+// identifiers.
+func IsValidToolName(name string) bool {
+	if name == "" || len(name) > maxToolName || strings.Contains(name, "__") {
+		return false
+	}
+	first := name[0]
+	if !isToolNameByte(first, true) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isToolNameByte(name[i], false) {
+			return false
+		}
+	}
+	return true
+}
+
+func isToolNameByte(c byte, first bool) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_' || c == '-':
+		return !first
+	}
+	return false
+}
+
+// restrictedToolTokens keep an advertised tool out of every session whatever
+// the server does: filesystem access, raw SQL / database access and batch
+// execution, which would replay nested calls around the approval policy.
+// These are exposure exclusions, separate from the approval policy.
+var restrictedToolTokens = []string{"sql", "file", "batch", "shell", "exec"}
+
+// restrictedToolExceptions are reviewed content tools whose names contain a
+// restricted token and stay available.
+var restrictedToolExceptions = map[string]bool{"batch_update_content": true}
+
+// restrictedToolNames are restricted tools whose names do not decompose into
+// the token vocabulary above: raw SQL schema access and theme file writes.
+var restrictedToolNames = map[string]bool{"describe_tables": true, "create_child_theme": true}
+
+// exposureExcluded reports whether a discovered name stays unavailable. It
+// matches whole name parts, so "set_featured_image" survives while "read_file"
+// and "run_sql" do not.
+func exposureExcluded(name string) bool {
+	lower := strings.ToLower(name)
+	if restrictedToolNames[lower] {
+		return true
+	}
+	if restrictedToolExceptions[lower] {
+		return false
+	}
+	parts := strings.FieldsFunc(lower, func(r rune) bool { return r == '_' || r == '-' })
+	for _, part := range parts {
+		for _, token := range restrictedToolTokens {
+			if part == token {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// MaxDiscoveredTools bounds how many tool entries one server may advertise
+// before discovery fails closed. It is exported so no other layer re-imposes a
+// smaller cap of its own on a live session.
+const MaxDiscoveredTools = 512
+
+// ToolExposed reports whether a discovered name may reach the model and be
+// executed: a valid name that is not a restricted exposure. Transport and the
+// aichattools builders share it, so the two layers cannot drift.
+func ToolExposed(name string) bool {
+	return IsValidToolName(name) && !exposureExcluded(name)
 }
 
 // errRedirectRefused stops redirect following so bearer tokens stay on the
@@ -354,9 +431,14 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 	return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 }
 
-// bearerTransport injects the static bearer token on every request and caps
-// every response body at maxHTTPBodyBytes. The SDK's MaxEventSize only
-// bounds SSE events, so plain JSON bodies need this wrapper.
+// productUserAgent identifies this client honestly and stably. Upstream
+// firewalls answer Go's default Go-http-client/1.1 with 406 HTML.
+const productUserAgent = "revserp-mcp/1.0"
+
+// bearerTransport injects the static bearer token and the product user agent
+// on every request, and caps every response body at maxHTTPBodyBytes. The
+// SDK's MaxEventSize only bounds SSE events, so plain JSON bodies need this
+// wrapper. Headers are set on a clone, so caller requests are untouched.
 type bearerTransport struct {
 	base  http.RoundTripper
 	token string
@@ -390,6 +472,7 @@ func (c *cappedBody) Close() error { return c.rc.Close() }
 func (b *bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	out := r.Clone(r.Context())
 	out.Header.Set("Authorization", "Bearer "+b.token)
+	out.Header.Set("User-Agent", productUserAgent)
 	resp, err := b.base.RoundTrip(out)
 	if err != nil || resp == nil || resp.Body == nil {
 		return resp, err
@@ -444,9 +527,10 @@ type Session struct {
 	closeHTTP func()
 }
 
-// Connect opens a Rune session: MCP initialization plus tools/list
-// pagination. It never executes tools. Unknown tools and tools without a
-// usable object input schema (within size/count limits) are excluded.
+// Connect opens a CMS session: MCP initialization plus tools/list
+// pagination. It never executes tools. Tools with an invalid name, a
+// restricted exposure name, or an unusable object input schema are
+// excluded; every other advertised tool is kept.
 func Connect(ctx context.Context, endpoint, bearerToken string) (*Session, error) {
 	if err := validateBearer(bearerToken); err != nil {
 		return nil, err
@@ -458,7 +542,7 @@ func Connect(ctx context.Context, endpoint, bearerToken string) (*Session, error
 	if _, err := validateStrictEndpoint(ctx, endpoint); err != nil {
 		return nil, err
 	}
-	return connectInner(ctx, endpoint, bearerToken, newSafeHTTPClient(bearerToken))
+	return connectInner(ctx, endpoint, newSafeHTTPClient(bearerToken), "rune")
 }
 
 // connectWithHTTPClient is the test-only injection point: tests pass a
@@ -485,10 +569,13 @@ func connectWithHTTPClient(ctx context.Context, endpoint, bearerToken string, hc
 		CheckRedirect: refuseRedirect,
 		Timeout:       timeout,
 	}
-	return connectInner(ctx, endpoint, bearerToken, cp)
+	return connectInner(ctx, endpoint, cp, "rune")
 }
 
-func connectInner(ctx context.Context, endpoint, _ string, hc *http.Client) (*Session, error) {
+// connectInner initializes one MCP session and keeps every discovered tool
+// that passes the name and schema policy. It never executes a tool.
+func connectInner(ctx context.Context, endpoint string, hc *http.Client, profile string) (*Session, error) {
+
 	connected := false
 	defer func() {
 		if !connected {
@@ -509,7 +596,7 @@ func connectInner(ctx context.Context, endpoint, _ string, hc *http.Client) (*Se
 		DisableStandaloneSSE: true,
 		MaxEventSize:         maxEventBytes,
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "revserp-runecms", Version: "1.0.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "revserp-" + profile, Version: "1.0.0"}, nil)
 	cs, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return nil, classifyConnectError(ctx, err)
@@ -534,10 +621,12 @@ type toolLister interface {
 	ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error)
 }
 
-// discoverTools pages through tools/list and keeps only usable allowlisted
-// tools: known name, valid object input schema within property limits.
-// Every advertised entry counts toward maxListedTools, not just accepted
-// ones; duplicate allowlisted names and repeating cursors are rejected.
+// discoverTools pages through tools/list and keeps every advertised tool
+// whose name passes IsValidToolName and the exposure exclusions and whose
+// input schema is a usable JSON object within property limits. Every
+// advertised entry counts toward MaxDiscoveredTools, not just accepted ones;
+// duplicate names and repeating cursors are rejected. An empty result is a
+// valid session: a server with no capability group enabled offers nothing.
 func discoverTools(ctx context.Context, cs toolLister) ([]Tool, error) {
 	var out []Tool
 	seen := map[string]struct{}{}
@@ -557,11 +646,8 @@ func discoverTools(ctx context.Context, cs toolLister) ([]Tool, error) {
 				continue
 			}
 			advertised++
-			if advertised > maxListedTools {
+			if advertised > MaxDiscoveredTools {
 				return nil, fail(CodeInvalidTools, "server advertises too many tools", nil)
-			}
-			if _, ok := allowedTools[t.Name]; !ok {
-				continue
 			}
 			if _, dup := seen[t.Name]; dup {
 				return nil, fail(CodeInvalidTools, "tool discovery returned duplicate tools", nil)
@@ -583,18 +669,15 @@ func discoverTools(ctx context.Context, cs toolLister) ([]Tool, error) {
 			return nil, fail(CodeInvalidTools, "tool discovery did not terminate", nil)
 		}
 	}
-	if len(out) == 0 {
-		return nil, fail(CodeInvalidTools, "no supported rune tools discovered", nil)
-	}
 	return out, nil
 }
 
-// acceptTool keeps a tool only if its name is allowlisted and its input
-// schema is a usable JSON object within size/count limits. The schema is
-// additionally validated with jsonschema-go against its meta-schema;
-// resolving uses no loader, so any remote $ref fails closed.
+// acceptTool keeps a discovered tool unless its name is invalid or excluded
+// from exposure, or its input schema is unusable. The schema is additionally
+// validated with jsonschema-go against its meta-schema; resolving uses no
+// loader, so any remote $ref fails closed.
 func acceptTool(t *mcp.Tool) (Tool, bool) {
-	if _, ok := allowedTools[t.Name]; !ok {
+	if !ToolExposed(t.Name) {
 		return Tool{}, false
 	}
 	raw, err := json.Marshal(t.InputSchema)
@@ -624,7 +707,18 @@ func acceptTool(t *mcp.Tool) (Tool, bool) {
 	}
 	desc := truncateUTF8(t.Description, maxDescription)
 	schemaCopy := append(json.RawMessage(nil), raw...)
-	return Tool{Name: t.Name, Description: desc, InputSchema: schemaCopy}, true
+	return Tool{Name: t.Name, Description: desc, Group: toolGroup(t), InputSchema: schemaCopy}, true
+}
+
+// toolGroup reads the server capability group out of tool metadata when one
+// is supplied. It is bounded display metadata and is never trusted.
+func toolGroup(t *mcp.Tool) string {
+	for _, key := range []string{"group", "capability_group", "category"} {
+		if value, ok := t.Meta[key].(string); ok && strings.TrimSpace(value) != "" {
+			return truncateUTF8(strings.TrimSpace(value), maxToolName)
+		}
+	}
+	return ""
 }
 
 // truncateUTF8 cuts s to at most max bytes without splitting a UTF-8
@@ -640,7 +734,7 @@ func truncateUTF8(s string, max int) string {
 	return cut
 }
 
-// Tools returns the discovered allowlisted tools.
+// Tools returns the tools discovered for this session.
 func (s *Session) Tools() []Tool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -649,6 +743,7 @@ func (s *Session) Tools() []Tool {
 		out[i] = Tool{
 			Name:        t.Name,
 			Description: t.Description,
+			Group:       t.Group,
 			InputSchema: append(json.RawMessage(nil), t.InputSchema...),
 		}
 	}
@@ -668,7 +763,7 @@ func (s *Session) Call(ctx context.Context, name string, args json.RawMessage) (
 	cs := s.cs
 	if _, ok := s.byName[name]; !ok {
 		s.mu.Unlock()
-		return Result{}, fail(CodeInvalidTools, "unknown tool", nil)
+		return Result{}, fail(CodeInvalidTools, "tool was not discovered for this session", nil)
 	}
 	s.mu.Unlock()
 
