@@ -28,15 +28,15 @@ type Image struct {
 	Data      string
 }
 
-// Message is one chat message. Reasoning content is intentionally not
-// representable here: it must never be sent back to the model.
+// Message carries provider-only reasoning separately from user-visible content.
 type Message struct {
-	Role       Role
-	Content    string
-	Images     []Image // user only; ignored on other roles
-	ToolCalls  []ToolCall
-	ToolCallID string
-	Name       string
+	Role             Role
+	Content          string
+	Images           []Image // user only; ignored on other roles
+	ToolCalls        []ToolCall
+	ToolCallID       string
+	Name             string
+	ReasoningContent string `json:"-"`
 }
 
 // Request is one streaming chat request, optionally with tools available.
@@ -45,6 +45,8 @@ type Request struct {
 	Effort   string
 	Messages []Message
 	Tools    []ToolDef
+	// DeepSeek requires reasoning replay for tool rounds; never emit it as chat events.
+	OnReasoningDelta func(string) `json:"-"`
 }
 
 // Usage contains provider token counts when the provider supplies them.
@@ -92,6 +94,8 @@ func ClassifyError(err error) *ProviderError {
 			return &ProviderError{Code: "rate_limited", Temporary: true}
 		case providerError.StatusCode >= 500:
 			return &ProviderError{Code: "provider_unavailable", Temporary: true}
+		case providerError.StatusCode == http.StatusBadRequest || providerError.StatusCode == http.StatusUnprocessableEntity:
+			return &ProviderError{Code: "provider_invalid_request"}
 		default:
 			return &ProviderError{Code: "provider_unavailable"}
 		}
@@ -169,7 +173,7 @@ func (client *DeepSeekClient) GenerateText(ctx context.Context, prompt string) (
 	return strings.TrimSpace(response.Choices[0].Message.Content), nil
 }
 
-// Stream sends a streaming chat request, optionally with tools, and discards all raw reasoning content.
+// Stream keeps raw reasoning on the private callback, outside chat events.
 func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit func(Event) error) error {
 	if strings.TrimSpace(client.apiKey) == "" {
 		return &ProviderError{Code: "provider_unavailable"}
@@ -184,12 +188,10 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 		case RoleSystem:
 			messages = append(messages, openai.SystemMessage(message.Content))
 		case RoleAssistant:
-			if len(message.ToolCalls) == 0 {
-				messages = append(messages, openai.AssistantMessage(message.Content))
-				continue
-			}
-			assistant := openai.ChatCompletionAssistantMessageParam{
-				ToolCalls: make([]openai.ChatCompletionMessageToolCallParam, 0, len(message.ToolCalls)),
+			assistant := openai.ChatCompletionAssistantMessageParam{}
+			if len(request.Tools) > 0 && request.Effort != "none" {
+				// Historical messages have no saved reasoning; include an empty field rather than omit it.
+				assistant.SetExtraFields(map[string]any{"reasoning_content": message.ReasoningContent})
 			}
 			if message.Content != "" {
 				assistant.Content.OfString = param.NewOpt(message.Content)
@@ -261,6 +263,9 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 			}
 			if err := json.Unmarshal([]byte(choice.Delta.RawJSON()), &providerDelta); err != nil {
 				return &ProviderError{Code: "provider_unavailable"}
+			}
+			if providerDelta.ReasoningContent != "" && request.OnReasoningDelta != nil {
+				request.OnReasoningDelta(providerDelta.ReasoningContent)
 			}
 			if providerDelta.ReasoningContent != "" && !reasoningStarted {
 				reasoningStarted = true

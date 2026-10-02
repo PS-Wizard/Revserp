@@ -393,12 +393,16 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		result := make(chan error, 1)
 		var roundCalls []ai.ToolCall
 		var roundText strings.Builder
+		var roundReasoning strings.Builder
 		go func() {
 			err := w.provider.Stream(ctx, ai.Request{
 				Model:    claimed.Model,
 				Effort:   claimed.Effort,
 				Messages: reqMessages,
 				Tools:    reqTools,
+				OnReasoningDelta: func(delta string) {
+					roundReasoning.WriteString(delta)
+				},
 			}, func(event ai.Event) error {
 				if event.ToolCall != nil {
 					roundCalls = append(roundCalls, *event.ToolCall)
@@ -518,7 +522,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 			return
 		}
 
-		live = append(live, ai.Message{Role: ai.RoleAssistant, Content: roundText.String(), ToolCalls: roundCalls})
+		live = append(live, ai.Message{Role: ai.RoleAssistant, Content: roundText.String(), ToolCalls: roundCalls, ReasoningContent: roundReasoning.String()})
 		toolStop := false
 		first := true
 		for _, call := range roundCalls {
@@ -717,7 +721,6 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 					return
 				}
 			}
-			live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
 		}
 		if toolStop {
 			break
@@ -1215,7 +1218,7 @@ func allowedToolsFromRegistry(registry *aichattools.Registry) []ai.ToolDef {
 func agentRequestBytes(messages []ai.Message, tools []ai.ToolDef) int {
 	total := 0
 	for _, message := range messages {
-		total += len(message.Content)
+		total += len(message.Content) + len(message.ReasoningContent)
 		for _, call := range message.ToolCalls {
 			total += len(call.ID) + len(call.Name) + len(call.Args)
 		}

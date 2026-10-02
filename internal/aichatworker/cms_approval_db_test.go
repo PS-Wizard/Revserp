@@ -185,6 +185,7 @@ func TestApproveExecutesOnceInTheSameRun(t *testing.T) {
 		{cmsWriteEvent("call-1")},
 		{{Text: "done"}},
 	}}
+	w.provider.(*roundProvider).reasoning = []string{"private-approval-reasoning"}
 	turnID := queued(t, w, user, project)
 	claimed, err := w.claim(context.Background())
 	if err != nil {
@@ -192,6 +193,23 @@ func TestApproveExecutesOnceInTheSameRun(t *testing.T) {
 	}
 	decideWhenPending(t, w, turnID, "approved", 200*time.Millisecond)
 	w.run(context.Background(), claimed)
+	requests := w.provider.(*roundProvider).requests
+	if len(requests) != 2 {
+		t.Fatalf("provider rounds = %d, want 2", len(requests))
+	}
+	resultCount := 0
+	reasoningReplayed := false
+	for _, message := range requests[1].Messages {
+		if message.Role == ai.RoleTool && message.ToolCallID == "call-1" {
+			resultCount++
+		}
+		if message.Role == ai.RoleAssistant && len(message.ToolCalls) > 0 {
+			reasoningReplayed = message.ReasoningContent == "private-approval-reasoning"
+		}
+	}
+	if resultCount != 1 || !reasoningReplayed {
+		t.Fatalf("approved tool replay: results=%d reasoning=%v, want 1/true", resultCount, reasoningReplayed)
+	}
 
 	if len(session.log) != 1 {
 		t.Fatalf("remote calls = %v, want exactly one approved write", session.log)

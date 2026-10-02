@@ -131,3 +131,10 @@ func TestMessageStatusForOutput(t *testing.T) {
 		t.Fatalf("output=false status=%q, want failed", got)
 	}
 }
+
+func TestReasoningCountsTowardAgentBudget(t *testing.T) {
+	messages := []ai.Message{{Role: ai.RoleAssistant, ReasoningContent: strings.Repeat("r", liveBudgetBytes+1)}}
+	if trimLiveToBudget(messages, nil) {
+		t.Fatal("private reasoning must count toward the provider context budget")
+	}
+}

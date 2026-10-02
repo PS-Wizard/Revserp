@@ -285,13 +285,20 @@ func TestStaleWorkerCannotFlushOrFinalize(t *testing.T) {
 
 // roundProvider serves one provider round per Stream call from a script.
 type roundProvider struct {
-	requests []ai.Request
-	rounds   [][]ai.Event
-	errs     []error
+	requests  []ai.Request
+	rounds    [][]ai.Event
+	errs      []error
+	reasoning []string
 }
 
 func (p *roundProvider) Stream(_ context.Context, request ai.Request, emit func(ai.Event) error) error {
 	p.requests = append(p.requests, request)
+	if len(p.reasoning) > 0 {
+		if request.OnReasoningDelta != nil {
+			request.OnReasoningDelta(p.reasoning[0])
+		}
+		p.reasoning = p.reasoning[1:]
+	}
 	if len(p.rounds) > 0 {
 		events := p.rounds[0]
 		p.rounds = p.rounds[1:]
@@ -320,6 +327,7 @@ func TestToolRoundPersistsCallsAndFinalAnswer(t *testing.T) {
 		{{Text: "answer"}},
 	}}
 	a.provider = provider
+	provider.reasoning = []string{"private-provider-reasoning"}
 	id := queued(t, a, user, project)
 	claimed, err := a.claim(context.Background())
 	if err != nil {
@@ -364,6 +372,22 @@ func TestToolRoundPersistsCallsAndFinalAnswer(t *testing.T) {
 	if len(provider.requests) != 2 {
 		t.Fatalf("streams=%d, want 2", len(provider.requests))
 	}
+	foundReasoning := false
+	for _, message := range provider.requests[1].Messages {
+		if message.Role == ai.RoleAssistant && len(message.ToolCalls) > 0 {
+			foundReasoning = message.ReasoningContent == "private-provider-reasoning"
+		}
+	}
+	if !foundReasoning {
+		t.Fatal("tool-round reasoning was not replayed")
+	}
+	var leaked int
+	if err := a.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_turn_events WHERE turn_id=$1 AND payload::text LIKE '%private-provider-reasoning%'`, id).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatal("private reasoning leaked into persisted chat events")
+	}
 	roundTools := map[string]bool{}
 	for _, def := range provider.requests[0].Tools {
 		roundTools[def.Name] = true
@@ -371,17 +395,17 @@ func TestToolRoundPersistsCallsAndFinalAnswer(t *testing.T) {
 	if !roundTools["read_issues"] || !roundTools["get_score_summary"] {
 		t.Fatalf("round 1 tools = %+v, want both registered tools", provider.requests[0].Tools)
 	}
-	foundCall, foundResult := false, false
+	foundCall, resultCount := false, 0
 	for _, message := range provider.requests[1].Messages {
 		if message.Role == ai.RoleAssistant && len(message.ToolCalls) == 1 && message.ToolCalls[0].ID == "call-1" {
 			foundCall = true
 		}
 		if message.Role == ai.RoleTool && message.ToolCallID == "call-1" && message.Name == "read_issues" && message.Content != "" {
-			foundResult = true
+			resultCount++
 		}
 	}
-	if !foundCall || !foundResult {
-		t.Fatalf("round 2 messages = %+v", provider.requests[1].Messages)
+	if !foundCall || resultCount != 1 {
+		t.Fatalf("round 2 tool result count = %d, want exactly 1", resultCount)
 	}
 }
 
