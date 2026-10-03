@@ -189,7 +189,7 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 			messages = append(messages, openai.SystemMessage(message.Content))
 		case RoleAssistant:
 			assistant := openai.ChatCompletionAssistantMessageParam{}
-			if len(request.Tools) > 0 && request.Effort != "none" {
+			if ChatReplaysReasoning(request) {
 				// Historical messages have no saved reasoning; include an empty field rather than omit it.
 				assistant.SetExtraFields(map[string]any{"reasoning_content": message.ReasoningContent})
 			}
@@ -216,7 +216,7 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 	params := openai.ChatCompletionNewParams{
 		Model:     openai.ChatModel(model),
 		Messages:  messages,
-		MaxTokens: param.NewOpt(int64(defaultChatMaxTokens)),
+		MaxTokens: param.NewOpt(int64(ChatMaxOutputTokens)),
 		StreamOptions: openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: param.NewOpt(true),
 		},

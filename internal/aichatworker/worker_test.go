@@ -54,29 +54,6 @@ func TestAllowedTools(t *testing.T) {
 	}
 }
 
-func TestTrimLiveToBudget(t *testing.T) {
-	tools := allowedTools(nil)
-	messages := []ai.Message{
-		{Role: ai.RoleSystem, Content: strings.Repeat("s", liveBudgetBytes/2)},
-		{Role: ai.RoleTool, Content: strings.Repeat("x", liveBudgetBytes/2), ToolCallID: "old", Name: "read_issues"},
-		{Role: ai.RoleTool, Content: "kept", ToolCallID: "new", Name: "read_issues"},
-	}
-	if !trimLiveToBudget(messages, tools) {
-		t.Fatal("trim should fit the budget")
-	}
-	if messages[1].Content != stubbedToolContent {
-		t.Fatalf("oldest tool result not stubbed: %q", messages[1].Content)
-	}
-	if messages[2].Content != "kept" {
-		t.Fatalf("newest tool result should be kept: %q", messages[2].Content)
-	}
-	// once every tool result is stubbed, the untrimmable skeleton decides
-	oversized := []ai.Message{{Role: ai.RoleSystem, Content: strings.Repeat("x", liveBudgetBytes+1)}}
-	if trimLiveToBudget(oversized, nil) {
-		t.Fatal("oversized skeleton should not fit")
-	}
-}
-
 func TestCapToolResultContent(t *testing.T) {
 	if got := capToolResultContent("short"); got != "short" {
 		t.Fatalf("cap changed short content: %q", got)
@@ -129,12 +106,5 @@ func TestMessageStatusForOutput(t *testing.T) {
 	}
 	if got := messageStatusForOutput(false); got != "failed" {
 		t.Fatalf("output=false status=%q, want failed", got)
-	}
-}
-
-func TestReasoningCountsTowardAgentBudget(t *testing.T) {
-	messages := []ai.Message{{Role: ai.RoleAssistant, ReasoningContent: strings.Repeat("r", liveBudgetBytes+1)}}
-	if trimLiveToBudget(messages, nil) {
-		t.Fatal("private reasoning must count toward the provider context budget")
 	}
 }

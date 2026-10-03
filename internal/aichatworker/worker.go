@@ -30,7 +30,6 @@ const (
 	defaultShutdownGrace   = 10 * time.Second
 	defaultAttempts        = 2
 	maxWorkerSlots         = 20
-	contextBudgetBytes     = 64 << 10
 	maxAgentRounds         = 20
 	toolRowBudget          = 200
 	pageContentBudgetBytes = 96 << 10
@@ -43,10 +42,7 @@ const (
 	// so the tool gets both a call cap and a request cap.
 	suggestCallsPerTurn    = 4
 	suggestRequestsPerTurn = 40
-	liveBudgetBytes        = 192 << 10
 	toolResultContentCap   = 32 << 10
-	stubbedToolContent     = "[earlier tool output omitted to fit context]"
-	toolLimitPrompt        = "You have reached the tool-call limit for this turn. Do not request any more tools. Answer now with concrete recommendations based only on what you have already gathered, citing the specific issues you found where relevant."
 )
 
 // Config contains the AI chat worker settings.
@@ -288,6 +284,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		messages[0].Content += "\n\n--- MCP context ---\n" + mcpStatus
 	}
 	allowed := allowedToolsFromRegistry(registry)
+	messages = fitHistoryToTools(messages, claimed.Model, claimed.Effort, allowed)
 	toolScope := aichattools.Scope{
 		UserID:            scope.UserID,
 		ProjectID:         scope.ProjectID,
@@ -365,30 +362,46 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	}
 
 	live := messages
+	var emittedText bool
 	var providerErr error
+	var currentRequest ai.Request
+	var currentRequestInputTokens, currentRound int
+	tracker := &chatContextTracker{}
+	rundown := map[string]string{}
+	modelBudget := chatInputBudgetTokens(claimed.Model)
 
 	for round := 0; ; round++ {
 		reqMessages := live
 		reqTools := allowed
 		final := round >= maxAgentRounds
+		currentRound = round
+		currentRequest = ai.Request{Model: claimed.Model, Effort: claimed.Effort, Messages: reqMessages, Tools: reqTools}
+		currentRequestInputTokens = tracker.inputTokens(currentRequest, live)
+		if !final && currentRequestInputTokens > modelBudget {
+			final = true
+			logChatContextDiagnostic("terminal_switch", w.cfg.ID, claimed.ID.String(), claimed.Model, round, currentRequest, currentRequestInputTokens, modelBudget)
+		}
 		if final {
 			reqTools = nil
-			reqMessages = append(append([]ai.Message{}, live...), ai.Message{Role: ai.RoleUser, Content: toolLimitPrompt})
-		}
-		if !trimLiveToBudget(reqMessages, reqTools) {
-			messageStatus := "failed"
-			if output {
-				messageStatus = "partial"
+			terminalMessages, terminalTokens, ok := terminalNoToolsMessages(live, rundown, claimed.Model)
+			currentRequest = ai.Request{Model: claimed.Model, Effort: claimed.Effort, Messages: terminalMessages}
+			currentRequestInputTokens = terminalTokens
+			if !ok {
+				logChatContextDiagnostic("local_guard_exhausted", w.cfg.ID, claimed.ID.String(), claimed.Model, round, currentRequest, terminalTokens, modelBudget)
+				w.finalizeAndLog(claimed, "failed", "context_too_large", messageStatusForOutput(output), usage)
+				return
 			}
-			w.finalizeAndLog(claimed, "failed", "context_too_large", messageStatus, usage)
-			return
+			reqMessages = terminalMessages
 		}
+		tracker.noteSent(len(reqTools) > 0, claimed.Effort, len(live))
 
 		events := make(chan ai.Event, 32)
 		result := make(chan error, 1)
 		var roundCalls []ai.ToolCall
 		var roundText strings.Builder
 		var roundReasoning strings.Builder
+		var roundUsage ai.Usage
+		haveRoundUsage := false
 		go func() {
 			err := w.provider.Stream(ctx, ai.Request{
 				Model:    claimed.Model,
@@ -430,6 +443,8 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 					usage.Reasoning += event.Usage.Reasoning
 					usage.Completion += event.Usage.Completion
 					usage.Total += event.Usage.Total
+					roundUsage = *event.Usage
+					haveRoundUsage = true
 				}
 				if event.Thinking && !thinking {
 					if !cancelRequested {
@@ -450,8 +465,14 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 						}
 						writing = true
 					}
+					if needParagraphBreak(emittedText, roundText.String(), event.Text) {
+						buffer.WriteString("\n\n")
+					}
 					roundText.WriteString(event.Text)
 					buffer.WriteString(event.Text)
+					if strings.TrimSpace(event.Text) != "" {
+						emittedText = true
+					}
 					if buffer.Len() >= 4096 {
 						if err := flush(cancelRequested); err != nil {
 							failTurn("flush", err)
@@ -497,6 +518,9 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 			}
 		}
 
+		if haveRoundUsage {
+			tracker.noteUsage(roundUsage)
+		}
 		if err := flush(cancelRequested || timedOut); err != nil {
 			failTurn("flush", err)
 			return
@@ -564,6 +588,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				nextSeq++
 				toolStart := time.Now()
 				status, result := truncatedToolArgsResult(call)
+				recordToolRundown(rundown, call.ID, status, result.Summary)
 				result.Content = capToolResultContent(result.Content)
 				if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
 					failTurn("tool_result_event", err)
@@ -600,6 +625,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 							failTurn("deny_mcp_call", err)
 							return
 						}
+						recordToolRundown(rundown, call.ID, "failed", "not approved")
 						continue
 					}
 					// Semantic safety preparation reads only and never
@@ -611,6 +637,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 					proposal, proposalErr := aichattools.PrepareMCPApproval(ctx, w.preflightSessionFor(scope, handle), handle.service, remote, json.RawMessage(call.Args))
 					if proposalErr != nil {
 						nextSeq++
+						recordToolRundown(rundown, call.ID, "failed", "mcp call blocked before execution")
 						if err := w.failBlockedMCPCall(ctx, claimed, call, &live, proposalErr.Error()); err != nil {
 							failTurn("tool_result_event", err)
 							return
@@ -625,6 +652,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 					liveDigest, ok := liveMCPToolDigest(handle.session, remote)
 					if !ok || liveDigest != currentDigest {
 						nextSeq++
+						recordToolRundown(rundown, call.ID, "failed", "mcp call blocked before execution")
 						if err := w.failBlockedMCPCall(ctx, claimed, call, &live, "the tool changed on its connection"); err != nil {
 							failTurn("tool_result_event", err)
 							return
@@ -667,12 +695,14 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 								failTurn("deny_approved_call", err)
 								return
 							}
+							recordToolRundown(rundown, call.ID, "failed", "not approved")
 						case approvalTimedOut:
 							w.closeApproval(ctx, claimed, requested, "rejected", approvalTimeoutSummary)
 							if err := w.denyToolCall(ctx, claimed, call, &live); err != nil {
 								failTurn("deny_approved_call", err)
 								return
 							}
+							recordToolRundown(rundown, call.ID, "failed", "not approved")
 						case approvalApproved:
 							stored, storedErr := queries.GetMCPApprovalByID(ctx, requested)
 							if storedErr != nil {
@@ -727,6 +757,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 			// so it can never authorize a later call of the same alias.
 			mcpHandles.unmarkApproved(call.Name)
 			status, result = normalizeToolCallResult(call.Name, status, result)
+			recordToolRundown(rundown, call.ID, status, result.Summary)
 			result.Content = capToolResultContent(result.Content)
 			if err := queries.CompleteAIToolCall(ctx, sqlc.CompleteAIToolCallParams{
 				ID:            rowID,
@@ -790,6 +821,9 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 		messageStatus := "failed"
 		if output {
 			messageStatus = "partial"
+		}
+		if classified.Code == "context_too_large" {
+			logChatContextDiagnostic("provider_rejected", w.cfg.ID, claimed.ID.String(), claimed.Model, currentRound, currentRequest, currentRequestInputTokens, modelBudget)
 		}
 		w.finalizeAndLog(claimed, "failed", classified.Code, messageStatus, usage)
 		return
@@ -869,40 +903,23 @@ ORDER BY historical_turn.created_at DESC, historical_turn.id DESC`, claimed.Conv
 	}
 	defer rows.Close()
 
-	type pair struct {
-		user, assistant string
-		images          []ai.Image
-	}
-	remaining := contextBudgetBytes - len(system) - len(currentUser)
-	pairs := make([]pair, 0, 16)
+	newestFirst := make([]historyPair, 0, 16)
 	for rows.Next() {
-		var historical pair
+		var historical historyPair
 		var blocks []byte
 		if err := rows.Scan(&historical.user, &blocks, &historical.assistant); err != nil {
 			return nil, turnScope{}, err
 		}
-		pairBytes := len(historical.user) + len(historical.assistant)
-		if pairBytes > remaining {
-			continue
-		}
-		remaining -= pairBytes
 		historical.images = parseUserImages(blocks)
-		pairs = append(pairs, historical)
+		newestFirst = append(newestFirst, historical)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, turnScope{}, err
 	}
 
-	messages := make([]ai.Message, 0, 2+len(pairs)*2)
-	messages = append(messages, ai.Message{Role: "system", Content: system})
-	for i := len(pairs) - 1; i >= 0; i-- {
-		messages = append(messages,
-			ai.Message{Role: "user", Content: pairs[i].user, Images: pairs[i].images},
-			ai.Message{Role: "assistant", Content: pairs[i].assistant},
-		)
-	}
-	messages = append(messages, ai.Message{Role: "user", Content: currentUser, Images: parseUserImages(currentBlocks)})
-	return messages, scope, nil
+	systemMsg := ai.Message{Role: "system", Content: system}
+	currentMsg := ai.Message{Role: "user", Content: currentUser, Images: parseUserImages(currentBlocks)}
+	return selectHistoryPairs(systemMsg, currentMsg, newestFirst, claimed.Model, claimed.Effort, nil), scope, nil
 }
 
 func parseUserImages(blocks []byte) []ai.Image {
@@ -1253,40 +1270,6 @@ func allowedToolsFromRegistry(registry *aichattools.Registry) []ai.ToolDef {
 	return defs
 }
 
-// agentRequestBytes approximates the provider-visible size of one agent round.
-func agentRequestBytes(messages []ai.Message, tools []ai.ToolDef) int {
-	total := 0
-	for _, message := range messages {
-		total += len(message.Content) + len(message.ReasoningContent)
-		for _, call := range message.ToolCalls {
-			total += len(call.ID) + len(call.Name) + len(call.Args)
-		}
-	}
-	for _, tool := range tools {
-		total += len(tool.Name) + len(tool.Description) + len(tool.Schema)
-	}
-	return total
-}
-
-// trimLiveToBudget stubs the oldest live tool results until the round fits the
-// agent budget, reporting false when the untrimmable skeleton still exceeds it.
-func trimLiveToBudget(messages []ai.Message, tools []ai.ToolDef) bool {
-	for agentRequestBytes(messages, tools) > liveBudgetBytes {
-		trimmed := false
-		for i := range messages {
-			if messages[i].Role == ai.RoleTool && messages[i].Content != stubbedToolContent {
-				messages[i].Content = stubbedToolContent
-				trimmed = true
-				break
-			}
-		}
-		if !trimmed {
-			return false
-		}
-	}
-	return true
-}
-
 // normalizeToolCallResult maps application-level tool errors to failed status so
 // clients can render them without changing the model-facing tool content.
 func normalizeToolCallResult(name, status string, result aichattools.Result) (string, aichattools.Result) {
@@ -1399,4 +1382,8 @@ func messageStatusForOutput(output bool) string {
 		return "partial"
 	}
 	return "failed"
+}
+
+func needParagraphBreak(priorText bool, roundText, delta string) bool {
+	return priorText && strings.TrimSpace(roundText) == "" && strings.TrimSpace(delta) != ""
 }
