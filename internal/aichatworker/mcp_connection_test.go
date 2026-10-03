@@ -137,6 +137,21 @@ func TestFilterMCPSpecs(t *testing.T) {
 	}
 }
 
+// TestFilterMCPSpecsDeniesFileWriteNames proves a saved Deny filters
+// formerly excluded names the same way: a denied write_file or run_sql
+// never reaches the model defs, while an allowed one stays served.
+func TestFilterMCPSpecsDeniesFileWriteNames(t *testing.T) {
+	connID := "11111111-1111-1111-1111-111111111111"
+	specs := []aichattools.MCPToolDef{{Name: "write_file"}, {Name: "run_sql"}, {Name: "search"}}
+	filtered := filterMCPSpecs(specs, connID, nil, map[string]bool{"write_file": true, "run_sql": true})
+	if len(filtered) != 1 || filtered[0].Name != "search" {
+		t.Fatalf("filtered = %v, want only search", filtered)
+	}
+	if got := filterMCPSpecs(specs, connID, nil, nil); len(got) != 3 {
+		t.Fatalf("unfiltered = %v, want all three names served", got)
+	}
+}
+
 func TestMCPModelToolNameSeparatesServers(t *testing.T) {
 	first := aichattools.MCPModelToolName("11111111-1111-1111-1111-111111111111", "save_item")
 	second := aichattools.MCPModelToolName("22222222-2222-2222-2222-222222222222", "save_item")

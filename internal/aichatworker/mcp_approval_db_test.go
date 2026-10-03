@@ -474,6 +474,14 @@ func wordPressUpdateTools() []aichattools.MCPToolDef {
 		{Name: "update_content", Description: "remote", InputSchema: object},
 	}
 }
+func fileWriteMCPTools() []aichattools.MCPToolDef {
+	object := json.RawMessage(`{"type":"object"}`)
+	return []aichattools.MCPToolDef{
+		{Name: "write_file", Description: "remote", InputSchema: object},
+		{Name: "read_file", Description: "remote", InputSchema: object},
+		{Name: "run_sql", Description: "remote", InputSchema: object},
+	}
+}
 
 // TestUpdateSnapshotValidationExecutes approves an update whose post is
 // unchanged: the helper snapshot read happens before the wait (a read, not a
@@ -570,11 +578,12 @@ func TestUpdateSnapshotChangeBlocksWrite(t *testing.T) {
 	}
 }
 
-// TestSnapshotReadWithoutAllowIsBlocked is the preflight policy: the safety
-// read runs only while get_content is on Allow. With the default Ask the
-// preparation fails closed with the prerequisite message and the write never
-// runs, instead of reading past the saved policy or approving blind.
-func TestSnapshotReadWithoutAllowIsBlocked(t *testing.T) {
+// TestSnapshotReadWithoutAllowFallsBackToExactArgsApproval is the preflight
+// rule: without Allow on get_content there is no before view, but the
+// exact-arguments proposal still goes through Ask like any other write. The
+// safety read never runs past saved policy, and the write never runs without
+// its own decision.
+func TestSnapshotReadWithoutAllowFallsBackToExactArgsApproval(t *testing.T) {
 	w, user, project := newMCPApprovalTestWorker(t)
 	connID := insertMCPConnection(t, w, project, "WordPress", "wordpress", "99998888-7777-7777-7777-777777777777", wordPressUpdateTools())
 	alias := aichattools.MCPModelToolName(connID.String(), "update_content")
@@ -584,13 +593,14 @@ func TestSnapshotReadWithoutAllowIsBlocked(t *testing.T) {
 	}
 	w.provider = &roundProvider{rounds: [][]ai.Event{
 		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: alias, Args: `{"id":"1","title":"new"}`}}},
-		{{Text: "blocked"}},
+		{{Text: "not approved"}},
 	}}
 	turnID := queued(t, w, user, project)
 	claimed, err := w.claim(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	decideWhenPending(t, w, turnID, "rejected", 100*time.Millisecond)
 	w.run(context.Background(), claimed)
 
 	for _, entry := range session.log {
@@ -598,36 +608,94 @@ func TestSnapshotReadWithoutAllowIsBlocked(t *testing.T) {
 			t.Fatalf("preflight read bypassed saved policy: %v", session.log)
 		}
 		if entry == "update_content" {
-			t.Fatalf("write ran without its safety check: %v", session.log)
+			t.Fatalf("write ran without its own decision: %v", session.log)
 		}
 	}
-	// Blocked preparation stores no tool-call row; the failure reaches the
-	// model transcript only.
-	var toolRows int
-	if err := w.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_tool_calls WHERE turn_id = $1`, turnID).Scan(&toolRows); err != nil {
+	var proposed, snapshot string
+	if err := w.pool.QueryRow(context.Background(), `SELECT proposed_args::text, snapshot::text FROM ai_mcp_approvals WHERE turn_id = $1`, turnID).Scan(&proposed, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if toolRows != 0 {
-		t.Fatalf("blocked preparation stored %d tool rows, want none", toolRows)
+	var proposedArgs map[string]any
+	if err := json.Unmarshal([]byte(proposed), &proposedArgs); err != nil || proposedArgs["id"] != "1" || proposedArgs["title"] != "new" {
+		t.Fatalf("proposed args = %s, want the exact call arguments", proposed)
 	}
-	blocked := ""
-	for _, message := range w.provider.(*roundProvider).requests[1].Messages {
-		if message.Role == ai.RoleTool && message.ToolCallID == "call-1" {
-			blocked = message.Content
-		}
+	if strings.TrimSpace(snapshot) != "{}" {
+		t.Fatalf("snapshot = %s, want no pre-write state without a permitted read", snapshot)
 	}
-	if !strings.Contains(blocked, "allow prerequisite read tool") {
-		t.Fatalf("blocked result = %q, want the specific prerequisite message preserved", blocked)
-	}
-	var approvals int
-	if err := w.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_mcp_approvals WHERE turn_id = $1`, turnID).Scan(&approvals); err != nil {
-		t.Fatal(err)
-	}
-	if approvals != 0 {
-		t.Fatal("blocked preparation created an approval row")
+	approvalStatus, toolStatus, _ := approvalAndToolStatus(t, w, turnID)
+	if approvalStatus != "rejected" || toolStatus != "failed" {
+		t.Fatalf("approval=%q tool=%q, want rejected/failed", approvalStatus, toolStatus)
 	}
 	if got := turnStatus(t, w, turnID); got != "completed" {
 		t.Fatalf("turn status = %q, want completed", got)
+	}
+}
+
+// TestFileWriteAskApprovalAndDeny proves saved policy governs formerly
+// excluded names end to end: write_file on Ask waits for its exact approval
+// and then executes once, while Deny keeps it out of the defs so a direct
+// call never dispatches.
+func TestFileWriteAskApprovalAndDeny(t *testing.T) {
+	w, user, project := newMCPApprovalTestWorker(t)
+	connID := insertMCPConnection(t, w, project, "Files", "custom", "aaaaaaaa-3333-3333-3333-333333333333", fileWriteMCPTools())
+	alias := aichattools.MCPModelToolName(connID.String(), "write_file")
+	session := &countingSession{fakeMCPSession: &fakeMCPSession{tools: fileWriteMCPTools()}}
+	w.MCPDial = func(ctx context.Context, endpoint, token string) (aichattools.MCPSession, error) {
+		return session, nil
+	}
+	w.provider = &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: alias, Args: `{"path":"/x","content":"hi"}`}}},
+		{{Text: "written"}},
+	}}
+	turnID := queued(t, w, user, project)
+	claimed, err := w.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decideWhenPending(t, w, turnID, "approved", 100*time.Millisecond)
+	w.run(context.Background(), claimed)
+
+	if len(session.log) != 1 || session.log[0] != `write_file:{"path":"/x","content":"hi"}` {
+		t.Fatalf("remote calls = %v, want the approved file write once with exact args", session.log)
+	}
+	approvalStatus, toolStatus, _ := approvalAndToolStatus(t, w, turnID)
+	if approvalStatus != "approved" || toolStatus != "completed" {
+		t.Fatalf("approval=%q tool=%q, want approved/completed", approvalStatus, toolStatus)
+	}
+	if got := turnStatus(t, w, turnID); got != "completed" {
+		t.Fatalf("turn status = %q, want completed", got)
+	}
+
+	denied, deniedUser, deniedProject := newMCPApprovalTestWorker(t)
+	deniedConn := insertMCPConnection(t, denied, deniedProject, "Files", "custom", "bbbbbbbb-3333-3333-3333-333333333333", fileWriteMCPTools())
+	deniedAlias := aichattools.MCPModelToolName(deniedConn.String(), "write_file")
+	deniedSession := &countingSession{fakeMCPSession: &fakeMCPSession{tools: fileWriteMCPTools()}}
+	denied.MCPDial = func(ctx context.Context, endpoint, token string) (aichattools.MCPSession, error) {
+		return deniedSession, nil
+	}
+	if _, err := denied.pool.Exec(context.Background(), `INSERT INTO project_mcp_tool_permissions(connection_id, tool_name, permission) VALUES($1, 'write_file', 'deny')`, deniedConn); err != nil {
+		t.Fatal(err)
+	}
+	denied.provider = &roundProvider{rounds: [][]ai.Event{
+		{{ToolCall: &ai.ToolCall{ID: "call-1", Name: deniedAlias, Args: `{"path":"/x","content":"hi"}`}}},
+		{{Text: "answered without the write"}},
+	}}
+	deniedTurn := queued(t, denied, deniedUser, deniedProject)
+	deniedClaimed, err := denied.claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied.run(context.Background(), deniedClaimed)
+
+	if len(deniedSession.log) != 0 {
+		t.Fatalf("denied file write reached the session: %v", deniedSession.log)
+	}
+	var callStatus, result string
+	if err := denied.pool.QueryRow(context.Background(), `SELECT status, result_content FROM ai_tool_calls WHERE turn_id = $1`, deniedTurn).Scan(&callStatus, &result); err != nil {
+		t.Fatal(err)
+	}
+	if callStatus != "failed" || !strings.Contains(result, "unknown tool") {
+		t.Fatalf("denied call = %q/%q, want failed unknown tool", callStatus, result)
 	}
 }
 

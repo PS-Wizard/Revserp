@@ -809,14 +809,15 @@ func TestMCPPutValidatesCurrentCatalogue(t *testing.T) {
 	}
 }
 
-// TestMCPPutRejectsAllowForRestricted proves a platform-restricted tool is
-// shown unavailable with its truthful reason and can never be allowed,
-// while deny stays a valid explicit rule.
-func TestMCPPutRejectsAllowForRestricted(t *testing.T) {
+// TestMCPPutAllowsEveryDiscoveredTool proves no name is excluded from user
+// policy: a formerly restricted tool accepts allow and deny, and the
+// connection lists it available under its saved rule.
+func TestMCPPutAllowsEveryDiscoveredTool(t *testing.T) {
 	f := newMCPApprovalFixture(t)
 	f.app.MCPConnect = func(ctx context.Context, endpoint, token string) (MCPSession, error) {
 		return &fakeMCPSession{tools: []mcpclient.Tool{
 			{Name: "describe_tables", Description: "d", InputSchema: json.RawMessage(`{}`)},
+			{Name: "run_sql", Description: "d", InputSchema: json.RawMessage(`{}`)},
 			{Name: "update_content", Description: "d", InputSchema: json.RawMessage(`{}`)},
 		}}, nil
 	}
@@ -829,18 +830,15 @@ func TestMCPPutRejectsAllowForRestricted(t *testing.T) {
 	if err := f.pool.QueryRow(f.ctx, `SELECT id FROM project_mcp_connections WHERE project_id = $1`, f.projectID).Scan(&connectionID); err != nil {
 		t.Fatal(err)
 	}
-	rec = mcpPermissionsRequest(t, f, connectionID, `{"permissions":[{"tool_name":"describe_tables","permission":"allow"}]}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("restricted allow: %d, want 400", rec.Code)
-	}
-	rec = mcpPermissionsRequest(t, f, connectionID, `{"permissions":[{"tool_name":"describe_tables","permission":"deny"}]}`)
+	rec = mcpPermissionsRequest(t, f, connectionID, `{"permissions":[{"tool_name":"describe_tables","permission":"allow"},{"tool_name":"run_sql","permission":"deny"}]}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("restricted deny: %d (%s), want 200", rec.Code, rec.Body.String())
+		t.Fatalf("allow+deny: %d (%s), want 200", rec.Code, rec.Body.String())
 	}
 	var listed struct {
 		Connections []struct {
 			Tools []struct {
 				Name              string  `json:"name"`
+				Permission        string  `json:"permission"`
 				Available         bool    `json:"available"`
 				UnavailableReason *string `json:"unavailable_reason"`
 			} `json:"tools"`
@@ -857,16 +855,20 @@ func TestMCPPutRejectsAllowForRestricted(t *testing.T) {
 	if len(listed.Connections) != 1 {
 		t.Fatalf("connections = %+v", listed.Connections)
 	}
+	want := map[string]string{"describe_tables": "allow", "run_sql": "deny", "update_content": "ask"}
 	for _, tool := range listed.Connections[0].Tools {
-		if tool.Name != "describe_tables" {
-			continue
+		permission, ok := want[tool.Name]
+		if !ok {
+			t.Fatalf("unexpected tool %q in the connection shape", tool.Name)
 		}
-		if tool.Available || tool.UnavailableReason == nil || *tool.UnavailableReason == "" {
-			t.Fatalf("restricted tool = %+v, want available:false with reason", tool)
+		if tool.Permission != permission || !tool.Available || tool.UnavailableReason != nil {
+			t.Fatalf("tool %+v, want permission %q available with no reason", tool, permission)
 		}
-		return
+		delete(want, tool.Name)
 	}
-	t.Fatal("restricted tool missing from the connection shape")
+	if len(want) != 0 {
+		t.Fatalf("tools missing from the connection shape: %v", want)
+	}
 }
 
 // TestMCPAlwaysAllowRequiresConnectionOwner keeps the permission-write

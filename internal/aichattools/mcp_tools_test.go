@@ -105,22 +105,21 @@ func TestBuildMCPToolsServesAliasesNotRemoteNames(t *testing.T) {
 	}
 }
 
-func TestBuildMCPToolsKeepsWordPressPlatformRestrictions(t *testing.T) {
-	specs := testToolSpecs("run_sql", "create_child_theme", "read_file", "batch_update_content", "search")
-	wordpress := BuildMCPTools(specs, &fakeMCPSession{}, MCPToolOptions{ConnectionID: testConnectionID, Service: MCPServiceWordPress})
-	if len(wordpress) != 2 {
-		t.Fatalf("WordPress served %d tools, want the 2 unrestricted ones", len(wordpress))
-	}
-	custom := BuildMCPTools(specs, &fakeMCPSession{}, MCPToolOptions{ConnectionID: testConnectionID, Service: MCPServiceCustom})
-	if len(custom) != len(specs) {
-		t.Fatalf("custom connection served %d tools, want all %d: names never restrict a custom server", len(custom), len(specs))
-	}
-	reason, restricted := WordPressToolRestriction("run_sql")
-	if !restricted || reason == "" {
-		t.Fatal("run_sql must stay unavailable with a truthful reason")
-	}
-	if _, restricted := WordPressToolRestriction("set_featured_image"); restricted {
-		t.Fatal("set_featured_image must stay available")
+func TestBuildMCPToolsServesEveryAdvertisedName(t *testing.T) {
+	specs := testToolSpecs("run_sql", "read_file", "write_file", "exec_shell", "batch_update_content", "describe_tables", "create_child_theme", "search")
+	for _, service := range []string{MCPServiceWordPress, MCPServiceCustom} {
+		tools, omitted := BuildMCPToolsWithDiagnostics(specs, &fakeMCPSession{}, MCPToolOptions{ConnectionID: testConnectionID, Service: service})
+		if len(tools) != len(specs) {
+			t.Fatalf("%s served %d tools, want all %d: no name is excluded", service, len(tools), len(specs))
+		}
+		if len(omitted) != 0 {
+			t.Fatalf("%s omitted %+v, want none", service, omitted)
+		}
+		for _, tool := range tools {
+			if tool.Def.Name != MCPModelToolName(testConnectionID, tool.Def.Label) {
+				t.Fatalf("tool name %q is not the canonical alias of remote tool %q", tool.Def.Name, tool.Def.Label)
+			}
+		}
 	}
 }
 
@@ -158,50 +157,56 @@ func TestMCPToolGuardsDispatchExactRemoteName(t *testing.T) {
 	}
 }
 
-func TestUnknownToolOutcomeUncertaintyBlocksLaterCalls(t *testing.T) {
+func TestUnknownCallOutcomeReportsTruthfullyWithoutLockout(t *testing.T) {
+	calls := 0
 	session := &fakeMCPSession{onCall: func(string, json.RawMessage) (MCPResult, error) {
-		return MCPResult{}, errors.New("connection reset")
+		calls++
+		if calls == 1 {
+			return MCPResult{}, errors.New("connection reset")
+		}
+		return MCPResult{Content: `{"ok":true}`}, nil
 	}}
-	writes := &MCPWriteState{}
 	tools := BuildMCPTools(testToolSpecs("mystery_write", "mystery_read"), session, MCPToolOptions{
 		ConnectionID: testConnectionID,
 		Service:      MCPServiceCustom,
-		Writes:       writes,
 	})
 	first, err := tools[0].Execute(context.Background(), json.RawMessage(`{}`), Scope{})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if !strings.Contains(first.Content, "unknown") || !strings.Contains(first.Summary, "do not retry") {
-		t.Fatalf("unknown outcome result %q does not forbid a retry", first.Content)
+	if !strings.Contains(first.Content, "outcome is unknown") || !strings.Contains(first.Content, "may already have applied") {
+		t.Fatalf("unknown outcome result %q does not report the ambiguity truthfully", first.Content)
 	}
-	if !writes.Uncertain() {
-		t.Fatal("an unknown tool failure must be treated as possibly applied")
+	if !strings.Contains(first.Content, "Check the current remote state") {
+		t.Fatalf("unknown outcome result %q gives no remote-state guidance", first.Content)
+	}
+	for _, command := range []string{"Do not retry", "do not retry", "no further call"} {
+		if strings.Contains(first.Content, command) {
+			t.Fatalf("unknown outcome result %q bans a later call", first.Content)
+		}
 	}
 	second, err := tools[1].Execute(context.Background(), json.RawMessage(`{}`), Scope{})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if len(session.calls) != 1 {
-		t.Fatalf("dispatched %d calls, want the second blocked while the outcome is unknown", len(session.calls))
+	if len(session.calls) != 2 {
+		t.Fatalf("dispatched %d calls, want the later permitted call to run normally", len(session.calls))
 	}
-	if !strings.Contains(second.Content, "unknown outcome") {
-		t.Fatalf("blocked call result %q does not explain the unknown outcome", second.Content)
+	if !strings.Contains(second.Content, `{"ok":true}`) {
+		t.Fatalf("later call result %q is not the live result", second.Content)
 	}
 }
 
-func TestReviewedWordPressReadStillRunsWhileOutcomeUncertain(t *testing.T) {
+func TestWordPressUnknownOutcomeDoesNotBlockLaterCalls(t *testing.T) {
 	session := &fakeMCPSession{onCall: func(name string, _ json.RawMessage) (MCPResult, error) {
 		if name == "update_content" {
 			return MCPResult{}, errors.New("connection reset")
 		}
 		return MCPResult{Content: "page title: Hello"}, nil
 	}}
-	writes := &MCPWriteState{}
 	tools := BuildMCPTools(testToolSpecs("update_content", "get_content"), session, MCPToolOptions{
 		ConnectionID: testConnectionID,
 		Service:      MCPServiceWordPress,
-		Writes:       writes,
 	})
 	if _, err := tools[0].Execute(context.Background(), json.RawMessage(`{"id":"1"}`), Scope{}); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -211,10 +216,10 @@ func TestReviewedWordPressReadStillRunsWhileOutcomeUncertain(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(session.calls) != 2 {
-		t.Fatalf("dispatched %d calls, want the reviewed read to check the outcome", len(session.calls))
+		t.Fatalf("dispatched %d calls, want the later call to run under normal checks", len(session.calls))
 	}
-	if !strings.Contains(read.Content, "page title") || strings.Contains(read.Content, mcpUnreviewedResultNote) {
-		t.Fatalf("reviewed read result %q is not plain data", read.Content)
+	if !strings.Contains(read.Content, "page title") {
+		t.Fatalf("later call result %q is not the live result", read.Content)
 	}
 }
 
@@ -238,7 +243,6 @@ func TestWordPressResultSemanticsStayTruthful(t *testing.T) {
 			tools := BuildMCPTools(testToolSpecs("update_content"), session, MCPToolOptions{
 				ConnectionID: testConnectionID,
 				Service:      MCPServiceWordPress,
-				Writes:       &MCPWriteState{},
 			})
 			result, err := tools[0].Execute(context.Background(), json.RawMessage(`{"id":"1"}`), Scope{})
 			if err != nil {
@@ -258,7 +262,6 @@ func TestWordPressResultSemanticsStayTruthful(t *testing.T) {
 	tools := BuildMCPTools(testToolSpecs("publish_content"), applied, MCPToolOptions{
 		ConnectionID: testConnectionID,
 		Service:      MCPServiceWordPress,
-		Writes:       &MCPWriteState{},
 	})
 	result, err := tools[0].Execute(context.Background(), json.RawMessage(`{"content":"hello"}`), Scope{})
 	if err != nil {
@@ -273,11 +276,9 @@ func TestMCPToolErrorResultIsNotAnUnknownOutcome(t *testing.T) {
 	session := &fakeMCPSession{onCall: func(string, json.RawMessage) (MCPResult, error) {
 		return MCPResult{Content: "no such post", IsError: true}, nil
 	}}
-	writes := &MCPWriteState{}
 	tools := BuildMCPTools(testToolSpecs("mystery_write"), session, MCPToolOptions{
 		ConnectionID: testConnectionID,
 		Service:      MCPServiceCustom,
-		Writes:       writes,
 	})
 	result, err := tools[0].Execute(context.Background(), json.RawMessage(`{}`), Scope{})
 	if err != nil {
@@ -286,8 +287,15 @@ func TestMCPToolErrorResultIsNotAnUnknownOutcome(t *testing.T) {
 	if !strings.Contains(result.Content, "no such post") {
 		t.Fatalf("tool error %q is not surfaced", result.Content)
 	}
-	if writes.Uncertain() {
-		t.Fatal("a tool-reported failure is a known outcome, not an unknown one")
+	if strings.Contains(result.Content, "outcome is unknown") {
+		t.Fatalf("tool-reported failure %q is misreported as an unknown outcome", result.Content)
+	}
+	again, err := tools[0].Execute(context.Background(), json.RawMessage(`{}`), Scope{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(session.calls) != 2 || !strings.Contains(again.Content, "no such post") {
+		t.Fatalf("later call = %d dispatches %q, want a normal second failure", len(session.calls), again.Content)
 	}
 }
 

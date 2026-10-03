@@ -605,7 +605,9 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 					// Semantic safety preparation reads only and never
 					// dispatches the mutation. Its preflight reads run through
 					// the policy-enforcing session, so they need the exact
-					// read tool on Allow, and fail closed otherwise.
+					// read tool on Allow; a denied or unavailable read only
+					// costs the preview, and the exact-arguments proposal
+					// still goes through Ask or Allow for the write itself.
 					proposal, proposalErr := aichattools.PrepareMCPApproval(ctx, w.preflightSessionFor(scope, handle), handle.service, remote, json.RawMessage(call.Args))
 					if proposalErr != nil {
 						nextSeq++
@@ -1317,10 +1319,10 @@ func capToolResultContent(content string) string {
 // JSON (truncated mid-string when a large payload exhausted the output
 // budget) to a failed result, so the model retries with a smaller payload
 // instead of the turn dying on the jsonb cast. No tool-call row is stored.
-// blockedMCPCallResult maps a call the safety helper refused to clear to a
-// failed result, so the model sees the block and the turn continues. The
-// bounded helper reason is included verbatim: it names the prerequisite the
-// user can grant. No tool-call row is stored and no remote call ran.
+// blockedMCPCallResult maps a call blocked before execution to a failed
+// result, so the model sees the block and the turn continues. The bounded
+// helper reason is included verbatim: it names what moved or what was
+// malformed. No tool-call row is stored and no remote call ran.
 func blockedMCPCallResult(call ai.ToolCall, reason string) (string, aichattools.Result) {
 	reason = strings.TrimSpace(reason)
 	if len(reason) > 500 {
@@ -1329,7 +1331,7 @@ func blockedMCPCallResult(call ai.ToolCall, reason string) (string, aichattools.
 	if reason == "" {
 		reason = "the call was blocked before execution"
 	}
-	content := fmt.Sprintf("tool %q call %q failed: %s, and was not performed. Do not retry the same call; explain what approval or safer alternative is needed instead.", call.Name, call.ID, reason)
+	content := fmt.Sprintf("tool %q call %q failed: %s, and was not performed. Check the current connection state and permissions before deciding whether to retry or what safer alternative to use instead.", call.Name, call.ID, reason)
 	return "failed", aichattools.Result{Content: content, Summary: "mcp call blocked before execution"}
 }
 

@@ -64,7 +64,6 @@ type mcpTurnHandle struct {
 	service        string
 	revision       string
 	session        aichattools.MCPSession
-	writes         *aichattools.MCPWriteState
 	aliases        map[string]string
 }
 
@@ -226,8 +225,7 @@ func (w *Worker) checkMCPCall(ctx context.Context, scope turnScope, connectionID
 
 // formatMCPOmissions renders a bounded per-connection omission list for
 // model context. Every entry names its exact saved connection and remote
-// tool with its own stable reason; platform exclusions keep their
-// platform-restricted reason and are never labeled alias collisions. Only
+// tool with its own stable reason. Only
 // the first entries are listed; the remainder is counted, never silently
 // dropped and never reconstructed without metadata.
 func formatMCPOmissions(omissions []mcpServeOmission) string {
@@ -401,8 +399,8 @@ func mcpDirectoryRemote(remote string) string {
 
 // mcpServeOmission is one advertised tool that was not served this turn,
 // attributed to its exact saved connection and remote name with a stable
-// reason. A deliberate platform exclusion keeps its own reason and is never
-// reported as an alias collision.
+// reason. Reasons stay distinct so a validation failure is never reported
+// as an alias collision or a budget limit.
 type mcpServeOmission struct {
 	connection string
 	remote     string
@@ -472,7 +470,6 @@ func (w *Worker) setupMCP(ctx context.Context, scope turnScope, disabled []strin
 		handle := &mcpTurnHandle{
 			connectionID: conn.id, connectionName: conn.name, service: conn.service,
 			revision: conn.revision, session: session,
-			writes:  &aichattools.MCPWriteState{},
 			aliases: map[string]string{},
 		}
 		added := 0
@@ -492,7 +489,6 @@ func (w *Worker) setupMCP(ctx context.Context, scope turnScope, disabled []strin
 				ConnectionID: conn.id.String(),
 				Service:      conn.service,
 				Guard:        w.mcpCallGuard(scope, set, handle, remote, alias),
-				Writes:       handle.writes,
 			})
 			for _, r := range rejected {
 				omit(conn, r.Remote, string(r.Reason), r.Detail)

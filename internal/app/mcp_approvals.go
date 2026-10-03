@@ -461,19 +461,13 @@ func (a *App) handleDecideMCPApproval(w http.ResponseWriter, r *http.Request) {
 		// the connection-owner boundary every other permission write
 		// requires: the initiator alone cannot grant it. The freshness
 		// check above already ran, so a stale card can neither execute nor
-		// regrant a revoked rule, and a platform-restricted tool can never
-		// be made runnable through Always allow. Plain approve/reject stay
-		// initiator-only.
+		// regrant a revoked rule. Plain approve/reject stay initiator-only.
 		if !connOrg.Valid {
 			writeJSONError(w, http.StatusConflict, "approval has no connection to allow")
 			return
 		}
 		if err := requireOrganizationOwner(r.Context(), queries, connOrg, principal.User.ID); err != nil {
 			writeInvitePermissionError(w, err)
-			return
-		}
-		if reason, restricted := mcpToolRestrictionReason(locked.Service, locked.RemoteToolName); restricted {
-			writeJSONError(w, http.StatusBadRequest, "tool is unavailable: "+reason)
 			return
 		}
 	}

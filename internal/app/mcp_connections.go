@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/ps-wizard/revserp/internal/aichattools"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/mcpclient"
 )
@@ -255,8 +254,10 @@ type mcpToolJSON struct {
 	Group       string `json:"group,omitempty"`
 	Permission  string `json:"permission"`
 	Available   bool   `json:"available"`
-	// UnavailableReason is set only when Available is false, naming the
-	// platform restriction truthfully.
+	// UnavailableReason is set only when Available is false, naming a
+	// genuine discovery problem such as an invalid schema or a stale
+	// connection. No tool is excluded by name or provider: every stored
+	// tool is available under the user's Ask/Allow/Deny policy.
 	UnavailableReason *string `json:"unavailable_reason,omitempty"`
 }
 
@@ -273,19 +274,9 @@ type mcpConnectionJSON struct {
 	UpdatedAt     string        `json:"updated_at"`
 }
 
-// mcpToolRestrictionReason reports the platform restriction keeping one
-// exact remote tool unavailable, consulting the reviewed adapter for
-// wordpress only. Custom connections are never name-heuristic filtered.
-func mcpToolRestrictionReason(service, remote string) (string, bool) {
-	if service != string(MCPServiceWordPress) {
-		return "", false
-	}
-	return aichattools.WordPressToolRestriction(remote)
-}
-
 // newMCPConnectionJSON builds the public connection shape. It never includes
-// token material. Absence of a permission row means Ask. Platform-restricted
-// tools are marked unavailable with their truthful reason.
+// token material. Absence of a permission row means Ask. Every stored tool is
+// available: Ask/Allow/Deny decides whether it runs.
 func newMCPConnectionJSON(conn sqlc.ProjectMcpConnection, stored []mcpStoredTool, permissions map[string]string) mcpConnectionJSON {
 	tools := make([]mcpToolJSON, 0, len(stored))
 	for _, tool := range stored {
@@ -296,10 +287,6 @@ func newMCPConnectionJSON(conn sqlc.ProjectMcpConnection, stored []mcpStoredTool
 		entry := mcpToolJSON{
 			Name: tool.Name, Description: tool.Description, Group: tool.Group,
 			Permission: permission, Available: true,
-		}
-		if reason, restricted := mcpToolRestrictionReason(conn.Service, tool.Name); restricted {
-			entry.Available = false
-			entry.UnavailableReason = &reason
 		}
 		tools = append(tools, entry)
 	}
@@ -873,10 +860,9 @@ type mcpPutPermissionsRequest struct {
 // one atomic batch. Names must be non-empty, permissions ask/allow/deny, and
 // every name must belong to the currently discovered available set: saved
 // policy is user data, never remote metadata, and a concurrent /check cannot
-// make it validate a stale catalogue because the connection row is locked
 // first and validated inside the transaction. Ask deletes the row (absence
-// means Ask). Allow on a platform-restricted tool is rejected: restricted
-// tools cannot be made runnable. Permission edits never bump the connection
+// means Ask). Every discovered tool accepts ask, allow and deny: the user
+// decides what runs. Permission edits never bump the connection
 // revision and never cross the network. Deny atomically invalidates matching
 // pending approvals.
 func (a *App) handleMCPPutPermissions(w http.ResponseWriter, r *http.Request) {
@@ -948,12 +934,6 @@ func (a *App) handleMCPPutPermissions(w http.ResponseWriter, r *http.Request) {
 		if !discovered[name] {
 			writeJSONError(w, http.StatusBadRequest, "unknown tool name")
 			return
-		}
-		if entry.Permission == "allow" {
-			if reason, restricted := mcpToolRestrictionReason(conn.Service, name); restricted {
-				writeJSONError(w, http.StatusBadRequest, "tool is unavailable: "+reason)
-				return
-			}
 		}
 		if entry.Permission == "deny" {
 			denied = append(denied, name)

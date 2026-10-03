@@ -37,8 +37,9 @@ const (
 // PrepareMCPApproval must be its policy-guarded session: preflight reads
 // (WordPress get_content, get_page_structure) answer to the saved permission of
 // that exact read tool, and a refusal is returned wrapped in this error, so
-// preparation never bypasses Ask or Deny and never quietly shows no before
-// view.
+// the read never bypasses Ask or Deny. Preparation then falls back to the
+// exact-arguments proposal without a before view, and the write still needs
+// its own Ask approval or Allow rule.
 var ErrMCPPreflightPermission = errors.New("mcp preflight read not permitted by saved permission")
 
 // MCPApprovalProposal is what the user is asked to approve for one exact remote
@@ -66,12 +67,16 @@ type MCPApprovalProposal struct {
 
 // PrepareMCPApproval builds the bounded proposal for one remote call and never
 // dispatches it. remoteName is the exact name the connection advertised, not a
-// model alias. A non-nil error blocks the call: malformed arguments, a
-// platform refusal and an unreadable pre-write state all fail closed.
+// model alias. A non-nil error blocks the call: malformed arguments and an
+// empty tool name fail closed; a missing or denied pre-write read does not.
 //
 // The proposal is built for every service. WordPress adds a real before view and
-// snapshot for the calls that change one existing post; everything else, custom
-// connections included, discloses the exact arguments and nothing more.
+// snapshot for the calls that change one existing post when the pre-write read
+// is permitted and available; everything else, custom connections included,
+// discloses the exact arguments and nothing more. A pre-write read that is
+// denied or unavailable falls back to that same exact-arguments proposal:
+// the read still obeys its own permission, and the write still needs its own
+// Ask approval or Allow rule.
 //
 // session must be the caller's policy-guarded session, and the requested
 // mutation is never dispatched here.
@@ -84,32 +89,26 @@ func PrepareMCPApproval(ctx context.Context, session MCPSession, service, remote
 	if err != nil {
 		return MCPApprovalProposal{}, fmt.Errorf("aichattools: mcp %s: %w", remote, err)
 	}
-	if refusal := mcpToolRefusal(service, remote, args); refusal != "" {
-		return MCPApprovalProposal{}, fmt.Errorf("aichattools: mcp %s: %s", remote, refusal)
-	}
 	proposal := MCPApprovalProposal{
 		Service: service,
 		Tool:    remote,
 		Target:  mcpApprovalTarget(remote, fields),
 		After:   mcpApprovalArgs(fields),
 	}
-	state, err := mcpWordPressPreWriteState(ctx, session, service, remote, fields)
-	if err != nil || state.snapshot == nil {
-		return proposal, err
-	}
-	before := state.preview
-	if wordPressBuilderTools[remote] {
-		element, err := wordPressBuilderPreview(ctx, session, remote, fields)
-		if err != nil {
-			return MCPApprovalProposal{}, err
+	// A pre-write read that is denied or unavailable only costs the preview:
+	// the proposal above already discloses the exact arguments, and the write
+	// still needs its own Ask approval or Allow rule.
+	if state, err := mcpWordPressPreWriteState(ctx, session, service, remote, fields); err == nil && state.snapshot != nil {
+		before := state.preview
+		if wordPressBuilderTools[remote] {
+			if element, err := wordPressBuilderPreview(ctx, session, remote, fields); err == nil && element != "" {
+				before += "\n" + element
+			}
+			proposal.After = wordPressBuilderChange(remote, fields)
 		}
-		if element != "" {
-			before += "\n" + element
-		}
-		proposal.After = wordPressBuilderChange(remote, fields)
+		proposal.Before = mcpApprovalText(before)
+		proposal.Snapshot = state.snapshot
 	}
-	proposal.Before = mcpApprovalText(before)
-	proposal.Snapshot = state.snapshot
 	return proposal, nil
 }
 

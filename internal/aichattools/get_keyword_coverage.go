@@ -48,8 +48,8 @@ type keywordCoverageStore interface {
 
 // keywordCoverageMemo holds the computed seed matrix for one turn. NewRegistry
 // runs once per turn, so a memo created inside getKeywordCoverageTool dies with
-// the turn. Calls run sequentially, but a mutex guards it like MCPWriteState
-// in case that changes.
+// the turn. Calls run sequentially, but a mutex guards the memo in case that
+// changes.
 type keywordCoverageMemo struct {
 	mu         sync.Mutex
 	projectID  pgtype.UUID

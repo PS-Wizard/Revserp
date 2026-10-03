@@ -58,7 +58,7 @@ func TestGenericDescriptionWithoutServerTextStaysTruthful(t *testing.T) {
 func TestGenericResultMarksUntrustedOutput(t *testing.T) {
 	session := &fakeMCPSession{}
 	tools := BuildMCPTools(testToolSpecs("mystery_tool"), session,
-		MCPToolOptions{ConnectionID: testConnectionID, Service: MCPServiceCustom, Writes: &MCPWriteState{}})
+		MCPToolOptions{ConnectionID: testConnectionID, Service: MCPServiceCustom})
 	result, err := tools[0].Execute(t.Context(), json.RawMessage(`{}`), Scope{})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -71,41 +71,39 @@ func TestGenericResultMarksUntrustedOutput(t *testing.T) {
 	}
 }
 
-// TestDiagnosticsSeparateOmissionReasons proves each unsaved advertisement
-// carries its own stable reason: a deliberate WordPress safety exclusion is
-// platform_restricted with its truthful detail, never an alias collision.
-func TestDiagnosticsSeparateOmissionReasons(t *testing.T) {
+// TestDiagnosticsOmitOnlyInvalidAdvertisements proves every valid advertised
+// name is served on every service: file, SQL, shell and batch names carry no
+// omission reason, and only a blank name or a missing schema is invalid_tool.
+func TestDiagnosticsOmitOnlyInvalidAdvertisements(t *testing.T) {
 	specs := []MCPToolDef{
 		{Name: "run_sql", Description: "remote", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "read_file", Description: "remote", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "exec_shell", Description: "remote", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "batch_update_content", Description: "remote", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "", Description: "remote", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "no_schema", Description: "remote"},
 		{Name: "kept", Description: "remote", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	tools, omitted := BuildMCPToolsWithDiagnostics(specs, &fakeMCPSession{},
-		MCPToolOptions{ConnectionID: testConnectionID, Service: MCPServiceWordPress})
-	if len(tools) != 1 || tools[0].Def.Label != "kept" {
-		t.Fatalf("served %d tools, want only the unrestricted one", len(tools))
-	}
-	byRemote := map[string]MCPOmittedTool{}
-	for _, o := range omitted {
-		byRemote[o.Remote] = o
-	}
-	restricted, ok := byRemote["run_sql"]
-	if !ok || restricted.Reason != MCPOmitPlatformRestricted || restricted.Detail == "" {
-		t.Fatalf("run_sql omission = %+v, want platform_restricted with detail", restricted)
-	}
-	if reason, _ := WordPressToolRestriction("run_sql"); reason != restricted.Detail {
-		t.Fatalf("omission detail %q is not the reviewed restriction reason", restricted.Detail)
-	}
-	if o, ok := byRemote[""]; !ok || o.Reason != MCPOmitInvalidTool {
-		t.Fatalf("blank-name omission = %+v, want invalid_tool", o)
-	}
-	if o, ok := byRemote["no_schema"]; !ok || o.Reason != MCPOmitInvalidTool {
-		t.Fatalf("schema-less omission = %+v, want invalid_tool", o)
-	}
-	for _, o := range omitted {
-		if o.Reason == MCPOmitPlatformRestricted && o.Remote != "run_sql" {
-			t.Fatalf("omission %+v mislabels a non-excluded tool as platform-restricted", o)
+	for _, service := range []string{MCPServiceWordPress, MCPServiceCustom} {
+		tools, omitted := BuildMCPToolsWithDiagnostics(specs, &fakeMCPSession{},
+			MCPToolOptions{ConnectionID: testConnectionID, Service: service})
+		if len(tools) != 5 {
+			t.Fatalf("%s served %d tools, want the 5 valid advertisements", service, len(tools))
+		}
+		byRemote := map[string]MCPOmittedTool{}
+		for _, o := range omitted {
+			byRemote[o.Remote] = o
+		}
+		for _, name := range []string{"run_sql", "read_file", "exec_shell", "batch_update_content", "kept"} {
+			if _, excluded := byRemote[name]; excluded {
+				t.Fatalf("%s omits %q, want it served", service, name)
+			}
+		}
+		if o, ok := byRemote[""]; !ok || o.Reason != MCPOmitInvalidTool {
+			t.Fatalf("%s blank-name omission = %+v, want invalid_tool", service, o)
+		}
+		if o, ok := byRemote["no_schema"]; !ok || o.Reason != MCPOmitInvalidTool {
+			t.Fatalf("%s schema-less omission = %+v, want invalid_tool", service, o)
 		}
 	}
 }
@@ -123,19 +121,19 @@ func TestDiagnosticsAliasRejected(t *testing.T) {
 	}
 }
 
-// TestCustomNeverRestrictedByName keeps the generic path free of provider
-// heuristics: every advertised custom name is served or fails validation,
-// never excluded as a platform restriction.
-func TestCustomNeverRestrictedByName(t *testing.T) {
-	specs := testToolSpecs("run_sql", "exec_shell", "describe_tables", "batch_update_content")
-	tools, omitted := BuildMCPToolsWithDiagnostics(specs, &fakeMCPSession{},
-		MCPToolOptions{ConnectionID: testConnectionID, Service: MCPServiceCustom})
-	if len(tools) != len(specs) {
-		t.Fatalf("custom served %d of %d tools", len(tools), len(specs))
-	}
-	for _, o := range omitted {
-		if o.Reason == MCPOmitPlatformRestricted {
-			t.Fatalf("custom omission %+v applies a platform restriction by name", o)
+// TestEveryServiceServesEveryName keeps every path free of provider
+// heuristics: every advertised name is served or fails validation, on
+// wordpress and custom alike.
+func TestEveryServiceServesEveryName(t *testing.T) {
+	specs := testToolSpecs("run_sql", "exec_shell", "describe_tables", "batch_update_content", "write_file")
+	for _, service := range []string{MCPServiceWordPress, MCPServiceCustom} {
+		tools, omitted := BuildMCPToolsWithDiagnostics(specs, &fakeMCPSession{},
+			MCPToolOptions{ConnectionID: testConnectionID, Service: service})
+		if len(tools) != len(specs) {
+			t.Fatalf("%s served %d of %d tools", service, len(tools), len(specs))
+		}
+		if len(omitted) != 0 {
+			t.Fatalf("%s omitted %+v, want none", service, omitted)
 		}
 	}
 }

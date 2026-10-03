@@ -62,7 +62,7 @@ func TestPrepareMCPApprovalDisclosesExactArgumentsWithoutInventingADiff(t *testi
 	}
 }
 
-func TestPrepareMCPApprovalSnapshotsWordPressPostStateAndFailsClosed(t *testing.T) {
+func TestPrepareMCPApprovalSnapshotsWordPressPostState(t *testing.T) {
 	session := &fakeSnapshotSession{content: wordpressPostJSON}
 	args := json.RawMessage(`{"id":"12","content":"new body"}`)
 	proposal, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "update_content", args)
@@ -95,14 +95,25 @@ func TestPrepareMCPApprovalSnapshotsWordPressPostStateAndFailsClosed(t *testing.
 	if string(changed.Snapshot) == string(proposal.Snapshot) {
 		t.Fatal("a changed page must produce a different snapshot")
 	}
-	for _, unreadable := range []MCPSession{
+}
+
+func TestPrepareMCPApprovalFallsBackToExactArgumentsWhenStateIsUnreadable(t *testing.T) {
+	args := json.RawMessage(`{"id":"12","content":"new body"}`)
+	for _, session := range []MCPSession{
 		&fakeSnapshotSession{readErr: errors.New("timeout")},
 		&fakeSnapshotSession{content: "not json"},
 		&fakeSnapshotSession{content: "{}"},
 		nil,
 	} {
-		if _, err := PrepareMCPApproval(context.Background(), unreadable, MCPServiceWordPress, "update_content", args); err == nil {
-			t.Fatalf("an unreadable pre-write state must block the call, session %T", unreadable)
+		proposal, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "update_content", args)
+		if err != nil {
+			t.Fatalf("an unreadable pre-write state must not block the proposal, session %T: %v", session, err)
+		}
+		if proposal.Tool != "update_content" || !strings.Contains(proposal.After, "new body") {
+			t.Fatalf("proposal %+v does not disclose the exact arguments", proposal)
+		}
+		if proposal.Snapshot != nil || proposal.Before != "" {
+			t.Fatalf("proposal %+v invents a before view without a readable state", proposal)
 		}
 	}
 }
@@ -135,44 +146,51 @@ func TestPrepareMCPApprovalAppliesToReadsDraftsAndDryRuns(t *testing.T) {
 	}
 }
 
-func TestPrepareMCPApprovalRefusesBrokenMarkupBeforeAnyDispatch(t *testing.T) {
-	session := &fakeSnapshotSession{content: wordpressPostJSON}
-	args := json.RawMessage(`{"id":"12","content":"<!-- wp:button -->\n<a class=\"wp-block-button__link\">Go</a>\n<!-- /wp:button -->"}`)
-	if _, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "update_content", args); err == nil {
-		t.Fatal("standalone wp:button markup must be refused")
+func TestPrepareMCPApprovalKeepsExactArgumentsWithoutRefusal(t *testing.T) {
+	for _, args := range []json.RawMessage{
+		json.RawMessage(`{"id":"12","content":"<!-- wp:button -->\n<a class=\"wp-block-button__link\">Go</a>\n<!-- /wp:button -->"}`),
+		json.RawMessage(`{"id":"12","content":"<!-- wp:buttons -->\n<!-- wp:button -->x<!-- /wp:button -->\n<!-- /wp:buttons -->"}`),
+	} {
+		session := &fakeSnapshotSession{content: wordpressPostJSON}
+		proposal, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "update_content", args)
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		if !strings.Contains(proposal.After, "wp:button") {
+			t.Fatalf("after %q rewrote the supplied markup", proposal.After)
+		}
 	}
-	if len(session.calls) != 0 {
-		t.Fatalf("a refused call dispatched %v", session.calls)
+	section, err := PrepareMCPApproval(context.Background(), &fakeSnapshotSession{}, MCPServiceWordPress, "insert_page_section", json.RawMessage(`{"id":"12","section":{"type":"button"}}`))
+	if err != nil {
+		t.Fatalf("the section shortcut must be proposed, not refused: %v", err)
 	}
-	session = &fakeSnapshotSession{content: wordpressPostJSON}
-	if _, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "update_content", json.RawMessage(`{"id":"12","content":"<!-- wp:buttons -->\n<!-- wp:button -->x<!-- /wp:button -->\n<!-- /wp:buttons -->"}`)); err != nil {
-		t.Fatalf("valid nested button markup must not be refused: %v", err)
+	if !strings.Contains(section.After, "button") {
+		t.Fatalf("after %q lost the requested shortcut", section.After)
 	}
-	session = &fakeSnapshotSession{}
-	if _, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "insert_page_section", json.RawMessage(`{"id":"12","section":{"type":"button"}}`)); err == nil {
-		t.Fatal("the button section shortcut must be refused")
+	custom, err := PrepareMCPApproval(context.Background(), &fakeSnapshotSession{}, MCPServiceCustom, "update_content", json.RawMessage(`{"content":"<!-- wp:button -->"}`))
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
 	}
-	if _, err := PrepareMCPApproval(context.Background(), &fakeSnapshotSession{}, MCPServiceCustom, "update_content", json.RawMessage(`{"content":"<!-- wp:button -->"}`)); err != nil {
-		t.Fatalf("a custom server's own content rules are not ours to refuse: %v", err)
+	if custom.Tool != "update_content" {
+		t.Fatalf("proposal %+v does not name the exact server tool", custom)
 	}
 }
 
-func TestPreparedWordPressCallIsRefusedBeforeDispatch(t *testing.T) {
+func TestPreparedWordPressCallDispatchesExactArguments(t *testing.T) {
 	session := &fakeMCPSession{}
 	tools := BuildMCPTools(testToolSpecs("update_content"), session, MCPToolOptions{
 		ConnectionID: testConnectionID,
 		Service:      MCPServiceWordPress,
-		Writes:       &MCPWriteState{},
 	})
-	result, err := tools[0].Execute(context.Background(), json.RawMessage(`{"id":"12","content":"<!-- wp:button -->x<!-- /wp:button -->"}`), Scope{})
-	if err != nil {
+	args := json.RawMessage(`{"id":"12","content":"<!-- wp:button -->x<!-- /wp:button -->"}`)
+	if _, err := tools[0].Execute(context.Background(), args, Scope{}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if len(session.calls) != 0 {
-		t.Fatalf("a refused call dispatched %v", session.calls)
+	if len(session.calls) != 1 || session.calls[0] != "update_content" {
+		t.Fatalf("dispatched %v, want the exact remote name", session.calls)
 	}
-	if !strings.Contains(result.Content, "wp:buttons") || result.Summary != "refused before the call" {
-		t.Fatalf("refusal result %+v does not explain the fix", result)
+	if string(session.args[0]) != string(args) {
+		t.Fatalf("dispatched args %s, want the call arguments unchanged", session.args[0])
 	}
 }
 
@@ -227,33 +245,60 @@ func TestPreparationNeverDispatchesTheRequestedMutation(t *testing.T) {
 	}
 }
 
-func TestPreflightReadRefusalByPermissionBlocksInsteadOfHidingTheBeforeView(t *testing.T) {
-	for _, blocked := range []string{"get_content", "get_page_structure"} {
-		session := &fakeSnapshotSession{content: wordpressPostJSON, structure: `{"children":[{"id":"el-1","settings":{"text":"Old"}}]}`, blocked: map[string]bool{blocked: true}}
-		remote, args := "update_content", json.RawMessage(`{"id":"12","content":"new body"}`)
-		if blocked == "get_page_structure" {
-			remote, args = "edit_page_element", json.RawMessage(`{"id":"12","element_id":"el-1"}`)
+func TestPreflightReadDenialFallsBackToExactArgsProposal(t *testing.T) {
+	// A denied post read leaves no snapshot: the card still proposes the
+	// exact arguments, and the write still needs its own Ask or Allow.
+	session := &fakeSnapshotSession{content: wordpressPostJSON, blocked: map[string]bool{"get_content": true}}
+	proposal, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "update_content", json.RawMessage(`{"id":"12","content":"new body"}`))
+	if err != nil {
+		t.Fatalf("a denied get_content read must not refuse the approved write: %v", err)
+	}
+	if proposal.Tool != "update_content" || !strings.Contains(proposal.After, "new body") {
+		t.Fatalf("proposal %+v does not disclose the exact arguments", proposal)
+	}
+	if proposal.Snapshot != nil || proposal.Before != "" {
+		t.Fatalf("proposal %+v invents a before view without a permitted read", proposal)
+	}
+	for _, called := range session.calls {
+		if called == "update_content" {
+			t.Fatalf("preparation dispatched the mutation %q", called)
 		}
-		_, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, remote, args)
-		if err == nil {
-			t.Fatalf("a refused %s preflight read must block the call, not hide the before view", blocked)
-		}
-		if !errors.Is(err, ErrMCPPreflightPermission) {
-			t.Fatalf("error %v does not report the permission prerequisite", err)
-		}
-		if !strings.Contains(err.Error(), "not permitted") {
-			t.Fatalf("error %q does not explain the permission prerequisite", err)
-		}
+	}
+
+	// A denied builder-structure read only costs the element line: the
+	// permitted post read still guards the write.
+	builder := &fakeSnapshotSession{content: wordpressPostJSON, structure: `{"children":[{"id":"el-1","settings":{"text":"Old"}}]}`, blocked: map[string]bool{"get_page_structure": true}}
+	edited, err := PrepareMCPApproval(context.Background(), builder, MCPServiceWordPress, "edit_page_element", json.RawMessage(`{"id":"12","element_id":"el-1"}`))
+	if err != nil {
+		t.Fatalf("a denied get_page_structure read must not refuse the approved write: %v", err)
+	}
+	if edited.Snapshot == nil || !strings.Contains(edited.Before, "status: publish") {
+		t.Fatalf("proposal %+v lost the permitted post preview", edited)
+	}
+	if strings.Contains(edited.Before, "element el-1 currently") {
+		t.Fatalf("before %q shows an element preview without a permitted read", edited.Before)
 	}
 }
 
-func TestPreflightReadFailureDoesNotFallThroughToAnUnreviewedCall(t *testing.T) {
+func TestPreflightReadDenialStillObeysItsOwnPermission(t *testing.T) {
+	session := &fakeSnapshotSession{content: wordpressPostJSON, blocked: map[string]bool{"get_content": true}}
+	if _, err := session.Call(context.Background(), "get_content", json.RawMessage(`{"id":"12"}`)); err == nil {
+		t.Fatal("a denied preflight read must stay denied")
+	} else if !errors.Is(err, ErrMCPPreflightPermission) {
+		t.Fatalf("error %v does not report the permission prerequisite", err)
+	}
+}
+
+func TestPreflightReadFailureFallsBackToExactArgsProposal(t *testing.T) {
 	session := &fakeSnapshotSession{readErr: errors.New("connection reset")}
 	proposal, err := PrepareMCPApproval(context.Background(), session, MCPServiceWordPress, "update_content", json.RawMessage(`{"id":"12","content":"new body"}`))
-	if err == nil {
-		t.Fatal("an unreadable pre-write state must block the call")
+	if err != nil {
+		t.Fatalf("an unreadable pre-write state must not block the proposal: %v", err)
 	}
-	if len(proposal.After) == 0 && len(session.calls) == 0 {
-		t.Fatal("the refused preparation disclosed nothing and read nothing")
+	if proposal.Tool != "update_content" || !strings.Contains(proposal.After, "new body") {
+		t.Fatalf("proposal %+v does not disclose the exact arguments", proposal)
+	}
+	if len(session.calls) != 1 || session.calls[0] != "get_content" {
+		t.Fatalf("preparation calls = %v, want only the attempted pre-write read", session.calls)
 	}
 }

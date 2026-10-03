@@ -43,8 +43,8 @@ func TestSetupMCPDirectoryAndOmissionReasons(t *testing.T) {
 	const revision = "22222222-2222-2222-2222-222222222222"
 	customID := insertMCPConnection(t, a, project, "Main\nBlog", "custom", revision, liveMCPTools())
 	wpID := insertMCPConnection(t, a, project, "WP", "custom", revision, liveMCPTools())
-	// The WordPress connection advertises one deliberately excluded tool and
-	// one served tool; endpoints distinguish the fake sessions.
+	// The WordPress connection advertises file/SQL names alongside a plain
+	// search tool; endpoints distinguish the fake sessions.
 	setMCPConnectionEndpoint(t, a, customID.String(), "https://custom.example.test/mcp")
 	setMCPConnectionEndpoint(t, a, wpID.String(), "https://wp.example.test/mcp")
 	if _, err := a.pool.Exec(context.Background(),
@@ -57,7 +57,7 @@ func TestSetupMCPDirectoryAndOmissionReasons(t *testing.T) {
 		case "https://custom.example.test/mcp":
 			return liveMCPSession(), nil
 		case "https://wp.example.test/mcp":
-			return mcpSessionWith("run_sql", "search_docs"), nil
+			return mcpSessionWith("run_sql", "write_file", "search_docs"), nil
 		}
 		return nil, errors.New("unexpected endpoint " + endpoint)
 	}
@@ -84,8 +84,8 @@ func TestSetupMCPDirectoryAndOmissionReasons(t *testing.T) {
 			t.Fatalf("status has no alias namespace %s: %q", namespace, status)
 		}
 	}
-	if !strings.Contains(status, `"WP"/"run_sql": platform_restricted`) {
-		t.Fatalf("status misattributes the WordPress exclusion: %q", status)
+	if strings.Contains(status, "platform_restricted") {
+		t.Fatalf("status excludes a tool by name: %q", status)
 	}
 	for _, misleading := range []string{"duplicate or rejected alias", "alias collision", "aliascollision"} {
 		if strings.Contains(status, misleading) {
@@ -94,14 +94,17 @@ func TestSetupMCPDirectoryAndOmissionReasons(t *testing.T) {
 	}
 	for _, secret := range []string{"secret-token", "example.test/mcp", "remote run_sql"} {
 		if strings.Contains(status, secret) {
-			t.Fatalf("status leaks connection material %q: %q", secret, status)
+			t.Fatalf("status leaks connection material %q: %s", secret, status)
 		}
 	}
-	// The served WordPress tool resolves through its own connection handle.
-	alias := aichattools.MCPModelToolName(wpID.String(), "search_docs")
-	handle, remote, ok := set.toolHandle(alias)
-	if !ok || remote != "search_docs" || handle == nil {
-		t.Fatalf("alias for search_docs does not resolve to its connection: %v %q", ok, remote)
+	// Every advertised WordPress name resolves through its own connection
+	// handle, file and SQL names included.
+	for _, remote := range []string{"run_sql", "write_file", "search_docs"} {
+		alias := aichattools.MCPModelToolName(wpID.String(), remote)
+		handle, resolved, ok := set.toolHandle(alias)
+		if !ok || resolved != remote || handle == nil {
+			t.Fatalf("alias for %s does not resolve to its connection: %v %q", remote, ok, resolved)
+		}
 	}
 }
 
@@ -178,13 +181,13 @@ func TestFormatMCPOmissionsBoundsAndLabels(t *testing.T) {
 	}
 	excluded := formatMCPOmissions([]mcpServeOmission{{
 		connection: "WP", remote: "run_sql",
-		reason: string(aichattools.MCPOmitPlatformRestricted),
-		detail: "not offered to the assistant: raw database and theme file access",
+		reason: string(aichattools.MCPOmitInvalidTool),
+		detail: "no live input schema",
 	}})
-	if !strings.Contains(excluded, `"WP"/"run_sql": platform_restricted (not offered`) {
-		t.Fatalf("platform exclusion is not attributed exactly: %q", excluded)
+	if !strings.Contains(excluded, `"WP"/"run_sql": invalid_tool (no live input schema)`) {
+		t.Fatalf("invalid advertisement is not attributed exactly: %q", excluded)
 	}
-	if strings.Contains(excluded, "duplicate") || strings.Contains(excluded, "collision") {
-		t.Fatalf("platform exclusion borrows an alias-collision label: %q", excluded)
+	if strings.Contains(excluded, "duplicate") || strings.Contains(excluded, "collision") || strings.Contains(excluded, "platform_restricted") {
+		t.Fatalf("invalid advertisement borrows another reason label: %q", excluded)
 	}
 }
