@@ -111,7 +111,7 @@ func New(pool *pgxpool.Pool, provider ai.Streamer, cfg Config) *Worker {
 		cfg.PollInterval = 2 * time.Second
 	}
 	if cfg.TurnTimeout <= 0 {
-		cfg.TurnTimeout = 5 * time.Minute
+		cfg.TurnTimeout = 20 * time.Minute
 	}
 	return &Worker{
 		pool:          pool,
@@ -403,6 +403,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		var roundUsage ai.Usage
 		haveRoundUsage := false
 		go func() {
+			requestStart := time.Now()
 			err := w.provider.Stream(ctx, ai.Request{
 				Model:    claimed.Model,
 				Effort:   claimed.Effort,
@@ -410,6 +411,9 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 				Tools:    reqTools,
 				OnReasoningDelta: func(delta string) {
 					roundReasoning.WriteString(delta)
+				},
+				OnStreamDiagnostic: func(diag ai.ChatStreamDiagnostic) {
+					logChatProviderRequestDiagnostic(w.cfg.ID, claimed.ID.String(), round, claimed.Model, claimed.Effort, time.Since(requestStart), diag)
 				},
 			}, func(event ai.Event) error {
 				if event.ToolCall != nil {

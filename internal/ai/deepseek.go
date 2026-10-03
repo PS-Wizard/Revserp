@@ -46,7 +46,8 @@ type Request struct {
 	Messages []Message
 	Tools    []ToolDef
 	// DeepSeek requires reasoning replay for tool rounds; never emit it as chat events.
-	OnReasoningDelta func(string) `json:"-"`
+	OnReasoningDelta   func(string)               `json:"-"`
+	OnStreamDiagnostic func(ChatStreamDiagnostic) `json:"-"`
 }
 
 // Usage contains provider token counts when the provider supplies them.
@@ -174,9 +175,13 @@ func (client *DeepSeekClient) GenerateText(ctx context.Context, prompt string) (
 }
 
 // Stream keeps raw reasoning on the private callback, outside chat events.
-func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit func(Event) error) error {
+func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit func(Event) error) (err error) {
+	diag := newStreamDiagnostic(request.OnStreamDiagnostic)
+	defer diag.finish()
 	if strings.TrimSpace(client.apiKey) == "" {
-		return &ProviderError{Code: "provider_unavailable"}
+		err = &ProviderError{Code: "provider_unavailable"}
+		diag.stop(diagStageMissingKey, diagCauseUnknownError, err)
+		return err
 	}
 	model := strings.TrimSpace(request.Model)
 	if model == "" {
@@ -226,8 +231,10 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 		for _, tool := range request.Tools {
 			var schema shared.FunctionParameters
 			if len(tool.Schema) > 0 {
-				if err := json.Unmarshal(tool.Schema, &schema); err != nil {
-					return fmt.Errorf("invalid schema for tool %q: %w", tool.Name, err)
+				if schemaErr := json.Unmarshal(tool.Schema, &schema); schemaErr != nil {
+					err = fmt.Errorf("invalid schema for tool %q: %w", tool.Name, schemaErr)
+					diag.stop(diagStageDecodeSchema, diagCauseInvalidJSON, err)
+					return err
 				}
 			}
 			tools = append(tools, openai.ChatCompletionToolParam{
@@ -257,26 +264,36 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 	toolCallsSeen := false
 	for stream.Next() {
 		chunk := stream.Current()
+		diag.countChunk()
 		for _, choice := range chunk.Choices {
+			diag.setFinishReason(string(choice.FinishReason))
 			var providerDelta struct {
 				ReasoningContent string `json:"reasoning_content"`
 			}
-			if err := json.Unmarshal([]byte(choice.Delta.RawJSON()), &providerDelta); err != nil {
-				return &ProviderError{Code: "provider_unavailable"}
+			if deltaErr := json.Unmarshal([]byte(choice.Delta.RawJSON()), &providerDelta); deltaErr != nil {
+				err = &ProviderError{Code: "provider_unavailable"}
+				diag.stop(diagStageDecodeDelta, diagCauseInvalidJSON, err)
+				return err
 			}
 			if providerDelta.ReasoningContent != "" && request.OnReasoningDelta != nil {
 				request.OnReasoningDelta(providerDelta.ReasoningContent)
 			}
+			if providerDelta.ReasoningContent != "" {
+				diag.countReasoning(len(providerDelta.ReasoningContent))
+			}
 			if providerDelta.ReasoningContent != "" && !reasoningStarted {
 				reasoningStarted = true
-				if err := emit(Event{Thinking: true}); err != nil {
-					return err
+				if emitErr := emit(Event{Thinking: true}); emitErr != nil {
+					diag.stopErr(diagStageEmitError, emitErr)
+					return emitErr
 				}
 			}
 			if choice.Delta.Content != "" {
 				answerStarted = true
-				if err := emit(Event{Text: choice.Delta.Content}); err != nil {
-					return err
+				diag.countText(len(choice.Delta.Content))
+				if emitErr := emit(Event{Text: choice.Delta.Content}); emitErr != nil {
+					diag.stopErr(diagStageEmitError, emitErr)
+					return emitErr
 				}
 			}
 			for _, toolCall := range choice.Delta.ToolCalls {
@@ -291,9 +308,11 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 		if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" && !accumulator.empty() {
 			for _, call := range accumulator.drain() {
 				toolCallsSeen = true
-				if err := emit(Event{ToolCall: &call}); err != nil {
-					return err
+				if emitErr := emit(Event{ToolCall: &call}); emitErr != nil {
+					diag.stopErr(diagStageEmitError, emitErr)
+					return emitErr
 				}
+				diag.countEmittedToolCall()
 			}
 		}
 		if chunk.JSON.Usage.Valid() {
@@ -310,32 +329,46 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 					} `json:"completion_tokens_details"`
 				} `json:"usage"`
 			}
-			if err := json.Unmarshal([]byte(chunk.RawJSON()), &providerUsage); err != nil {
-				return &ProviderError{Code: "provider_unavailable"}
+			if usageErr := json.Unmarshal([]byte(chunk.RawJSON()), &providerUsage); usageErr != nil {
+				err = &ProviderError{Code: "provider_unavailable"}
+				diag.stop(diagStageDecodeUsage, diagCauseInvalidJSON, err)
+				return err
 			}
 			usage.Reasoning = providerUsage.Usage.CompletionTokensDetails.ReasoningTokens
 			if usage.Reasoning == 0 {
 				usage.Reasoning = providerUsage.Usage.ReasoningTokens
 			}
-			if err := emit(Event{Usage: &usage}); err != nil {
-				return err
+			diag.setUsage(usage)
+			if emitErr := emit(Event{Usage: &usage}); emitErr != nil {
+				diag.stopErr(diagStageEmitError, emitErr)
+				return emitErr
 			}
 		}
 	}
-	if err := stream.Err(); err != nil {
-		return ClassifyError(err)
+	if streamErr := stream.Err(); streamErr != nil {
+		diag.stopErr(diagStageStreamError, streamErr)
+		return ClassifyError(streamErr)
 	}
 	// Safety net: the stream may end without an explicit finish reason,
 	// leaving reassembled tool calls unemitted.
 	for _, call := range accumulator.drain() {
 		toolCallsSeen = true
-		if err := emit(Event{ToolCall: &call}); err != nil {
-			return err
+		if emitErr := emit(Event{ToolCall: &call}); emitErr != nil {
+			diag.stopErr(diagStageEmitError, emitErr)
+			return emitErr
 		}
+		diag.countEmittedToolCall()
 	}
 	if !answerStarted && !toolCallsSeen {
-		return &ProviderError{Code: "provider_unavailable", Temporary: true}
+		err = &ProviderError{Code: "provider_unavailable", Temporary: true}
+		cause := diagCauseEmptyResponse
+		if diag.sawReasoning() {
+			cause = diagCauseReasoningOnly
+		}
+		diag.stop(diagStageEmptyResponse, cause, err)
+		return err
 	}
+	diag.stop(diagStageStreamComplete, "", nil)
 	return nil
 }
 

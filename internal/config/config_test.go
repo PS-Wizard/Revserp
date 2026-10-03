@@ -181,3 +181,22 @@ func TestValidateDBTimeoutDirectZeroField(t *testing.T) {
 		t.Fatal("Validate should fail for negative DBLockTimeout field")
 	}
 }
+
+func TestLoadAITurnTimeout(t *testing.T) {
+	unsetEnv(t, "AI_TURN_TIMEOUT")
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+
+	if got := Load().AITurnTimeout; got != 20*time.Minute {
+		t.Errorf("AITurnTimeout default: got %s, want 20m", got)
+	}
+
+	setEnv(t, "AI_TURN_TIMEOUT", "20m")
+	if got := Load().AITurnTimeout; got != 20*time.Minute {
+		t.Errorf("AITurnTimeout 20m: got %s, want 20m", got)
+	}
+
+	setEnv(t, "AI_TURN_TIMEOUT", "60m")
+	if got := Load().AITurnTimeout; got != 60*time.Minute {
+		t.Errorf("AITurnTimeout 60m: got %s, want 60m", got)
+	}
+}

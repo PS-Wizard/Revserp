@@ -122,7 +122,7 @@ func Load() Config {
 		// Dev override: set to 0s to re-test the maps card freely. Prod keeps
 		// the 24h default so a click cannot quietly drain Serper credits.
 		MapsVisibilityCooldown:      getEnvDuration("MAPS_VISIBILITY_COOLDOWN", 24*time.Hour),
-		AITurnTimeout:               getEnvDurationInRange("AI_TURN_TIMEOUT", 5*time.Minute, 30*time.Second, 10*time.Minute),
+		AITurnTimeout:               getEnvDurationInRange("AI_TURN_TIMEOUT", 20*time.Minute, 30*time.Second, 60*time.Minute),
 		ObscuraPath:                 getEnv("OBSCURA_PATH", ""),
 		RendererConcurrency:         getEnvInt("RENDERER_CONCURRENCY", 2),
 		ObscuraTimeout:              time.Duration(getEnvInt("OBSCURA_TIMEOUT_SECONDS", 5)) * time.Second,
