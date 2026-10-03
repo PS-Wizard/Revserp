@@ -20,15 +20,11 @@ type App struct {
 	SessionManager *internalauth.SessionManager
 	GSCService     *gsc.Service
 	GAService      *ga.Service
-	// RuneConnect wraps runecms.Connect (initialize + tools/list discovery).
+	// MCPConnect dials one generic session for connection validation
+	// (initialize plus tools/list discovery only, never tool execution).
 	// Wired by default in New; tests may replace it with a fake. A nil value
 	// answers 503 so handlers degrade safely.
-	RuneConnect RuneConnectFunc
-	// CMSConnect dials one provider session for CMS validation. Wired by
-	// default in New (Rune via runecms.Connect, WordPress via
-	// runecms.ConnectWordPress); tests may replace it with a fake. Both
-	// providers share the same encryption service requirement.
-	CMSConnect CMSConnectFunc
+	MCPConnect MCPConnectFunc
 	OrgEvents  *organizationEventHub
 }
 
@@ -56,7 +52,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		GSCService:     gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes),
 		GAService:      ga.NewService(cfg.MaxAPIResponseBytes),
 		OrgEvents:      newOrganizationEventHub(),
-		RuneConnect:    defaultRuneConnect,
-		CMSConnect:     DefaultCMSConnect,
+		MCPConnect:     DefaultMCPConnect,
 	}
 }

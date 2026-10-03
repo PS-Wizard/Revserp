@@ -43,11 +43,10 @@ func run() error {
 	}
 
 	application := app.New(cfg, dbPool, authVerifier)
-	// CMS validation dials through the provider-aware connector (Rune via
-	// runecms.Connect, WordPress via the transport-owned
-	// runecms.ConnectWordPress) with the shared encryption requirement.
-	// Tests replace it with a fake; a nil value answers 503.
-	application.CMSConnect = app.DefaultCMSConnect
+	// MCP connection validation dials through the generic transport client
+	// with the shared encryption requirement. Tests replace it with a fake;
+	// a nil value answers 503.
+	application.MCPConnect = app.DefaultMCPConnect
 	application.StartOrganizationEventHub(ctx)
 	application.StartOrganizationEventsCleanup(ctx)
 

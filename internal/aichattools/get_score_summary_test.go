@@ -500,17 +500,15 @@ func TestCatalogAndRegistrySplit(t *testing.T) {
 		catalogNames = append(catalogNames, def.Name)
 	}
 	wantCatalog := []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage"}
-	wantCatalog = append(wantCatalog, RuneStaticNames()...)
-	wantCatalog = append(wantCatalog, WordPressStaticNames()...)
 	if !reflect.DeepEqual(catalogNames, wantCatalog) {
 		t.Fatalf("catalog names = %v, want %v", catalogNames, wantCatalog)
 	}
 
-	// Disconnected CMS tools are catalog names only: the default executing
-	// registry serves native tools, never cms__ names.
+	// MCP connection tools are never catalog names: they exist per
+	// connection, so the default registry serves native tools only.
 	for _, name := range registryNames {
-		if IsRuneToolName(name) || IsWordPressToolName(name) {
-			t.Fatalf("default registry serves %q without a live CMS session", name)
+		if IsMCPModelToolName(name) {
+			t.Fatalf("default registry serves %q without a live MCP connection", name)
 		}
 	}
 

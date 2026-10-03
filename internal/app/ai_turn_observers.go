@@ -49,6 +49,14 @@ type aiTurnResponse struct {
 	UpdatedAt        time.Time            `json:"updated_at"`
 	Messages         []aiMessageResponse  `json:"messages"`
 	ToolCalls        []aiToolCallResponse `json:"tool_calls"`
+	// Approvals carries the turn's current approval cards (pending plus
+	// history) in the same snapshot as Messages, so the frontend can seed
+	// text, cursor, and cards together with no replay.
+	Approvals []mcpApprovalJSON `json:"approvals"`
+	// EventCursor is MAX(ai_turn_events.id) for this turn in the same
+	// snapshot. Subscribing the live stream after it replays exactly the
+	// events the snapshot does not contain: no gaps, no duplicates.
+	EventCursor int64 `json:"event_cursor"`
 }
 
 type aiMessageResponse struct {
@@ -131,6 +139,7 @@ func newAITurnResponse(turn aiTurnSnapshot, messages []sqlc.ListAIMessagesForUse
 		UpdatedAt:        turn.UpdatedAt.Time,
 		Messages:         make([]aiMessageResponse, 0, len(messages)),
 		ToolCalls:        make([]aiToolCallResponse, 0),
+		Approvals:        make([]mcpApprovalJSON, 0),
 	}
 	for _, message := range messages {
 		response.Messages = append(response.Messages, aiMessageResponse{
@@ -202,7 +211,19 @@ func (a *App) handleGetAITurn(w http.ResponseWriter, r *http.Request) {
 
 	}
 	user := principal.User
-	turn, err := a.Queries.GetAITurnForUser(r.Context(), sqlc.GetAITurnForUserParams{UserID: user.ID, TurnID: turnID})
+	// One read-only REPEATABLE READ transaction covers the turn, its
+	// messages, tool calls, current approvals, and the event cursor, so the
+	// cursor describes exactly the committed state the snapshot shows. Never
+	// read live rows first and MAX(id) after: that pair can straddle a commit
+	// and replay or skip events on resubscribe.
+	tx, err := a.DB.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		serverError(w, r, fmt.Errorf("begin ai turn snapshot: %w", err))
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	queries := a.Queries.WithTx(tx)
+	turn, err := queries.GetAITurnForUser(r.Context(), sqlc.GetAITurnForUserParams{UserID: user.ID, TurnID: turnID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSONError(w, http.StatusNotFound, "turn not found")
 		return
@@ -211,18 +232,36 @@ func (a *App) handleGetAITurn(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, fmt.Errorf("get ai turn: %w", err))
 		return
 	}
-	messages, err := a.Queries.ListAIMessagesForUser(r.Context(), sqlc.ListAIMessagesForUserParams{UserID: user.ID, TurnID: turnID})
+	messages, err := queries.ListAIMessagesForUser(r.Context(), sqlc.ListAIMessagesForUserParams{UserID: user.ID, TurnID: turnID})
 	if err != nil {
 		serverError(w, r, fmt.Errorf("get ai turn messages: %w", err))
 		return
 	}
-	toolCalls, err := a.Queries.ListAIToolCallsForTurn(r.Context(), turnID)
+	toolCalls, err := queries.ListAIToolCallsForTurn(r.Context(), turnID)
 	if err != nil {
 		serverError(w, r, fmt.Errorf("get ai turn tool calls: %w", err))
 		return
 	}
+	approvalRows, err := queries.ListMCPApprovalsForTurn(r.Context(), turnID)
+	if err != nil {
+		serverError(w, r, fmt.Errorf("get ai turn approvals: %w", err))
+		return
+	}
+	var eventCursor int64
+	if err := tx.QueryRow(r.Context(), `SELECT COALESCE(MAX(id), 0) FROM ai_turn_events WHERE turn_id = $1`, turnID).Scan(&eventCursor); err != nil {
+		serverError(w, r, fmt.Errorf("get ai turn event cursor: %w", err))
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		serverError(w, r, fmt.Errorf("commit ai turn snapshot: %w", err))
+		return
+	}
 	response := newAITurnResponse(snapshotFromAITurn(turn), messages)
 	response.ToolCalls = newAIToolCallsResponse(toolCalls)
+	response.EventCursor = eventCursor
+	for _, row := range approvalRows {
+		response.Approvals = append(response.Approvals, newMCPApprovalJSON(mcpApprovalDataFromTurnRow(row)))
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -264,7 +303,7 @@ func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
 		// Cancelling a paused turn invalidates its pending approvals
 		// atomically with the stop, so no later decision can queue it again
 		// and continuation becomes impossible.
-		invalidated, err := queries.InvalidatePendingCMSApprovalsForTurn(r.Context(), sqlc.InvalidatePendingCMSApprovalsForTurnParams{
+		invalidated, err := queries.InvalidatePendingMCPApprovalsForTurn(r.Context(), sqlc.InvalidatePendingMCPApprovalsForTurnParams{
 			TurnID:  turnID,
 			Summary: "turn cancelled while waiting for approval",
 		})
@@ -273,18 +312,17 @@ func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, approval := range invalidated {
-			payload, err := json.Marshal(map[string]any{"approval": newCMSApprovalJSON(cmsApprovalData{
-				ID: approval.ID, TurnID: approval.TurnID, ToolCallID: approval.ToolCallID, ToolName: approval.ToolName,
-				Provider: approval.Provider, Target: approval.Target, BeforeText: approval.BeforeText, AfterText: approval.AfterText,
-				Snapshot: approval.Snapshot, ProposedArgs: approval.ProposedArgs, ConnectionRevision: approval.ConnectionRevision,
-				Status: approval.Status, CreatedAt: approval.CreatedAt, DecidedAt: approval.DecidedAt, DecidedBy: approval.DecidedBy,
-				Summary: approval.Summary,
-			})})
+			payload, err := mcpApprovalDecidedPayloadFromData(mcpApprovalDataFromInvalidatedTurn(approval))
 			if err != nil {
 				serverError(w, r, fmt.Errorf("encode invalidated ai approval: %w", err))
 				return
 			}
-			if _, err := tx.Exec(r.Context(), `INSERT INTO ai_turn_events(turn_id, event_type, payload) VALUES ($1, 'approval_decided', $2::jsonb)`, turnID, string(payload)); err != nil {
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				serverError(w, r, fmt.Errorf("encode invalidated ai approval: %w", err))
+				return
+			}
+			if _, err := tx.Exec(r.Context(), `INSERT INTO ai_turn_events(turn_id, event_type, payload) VALUES ($1, 'approval_decided', $2::jsonb)`, turnID, string(encoded)); err != nil {
 				serverError(w, r, fmt.Errorf("create invalidated ai approval event: %w", err))
 				return
 			}
@@ -312,7 +350,7 @@ func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
 		// A pause racing this cancel finds cancel_requested_at set and
 		// finalizes stopped instead; invalidating here covers an approval
 		// row committed just before the worker observed the cancel.
-		if _, err := queries.InvalidatePendingCMSApprovalsForTurn(r.Context(), sqlc.InvalidatePendingCMSApprovalsForTurnParams{
+		if _, err := queries.InvalidatePendingMCPApprovalsForTurn(r.Context(), sqlc.InvalidatePendingMCPApprovalsForTurnParams{
 			TurnID:  turnID,
 			Summary: "turn cancelled while running",
 		}); err != nil {

@@ -32,6 +32,9 @@ func testWorker(t *testing.T) (*Worker, *Worker, pgtype.UUID, pgtype.UUID) {
 		t.Skip(err)
 	}
 	t.Cleanup(pool.Close)
+	if err := internaldb.EnsureMCPMarketplaceTestSchema(context.Background(), pool); err != nil {
+		t.Skipf("mcp marketplace test schema not available: %v", err)
+	}
 	name := fmt.Sprintf("chat-worker-%d", time.Now().UnixNano())
 	ctx := context.Background()
 	var org, user, project pgtype.UUID

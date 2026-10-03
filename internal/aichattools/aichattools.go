@@ -231,13 +231,14 @@ func NewRegistry() *Registry {
 	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool()}}
 }
 
-// CatalogDefs lists every implemented tool definition in catalog order,
-// including tools not yet served to the model. Admin gating and denylist
+// CatalogDefs lists every native tool definition in catalog order, including
+// native tools not yet served to the model. Admin gating and denylist
 // validation run against the full catalog, so a tool can be gateable (and
-// shown in the admin AI tools drawer) before the model can call it.
+// shown in the admin AI tools drawer) before the model can call it. MCP
+// connection tools are not here: they exist per connection and are gated by
+// the canonical aliases MCPModelToolName builds.
 func CatalogDefs() []Def {
-	defs := []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def}
-	return append(append(defs, runeStaticDefs()...), wordpressStaticDefs()...)
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag
@@ -271,7 +272,7 @@ func (r *Registry) Defs() []Def {
 }
 
 // Add registers one per-turn tool, rejecting empty or duplicate names so a
-// dynamic CMS tool can never shadow or duplicate a native tool.
+// dynamic MCP tool can never shadow or duplicate a native tool.
 func (r *Registry) Add(tool Tool) error {
 	if strings.TrimSpace(tool.Def.Name) == "" {
 		return errors.New("aichattools: tool name must not be empty")
@@ -291,4 +292,24 @@ func (r *Registry) Get(name string) (Tool, bool) {
 		}
 	}
 	return Tool{}, false
+}
+
+// NewFilteredRegistry returns a registry of the native served tools minus the
+// blocked (denylist snapshot) names. MCP connection tools are added per turn
+// with Add; the executing registry and the model-facing defs must derive from
+// the same per-turn registry so the model cannot run a disabled or unexposed
+// tool by guessing its name.
+func NewFilteredRegistry(blocked []string) *Registry {
+	deny := make(map[string]bool, len(blocked))
+	for _, name := range blocked {
+		deny[name] = true
+	}
+	registry := &Registry{}
+	for _, tool := range NewRegistry().tools {
+		if deny[tool.Def.Name] {
+			continue
+		}
+		registry.tools = append(registry.tools, tool)
+	}
+	return registry
 }

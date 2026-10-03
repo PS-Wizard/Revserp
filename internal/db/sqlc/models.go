@@ -40,7 +40,16 @@ type AiAuditRun struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
-type AiCmsApproval struct {
+type AiConversation struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type AiMcpApproval struct {
 	ID                 pgtype.UUID
 	TurnID             pgtype.UUID
 	ToolCallID         string
@@ -58,15 +67,11 @@ type AiCmsApproval struct {
 	Summary            string
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
-}
-
-type AiConversation struct {
-	ID              pgtype.UUID
-	ProjectID       pgtype.UUID
-	CreatedByUserID pgtype.UUID
-	Title           string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
+	ConnectionID       pgtype.UUID
+	ConnectionName     string
+	RemoteToolName     string
+	SchemaDigest       string
+	Service            string
 }
 
 type AiMessage struct {
@@ -507,18 +512,6 @@ type ProjectBusinessProfile struct {
 	BusinessCompetitors []byte
 }
 
-type ProjectCmsConnection struct {
-	ProjectID      pgtype.UUID
-	EndpointUrl    string
-	EncryptedToken string
-	Revision       pgtype.UUID
-	Tools          []byte
-	LastCheckedAt  pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	Provider       string
-}
-
 type ProjectCompetitor struct {
 	ID        pgtype.UUID
 	ProjectID pgtype.UUID
@@ -557,6 +550,27 @@ type ProjectKeyword struct {
 	Source            string
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+}
+
+type ProjectMcpConnection struct {
+	ID             pgtype.UUID
+	ProjectID      pgtype.UUID
+	Name           string
+	Service        string
+	EndpointUrl    string
+	EncryptedToken string
+	Revision       pgtype.UUID
+	Tools          []byte
+	LastCheckedAt  pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+type ProjectMcpToolPermission struct {
+	ConnectionID pgtype.UUID
+	ToolName     string
+	Permission   string
+	UpdatedAt    pgtype.Timestamptz
 }
 
 type ProjectSetup struct {

@@ -34,36 +34,21 @@ const (
 	approvalTimeoutSummary = "no decision before the approval wait ended; the call was not performed"
 )
 
-// cmsApprovalRequired reports whether a tool call must wait for an explicit
-// user approval before any remote sensitive call. Only the known policy
-// decides: the Rune create/update writes and every catalogued WordPress write,
-// which PrepareCMSApproval then refines with its draft and dry-run exceptions.
-// A discovered tool outside the catalogue has no policy, so it executes
-// directly; the write-uncertainty marker and the no-retry crash recovery still
-// cover it, because a name outside the policy is never treated as read-only.
-func cmsApprovalRequired(toolName string) bool {
-	return aichattools.IsRuneWriteName(toolName) || aichattools.IsWordPressWriteName(toolName)
-}
-
-// cmsCallSummary is the bounded plaintext proposal stored per approval.
+// mcpCallSummary is the bounded plaintext proposal stored per approval.
 // Target/Before/After are untrusted display data, never secrets.
-type cmsCallSummary struct {
-	provider string
-	target   string
-	before   string
-	after    string
-	snapshot json.RawMessage
+type mcpCallSummary struct {
+	target string
+	before string
+	after  string
 }
 
 // proposalSummary maps one helper proposal to the stored summary, keeping the
 // helper's own bounds and truncating defensively on top.
-func proposalSummary(provider string, proposal aichattools.CMSApprovalProposal) cmsCallSummary {
-	return cmsCallSummary{
-		provider: provider,
-		target:   truncateRunes(proposal.Target, approvalTargetMax),
-		before:   truncateRunes(proposal.Before, approvalAfterMax),
-		after:    truncateRunes(proposal.After, approvalAfterMax),
-		snapshot: proposal.Snapshot,
+func proposalSummary(proposal aichattools.MCPApprovalProposal) mcpCallSummary {
+	return mcpCallSummary{
+		target: truncateRunes(proposal.Target, approvalTargetMax),
+		before: truncateRunes(proposal.Before, approvalAfterMax),
+		after:  truncateRunes(proposal.After, approvalAfterMax),
 	}
 }
 
@@ -94,9 +79,8 @@ func canonicalArgsEqual(proposed []byte, live string) bool {
 
 // snapshotsEqualCanonical compares the snapshot taken when the approval was
 // requested with a fresh helper snapshot semantically. Both empty means no
-// pre-write state existed (Rune creates, global actions): the connection guard
-// plus the immutable in-memory args carry the check instead. Any other
-// difference blocks the write.
+// pre-write state existed: the connection guard plus the immutable in-memory
+// args carry the check instead. Any other difference blocks the write.
 func snapshotsEqualCanonical(stored, fresh []byte) bool {
 	blank := func(raw []byte) bool {
 		trimmed := bytes.TrimSpace(raw)
@@ -113,26 +97,33 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// requestCMSApproval persists the pending approval and its approval_required
+// requestMCPApproval persists the pending approval and its approval_required
 // event atomically: the event carries the row the frontend renders, so it must
-// never exist without it. The turn stays running and keeps its lease.
-func (w *Worker) requestCMSApproval(ctx context.Context, claimed turn, call ai.ToolCall, summary cmsCallSummary, revision string) (pgtype.UUID, error) {
+// never exist without it. The turn stays running and keeps its lease. The
+// stored row binds the exact connection, remote tool, immutable args, schema
+// digest, and reviewed snapshot the worker executes on approval.
+func (w *Worker) requestMCPApproval(ctx context.Context, claimed turn, call ai.ToolCall, handle *mcpTurnHandle, remote, schemaDigest string, proposal aichattools.MCPApprovalProposal, summary mcpCallSummary) (pgtype.UUID, error) {
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
 		return pgtype.UUID{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	created, err := sqlc.New(tx).CreateCMSApproval(ctx, sqlc.CreateCMSApprovalParams{
+	created, err := sqlc.New(tx).CreateMCPApproval(ctx, sqlc.CreateMCPApprovalParams{
 		TurnID:             claimed.ID,
 		ToolCallID:         call.ID,
 		ToolName:           call.Name,
-		Provider:           summary.provider,
+		Provider:           handle.service,
+		Service:            handle.service,
+		ConnectionID:       handle.connectionID,
+		ConnectionName:     handle.connectionName,
+		RemoteToolName:     remote,
+		SchemaDigest:       schemaDigest,
 		Target:             summary.target,
 		BeforeText:         summary.before,
 		AfterText:          summary.after,
-		Snapshot:           defaultEmptyJSON(summary.snapshot),
+		Snapshot:           defaultEmptyJSON(proposal.Snapshot),
 		ProposedArgs:       []byte(call.Args),
-		ConnectionRevision: textUUID(revision),
+		ConnectionRevision: textUUID(handle.revision),
 	})
 	if err != nil {
 		return pgtype.UUID{}, err
@@ -177,7 +168,7 @@ func (w *Worker) waitForApprovalDecision(ctx context.Context, claimed turn, appr
 	deadline := time.Now().Add(w.approvalWait)
 	for {
 		var status string
-		if err := w.pool.QueryRow(ctx, `SELECT status FROM ai_cms_approvals WHERE id = $1`, approvalID).Scan(&status); err != nil {
+		if err := w.pool.QueryRow(ctx, `SELECT status FROM ai_mcp_approvals WHERE id = $1`, approvalID).Scan(&status); err != nil {
 			return approvalLost, err
 		}
 		cancelled, err := w.refreshLease(ctx, claimed)
@@ -207,7 +198,7 @@ func (w *Worker) waitForApprovalDecision(ctx context.Context, claimed turn, appr
 // ended unanswered, or a target that moved) so the approval leaves the
 // pending state the frontend renders.
 func (w *Worker) closeApproval(ctx context.Context, claimed turn, approvalID pgtype.UUID, status, summary string) {
-	if _, err := w.pool.Exec(ctx, `UPDATE ai_cms_approvals SET status = $2, decided_at = now(), summary = $3, updated_at = now() WHERE id = $1 AND status IN ('pending', 'approved')`, approvalID, status, summary); err != nil {
+	if _, err := w.pool.Exec(ctx, `UPDATE ai_mcp_approvals SET status = $2, decided_at = now(), summary = $3, updated_at = now() WHERE id = $1 AND status IN ('pending', 'approved')`, approvalID, status, summary); err != nil {
 		return
 	}
 	payload, err := w.approvalPayload(ctx, w.pool, approvalID)
@@ -229,9 +220,9 @@ func defaultEmptyJSON(raw json.RawMessage) []byte {
 // approvalPayload renders the approval entity shape the SSE approval events
 // carry, read back from the stored row.
 func (w *Worker) approvalPayload(ctx context.Context, queries rowQuerier, approvalID pgtype.UUID) (string, error) {
-	var row sqlc.GetCMSApprovalByIDRow
-	if err := queries.QueryRow(ctx, `SELECT id, turn_id, tool_call_id, tool_name, provider, target, before_text, after_text, snapshot, proposed_args, connection_revision, status, created_at, decided_at, decided_by, summary FROM ai_cms_approvals WHERE id = $1`, approvalID).Scan(
-		&row.ID, &row.TurnID, &row.ToolCallID, &row.ToolName, &row.Provider, &row.Target, &row.BeforeText, &row.AfterText, &row.Snapshot, &row.ProposedArgs, &row.ConnectionRevision, &row.Status, &row.CreatedAt, &row.DecidedAt, &row.DecidedBy, &row.Summary,
+	var row sqlc.GetMCPApprovalByIDRow
+	if err := queries.QueryRow(ctx, `SELECT id, turn_id, tool_call_id, tool_name, provider, service, connection_id, connection_name, remote_tool_name, schema_digest, target, before_text, after_text, snapshot, proposed_args, connection_revision, status, created_at, decided_at, decided_by, summary FROM ai_mcp_approvals WHERE id = $1`, approvalID).Scan(
+		&row.ID, &row.TurnID, &row.ToolCallID, &row.ToolName, &row.Provider, &row.Service, &row.ConnectionID, &row.ConnectionName, &row.RemoteToolName, &row.SchemaDigest, &row.Target, &row.BeforeText, &row.AfterText, &row.Snapshot, &row.ProposedArgs, &row.ConnectionRevision, &row.Status, &row.CreatedAt, &row.DecidedAt, &row.DecidedBy, &row.Summary,
 	); err != nil {
 		return "", err
 	}
@@ -254,13 +245,28 @@ func textUUID(value string) pgtype.UUID {
 
 // approvalJSONFromWorker maps one approval row to the contract entity shape
 // for SSE payloads (worker side; the app owns the HTTP shape).
-func approvalJSONFromWorker(row sqlc.GetCMSApprovalByIDRow) map[string]any {
+func approvalJSONFromWorker(row sqlc.GetMCPApprovalByIDRow) map[string]any {
 	approval := map[string]any{
 		"id": row.ID.String(), "turn_id": row.TurnID.String(),
-		"tool_call_id": row.ToolCallID, "tool_name": row.ToolName, "provider": row.Provider,
+		"tool_call_id": row.ToolCallID, "tool_name": row.ToolName,
 		"target": row.Target, "before": row.BeforeText, "after": row.AfterText,
 		"status": row.Status, "created_at": row.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		"proposed_args": json.RawMessage(append([]byte(nil), row.ProposedArgs...)),
+	}
+	if row.Provider != "" {
+		approval["provider"] = row.Provider
+	}
+	if row.Service != "" {
+		approval["service"] = row.Service
+	}
+	if row.ConnectionID.Valid {
+		approval["connection_id"] = row.ConnectionID.String()
+	}
+	if row.ConnectionName != "" {
+		approval["connection_name"] = row.ConnectionName
+	}
+	if row.RemoteToolName != "" {
+		approval["remote_tool_name"] = row.RemoteToolName
 	}
 	if row.DecidedAt.Valid {
 		approval["decided_at"] = row.DecidedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
@@ -271,30 +277,50 @@ func approvalJSONFromWorker(row sqlc.GetCMSApprovalByIDRow) map[string]any {
 	return approval
 }
 
-// approvedCallUnchanged re-checks an approved call against the live session
-// before the write: the connection guard (membership, feature, provider,
-// revision) must still pass and a fresh helper run must reproduce the snapshot
-// taken when the approval was requested. The args are the in-memory ones the
-// approval was built from, so they cannot have drifted.
-func (w *Worker) approvedCallUnchanged(ctx context.Context, handle *cmsTurnHandle, scope turnScope, proposal aichattools.CMSApprovalProposal, call ai.ToolCall) bool {
+// approvedMCPCall is an approved Ask call awaiting its live rechecks.
+type approvedMCPCall struct {
+	handle       *mcpTurnHandle
+	remote       string
+	proposal     aichattools.MCPApprovalProposal
+	schemaDigest string
+	call         ai.ToolCall
+}
+
+// approvedCallUnchanged re-checks an approved call against the current
+// saved rows and the live session before dispatch: membership, feature, and
+// revision must still pass, the exact tool must still be discovered with the
+// approved schema digest, the rule must not be Deny, the stored args must
+// match the in-memory ones, and a fresh helper run through the
+// policy-enforcing preflight session must reproduce the snapshot taken when
+// the approval was requested.
+func (w *Worker) approvedCallUnchanged(ctx context.Context, scope turnScope, approved approvedMCPCall, storedArgs []byte) bool {
+	handle := approved.handle
 	if handle == nil {
 		return false
 	}
-	if err := w.cmsGuard(scope.UserID, scope.ProjectID, handle.provider, handle.revision)(ctx); err != nil {
+	permission, currentDigest, err := w.verifyMCPCallCurrent(ctx, scope, handle.connectionID, handle.revision, approved.remote)
+	if err != nil || permission == "deny" || currentDigest != approved.schemaDigest {
 		return false
 	}
-	fresh, err := aichattools.PrepareCMSApproval(ctx, handle.session, handle.provider, call.Name, json.RawMessage(call.Args))
+	if !canonicalArgsEqual(storedArgs, approved.call.Args) {
+		return false
+	}
+	liveDigest, ok := liveMCPToolDigest(handle.session, approved.remote)
+	if !ok || liveDigest != currentDigest {
+		return false
+	}
+	fresh, err := aichattools.PrepareMCPApproval(ctx, w.preflightSessionFor(scope, handle), handle.service, approved.remote, json.RawMessage(approved.call.Args))
 	if err != nil {
 		return false
 	}
-	return snapshotsEqualCanonical(proposal.Snapshot, fresh.Snapshot)
+	return snapshotsEqualCanonical(approved.proposal.Snapshot, fresh.Snapshot)
 }
 
-// denyToolCall records a rejected call as a paired denied tool result. It
+// denyToolCall records a refused call as a paired denied tool result. It
 // never executes the remote call.
 func (w *Worker) denyToolCall(ctx context.Context, claimed turn, call ai.ToolCall, live *[]ai.Message) error {
 	queries := sqlc.New(w.pool)
-	content := call.Name + " error: the requested CMS change was not approved and was not performed."
+	content := call.Name + " error: the requested MCP change was not approved and was not performed."
 	rowID, _, err := ensureToolCallRow(ctx, w.pool, queries, claimed.ID, call)
 	if err != nil {
 		return err

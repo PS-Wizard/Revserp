@@ -68,17 +68,63 @@ func adminAIToolCatalog() []adminAIToolInfo {
 	return infos
 }
 
-// dynamicCMSToolName reports whether name is a valid namespaced-provider CMS
-// identifier (cms__ / wp__ plus a validated suffix). It accepts names this
-// build's static catalogue has never seen, so a newly discovered tool can be
-// disabled; it grants nothing, because the executing registry still comes
-// only from the session's discovered tools.
-func dynamicCMSToolName(name string) bool {
-	return aichattools.IsRuneToolName(name) || aichattools.IsWordPressToolName(name)
+// dynamicMCPToolName reports whether name is a canonical generic MCP model
+// alias, or a historical cms__/wp__ name kept for saved denylist history
+// only. It accepts aliases this build's static catalogue has never seen, so
+// a newly discovered tool can be disabled; it grants nothing, because the
+// executing registry still comes only from the session's discovered tools.
+// No legacy execution aliases exist: history-only names never reach the model.
+func dynamicMCPToolName(name string) bool {
+	if aichattools.IsMCPModelToolName(name) {
+		return true
+	}
+	return isHistoricalCMSNamespacedName(name)
+}
+
+// isHistoricalCMSNamespacedName matches the retired cms__/wp__ spellings so
+// previously saved denylists keep validating. It checks the retired local
+// grammar (no double underscore, ASCII word characters, max 128) without
+// importing the retired tool packages. Names that were never valid, like
+// cms__a__b, stay rejected.
+func isHistoricalCMSNamespacedName(name string) bool {
+	for _, prefix := range []string{"cms__", "wp__"} {
+		suffix, ok := cutPrefix(name, prefix)
+		if ok && isHistoricalCMSToolName(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func cutPrefix(name, prefix string) (string, bool) {
+	if len(name) > len(prefix) && name[:len(prefix)] == prefix {
+		return name[len(prefix):], true
+	}
+	return "", false
+}
+
+// isHistoricalCMSToolName is the retired transport name grammar: bounded
+// ASCII letters, digits, underscores and dashes, first character
+// alphanumeric, no doubled underscore.
+func isHistoricalCMSToolName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	if strings.Contains(name, "__") {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		valid := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
+		if !valid || i == 0 && !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // normalizeDisabledAITools drops empty and unknown names, dedupes, orders the
-// catalog entries first and any valid dynamic CMS name after them, and
+// catalog entries first and any valid dynamic MCP alias after them, and
 // force-disables tools whose feature flag is off.
 func normalizeDisabledAITools(tools []string, gscConnector bool) []string {
 	disabled := make(map[string]bool, len(tools))
@@ -102,7 +148,7 @@ func normalizeDisabledAITools(tools []string, gscConnector bool) []string {
 	}
 	dynamic := make([]string, 0, len(tools))
 	for name := range disabled {
-		if !seen[name] && dynamicCMSToolName(name) {
+		if !seen[name] && dynamicMCPToolName(name) {
 			dynamic = append(dynamic, name)
 		}
 	}
@@ -112,11 +158,11 @@ func normalizeDisabledAITools(tools []string, gscConnector bool) []string {
 
 // validateDisabledAITools rejects names outside the registry catalog and
 // returns the normalized list (feature-off tools force-disabled). Valid
-// dynamic cms__/wp__ identifiers are accepted too; a guessed native name
+// dynamic MCP aliases (plus historical names for saved history) are accepted too; a guessed native name
 // still fails.
 func validateDisabledAITools(tools []string, gscConnector bool) ([]string, error) {
 	for _, tool := range tools {
-		if tool != "" && !containsString(aiToolCatalogNames(), tool) && !dynamicCMSToolName(tool) {
+		if tool != "" && !containsString(aiToolCatalogNames(), tool) && !dynamicMCPToolName(tool) {
 			return nil, fmt.Errorf("unknown ai tool %q; valid tools: %s", tool, strings.Join(aiToolCatalogNames(), ", "))
 		}
 	}

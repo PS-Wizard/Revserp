@@ -447,18 +447,18 @@ func recoverExpiredAITurnsForConversation(ctx context.Context, queries *sqlc.Que
 		// An approved CMS call caught mid-execution fails as unknown (paired
 		// with an unknown tool result) and is never retried, mirroring the
 		// worker recovery path.
-		if err := failExecutingCMSApprovalsForTurn(ctx, queries, turn.ID); err != nil {
+		if err := failExecutingMCPApprovalsForTurn(ctx, queries, turn.ID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// failExecutingCMSApprovalsForTurn marks executing approvals of one
+// failExecutingMCPApprovalsForTurn marks executing approvals of one
 // recovered-failed turn as failed with an unknown outcome, pairs each with
 // an unknown tool result event, and never executes anything.
-func failExecutingCMSApprovalsForTurn(ctx context.Context, queries *sqlc.Queries, turnID pgtype.UUID) error {
-	approvals, err := queries.FailExecutingCMSApprovalsForTurn(ctx, turnID)
+func failExecutingMCPApprovalsForTurn(ctx context.Context, queries *sqlc.Queries, turnID pgtype.UUID) error {
+	approvals, err := queries.FailExecutingMCPApprovalsForTurn(ctx, turnID)
 	if err != nil {
 		return fmt.Errorf("fail executing ai approvals: %w", err)
 	}

@@ -10,11 +10,11 @@ import (
 	"io"
 )
 
-// EncryptSecret encrypts one token for database storage.
+// EncryptSecret encrypts one token for database storage. Empty plaintext
+// encrypts to a nonempty opaque ciphertext so callers with a NOT NULL
+// credential column can represent an explicit no-credential state without a
+// placeholder token; DecryptSecret returns the empty plaintext back.
 func (service *Service) EncryptSecret(value string) (string, error) {
-	if value == "" {
-		return "", nil
-	}
 	key := deriveEncryptionKey(service.encryptionSecret)
 	block, err := aes.NewCipher(key)
 	if err != nil {

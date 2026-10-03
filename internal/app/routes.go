@@ -104,8 +104,8 @@ func (a *App) Router() http.Handler {
 				gated.Get("/ai/conversations/{conversationID}", a.handleGetAIConversation)
 				gated.Delete("/ai/conversations/{conversationID}", a.handleDeleteAIConversation)
 				gated.Post("/ai/conversations/{conversationID}/turns", a.handleSubmitAITurn)
-				gated.Get("/ai/conversations/{conversationID}/approvals", a.handleListCMSApprovals)
-				gated.Post("/ai/conversations/{conversationID}/approvals/{approvalID}/decision", a.handleDecideCMSApproval)
+				gated.Get("/ai/conversations/{conversationID}/approvals", a.handleListMCPApprovals)
+				gated.Post("/ai/conversations/{conversationID}/approvals/{approvalID}/decision", a.handleDecideMCPApproval)
 			})
 			app.Get("/ai/turns/{turnID}", a.handleGetAITurn)
 			app.Post("/ai/turns/{turnID}/cancel", a.handleCancelAITurn)
@@ -138,14 +138,13 @@ func (a *App) Router() http.Handler {
 
 			app.Group(func(gated chi.Router) {
 				gated.Use(a.requireFeature(FeatureIntegrations, featuresByProjectParam))
-				gated.Get("/projects/{projectID}/rune/status", a.handleRuneStatus)
-				gated.Post("/projects/{projectID}/rune/connect", a.handleRuneConnect)
-				gated.Post("/projects/{projectID}/rune/check", a.handleRuneCheck)
-				gated.Post("/projects/{projectID}/rune/disconnect", a.handleRuneDisconnect)
-				gated.Get("/projects/{projectID}/cms/status", a.handleCMSStatus)
-				gated.Post("/projects/{projectID}/cms/connect", a.handleCMSConnect)
-				gated.Post("/projects/{projectID}/cms/check", a.handleCMSCheck)
-				gated.Post("/projects/{projectID}/cms/disconnect", a.handleCMSDisconnect)
+				gated.Get("/projects/{projectID}/mcp/catalog", a.handleMCPCatalog)
+				gated.Get("/projects/{projectID}/mcp/connections", a.handleMCPListConnections)
+				gated.Post("/projects/{projectID}/mcp/connections", a.handleMCPCreateConnection)
+				gated.Patch("/projects/{projectID}/mcp/connections/{connectionID}", a.handleMCPPatchConnection)
+				gated.Post("/projects/{projectID}/mcp/connections/{connectionID}/check", a.handleMCPCheckConnection)
+				gated.Delete("/projects/{projectID}/mcp/connections/{connectionID}", a.handleMCPDeleteConnection)
+				gated.Put("/projects/{projectID}/mcp/connections/{connectionID}/permissions", a.handleMCPPutPermissions)
 			})
 
 			app.Group(func(gated chi.Router) {

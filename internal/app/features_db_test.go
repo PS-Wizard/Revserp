@@ -44,6 +44,9 @@ func newFeaturesTestQueries(t *testing.T) (*sqlc.Queries, *pgxpool.Pool, context
 		t.Skipf("database is not available: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	if err := internaldb.EnsureMCPMarketplaceTestSchema(ctx, pool); err != nil {
+		t.Skipf("mcp marketplace test schema not available: %v", err)
+	}
 
 	return sqlc.New(pool), pool, ctx
 }

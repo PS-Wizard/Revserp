@@ -10,13 +10,11 @@ import (
 	"syscall"
 
 	"github.com/ps-wizard/revserp/internal/ai"
-	"github.com/ps-wizard/revserp/internal/aichattools"
 	"github.com/ps-wizard/revserp/internal/aichatworker"
 	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 	"github.com/ps-wizard/revserp/internal/googlesuggest"
 	"github.com/ps-wizard/revserp/internal/gsc"
-	"github.com/ps-wizard/revserp/internal/runecms"
 	"github.com/ps-wizard/revserp/internal/tinyfish"
 )
 
@@ -54,20 +52,10 @@ func run() error {
 		TurnTimeout:  cfg.AITurnTimeout,
 	})
 	worker.GSC = gsc.NewService(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, cfg.GoogleTokenEncryptionSecret, cfg.MaxAPIResponseBytes)
-	// One Rune CMS session per turn, dialed from the saved per-project
-	// connection. *runecms.Session satisfies the worker session interface
-	// directly, so no adapter or network bypass exists here.
-	worker.RuneDial = func(ctx context.Context, endpoint, token string) (aichattools.RuneSession, error) {
-		return runecms.Connect(ctx, endpoint, token)
-	}
-	// One WordPress CMS session per turn, dialed from the saved per-project
-	// connection through the transport-owned WordPress connector (same safe
-	// HTTP transport and shared encryption requirement as Rune).
-	// *runecms.Session satisfies the worker session interface directly, so no
-	// adapter or network bypass exists here.
-	worker.WordPressDial = func(ctx context.Context, endpoint, token string) (aichattools.RuneSession, error) {
-		return runecms.ConnectWordPress(ctx, endpoint, token)
-	}
+	// One generic MCP session per connection per turn, dialed from the saved
+	// per-project connections. *mcpclient.Session satisfies the worker session
+	// interface directly, so no adapter or network bypass exists here.
+	worker.MCPDial = aichatworker.DefaultMCPConnector
 	// Google autocomplete is keyless, so the reader is always wired; a call
 	// reports unavailable only when the endpoint cannot be reached at call time.
 	worker.Suggest = googlesuggest.NewClient("", cfg.MaxAPIResponseBytes, 0)

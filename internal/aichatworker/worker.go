@@ -78,16 +78,11 @@ type Worker struct {
 	// unavailable state).
 	Suggest aichattools.SuggestClient
 
-	// RuneDial connects one Rune CMS session per turn; nil when no
-	// connector is wired (tests inject a fake). A nil connector leaves
-	// CMS tools disconnected and native chat working.
-	RuneDial RuneConnector
-
-	// WordPressDial connects one WordPress CMS session per turn through
-	// the transport-owned runecms.ConnectWordPress; nil keeps WordPress
-	// turns working without CMS tools (fail closed). Wired in
+	// MCPDial connects one generic MCP session per connection per turn; nil
+	// when no connector is wired (tests inject a fake). A nil connector
+	// leaves MCP tools disconnected and native chat working. Wired in
 	// cmd/ai-chat-worker.
-	WordPressDial RuneConnector
+	MCPDial MCPConnector
 
 	lease     time.Duration
 	heartbeat time.Duration
@@ -282,15 +277,15 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	queries := sqlc.New(w.pool)
 	// One registry per turn drives both the provider-facing defs and the
 	// executor, so the model cannot run a disabled or unexposed tool by
-	// guessing its name. CMS tools join the same registry for this turn
+	// guessing its name. MCP tools join the same registry for this turn
 	// only; nothing is shared across turns.
 	registry := aichattools.NewFilteredRegistry(claimed.DisabledTools)
-	cmsStatus, cmsHandle, closeCMS := w.setupCMS(ctx, scope, claimed.DisabledTools, registry)
-	if closeCMS != nil {
-		defer closeCMS()
+	mcpStatus, mcpHandles, closeMCP := w.setupMCP(ctx, scope, claimed.DisabledTools, registry)
+	if closeMCP != nil {
+		defer closeMCP()
 	}
-	if cmsStatus != "" && len(messages) > 0 {
-		messages[0].Content += "\n\n--- CMS context ---\n" + cmsStatus
+	if mcpStatus != "" && len(messages) > 0 {
+		messages[0].Content += "\n\n--- MCP context ---\n" + mcpStatus
 	}
 	allowed := allowedToolsFromRegistry(registry)
 	toolScope := aichattools.Scope{
@@ -578,89 +573,128 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
 				continue
 			}
-			// CMS writes consult PrepareCMSApproval BEFORE any remote
-			// sensitive call. A required approval parks this run in place:
-			// the approval row and its event are committed, then the
-			// same process waits for the decision with the lease held and
-			// the transcript in memory. A helper error blocks the call as
-			// a failed result; the write never runs either way. The gate
-			// only covers a tool this turn's active registry still serves:
-			// a disabled or unknown tool must fall through to the
-			// unknown-tool result instead of becoming a pending approval.
+			// MCP calls consult the saved user policy before anything runs. The
+			// gate only covers a tool this turn's active registry still serves
+			// under a known connection alias: a disabled or unknown tool falls
+			// through to the unknown-tool result instead of an approval. Deny
+			// never dispatches, even for a call created before the Deny. Allow
+			// executes with guards and semantic safety checks but no prompt.
+			// Ask parks this run in place: the approval row, bound to the exact
+			// connection, remote tool, immutable args, and schema digest, and
+			// its event are committed, then the same process waits for the
+			// decision with the lease held and the transcript in memory.
 			var approval pgtype.UUID
 			_, registered := registry.Get(call.Name)
-			if registered && cmsApprovalRequired(call.Name) && cmsHandle != nil {
-				proposal, proposalErr := aichattools.PrepareCMSApproval(ctx, cmsHandle.session, cmsHandle.provider, call.Name, json.RawMessage(call.Args))
-				if proposalErr != nil {
-					nextSeq++
-					toolStart := time.Now()
-					status, result := blockedCMSCallResult(call)
-					result.Content = capToolResultContent(result.Content)
-					if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
-						failTurn("tool_result_event", err)
-						return
-					}
-					log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
-					live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
-					continue
-				}
-				// Cleared by policy (a read, dry run, or proven-draft edit):
-				// fall through to direct execution with no approval row.
-				if proposal.Required {
-					if err := flush(false); err != nil {
-						failTurn("flush", err)
-						return
-					}
-					requested, err := w.requestCMSApproval(ctx, claimed, call, proposalSummary(cmsHandle.provider, proposal), cmsHandle.revision)
-					if stop, abandon := fail(err); stop {
-						if abandon {
-							return
-						}
-						toolStop = true
-						break
-					}
-					decision, err := w.waitForApprovalDecision(ctx, claimed, requested)
-					if stop, abandon := fail(err); stop {
-						if abandon {
-							return
-						}
-						toolStop = true
-						break
-					}
-					switch decision {
-					case approvalCancelled:
-						cancelRequested = true
-						cancel()
-						ctxDone = nil
-						toolStop = true
-					case approvalDenied:
+			// Call-scoped proof: a previous call's approval never authorizes
+			// this one, even for the same alias. The current call earns its
+			// own proof below only after its exact decision is marked
+			// executing, and the proof is dropped when its dispatch ends.
+			mcpHandles.clearApproved()
+			if registered {
+				if handle, remote, isMCP := mcpHandles.toolHandle(call.Name); isMCP {
+					// Current-row verification: membership, feature, revision,
+					// exact tool presence, current schema digest, and rule.
+					permission, currentDigest, checkErr := w.verifyMCPCallCurrent(ctx, scope, handle.connectionID, handle.revision, remote)
+					if checkErr != nil || permission == "deny" {
 						if err := w.denyToolCall(ctx, claimed, call, &live); err != nil {
-							failTurn("deny_approved_call", err)
+							failTurn("deny_mcp_call", err)
 							return
 						}
-					case approvalTimedOut:
-						w.closeApproval(ctx, claimed, requested, "rejected", approvalTimeoutSummary)
-						if err := w.denyToolCall(ctx, claimed, call, &live); err != nil {
-							failTurn("deny_approved_call", err)
-							return
-						}
-					case approvalApproved:
-						if !w.approvedCallUnchanged(ctx, cmsHandle, scope, proposal, call) {
-							w.closeApproval(ctx, claimed, requested, "invalidated", "connection changed while waiting for approval")
-							w.finalizeAndLog(claimed, "failed", "cms_connection_changed", messageStatusForOutput(output), usage)
-							return
-						}
-						if changed, err := queries.MarkCMSApprovalExecuting(ctx, requested); err != nil || changed != 1 {
-							failTurn("approval_executing", err)
-							return
-						}
-						approval = requested
-					}
-					if toolStop {
-						break
-					}
-					if !approval.Valid {
 						continue
+					}
+					// Semantic safety preparation reads only and never
+					// dispatches the mutation. Its preflight reads run through
+					// the policy-enforcing session, so they need the exact
+					// read tool on Allow, and fail closed otherwise.
+					proposal, proposalErr := aichattools.PrepareMCPApproval(ctx, w.preflightSessionFor(scope, handle), handle.service, remote, json.RawMessage(call.Args))
+					if proposalErr != nil {
+						nextSeq++
+						if err := w.failBlockedMCPCall(ctx, claimed, call, &live, proposalErr.Error()); err != nil {
+							failTurn("tool_result_event", err)
+							return
+						}
+						continue
+					}
+					// The session's live schema must match the current saved
+					// discovery: a /check that removed or changed the tool
+					// mid-turn blocks the stale execution. The digest
+					// approved below is the current one, and dispatch
+					// re-verifies it again.
+					liveDigest, ok := liveMCPToolDigest(handle.session, remote)
+					if !ok || liveDigest != currentDigest {
+						nextSeq++
+						if err := w.failBlockedMCPCall(ctx, claimed, call, &live, "the tool changed on its connection"); err != nil {
+							failTurn("tool_result_event", err)
+							return
+						}
+						continue
+					}
+					// Allow executes below with no approval row, but the
+					// execution-start guard re-verifies the rule at dispatch:
+					// an Ask that landed after this gate blocks instead of
+					// running.
+					if permission != "allow" {
+						if err := flush(false); err != nil {
+							failTurn("flush", err)
+							return
+						}
+						requested, err := w.requestMCPApproval(ctx, claimed, call, handle, remote, liveDigest, proposal, proposalSummary(proposal))
+						if stop, abandon := fail(err); stop {
+							if abandon {
+								return
+							}
+							toolStop = true
+							break
+						}
+						decision, err := w.waitForApprovalDecision(ctx, claimed, requested)
+						if stop, abandon := fail(err); stop {
+							if abandon {
+								return
+							}
+							toolStop = true
+							break
+						}
+						switch decision {
+						case approvalCancelled:
+							cancelRequested = true
+							cancel()
+							ctxDone = nil
+							toolStop = true
+						case approvalDenied:
+							if err := w.denyToolCall(ctx, claimed, call, &live); err != nil {
+								failTurn("deny_approved_call", err)
+								return
+							}
+						case approvalTimedOut:
+							w.closeApproval(ctx, claimed, requested, "rejected", approvalTimeoutSummary)
+							if err := w.denyToolCall(ctx, claimed, call, &live); err != nil {
+								failTurn("deny_approved_call", err)
+								return
+							}
+						case approvalApproved:
+							stored, storedErr := queries.GetMCPApprovalByID(ctx, requested)
+							if storedErr != nil {
+								failTurn("approval_read", storedErr)
+								return
+							}
+							if !w.approvedCallUnchanged(ctx, scope, approvedMCPCall{handle: handle, remote: remote, proposal: proposal, schemaDigest: liveDigest, call: call}, stored.ProposedArgs) {
+								w.closeApproval(ctx, claimed, requested, "invalidated", "connection changed while waiting for approval")
+								w.finalizeAndLog(claimed, "failed", "cms_connection_changed", messageStatusForOutput(output), usage)
+								return
+							}
+							if changed, err := queries.MarkMCPApprovalExecuting(ctx, requested); err != nil || changed != 1 {
+								failTurn("approval_executing", err)
+								return
+							}
+							mcpHandles.markApproved(call.Name)
+							approval = requested
+						}
+						if toolStop {
+							break
+						}
+						if !approval.Valid {
+							continue
+						}
 					}
 				}
 			}
@@ -687,6 +721,9 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 			toolStart := time.Now()
 			log.Printf("ai chat tool call started: worker_id=%s turn_id=%s call_id=%s name=%s args=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, toolArgsForLog(call.Name, call.Args))
 			status, result := executeToolCall(ctx, registry, call, toolScope)
+			// The dispatch window is over: drop this call's approval proof
+			// so it can never authorize a later call of the same alias.
+			mcpHandles.unmarkApproved(call.Name)
 			status, result = normalizeToolCallResult(call.Name, status, result)
 			result.Content = capToolResultContent(result.Content)
 			if err := queries.CompleteAIToolCall(ctx, sqlc.CompleteAIToolCallParams{
@@ -714,7 +751,7 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				if status == "failed" {
 					approvalStatus = "failed"
 				}
-				if _, err := queries.CompleteCMSApproval(ctx, sqlc.CompleteCMSApprovalParams{
+				if _, err := queries.CompleteMCPApproval(ctx, sqlc.CompleteMCPApprovalParams{
 					ApprovalID: approval, Status: approvalStatus, Summary: result.Summary,
 				}); err != nil {
 					failTurn("approval_complete", err)
@@ -1133,7 +1170,7 @@ INSERT INTO ai_turn_events(turn_id, event_type, payload)
 VALUES ($1, 'failed', '{"error_code":"worker_interrupted"}'::jsonb)`, item.id); err != nil {
 			return err
 		}
-		// An approved CMS call caught mid-execution by the crash may have
+		// An approved MCP call caught mid-execution by the crash may have
 		// applied remotely while its result was never saved. Fail it as
 		// unknown (paired with an unknown tool result) and never retry it.
 		if err := w.failRecoveredApprovals(ctx, tx, item.id); err != nil {
@@ -1149,7 +1186,7 @@ VALUES ($1, 'failed', '{"error_code":"worker_interrupted"}'::jsonb)`, item.id); 
 // applied, so automatic retry is forbidden.
 func (w *Worker) failRecoveredApprovals(ctx context.Context, tx pgx.Tx, turnID pgtype.UUID) error {
 	queries := sqlc.New(tx)
-	approvals, err := queries.FailExecutingCMSApprovalsForTurn(ctx, turnID)
+	approvals, err := queries.FailExecutingMCPApprovalsForTurn(ctx, turnID)
 	if err != nil {
 		return err
 	}
@@ -1280,16 +1317,39 @@ func capToolResultContent(content string) string {
 // JSON (truncated mid-string when a large payload exhausted the output
 // budget) to a failed result, so the model retries with a smaller payload
 // instead of the turn dying on the jsonb cast. No tool-call row is stored.
-// blockedCMSCallResult maps a call the approval helper refused to clear to
-// a failed result, so the model sees the block and the turn continues. No
-// tool-call row is stored and no remote call ran.
-func blockedCMSCallResult(call ai.ToolCall) (string, aichattools.Result) {
-	content := fmt.Sprintf("tool %q call %q failed: the requested CMS change was blocked before execution and was not performed. Do not retry the same call; explain what approval or safer alternative is needed instead.", call.Name, call.ID)
-	return "failed", aichattools.Result{Content: content, Summary: "cms change blocked before execution"}
+// blockedMCPCallResult maps a call the safety helper refused to clear to a
+// failed result, so the model sees the block and the turn continues. The
+// bounded helper reason is included verbatim: it names the prerequisite the
+// user can grant. No tool-call row is stored and no remote call ran.
+func blockedMCPCallResult(call ai.ToolCall, reason string) (string, aichattools.Result) {
+	reason = strings.TrimSpace(reason)
+	if len(reason) > 500 {
+		reason = reason[:500] + "…[truncated]"
+	}
+	if reason == "" {
+		reason = "the call was blocked before execution"
+	}
+	content := fmt.Sprintf("tool %q call %q failed: %s, and was not performed. Do not retry the same call; explain what approval or safer alternative is needed instead.", call.Name, call.ID, reason)
+	return "failed", aichattools.Result{Content: content, Summary: "mcp call blocked before execution"}
+}
+
+// failBlockedMCPCall records a call blocked before execution as a failed
+// tool result event plus the in-memory result, without storing a tool-call
+// row. A non-nil return means the turn itself failed while recording.
+func (w *Worker) failBlockedMCPCall(ctx context.Context, claimed turn, call ai.ToolCall, live *[]ai.Message, reason string) error {
+	toolStart := time.Now()
+	status, result := blockedMCPCallResult(call, reason)
+	result.Content = capToolResultContent(result.Content)
+	if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
+		return err
+	}
+	log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
+	*live = append(*live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
+	return nil
 }
 
 func truncatedToolArgsResult(call ai.ToolCall) (string, aichattools.Result) {
-	content := fmt.Sprintf("tool %q call %q failed: the arguments were truncated or malformed (not valid JSON), so the call was not executed. The payload was too large. Resend a SHORTER payload: for CMS writes, shorten the body or split the write across several smaller update calls.", call.Name, call.ID)
+	content := fmt.Sprintf("tool %q call %q failed: the arguments were truncated or malformed (not valid JSON), so the call was not executed. The payload was too large. Resend a SHORTER payload: for MCP calls, shorten the body or split the write across several smaller update calls.", call.Name, call.ID)
 	return "failed", aichattools.Result{Content: content, Summary: "arguments truncated or malformed"}
 }
 
@@ -1308,13 +1368,19 @@ func executeToolCall(ctx context.Context, registry *aichattools.Registry, call a
 }
 
 // toolArgsForLog bounds a tool argument string for log output, redacting
-// CMS record arguments entirely: record payloads are user content, not
+// MCP call arguments entirely: remote payloads are user content, not
 // diagnostics. Persisted tool-call rows and user activity still keep args.
 func toolArgsForLog(name, args string) string {
-	if aichattools.IsRuneToolName(name) || aichattools.IsWordPressToolName(name) {
+	if aichattools.IsMCPModelToolName(name) || isHistoricalMCPToolName(name) {
 		return "[redacted]"
 	}
 	return truncateToolLog(args)
+}
+
+// isHistoricalMCPToolName matches the retired cms__/wp__ spellings so old
+// turns still redact their arguments in logs.
+func isHistoricalMCPToolName(name string) bool {
+	return strings.HasPrefix(name, "cms__") || strings.HasPrefix(name, "wp__")
 }
 
 // truncateToolLog bounds a tool argument string for log output.
