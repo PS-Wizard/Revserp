@@ -67,6 +67,14 @@ func extractPageViewport(parsedPage *ParsedPage) string {
 	return parsedPage.Viewport
 }
 
+func extractPageCanonicalURL(parsedPage *ParsedPage) string {
+	if parsedPage == nil {
+		return ""
+	}
+
+	return parsedPage.CanonicalURL
+}
+
 // extractPageRobots returns the parsed robots value when available.
 func extractPageRobots(parsedPage *ParsedPage) string {
 	if parsedPage == nil {

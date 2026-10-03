@@ -272,6 +272,7 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		VisibleText:             nullableText(extractPageVisibleText(parsedPage)),
 		ContentSha256:           pgtype.Text{},
 		Author:                  nullableText(extractPageAuthor(parsedPage)),
+		CanonicalUrl:            nullableText(extractPageCanonicalURL(parsedPage)),
 		Lang:                    nullableText(extractPageLang(parsedPage)),
 		Viewport:                nullableText(extractPageViewport(parsedPage)),
 		Robots:                  nullableText(extractPageRobots(parsedPage)),

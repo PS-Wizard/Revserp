@@ -100,6 +100,7 @@ func TestStorePersistResult(t *testing.T) {
 		URL                string
 		Title              pgtype.Text
 		MetaDescription    pgtype.Text
+		CanonicalURL       pgtype.Text
 		H2Count            pgtype.Int4
 		H3Count            pgtype.Int4
 		InternalLinks      pgtype.Int4
@@ -108,13 +109,14 @@ func TestStorePersistResult(t *testing.T) {
 		JavascriptRendered pgtype.Bool
 	}
 	if err := pool.QueryRow(ctx, `
-		SELECT url, title, meta_description, h2_count, h3_count, internal_links, external_links, response_time_ms, javascript_rendered
+		SELECT url, title, meta_description, canonical_url, h2_count, h3_count, internal_links, external_links, response_time_ms, javascript_rendered
 		FROM crawl_pages
 		WHERE crawl_id = $1
 	`, crawlID).Scan(
 		&storedPage.URL,
 		&storedPage.Title,
 		&storedPage.MetaDescription,
+		&storedPage.CanonicalURL,
 		&storedPage.H2Count,
 		&storedPage.H3Count,
 		&storedPage.InternalLinks,
@@ -133,6 +135,9 @@ func TestStorePersistResult(t *testing.T) {
 	}
 	if storedPage.MetaDescription.String != "Example home page" {
 		t.Fatalf("got page meta description %q", storedPage.MetaDescription.String)
+	}
+	if !storedPage.CanonicalURL.Valid || storedPage.CanonicalURL.String != "https://example.com/" {
+		t.Fatalf("got page canonical url %q (valid=%v)", storedPage.CanonicalURL.String, storedPage.CanonicalURL.Valid)
 	}
 	if storedPage.H2Count.Int32 != 2 {
 		t.Fatalf("got h2 count %d", storedPage.H2Count.Int32)
@@ -574,5 +579,58 @@ func TestCapErrorMessageKeepsValidUTF8(t *testing.T) {
 
 	if got := capErrorMessage("bad \xff bytes"); !utf8.ValidString(got) {
 		t.Fatalf("invalid input not sanitized: %q", got)
+	}
+}
+
+func TestBuildCreateCrawlPageParamsCanonicalURL(t *testing.T) {
+	testCases := []struct {
+		name              string
+		parsedPage        *ParsedPage
+		wantCanonicalURL  string
+		wantCanonicalNull bool
+	}{
+		{
+			name:             "canonical url is preserved",
+			parsedPage:       &ParsedPage{URL: "https://example.com/", CanonicalURL: "https://example.com/canonical"},
+			wantCanonicalURL: "https://example.com/canonical",
+		},
+		{
+			name:              "empty canonical url is null",
+			parsedPage:        &ParsedPage{URL: "https://example.com/"},
+			wantCanonicalNull: true,
+		},
+		{
+			name:              "whitespace canonical url is null",
+			parsedPage:        &ParsedPage{URL: "https://example.com/", CanonicalURL: "   "},
+			wantCanonicalNull: true,
+		},
+		{
+			name:              "nil parsed page is null",
+			wantCanonicalNull: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			params := buildCreateCrawlPageParams(pgtype.UUID{}, "https://example.com/", CrawlResult{
+				Job:        CrawlJob{URL: "https://example.com/"},
+				Fetch:      FetchResult{FinalURL: "https://example.com/", StatusCode: 200, ContentType: "text/html"},
+				ParsedPage: testCase.parsedPage,
+			})
+
+			if testCase.wantCanonicalNull {
+				if params.CanonicalUrl.Valid {
+					t.Fatalf("got canonical url %q, want NULL", params.CanonicalUrl.String)
+				}
+				return
+			}
+
+			if !params.CanonicalUrl.Valid {
+				t.Fatalf("got canonical url NULL, want %q", testCase.wantCanonicalURL)
+			}
+			if params.CanonicalUrl.String != testCase.wantCanonicalURL {
+				t.Fatalf("got canonical url %q, want %q", params.CanonicalUrl.String, testCase.wantCanonicalURL)
+			}
+		})
 	}
 }
