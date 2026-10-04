@@ -143,6 +143,7 @@ WITH batch AS (
     FROM crawl_links AS cl
     INNER JOIN crawl_pages AS cp
         ON cp.crawl_id = cl.crawl_id
+       AND digest(cp.url_key, 'sha256') = digest(cl.target_url_key, 'sha256')
        AND cp.url_key = cl.target_url_key
     WHERE cl.crawl_id = sqlc.arg(crawl_id)
       AND cl.is_internal = TRUE
