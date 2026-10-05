@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,10 +18,9 @@ import (
 )
 
 // Location setup API tests: unbound creation, editable query counts, scoped
-// listing and deletion, paid listing lookup evidence, deletion guards and the
-// free Nominatim cache. Every DB test is gated by the fixture and the Serper /
-// Nominatim providers are local HTTP stubs, never paid calls.
-
+// listing and deletion, paid Maps listing lookup evidence, deletion guards and
+// the free Nominatim cache. Every DB test uses the isolated fixture database
+// and local HTTP stubs, never paid calls or live provider URLs.
 type mapsCreditBudget struct {
 	remaining int64
 	reserved  int64
@@ -62,9 +62,140 @@ func createUnboundLocation(t *testing.T, fx localVisibilityFixture, name string)
 	return location
 }
 
-func configurePlacesStub(fx localVisibilityFixture, endpoint string) {
+func createEmptyAddressLocation(t *testing.T, fx localVisibilityFixture, name string) localVisibilityLocationResponse {
+	t.Helper()
+	body := fmt.Sprintf(`{"name":%q,"latitude":27.6942,"longitude":85.3123,"queries":[]}`, name)
+	rr := callCreateLocation(t, fx.app, fx.ownerID, fx.projectID.String(), body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create empty-address location status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var location localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &location); err != nil {
+		t.Fatalf("decode empty-address location: %v body=%s", err, rr.Body.String())
+	}
+	if location.PlaceID != nil {
+		t.Fatalf("empty-address location place_id = %q, want null", *location.PlaceID)
+	}
+	if strings.TrimSpace(location.Address) != "" {
+		t.Fatalf("empty-address location address = %q, want empty draft", location.Address)
+	}
+	return location
+}
+
+// configureMapsStub points the Maps resolution provider at a local stub. The
+// Places endpoint is parked on loopback too so no test can reach a live URL.
+func configureMapsStub(fx localVisibilityFixture, endpoint string) {
 	fx.app.Config.SerperAPIKey = "test-serper-key"
-	fx.app.Config.SerperPlacesEndpoint = endpoint
+	fx.app.Config.SerperMapsEndpoint = endpoint
+	fx.app.Config.SerperPlacesEndpoint = "http://127.0.0.1:1/local-seo-test/places"
+}
+
+// mapsEchoServer stubs the paid Maps endpoint. It asserts the SDK posts
+// q/ll/hl and echoes the requested ll back so the strict 10m viewport check
+// can pass; the body builder controls credits/places per case.
+func mapsEchoServer(t *testing.T, hits *atomic.Int64, status int, buildBody func(ll string) string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Header.Get("X-API-KEY") != "test-serper-key" {
+			t.Errorf("provider request missing X-API-KEY")
+		}
+		var req map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		if strings.TrimSpace(req["q"]) == "" || strings.TrimSpace(req["ll"]) == "" || req["hl"] != "en" {
+			t.Errorf("provider request q/ll/hl = %#v, want q, ll and hl=en", req)
+		}
+		if ll := strings.TrimSpace(req["ll"]); !strings.HasPrefix(ll, "@") {
+			t.Errorf("provider ll missing @ prefix: %q", req["ll"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+		}
+		_, _ = w.Write([]byte(buildBody(req["ll"])))
+	}))
+}
+
+type mapsObservedCall struct {
+	mu sync.Mutex
+	q  string
+	ll string
+}
+
+func (o *mapsObservedCall) store(q, ll string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.q, o.ll = q, ll
+}
+
+func (o *mapsObservedCall) load() (string, string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.q, o.ll
+}
+
+// mapsCaptureServer is mapsEchoServer that also records the last posted q/ll
+// so tests can prove the provider received the actual typed name and the LL
+// built from the provided viewport.
+func mapsCaptureServer(t *testing.T, hits *atomic.Int64, observed *mapsObservedCall, status int, buildBody func(ll string) string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Header.Get("X-API-KEY") != "test-serper-key" {
+			t.Errorf("provider request missing X-API-KEY")
+		}
+		var req map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		if strings.TrimSpace(req["q"]) == "" || strings.TrimSpace(req["ll"]) == "" || req["hl"] != "en" {
+			t.Errorf("provider request q/ll/hl = %#v, want q, ll and hl=en", req)
+		}
+		if ll := strings.TrimSpace(req["ll"]); !strings.HasPrefix(ll, "@") {
+			t.Errorf("provider ll missing @ prefix: %q", req["ll"])
+		}
+		observed.store(req["q"], req["ll"])
+		w.Header().Set("Content-Type", "application/json")
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+		}
+		_, _ = w.Write([]byte(buildBody(req["ll"])))
+	}))
+}
+
+func mapsSuccessBody(placesFragment string) func(ll string) string {
+	return func(ll string) string {
+		return fmt.Sprintf(`{"credits":3,"ll":%q,"places":[%s]}`, ll, placesFragment)
+	}
+}
+
+func expectedMapsLL(latitude, longitude float64) string {
+	return fmt.Sprintf("@%.6f,%.6f,14z", latitude, longitude)
+}
+
+// explicitLookupBody builds the direct business-search body: search_query from
+// the typed candidate DisplayName (or the explicit search override) plus the
+// direct viewport lat/lon. No candidate object and no cached geography.
+func explicitLookupBody(search string, candidate geography.GeocodedAddress) string {
+	q := strings.TrimSpace(search)
+	if q == "" {
+		q = strings.TrimSpace(candidate.DisplayName)
+	}
+	raw, err := json.Marshal(map[string]any{"search_query": q, "latitude": candidate.Latitude, "longitude": candidate.Longitude})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func explicitDirectBody(query string, latitude, longitude float64) string {
+	raw, err := json.Marshal(map[string]any{"search_query": query, "latitude": latitude, "longitude": longitude})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
 
 func callListProjectLocations(t *testing.T, app *App, userID pgtype.UUID, projectID string) *httptest.ResponseRecorder {
@@ -93,7 +224,12 @@ func callDeleteProject(t *testing.T, app *App, userID pgtype.UUID, projectID str
 
 func callCreateListingLookup(t *testing.T, app *App, userID pgtype.UUID, projectID, locationID string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := localVisibilityRequest(t, http.MethodPost, userID, map[string]string{"projectID": projectID, "locationID": locationID}, `{}`)
+	return callCreateListingLookupBody(t, app, userID, projectID, locationID, `{}`)
+}
+
+func callCreateListingLookupBody(t *testing.T, app *App, userID pgtype.UUID, projectID, locationID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := localVisibilityRequest(t, http.MethodPost, userID, map[string]string{"projectID": projectID, "locationID": locationID}, body)
 	rr := httptest.NewRecorder()
 	app.handleCreateListingLookup(rr, req)
 	return rr
@@ -112,6 +248,14 @@ func callBindLocationListing(t *testing.T, app *App, userID pgtype.UUID, project
 	req := localVisibilityRequest(t, http.MethodPost, userID, map[string]string{"projectID": projectID, "locationID": locationID}, body)
 	rr := httptest.NewRecorder()
 	app.handleBindLocationListing(rr, req)
+	return rr
+}
+
+func callUnbindLocationListing(t *testing.T, app *App, userID pgtype.UUID, projectID, locationID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := localVisibilityRequest(t, http.MethodDelete, userID, map[string]string{"projectID": projectID, "locationID": locationID}, "")
+	rr := httptest.NewRecorder()
+	app.handleUnbindLocationListing(rr, req)
 	return rr
 }
 
@@ -245,22 +389,25 @@ func TestLocationListScopingAndDeletion(t *testing.T) {
 	}
 }
 
-func TestListingLookupChargedSuccessAndBinding(t *testing.T) {
+func TestListingLookupMapsChargedSuccessAndAuthoritativeBinding(t *testing.T) {
 	fx := newLocalVisibilityFixture(t)
 	fx.fundLocalVisibilityBudgets(t)
 	location := createUnboundLocation(t, fx, "lookup-success")
 
+	// The saved centre is the search area (27.6942,85.3123). The paid payload
+	// returns a strictly different business coordinate (27.7001,85.3188): the
+	// regression must keep these unequal so binding cannot pass by echoing the
+	// request viewport.
+	if location.Latitude == 27.7001 && location.Longitude == 85.3188 {
+		t.Fatalf("fixture must keep saved search-area coords different from provider business coords")
+	}
+
 	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		if r.Header.Get("X-API-KEY") != "test-serper-key" {
-			t.Errorf("provider request missing X-API-KEY")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"credits":1,"places":[{"position":1,"title":"Real Cafe","address":"1 Test Street","latitude":27.6942,"longitude":85.3123,"placeId":"real-place-1"}]}`))
-	}))
+	var observed mapsObservedCall
+	server := mapsCaptureServer(t, &hits, &observed, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"real-place-1","cid":"111","title":"Real Cafe","address":"1 Test Street","latitude":27.7001,"longitude":85.3188}`))
 	t.Cleanup(server.Close)
-	configurePlacesStub(fx, server.URL)
+	configureMapsStub(fx, server.URL)
 
 	basePlatform := fx.platformBudget(t)
 	baseOrg := fx.orgBudget(t)
@@ -273,20 +420,32 @@ func TestListingLookupChargedSuccessAndBinding(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &lookup); err != nil {
 		t.Fatalf("decode lookup: %v body=%s", err, rr.Body.String())
 	}
-	if lookup.Status != "completed" || lookup.ExpectedCredits != 1 || lookup.CreditsUsed != 1 || lookup.ReservedCredits != 0 || !lookup.CreditKnown {
-		t.Fatalf("lookup = %#v", lookup)
+	if lookup.Status != "completed" || lookup.ExpectedCredits != 3 || lookup.CreditsUsed != 3 || lookup.ReservedCredits != 0 || !lookup.CreditKnown {
+		t.Fatalf("lookup = %#v, want completed 3/3/0 known", lookup)
 	}
 	if len(lookup.Candidates) != 1 || lookup.Candidates[0].PlaceID != "real-place-1" {
 		t.Fatalf("candidates = %#v", lookup.Candidates)
 	}
+	if lookup.Candidates[0].Latitude != 27.7001 || lookup.Candidates[0].Longitude != 85.3188 {
+		t.Fatalf("candidate coords = %v,%v, want provider 27.7001,85.3188", lookup.Candidates[0].Latitude, lookup.Candidates[0].Longitude)
+	}
+	if lookup.Candidates[0].Latitude == location.Latitude && lookup.Candidates[0].Longitude == location.Longitude {
+		t.Fatalf("candidate must not equal the saved search-area centre %v,%v", location.Latitude, location.Longitude)
+	}
 	if hits.Load() != 1 {
 		t.Fatalf("provider hits = %d, want 1", hits.Load())
 	}
-	if got := fx.platformBudget(t).spent - basePlatform.spent; got != 1 {
-		t.Fatalf("platform spent delta = %d, want 1", got)
+	if got := fx.platformBudget(t).spent - basePlatform.spent; got != 3 {
+		t.Fatalf("platform spent delta = %d, want 3", got)
 	}
-	if got := fx.orgBudget(t).spent - baseOrg.spent; got != 1 {
-		t.Fatalf("org spent delta = %d, want 1", got)
+	if got := fx.orgBudget(t).spent - baseOrg.spent; got != 3 {
+		t.Fatalf("org spent delta = %d, want 3", got)
+	}
+	// Fallback uses the saved name+address and the saved search-area viewport.
+	if q, ll := observed.load(); q != "lookup-success 1 Test Street" {
+		t.Fatalf("provider q = %q, want saved fallback %q", q, "lookup-success 1 Test Street")
+	} else if ll != expectedMapsLL(27.6942, 85.3123) {
+		t.Fatalf("provider ll = %q, want saved search-area viewport %q", ll, expectedMapsLL(27.6942, 85.3123))
 	}
 
 	// A client-invented candidate is rejected without changing the location.
@@ -306,7 +465,8 @@ func TestListingLookupChargedSuccessAndBinding(t *testing.T) {
 		t.Fatalf("forged bind changed place_id to %q", *stillUnbound.PlaceID)
 	}
 
-	// Selecting a real candidate binds without moving the accepted centre.
+	// Binding writes the authoritative Google coordinates from the paid
+	// payload, not the saved centre / request viewport.
 	rr = callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
 		fmt.Sprintf(`{"lookup_id":%q,"place_id":"real-place-1"}`, lookup.ID))
 	if rr.Code != http.StatusOK {
@@ -319,11 +479,14 @@ func TestListingLookupChargedSuccessAndBinding(t *testing.T) {
 	if bound.PlaceID == nil || *bound.PlaceID != "real-place-1" {
 		t.Fatalf("bound place_id = %v", bound.PlaceID)
 	}
-	if bound.Latitude != location.Latitude || bound.Longitude != location.Longitude {
-		t.Fatalf("binding changed coordinates from %v,%v to %v,%v", location.Latitude, location.Longitude, bound.Latitude, bound.Longitude)
+	if bound.Latitude != 27.7001 || bound.Longitude != 85.3188 {
+		t.Fatalf("binding kept %v,%v, want authoritative provider 27.7001,85.3188", bound.Latitude, bound.Longitude)
 	}
-	if got := fx.platformBudget(t).spent - basePlatform.spent; got != 1 {
-		t.Fatalf("binding re-spent: platform spent delta = %d, want 1", got)
+	if bound.Latitude == location.Latitude && bound.Longitude == location.Longitude {
+		t.Fatalf("bound coords must come from the provider payload, not the request viewport/saved centre")
+	}
+	if got := fx.platformBudget(t).spent - basePlatform.spent; got != 3 {
+		t.Fatalf("binding re-spent: platform spent delta = %d, want 3", got)
 	}
 
 	// The latest read is free and never triggers another provider call.
@@ -334,6 +497,507 @@ func TestListingLookupChargedSuccessAndBinding(t *testing.T) {
 	if hits.Load() != 1 {
 		t.Fatalf("provider hits after latest = %d, want 1", hits.Load())
 	}
+
+	// Binding is final: further lookups and binds conflict while bound.
+	if rr = callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID); rr.Code != http.StatusConflict {
+		t.Fatalf("bound lookup status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if rr = callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"real-place-1"}`, lookup.ID)); rr.Code != http.StatusConflict {
+		t.Fatalf("second bind status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits after bound conflict = %d, want 1", hits.Load())
+	}
+
+	// Free unbinding clears identity but preserves coords and lookup history.
+	rr = callUnbindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unbind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var unbound localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &unbound); err != nil {
+		t.Fatalf("decode unbound: %v", err)
+	}
+	if unbound.PlaceID != nil {
+		t.Fatalf("unbind kept place_id %q, want null", *unbound.PlaceID)
+	}
+	if unbound.Latitude != 27.7001 || unbound.Longitude != 85.3188 {
+		t.Fatalf("unbind moved coords to %v,%v, want preserved 27.7001,85.3188", unbound.Latitude, unbound.Longitude)
+	}
+	rr = callGetLatestListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("latest after unbind status = %d", rr.Code)
+	}
+	var history locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if history.ID != lookup.ID || history.Status != "completed" {
+		t.Fatalf("history = %#v, want original completed lookup", history)
+	}
+}
+
+func TestListingLookupSameCandidateDedupedAfterCompleted(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	location := createUnboundLocation(t, fx, "dedup-completed")
+
+	var hits atomic.Int64
+	server := mapsEchoServer(t, &hits, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"real-place-1","cid":"111","title":"Real Cafe","address":"1 Test Street","latitude":27.7001,"longitude":85.3188}`))
+	t.Cleanup(server.Close)
+	configureMapsStub(fx, server.URL)
+	baseOrg := fx.orgBudget(t)
+
+	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var first locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	if first.Status != "completed" {
+		t.Fatalf("first lookup = %#v, want completed", first)
+	}
+
+	rr = callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var second locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode second: %v", err)
+	}
+	if second.ID != first.ID || !second.Deduplicated {
+		t.Fatalf("second lookup = %#v, want same evidence id with deduplicated=true", second)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits = %d, want 1", hits.Load())
+	}
+	if got := fx.orgBudget(t).spent - baseOrg.spent; got != 3 {
+		t.Fatalf("org spent delta = %d, want single charge of 3", got)
+	}
+}
+
+func TestListingLookupSameCandidateDedupedAfterFailed(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	location := createUnboundLocation(t, fx, "dedup-failed")
+
+	var hits atomic.Int64
+	server := mapsEchoServer(t, &hits, http.StatusOK, mapsSuccessBody(
+		`{"cid":"1234567890","title":"CID Only Cafe","latitude":27.7001,"longitude":85.3188}`))
+	t.Cleanup(server.Close)
+	configureMapsStub(fx, server.URL)
+	baseOrg := fx.orgBudget(t)
+
+	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var first locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	if first.Status != "failed" || first.CreditsUsed != 3 || !first.CreditKnown {
+		t.Fatalf("first lookup = %#v, want failed with 3 spent", first)
+	}
+
+	rr = callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var second locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode second: %v", err)
+	}
+	if second.ID != first.ID || !second.Deduplicated || second.Status != "failed" {
+		t.Fatalf("second lookup = %#v, want same failed evidence deduplicated", second)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits = %d, want 1", hits.Load())
+	}
+	if got := fx.orgBudget(t).spent - baseOrg.spent; got != 3 {
+		t.Fatalf("org spent delta = %d, want single charge of 3", got)
+	}
+
+	// A failed lookup has no bindable candidate, so binding rejects.
+	rr = callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"anything"}`, first.ID))
+	if rr.Code != http.StatusConflict && rr.Code != http.StatusBadRequest {
+		t.Fatalf("bind after failed status = %d, want 4xx; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestListingLookupDifferentExplicitQueryReservesAgain(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	location := createUnboundLocation(t, fx, "explicit-candidate")
+	candidateA := geography.GeocodedAddress{DisplayName: fmt.Sprintf("Cafe A Testville %d", time.Now().UnixNano()), Latitude: 27.71, Longitude: 85.33, Locality: "Testville", CountryCode: "np"}
+	candidateB := geography.GeocodedAddress{DisplayName: "Cafe B Testville", Latitude: 27.72, Longitude: 85.34, Locality: "Testville", CountryCode: "np"}
+
+	// The paid payload returns business coords strictly different from either
+	// explicit viewport, so no bind can pass by echoing the request viewport.
+	var hits atomic.Int64
+	var observed mapsObservedCall
+	server := mapsCaptureServer(t, &hits, &observed, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"explicit-place","cid":"222","title":"Explicit Cafe","address":"Testville","latitude":27.7001,"longitude":85.3188}`))
+	t.Cleanup(server.Close)
+	configureMapsStub(fx, server.URL)
+	baseOrg := fx.orgBudget(t)
+
+	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("fallback lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var fallback locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &fallback); err != nil {
+		t.Fatalf("decode fallback: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits after fallback = %d, want 1", hits.Load())
+	}
+
+	// Re-reading evidence is free; nothing retries automatically.
+	if rr = callGetLatestListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID); rr.Code != http.StatusOK {
+		t.Fatalf("latest status = %d", rr.Code)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits after latest = %d, want 1 (no auto retry)", hits.Load())
+	}
+
+	rr = callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, explicitLookupBody(candidateA.DisplayName, candidateA))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("explicit A status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var explicitA locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &explicitA); err != nil {
+		t.Fatalf("decode explicit A: %v", err)
+	}
+	if explicitA.ID == fallback.ID || explicitA.Deduplicated {
+		t.Fatalf("explicit A = %#v, want a new charged lookup", explicitA)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("provider hits after explicit A = %d, want 2", hits.Load())
+	}
+	// The provider received the actual typed business name and the LL built
+	// from the provided explicit viewport.
+	if q, ll := observed.load(); q != candidateA.DisplayName {
+		t.Fatalf("provider q = %q, want typed %q", q, candidateA.DisplayName)
+	} else if ll != expectedMapsLL(candidateA.Latitude, candidateA.Longitude) {
+		t.Fatalf("provider ll = %q, want explicit viewport %q", ll, expectedMapsLL(candidateA.Latitude, candidateA.Longitude))
+	}
+	if explicitA.Candidates[0].Latitude == candidateA.Latitude && explicitA.Candidates[0].Longitude == candidateA.Longitude {
+		t.Fatalf("lookup candidate must come from the provider payload, not the request viewport %v,%v", candidateA.Latitude, candidateA.Longitude)
+	}
+
+	rr = callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, explicitLookupBody(candidateA.DisplayName, candidateA))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("repeat A status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var repeatA locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &repeatA); err != nil {
+		t.Fatalf("decode repeat A: %v", err)
+	}
+	if repeatA.ID != explicitA.ID || !repeatA.Deduplicated {
+		t.Fatalf("repeat A = %#v, want same evidence deduplicated", repeatA)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("provider hits after repeat A = %d, want 2", hits.Load())
+	}
+
+	rr = callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, explicitLookupBody(candidateB.DisplayName, candidateB))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("explicit B status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var explicitB locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &explicitB); err != nil {
+		t.Fatalf("decode explicit B: %v", err)
+	}
+	if explicitB.ID == explicitA.ID || explicitB.ID == fallback.ID {
+		t.Fatalf("explicit B = %#v, want another new lookup", explicitB)
+	}
+	if hits.Load() != 3 {
+		t.Fatalf("provider hits after explicit B = %d, want 3", hits.Load())
+	}
+	if q, ll := observed.load(); q != candidateB.DisplayName {
+		t.Fatalf("provider q = %q, want typed %q", q, candidateB.DisplayName)
+	} else if ll != expectedMapsLL(candidateB.Latitude, candidateB.Longitude) {
+		t.Fatalf("provider ll = %q, want explicit viewport %q", ll, expectedMapsLL(candidateB.Latitude, candidateB.Longitude))
+	}
+	if got := fx.orgBudget(t).spent - baseOrg.spent; got != 9 {
+		t.Fatalf("org spent delta = %d, want 3 lookups x 3 credits", got)
+	}
+}
+
+func TestListingLookupLegacyCandidateAndInvalidSelectionRejectedBeforeCharge(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	location := createUnboundLocation(t, fx, "invalid-selection")
+
+	var hits atomic.Int64
+	var observed mapsObservedCall
+	server := mapsCaptureServer(t, &hits, &observed, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"real-place-1","title":"Real Cafe","address":"Testville","latitude":27.7001,"longitude":85.3188}`))
+	t.Cleanup(server.Close)
+	configureMapsStub(fx, server.URL)
+	baseOrg := fx.orgBudget(t)
+	basePlatform := fx.platformBudget(t)
+
+	// The legacy Nominatim candidate envelope is unknown to the strict body
+	// and must be rejected before any reservation or provider call.
+	legacy := fmt.Sprintf(`{"search_query":"Real Cafe %d","candidate":{"display_name":"Real Cafe, Testville","latitude":27.71,"longitude":85.33}}`, time.Now().UnixNano())
+	if rr := callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, legacy); rr.Code != http.StatusBadRequest {
+		t.Fatalf("legacy candidate status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+
+	invalidBodies := []struct {
+		name string
+		body string
+	}{
+		{"missing pair", `{"search_query":"Typed Cafe","latitude":27.71}`},
+		{"missing query falls back but invalid coords", `{"latitude":91,"longitude":85.33}`},
+		{"latitude out of range", `{"search_query":"Typed Cafe","latitude":91,"longitude":85.33}`},
+		{"longitude out of range", `{"search_query":"Typed Cafe","latitude":27.71,"longitude":-181}`},
+		{"oversized query", fmt.Sprintf(`{"search_query":%q,"latitude":27.71,"longitude":85.33}`, strings.Repeat("x", 1001))},
+		{"unknown field", `{"search_query":"Typed Cafe","latitude":27.71,"longitude":85.33,"candidate":{}}`},
+	}
+	for _, tc := range invalidBodies {
+		t.Run(tc.name, func(t *testing.T) {
+			if rr := callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, tc.body); rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+
+	if hits.Load() != 0 {
+		t.Fatalf("provider hits = %d, want 0 before any valid selection", hits.Load())
+	}
+	if after := fx.orgBudget(t); after != baseOrg {
+		t.Fatalf("invalid selection changed org budget from %#v to %#v", baseOrg, after)
+	}
+	if after := fx.platformBudget(t); after != basePlatform {
+		t.Fatalf("invalid selection changed platform budget from %#v to %#v", basePlatform, after)
+	}
+	var count int
+	if err := fx.pool.QueryRow(fx.ctx, `SELECT count(*) FROM local_listing_lookups WHERE location_id = $1`, location.ID).Scan(&count); err != nil {
+		t.Fatalf("count lookups: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("lookup rows = %d, want 0", count)
+	}
+
+	// A valid uncached typed business query plus an explicit viewport works
+	// with no Nominatim seeding: the free geography cache is not consulted.
+	typed := fmt.Sprintf("Typed Business %d", time.Now().UnixNano())
+	rr := callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, explicitDirectBody(typed, 27.7155, 85.3312))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid uncached lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var lookup locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &lookup); err != nil {
+		t.Fatalf("decode valid lookup: %v body=%s", err, rr.Body.String())
+	}
+	if lookup.Status != "completed" || lookup.CreditsUsed != 3 || !lookup.CreditKnown {
+		t.Fatalf("valid lookup = %#v, want completed 3 known", lookup)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits = %d, want 1", hits.Load())
+	}
+	if q, ll := observed.load(); q != typed {
+		t.Fatalf("provider q = %q, want typed %q", q, typed)
+	} else if ll != expectedMapsLL(27.7155, 85.3312) {
+		t.Fatalf("provider ll = %q, want explicit viewport %q", ll, expectedMapsLL(27.7155, 85.3312))
+	}
+	if lookup.Candidates[0].Latitude == 27.7155 && lookup.Candidates[0].Longitude == 85.3312 {
+		t.Fatalf("candidate must come from the provider payload, not the request viewport")
+	}
+	if got := fx.orgBudget(t).spent - baseOrg.spent; got != 3 {
+		t.Fatalf("org spent delta = %d, want 3", got)
+	}
+}
+
+func TestListingLookupDirectBusinessSearchWithoutSavedAddress(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	// No saved address is required before a direct business search: the draft
+	// keeps an empty address and its saved coords are only the search area.
+	location := createEmptyAddressLocation(t, fx, "direct-no-address")
+	if location.Latitude != 27.6942 || location.Longitude != 85.3123 {
+		t.Fatalf("draft centre = %v,%v, want saved search area 27.6942,85.3123", location.Latitude, location.Longitude)
+	}
+
+	typed := fmt.Sprintf("Direct Business %d", time.Now().UnixNano())
+	const viewportLat, viewportLon = 27.7155, 85.3312
+
+	var hits atomic.Int64
+	var observed mapsObservedCall
+	server := mapsCaptureServer(t, &hits, &observed, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"direct-place-1","cid":"333","title":"Direct Business","address":"Somewhere","latitude":27.7001,"longitude":85.3188}`))
+	t.Cleanup(server.Close)
+	configureMapsStub(fx, server.URL)
+
+	rr := callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, explicitDirectBody(typed, viewportLat, viewportLon))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("direct lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var lookup locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &lookup); err != nil {
+		t.Fatalf("decode direct lookup: %v body=%s", err, rr.Body.String())
+	}
+	if lookup.Status != "completed" || lookup.CreditsUsed != 3 || !lookup.CreditKnown {
+		t.Fatalf("direct lookup = %#v, want completed 3 known", lookup)
+	}
+	if q, ll := observed.load(); q != typed {
+		t.Fatalf("provider q = %q, want typed %q", q, typed)
+	} else if ll != expectedMapsLL(viewportLat, viewportLon) {
+		t.Fatalf("provider ll = %q, want provided viewport %q", ll, expectedMapsLL(viewportLat, viewportLon))
+	}
+	if len(lookup.Candidates) != 1 || lookup.Candidates[0].PlaceID != "direct-place-1" {
+		t.Fatalf("candidates = %#v", lookup.Candidates)
+	}
+	// The empty-address draft is still a search area, not the business
+	// coordinate, until the human-confirmed Google bind.
+	if rr = callGetLocation(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID); rr.Code != http.StatusOK {
+		t.Fatalf("get before bind status = %d", rr.Code)
+	}
+	var before localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &before); err != nil {
+		t.Fatalf("decode before bind: %v", err)
+	}
+	if before.PlaceID != nil {
+		t.Fatalf("direct lookup bound place_id %q before human confirmation", *before.PlaceID)
+	}
+	if before.Latitude != 27.6942 || before.Longitude != 85.3123 {
+		t.Fatalf("draft moved to %v,%v before bind, want saved search area", before.Latitude, before.Longitude)
+	}
+
+	rr = callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"direct-place-1"}`, lookup.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var bound localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &bound); err != nil {
+		t.Fatalf("decode bound: %v", err)
+	}
+	if bound.PlaceID == nil || *bound.PlaceID != "direct-place-1" {
+		t.Fatalf("bound place_id = %v", bound.PlaceID)
+	}
+	if bound.Latitude != 27.7001 || bound.Longitude != 85.3188 {
+		t.Fatalf("bound coords = %v,%v, want provider payload 27.7001,85.3188", bound.Latitude, bound.Longitude)
+	}
+	if bound.Latitude == viewportLat && bound.Longitude == viewportLon {
+		t.Fatalf("bound coords must come from the provider payload, not the request viewport %v,%v", viewportLat, viewportLon)
+	}
+	if bound.Latitude == location.Latitude && bound.Longitude == location.Longitude {
+		t.Fatalf("bound coords must not equal the saved search-area centre")
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestListingLookupFailedCIDOnlyAndMissingCoordsBindRejected(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	cidLocation := createUnboundLocation(t, fx, "cid-only-case")
+	coordLocation := createUnboundLocation(t, fx, "missing-coords-case")
+
+	cases := []struct {
+		name       string
+		locationID string
+		places     string
+	}{
+		{"cid only without placeId fails", cidLocation.ID,
+			`{"cid":"1234567890","title":"CID Only Cafe","latitude":27.7001,"longitude":85.3188}`},
+		{"placeId without coordinates fails", coordLocation.ID, `{"placeId":"lonely-place","title":"No Coords Cafe"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int64
+			server := mapsEchoServer(t, &hits, http.StatusOK, mapsSuccessBody(tc.places))
+			t.Cleanup(server.Close)
+			configureMapsStub(fx, server.URL)
+			baseOrg := fx.orgBudget(t)
+
+			rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), tc.locationID)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("lookup status = %d body=%s", rr.Code, rr.Body.String())
+			}
+			var lookup locationListingLookupResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &lookup); err != nil {
+				t.Fatalf("decode lookup: %v", err)
+			}
+			// A non-empty result without a bindable placeId still settles the
+			// actual 3-credit spend as failed; only a genuine empty array is a
+			// completed no-match.
+			if lookup.Status != "failed" || lookup.CreditsUsed != 3 || lookup.ReservedCredits != 0 || !lookup.CreditKnown {
+				t.Fatalf("lookup = %#v, want failed with 3 spent", lookup)
+			}
+			if lookup.Error == nil || !strings.Contains(*lookup.Error, "bindable placeId") {
+				t.Fatalf("lookup error = %v, want bindable placeId message", lookup.Error)
+			}
+			if len(lookup.Candidates) != 0 {
+				t.Fatalf("failed candidates = %#v, want none exposed", lookup.Candidates)
+			}
+			if hits.Load() != 1 {
+				t.Fatalf("provider hits = %d, want 1", hits.Load())
+			}
+			if got := fx.orgBudget(t).spent - baseOrg.spent; got != 3 {
+				t.Fatalf("org spent delta = %d, want 3", got)
+			}
+
+			rr = callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), tc.locationID,
+				fmt.Sprintf(`{"lookup_id":%q,"place_id":"lonely-place"}`, lookup.ID))
+			if rr.Code != http.StatusConflict && rr.Code != http.StatusBadRequest {
+				t.Fatalf("bind after failed status = %d, want 4xx; body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestListingLookupGenuineEmptyCompletedNoMatches(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	location := createUnboundLocation(t, fx, "genuine-empty")
+
+	var hits atomic.Int64
+	server := mapsEchoServer(t, &hits, http.StatusOK, func(ll string) string {
+		return fmt.Sprintf(`{"credits":3,"ll":%q,"places":[]}`, ll)
+	})
+	t.Cleanup(server.Close)
+	configureMapsStub(fx, server.URL)
+	baseOrg := fx.orgBudget(t)
+
+	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("lookup status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var lookup locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &lookup); err != nil {
+		t.Fatalf("decode lookup: %v", err)
+	}
+	if lookup.Status != "completed" || lookup.CreditsUsed != 3 || lookup.ReservedCredits != 0 || !lookup.CreditKnown {
+		t.Fatalf("lookup = %#v, want completed with 3 spent", lookup)
+	}
+	if len(lookup.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want no matches", lookup.Candidates)
+	}
+	if got := fx.orgBudget(t).spent - baseOrg.spent; got != 3 {
+		t.Fatalf("org spent delta = %d, want 3", got)
+	}
+
+	rr = callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"no-such-place"}`, lookup.ID))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bind with no match status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits = %d, want 1", hits.Load())
+	}
 }
 
 func TestListingLookupNoFundsBlocksProvider(t *testing.T) {
@@ -343,13 +1007,10 @@ func TestListingLookupNoFundsBlocksProvider(t *testing.T) {
 	location := createUnboundLocation(t, fx, "no-funds")
 
 	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"credits":1,"places":[]}`))
-	}))
+	server := mapsEchoServer(t, &hits, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"real-place-1","title":"Real Cafe","address":"1 Test Street","latitude":27.7001,"longitude":85.3188}`))
 	t.Cleanup(server.Close)
-	configurePlacesStub(fx, server.URL)
+	configureMapsStub(fx, server.URL)
 
 	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
 	if rr.Code != http.StatusConflict {
@@ -373,14 +1034,11 @@ func TestListingLookupChargedHTTPErrorIsFailed(t *testing.T) {
 	location := createUnboundLocation(t, fx, "charged-error")
 
 	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"credits":1,"places":[]}`))
-	}))
+	server := mapsEchoServer(t, &hits, http.StatusInternalServerError, func(ll string) string {
+		return `{"credits":3,"places":[]}`
+	})
 	t.Cleanup(server.Close)
-	configurePlacesStub(fx, server.URL)
+	configureMapsStub(fx, server.URL)
 
 	base := fx.orgBudget(t)
 	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
@@ -391,15 +1049,15 @@ func TestListingLookupChargedHTTPErrorIsFailed(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &lookup); err != nil {
 		t.Fatalf("decode lookup: %v", err)
 	}
-	if lookup.Status != "failed" || lookup.CreditsUsed != 1 || lookup.ReservedCredits != 0 || !lookup.CreditKnown {
+	if lookup.Status != "failed" || lookup.CreditsUsed != 3 || lookup.ReservedCredits != 0 || !lookup.CreditKnown {
 		t.Fatalf("charged error lookup = %#v", lookup)
 	}
 	if lookup.Error == nil || *lookup.Error == "" {
 		t.Fatalf("charged error lookup error = %v, want recorded", lookup.Error)
 	}
 	after := fx.orgBudget(t)
-	if after.spent-base.spent != 1 || after.reserved != base.reserved {
-		t.Fatalf("charged error budget change = spent %d reserved %d, want spent 1 reserved 0", after.spent-base.spent, after.reserved-base.reserved)
+	if after.spent-base.spent != 3 || after.reserved != base.reserved {
+		t.Fatalf("charged error budget change = spent %d reserved %d, want spent 3 reserved 0", after.spent-base.spent, after.reserved-base.reserved)
 	}
 
 	// Reading evidence later must not retry the paid provider.
@@ -411,17 +1069,17 @@ func TestListingLookupChargedHTTPErrorIsFailed(t *testing.T) {
 	}
 }
 
-func TestListingLookupUnknownChargeHoldsReservation(t *testing.T) {
+func TestListingLookupUnknownTimeoutHoldsAndBlocks(t *testing.T) {
 	fx := newLocalVisibilityFixture(t)
 	fx.fundLocalVisibilityBudgets(t)
-	location := createUnboundLocation(t, fx, "unknown")
+	location := createUnboundLocation(t, fx, "unknown-hold")
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`not-a-json-response`))
-	}))
+	// An undecodable body stands in for a timeout: no charge evidence, so the
+	// 3-credit reservation stays held instead of settling or releasing.
+	var hits atomic.Int64
+	server := mapsEchoServer(t, &hits, http.StatusOK, func(ll string) string { return `not-a-json-response` })
 	t.Cleanup(server.Close)
-	configurePlacesStub(fx, server.URL)
+	configureMapsStub(fx, server.URL)
 
 	base := fx.orgBudget(t)
 	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
@@ -432,12 +1090,48 @@ func TestListingLookupUnknownChargeHoldsReservation(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &lookup); err != nil {
 		t.Fatalf("decode lookup: %v", err)
 	}
-	if lookup.Status != "uncertain" || lookup.CreditKnown || lookup.CreditsUsed != 0 || lookup.ReservedCredits != 1 {
-		t.Fatalf("unknown lookup = %#v, want uncertain with reservation held", lookup)
+	if lookup.Status != "uncertain" || lookup.CreditKnown || lookup.CreditsUsed != 0 || lookup.ReservedCredits != 3 {
+		t.Fatalf("unknown lookup = %#v, want uncertain with 3 held", lookup)
 	}
 	after := fx.orgBudget(t)
-	if after.reserved-base.reserved != 1 || after.spent != base.spent {
-		t.Fatalf("unknown lookup budget change = reserved %d spent %d, want reserved 1 spent 0", after.reserved-base.reserved, after.spent-base.spent)
+	if after.reserved-base.reserved != 3 || after.spent != base.spent {
+		t.Fatalf("unknown lookup budget change = reserved %d spent %d, want reserved 3 spent 0", after.reserved-base.reserved, after.spent-base.spent)
+	}
+
+	// The held reservation blocks a retry, even for a different explicit query.
+	if rr = callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID); rr.Code != http.StatusConflict {
+		t.Fatalf("same retry status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	other := geography.GeocodedAddress{DisplayName: "Other Cafe, Testville", Latitude: 27.73, Longitude: 85.35, Locality: "Testville", CountryCode: "np"}
+	if rr = callCreateListingLookupBody(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, explicitLookupBody("Other Cafe, Testville", other)); rr.Code != http.StatusConflict {
+		t.Fatalf("different retry status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits after blocked retries = %d, want 1", hits.Load())
+	}
+
+	// The hold also blocks location and project deletion.
+	if rr := callDeleteProjectLocation(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID); rr.Code != http.StatusConflict {
+		t.Fatalf("location delete status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := callDeleteProject(t, fx.app, fx.ownerID, fx.projectID.String()); rr.Code != http.StatusConflict {
+		t.Fatalf("project delete status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+
+	// The recorded uncertain evidence is immutable and re-readable for free.
+	rr = callGetLatestListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("latest status = %d", rr.Code)
+	}
+	var reread locationListingLookupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &reread); err != nil {
+		t.Fatalf("decode latest: %v", err)
+	}
+	if reread.ID != lookup.ID || reread.Status != "uncertain" || reread.ReservedCredits != 3 {
+		t.Fatalf("latest = %#v, want the same held lookup", reread)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits after latest = %d, want 1", hits.Load())
 	}
 }
 
@@ -451,13 +1145,10 @@ func TestListingLookupDuplicateActiveConflict(t *testing.T) {
 		t.Fatalf("insert running lookup: %v", err)
 	}
 	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"credits":1,"places":[]}`))
-	}))
+	server := mapsEchoServer(t, &hits, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"real-place-1","title":"Real Cafe","address":"1 Test Street","latitude":27.7001,"longitude":85.3188}`))
 	t.Cleanup(server.Close)
-	configurePlacesStub(fx, server.URL)
+	configureMapsStub(fx, server.URL)
 
 	base := fx.orgBudget(t)
 	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID)
@@ -484,12 +1175,11 @@ func TestListingLookupCrossScopeNotFound(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = fx.pool.Exec(context.Background(), `DELETE FROM projects WHERE id=$1`, otherProject) })
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"credits":1,"places":[{"placeId":"scope-place","title":"Scope Cafe"}]}`))
-	}))
+	var hits atomic.Int64
+	server := mapsEchoServer(t, &hits, http.StatusOK, mapsSuccessBody(
+		`{"placeId":"scope-place","cid":"999","title":"Scope Cafe","address":"1 Test Street","latitude":27.7011,"longitude":85.3199}`))
 	t.Cleanup(server.Close)
-	configurePlacesStub(fx, server.URL)
+	configureMapsStub(fx, server.URL)
 
 	rr := callCreateListingLookup(t, fx.app, fx.ownerID, fx.projectID.String(), first.ID)
 	if rr.Code != http.StatusOK {

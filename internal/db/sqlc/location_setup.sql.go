@@ -12,18 +12,21 @@ import (
 )
 
 const bindLocationListingForUser = `-- name: BindLocationListingForUser :one
-UPDATE project_locations l SET place_id = $4::text, updated_at = now()
+UPDATE project_locations l SET place_id = $4::text,
+latitude = $5::double precision, longitude = $6::double precision, updated_at = now()
 FROM projects p,organization_members m
 WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
-AND m.org_id = p.organization_id AND m.user_id = $3
+AND m.org_id = p.organization_id AND m.user_id = $3 AND l.place_id IS NULL
 RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service
 `
 
 type BindLocationListingForUserParams struct {
-	ID      pgtype.UUID
-	ID_2    pgtype.UUID
-	UserID  pgtype.UUID
-	PlaceID string
+	ID        pgtype.UUID
+	ID_2      pgtype.UUID
+	UserID    pgtype.UUID
+	PlaceID   string
+	Latitude  float64
+	Longitude float64
 }
 
 func (q *Queries) BindLocationListingForUser(ctx context.Context, arg BindLocationListingForUserParams) (ProjectLocation, error) {
@@ -32,6 +35,8 @@ func (q *Queries) BindLocationListingForUser(ctx context.Context, arg BindLocati
 		arg.ID_2,
 		arg.UserID,
 		arg.PlaceID,
+		arg.Latitude,
+		arg.Longitude,
 	)
 	var i ProjectLocation
 	err := row.Scan(
@@ -54,7 +59,7 @@ func (q *Queries) BindLocationListingForUser(ctx context.Context, arg BindLocati
 const completeLocationListingLookup = `-- name: CompleteLocationListingLookup :one
 UPDATE local_listing_lookups SET status = $2, reserved_credits = $3, credits_used = $4,
 credit_known = $5, raw_response = $6, error = $7, completed_at = now()
-WHERE id = $1 AND status = 'running' RETURNING id, location_id, query, status, expected_credits, reserved_credits, credits_used, credit_known, raw_response, error, created_at, completed_at
+WHERE id = $1 AND status = 'running' RETURNING id, location_id, query, status, expected_credits, reserved_credits, credits_used, credit_known, raw_response, error, created_at, completed_at, candidate_key, source_latitude, source_longitude
 `
 
 type CompleteLocationListingLookupParams struct {
@@ -91,21 +96,38 @@ func (q *Queries) CompleteLocationListingLookup(ctx context.Context, arg Complet
 		&i.Error,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.CandidateKey,
+		&i.SourceLatitude,
+		&i.SourceLongitude,
 	)
 	return i, err
 }
 
 const createLocationListingLookup = `-- name: CreateLocationListingLookup :one
-INSERT INTO local_listing_lookups(location_id,query) VALUES($1,$2) RETURNING id, location_id, query, status, expected_credits, reserved_credits, credits_used, credit_known, raw_response, error, created_at, completed_at
+INSERT INTO local_listing_lookups(location_id,query,expected_credits,reserved_credits,candidate_key,source_latitude,source_longitude,created_at)
+VALUES($1::uuid,$2::text,$3::integer,
+$3::integer,$4::text,
+$5::double precision,$6::double precision,clock_timestamp()) RETURNING id, location_id, query, status, expected_credits, reserved_credits, credits_used, credit_known, raw_response, error, created_at, completed_at, candidate_key, source_latitude, source_longitude
 `
 
 type CreateLocationListingLookupParams struct {
-	LocationID pgtype.UUID
-	Query      string
+	LocationID      pgtype.UUID
+	Query           string
+	ExpectedCredits int32
+	CandidateKey    string
+	SourceLatitude  float64
+	SourceLongitude float64
 }
 
 func (q *Queries) CreateLocationListingLookup(ctx context.Context, arg CreateLocationListingLookupParams) (LocalListingLookup, error) {
-	row := q.db.QueryRow(ctx, createLocationListingLookup, arg.LocationID, arg.Query)
+	row := q.db.QueryRow(ctx, createLocationListingLookup,
+		arg.LocationID,
+		arg.Query,
+		arg.ExpectedCredits,
+		arg.CandidateKey,
+		arg.SourceLatitude,
+		arg.SourceLongitude,
+	)
 	var i LocalListingLookup
 	err := row.Scan(
 		&i.ID,
@@ -120,6 +142,9 @@ func (q *Queries) CreateLocationListingLookup(ctx context.Context, arg CreateLoc
 		&i.Error,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.CandidateKey,
+		&i.SourceLatitude,
+		&i.SourceLongitude,
 	)
 	return i, err
 }
@@ -196,7 +221,7 @@ func (q *Queries) DeleteLocationSetupForUser(ctx context.Context, arg DeleteLoca
 }
 
 const getLatestListingLookupForUser = `-- name: GetLatestListingLookupForUser :one
-SELECT s.id, s.location_id, s.query, s.status, s.expected_credits, s.reserved_credits, s.credits_used, s.credit_known, s.raw_response, s.error, s.created_at, s.completed_at FROM local_listing_lookups s
+SELECT s.id, s.location_id, s.query, s.status, s.expected_credits, s.reserved_credits, s.credits_used, s.credit_known, s.raw_response, s.error, s.created_at, s.completed_at, s.candidate_key, s.source_latitude, s.source_longitude FROM local_listing_lookups s
 JOIN project_locations l ON l.id = s.location_id
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
@@ -226,12 +251,15 @@ func (q *Queries) GetLatestListingLookupForUser(ctx context.Context, arg GetLate
 		&i.Error,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.CandidateKey,
+		&i.SourceLatitude,
+		&i.SourceLongitude,
 	)
 	return i, err
 }
 
 const getListingLookupForUser = `-- name: GetListingLookupForUser :one
-SELECT s.id, s.location_id, s.query, s.status, s.expected_credits, s.reserved_credits, s.credits_used, s.credit_known, s.raw_response, s.error, s.created_at, s.completed_at FROM local_listing_lookups s
+SELECT s.id, s.location_id, s.query, s.status, s.expected_credits, s.reserved_credits, s.credits_used, s.credit_known, s.raw_response, s.error, s.created_at, s.completed_at, s.candidate_key, s.source_latitude, s.source_longitude FROM local_listing_lookups s
 JOIN project_locations l ON l.id = s.location_id
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
@@ -266,6 +294,9 @@ func (q *Queries) GetListingLookupForUser(ctx context.Context, arg GetListingLoo
 		&i.Error,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.CandidateKey,
+		&i.SourceLatitude,
+		&i.SourceLongitude,
 	)
 	return i, err
 }
@@ -333,7 +364,7 @@ func (q *Queries) GetLocationGeographyCache(ctx context.Context, cacheKey string
 }
 
 const getLocationListingLookup = `-- name: GetLocationListingLookup :one
-SELECT s.id, s.location_id, s.query, s.status, s.expected_credits, s.reserved_credits, s.credits_used, s.credit_known, s.raw_response, s.error, s.created_at, s.completed_at,p.organization_id FROM local_listing_lookups s
+SELECT s.id, s.location_id, s.query, s.status, s.expected_credits, s.reserved_credits, s.credits_used, s.credit_known, s.raw_response, s.error, s.created_at, s.completed_at, s.candidate_key, s.source_latitude, s.source_longitude,p.organization_id FROM local_listing_lookups s
 JOIN project_locations l ON l.id = s.location_id
 JOIN projects p ON p.id = l.project_id
 WHERE s.id = $1
@@ -352,6 +383,9 @@ type GetLocationListingLookupRow struct {
 	Error           pgtype.Text
 	CreatedAt       pgtype.Timestamptz
 	CompletedAt     pgtype.Timestamptz
+	CandidateKey    string
+	SourceLatitude  pgtype.Float8
+	SourceLongitude pgtype.Float8
 	OrganizationID  pgtype.UUID
 }
 
@@ -371,6 +405,9 @@ func (q *Queries) GetLocationListingLookup(ctx context.Context, id pgtype.UUID) 
 		&i.Error,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.CandidateKey,
+		&i.SourceLatitude,
+		&i.SourceLongitude,
 		&i.OrganizationID,
 	)
 	return i, err
@@ -423,7 +460,7 @@ func (q *Queries) ListProjectLocationsForUser(ctx context.Context, arg ListProje
 }
 
 const lockLocationListingLookup = `-- name: LockLocationListingLookup :one
-SELECT id, location_id, query, status, expected_credits, reserved_credits, credits_used, credit_known, raw_response, error, created_at, completed_at FROM local_listing_lookups WHERE id = $1 FOR UPDATE
+SELECT id, location_id, query, status, expected_credits, reserved_credits, credits_used, credit_known, raw_response, error, created_at, completed_at, candidate_key, source_latitude, source_longitude FROM local_listing_lookups WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockLocationListingLookup(ctx context.Context, id pgtype.UUID) (LocalListingLookup, error) {
@@ -442,6 +479,9 @@ func (q *Queries) LockLocationListingLookup(ctx context.Context, id pgtype.UUID)
 		&i.Error,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.CandidateKey,
+		&i.SourceLatitude,
+		&i.SourceLongitude,
 	)
 	return i, err
 }
@@ -459,6 +499,40 @@ type SaveLocationGeographyCacheParams struct {
 func (q *Queries) SaveLocationGeographyCache(ctx context.Context, arg SaveLocationGeographyCacheParams) error {
 	_, err := q.db.Exec(ctx, saveLocationGeographyCache, arg.CacheKey, arg.Results)
 	return err
+}
+
+const unbindLocationListingForUser = `-- name: UnbindLocationListingForUser :one
+UPDATE project_locations l SET place_id = NULL, updated_at = now()
+FROM projects p,organization_members m
+WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
+AND m.org_id = p.organization_id AND m.user_id = $3
+RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service
+`
+
+type UnbindLocationListingForUserParams struct {
+	ID     pgtype.UUID
+	ID_2   pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) UnbindLocationListingForUser(ctx context.Context, arg UnbindLocationListingForUserParams) (ProjectLocation, error) {
+	row := q.db.QueryRow(ctx, unbindLocationListingForUser, arg.ID, arg.ID_2, arg.UserID)
+	var i ProjectLocation
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.PlaceID,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Queries,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Address,
+		&i.Locality,
+		&i.QueryService,
+	)
+	return i, err
 }
 
 const updateLocationSetupForUser = `-- name: UpdateLocationSetupForUser :one

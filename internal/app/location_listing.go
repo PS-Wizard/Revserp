@@ -24,23 +24,34 @@ type locationListingCandidate struct {
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
 }
+type locationListingSourceCandidate struct {
+	DisplayName string  `json:"display_name"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+}
+
 type locationListingLookupResponse struct {
-	ID              string                     `json:"id"`
-	Status          string                     `json:"status"`
-	ExpectedCredits int32                      `json:"expected_credits"`
-	CreditsUsed     int64                      `json:"credits_used"`
-	ReservedCredits int64                      `json:"reserved_credits"`
-	CreditKnown     bool                       `json:"credit_known"`
-	Error           *string                    `json:"error"`
-	Candidates      []locationListingCandidate `json:"candidates"`
+	ID              string                          `json:"id"`
+	Status          string                          `json:"status"`
+	ExpectedCredits int32                           `json:"expected_credits"`
+	CreditsUsed     int64                           `json:"credits_used"`
+	ReservedCredits int64                           `json:"reserved_credits"`
+	CreditKnown     bool                            `json:"credit_known"`
+	Error           *string                         `json:"error"`
+	Candidates      []locationListingCandidate      `json:"candidates"`
+	Deduplicated    bool                            `json:"deduplicated,omitempty"`
+	SourceCandidate *locationListingSourceCandidate `json:"source_candidate,omitempty"`
 }
 
 func listingLookupResponse(lookup sqlc.LocalListingLookup) (locationListingLookupResponse, error) {
 	response := locationListingLookupResponse{ID: lookup.ID.String(), Status: lookup.Status, ExpectedCredits: lookup.ExpectedCredits, CreditsUsed: lookup.CreditsUsed, ReservedCredits: lookup.ReservedCredits, CreditKnown: lookup.CreditKnown, Error: localVisibilityNullableText(lookup.Error), Candidates: []locationListingCandidate{}}
+	if lookup.SourceLatitude.Valid && lookup.SourceLongitude.Valid {
+		response.SourceCandidate = &locationListingSourceCandidate{DisplayName: lookup.Query, Latitude: lookup.SourceLatitude.Float64, Longitude: lookup.SourceLongitude.Float64}
+	}
 	if lookup.Status != "completed" {
 		return response, nil
 	}
-	var provider serper.PlacesResponse
+	var provider serper.MapsListingResponse
 	if err := json.Unmarshal(lookup.RawResponse, &provider); err != nil {
 		return response, err
 	}
@@ -49,8 +60,18 @@ func listingLookupResponse(lookup sqlc.LocalListingLookup) (locationListingLooku
 		if strings.TrimSpace(place.PlaceID) == "" || seen[place.PlaceID] {
 			continue
 		}
+		if lookup.ExpectedCredits == 3 && !place.HasMapCoordinates() {
+			continue
+		}
 		seen[place.PlaceID] = true
-		response.Candidates = append(response.Candidates, locationListingCandidate{PlaceID: place.PlaceID, Title: place.Title, Address: place.Address, Latitude: place.Latitude, Longitude: place.Longitude})
+		candidate := locationListingCandidate{PlaceID: place.PlaceID, Title: place.Title, Address: place.Address}
+		if place.Latitude != nil {
+			candidate.Latitude = *place.Latitude
+		}
+		if place.Longitude != nil {
+			candidate.Longitude = *place.Longitude
+		}
+		response.Candidates = append(response.Candidates, candidate)
 	}
 	return response, nil
 }
@@ -82,7 +103,7 @@ func (a *App) handleCreateListingLookup(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	var body struct{}
+	var body createListingLookupRequest
 	if !readStrictJSONOrRespond(w, r, &body) {
 		return
 	}
@@ -90,16 +111,21 @@ func (a *App) handleCreateListingLookup(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, 409, "location already has a bound listing")
 		return
 	}
-	if strings.TrimSpace(location.Address) == "" {
-		writeJSONError(w, 400, "save the physical address before searching for a listing")
+	selection, err := listingResolutionSelection(location, body)
+	if err != nil {
+		if errors.Is(err, errInvalidListingSelection) {
+			writeJSONError(w, 400, err.Error())
+		} else {
+			serverError(w, r, err)
+		}
 		return
 	}
-	if strings.TrimSpace(a.Config.SerperAPIKey) == "" || strings.TrimSpace(a.Config.SerperPlacesEndpoint) == "" {
-		writeJSONError(w, 503, "Google listing lookup provider is not configured")
+	if strings.TrimSpace(a.Config.SerperAPIKey) == "" || strings.TrimSpace(a.Config.SerperMapsEndpoint) == "" {
+		writeJSONError(w, 503, "Google Maps listing resolution provider is not configured")
 		return
 	}
 	store := localvisibility.ListingLookupStore{Pool: a.DB}
-	lookup, err := store.ReserveListingLookup(r.Context(), userID, location.ProjectID, location.ID)
+	lookup, created, err := store.ReserveListingLookup(r.Context(), userID, location.ProjectID, location.ID, selection)
 	if err != nil {
 		switch {
 		case errors.Is(err, localvisibility.ErrMapsBudgetUnavailable):
@@ -115,8 +141,18 @@ func (a *App) handleCreateListingLookup(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
+	if !created {
+		response, err := listingLookupResponse(lookup)
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		response.Deduplicated = true
+		writeJSON(w, 200, response)
+		return
+	}
 	provider := serper.NewClient(a.Config.SerperAPIKey, a.Config.SerperMapsEndpoint, a.Config.SerperPlacesEndpoint, a.Config.SerperReviewsEndpoint)
-	result, providerErr := provider.Places(r.Context(), lookup.Query)
+	result, providerErr := provider.LookupMapsListing(r.Context(), lookup.Query, lookup.SourceLatitude.Float64, lookup.SourceLongitude.Float64)
 	// Cancellation must not discard a paid response or release an unknown charge.
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
 	defer cancel()
@@ -160,6 +196,10 @@ func (a *App) handleBindLocationListing(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if location.PlaceID.Valid {
+		writeJSONError(w, 409, "unbind the current listing before selecting another")
+		return
+	}
 	var body struct {
 		LookupID string `json:"lookup_id"`
 		PlaceID  string `json:"place_id"`
@@ -191,21 +231,25 @@ func (a *App) handleBindLocationListing(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	selected := strings.TrimSpace(body.PlaceID)
-	found := false
+	var chosen *locationListingCandidate
 	for _, candidate := range candidates.Candidates {
 		if candidate.PlaceID == selected {
-			found = true
+			chosen = &candidate
 			break
 		}
 	}
-	if !found {
+	if chosen == nil {
 		writeJSONError(w, 400, "place_id must be a candidate from this location's lookup")
 		return
 	}
-	bound, err := a.Queries.BindLocationListingForUser(r.Context(), sqlc.BindLocationListingForUserParams{ID: location.ID, ID_2: location.ProjectID, UserID: userID, PlaceID: selected})
+	latitude, longitude := location.Latitude, location.Longitude
+	if lookup.ExpectedCredits == 3 {
+		latitude, longitude = chosen.Latitude, chosen.Longitude
+	}
+	bound, err := a.Queries.BindLocationListingForUser(r.Context(), sqlc.BindLocationListingForUserParams{ID: location.ID, ID_2: location.ProjectID, UserID: userID, PlaceID: selected, Latitude: latitude, Longitude: longitude})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, 404, "location not found")
+			writeJSONError(w, 409, "listing binding changed; reload the location")
 		} else {
 			serverError(w, r, err)
 		}
@@ -261,4 +305,26 @@ func (a *App) handleDeleteLocationSetup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleUnbindLocationListing(w http.ResponseWriter, r *http.Request) {
+	location, userID, ok := a.locationSetupLocation(w, r)
+	if !ok {
+		return
+	}
+	unbound, err := a.Queries.UnbindLocationListingForUser(r.Context(), sqlc.UnbindLocationListingForUserParams{ID: location.ID, ID_2: location.ProjectID, UserID: userID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, 404, "location not found")
+		} else {
+			serverError(w, r, err)
+		}
+		return
+	}
+	response, err := newLocalVisibilityLocationResponse(unbound.ID, unbound.ProjectID, unbound.Name, unbound.PlaceID, unbound.Latitude, unbound.Longitude, unbound.Queries, unbound.Address, unbound.Locality, unbound.QueryService)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, 200, response)
 }

@@ -85,6 +85,7 @@ func (a *App) Router() http.Handler {
 			app.Post("/projects/{projectID}/locations/{locationID}/listing-lookups", a.handleCreateListingLookup)
 			app.Get("/projects/{projectID}/locations/{locationID}/listing-lookups/latest", a.handleGetLatestListingLookup)
 			app.Post("/projects/{projectID}/locations/{locationID}/listing", a.handleBindLocationListing)
+			app.Delete("/projects/{projectID}/locations/{locationID}/listing", a.handleUnbindLocationListing)
 			app.Post("/projects/{projectID}/locations/{locationID}/runs", a.handleCreateLocalVisibilityRun)
 			app.Get("/projects/{projectID}/locations/{locationID}/runs/latest", a.handleGetLatestLocalVisibilityRun)
 			app.Get("/projects/{projectID}/locations/{locationID}/runs/{runID}", a.handleGetLocalVisibilityRun)

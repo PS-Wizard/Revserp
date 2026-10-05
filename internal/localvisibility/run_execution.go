@@ -25,9 +25,8 @@ var localRunSectors = map[string]bool{
 	"centre": true, "N": true, "NE": true, "E": true, "SE": true, "S": true, "SW": true, "W": true, "NW": true,
 }
 
-// ExecuteLocalVisibilityRun executes one queued local visibility run: 45
-// sequential Serper maps calls (five frozen queries by nine frozen grid points)
-// with per-cell settlement, then finalizes the run.
+// ExecuteLocalVisibilityRun executes one queued run with one to five frozen
+// queries across nine frozen points, settles each call, then finalizes the run.
 //
 // The frozen snapshot is fully validated before any provider call is issued,
 // including the exact stored viewport strings. The run status row is
@@ -50,8 +49,6 @@ func ExecuteLocalVisibilityRun(ctx context.Context, pool *pgxpool.Pool, cfg conf
 	if err := validateLocalRunSnapshot(snapshot, run.ExpectedCredits); err != nil {
 		return err
 	}
-	// Atomic queued -> running claim. No row means another worker owns the run
-	// or it already finished: either way no provider call may be issued.
 	if _, err := queries.StartLocalVisibilityRun(ctx, runID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("local visibility run %s is not queued", runID.String())
@@ -86,16 +83,14 @@ loop:
 			// guarantee a replay is free, so each cell gets one attempt.
 			response, providerErr := client.MapsAt(ctx, query, point.Latitude, point.Longitude)
 			outcome := localCellOutcome(runID, queryIndex, pointIndex, snapshot.TargetPlaceID, response, providerErr)
-			if err := store.RecordCellOutcome(ctx, outcome); err != nil {
-				if ctx.Err() == nil {
-					execErr = fmt.Errorf("local visibility record cell q%d p%d: %w", queryIndex, pointIndex, err)
-				}
+			if err := recordLocalCellSettlement(ctx, store, outcome); err != nil {
+				execErr = fmt.Errorf("local visibility record cell q%d p%d: %w", queryIndex, pointIndex, err)
+				break loop
+			}
+			if ctx.Err() != nil {
 				break loop
 			}
 			if outcome.CreditKnown && outcome.Credits != MapsCreditsPerCall {
-				// The per-call price moved: record the actual charge above,
-				// then stop before further calls to avoid unbounded spend.
-				// FinishRun below leaves the run partial.
 				break loop
 			}
 		}
@@ -122,12 +117,6 @@ loop:
 	return nil
 }
 
-// validateLocalRunSnapshot rejects a run whose frozen measurement parameters
-// drifted from the fixed grid contract before any paid call is issued. Query
-// text must already be normalized: nothing here trims or rewrites it, the
-// stored text is used verbatim. Each stored viewport must equal the formatted
-// viewport of its grid point exactly, which pins the measured coordinates
-// without recomputing the grid geometry.
 func validateLocalRunSnapshot(snapshot LocalRunSnapshot, expectedCredits int32) error {
 	if len(snapshot.Queries) < 1 || len(snapshot.Queries) > MapQueryCount {
 		return fmt.Errorf("local visibility snapshot queries = %d, want between 1 and %d", len(snapshot.Queries), MapQueryCount)
@@ -209,11 +198,12 @@ func validateLocalRunSnapshot(snapshot LocalRunSnapshot, expectedCredits int32) 
 	return nil
 }
 
-// localCellOutcome maps one provider attempt to its immutable result row.
-// Rank resolves strictly by PlaceID with a positive position, never by title.
-// A failed call keeps match unknown with no rank; only successful calls may
-// report found or absent. Credits above zero mean the charge is known;
-// anything else keeps the reservation for later reconciliation.
+func recordLocalCellSettlement(ctx context.Context, store LocalVisibilityStore, outcome sqlc.InsertLocalVisibilityResultParams) error {
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), localRunFinalizeTimeout)
+	defer cancel()
+	return store.RecordCellOutcome(settleCtx, outcome)
+}
+
 func localCellOutcome(runID pgtype.UUID, queryIndex, pointIndex int, targetPlaceID string, response serper.MapsResponse, providerErr error) sqlc.InsertLocalVisibilityResultParams {
 	raw, marshalErr := json.Marshal(response)
 	if marshalErr != nil {
@@ -251,10 +241,6 @@ func localCellOutcome(runID pgtype.UUID, queryIndex, pointIndex int, targetPlace
 	return outcome
 }
 
-// resolveLocalPlaceRank returns the smallest positive position whose PlaceID
-// equals the target. Title is never consulted: only the provider's stable
-// place identifier proves the listing is ours, and a non-positive position
-// is not a rank.
 func resolveLocalPlaceRank(places []serper.Place, targetPlaceID string) (int, bool) {
 	if targetPlaceID == "" {
 		return 0, false

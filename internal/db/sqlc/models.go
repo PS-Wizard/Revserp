@@ -389,6 +389,9 @@ type LocalListingLookup struct {
 	Error           pgtype.Text
 	CreatedAt       pgtype.Timestamptz
 	CompletedAt     pgtype.Timestamptz
+	CandidateKey    string
+	SourceLatitude  pgtype.Float8
+	SourceLongitude pgtype.Float8
 }
 
 type LocalRunCell struct {

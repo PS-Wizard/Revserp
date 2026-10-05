@@ -524,8 +524,6 @@ func TestExecuteLocalVisibilityRunCancelsWithoutRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload run: %v", err)
 	}
-	// The started-but-unrecorded cell keeps its reservation (its charge is
-	// unknown); the 43 never-started cells release theirs.
 	if run.Status != "partial" || run.ReservedCredits != 3 || run.CreditsUsed != 3 {
 		t.Fatalf("run = status %s reserved %d used %d, want partial/3/3", run.Status, run.ReservedCredits, run.CreditsUsed)
 	}
@@ -535,8 +533,8 @@ func TestExecuteLocalVisibilityRunCancelsWithoutRetry(t *testing.T) {
 	}
 	for _, cell := range cells {
 		if cell.QueryIndex == 0 && cell.PointIndex == 1 {
-			if cell.CallStatus != "pending" || !cell.StartedAt.Valid {
-				t.Fatalf("cancelled cell = %+v, want started but still pending", cell)
+			if cell.CallStatus != "request_failed" || cell.MatchStatus != "unknown" || cell.CreditKnown || cell.Credits != 0 || !cell.StartedAt.Valid {
+				t.Fatalf("cancelled cell = %+v, want failed request with unknown charge and no retry", cell)
 			}
 		}
 	}
@@ -683,5 +681,55 @@ func TestLocalVisibilityDeletionBlocksUnsettledSpend(t *testing.T) {
 	var remainingRuns int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM local_visibility_runs WHERE id=$1`, runID).Scan(&remainingRuns); err != nil || remainingRuns != 0 {
 		t.Fatalf("settled location did not cascade run: %d %v", remainingRuns, err)
+	}
+}
+
+func TestRecordLocalCellSettlementAfterWorkerCancel(t *testing.T) {
+	pool, ctx := newLocalRunTestPool(t)
+	f := newLocalRunFixture(t, ctx, pool)
+	store := LocalVisibilityStore{Pool: pool}
+	queries := sqlc.New(pool)
+	runID := enqueueLocalStubRun(t, ctx, pool, f, "http://127.0.0.1:1/maps")
+	if _, err := queries.StartLocalVisibilityRun(ctx, runID); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	if _, err := queries.StartLocalRunCell(ctx, sqlc.StartLocalRunCellParams{RunID: runID}); err != nil {
+		t.Fatalf("start cell: %v", err)
+	}
+	// Decoded paid response received before the worker context was canceled.
+	outcome := localCellOutcome(runID, 0, 0, f.placeID, serper.MapsResponse{
+		LL:      "@40.000000,-74.000000,14z",
+		Credits: 3,
+		Places:  []serper.Place{{Position: 2, Title: "Wrong Name", PlaceID: f.placeID}},
+	}, nil)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := recordLocalCellSettlement(canceled, store, outcome); err != nil {
+		t.Fatalf("settlement after cancel: %v", err)
+	}
+	run, err := queries.GetLocalVisibilityRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("reload run: %v", err)
+	}
+	if run.CreditsUsed != 3 || run.ReservedCredits != 132 {
+		t.Fatalf("run = reserved %d used %d, want 132/3", run.ReservedCredits, run.CreditsUsed)
+	}
+	cells, err := queries.GetLocalRunCells(ctx, runID)
+	if err != nil {
+		t.Fatalf("cells: %v", err)
+	}
+	var settled *sqlc.GetLocalRunCellsRow
+	for i := range cells {
+		if cells[i].QueryIndex == 0 && cells[i].PointIndex == 0 {
+			settled = &cells[i]
+			break
+		}
+	}
+	if settled == nil || settled.CallStatus != "success_nonempty" || settled.MatchStatus != "found" || !settled.Rank.Valid || settled.Rank.Int32 != 2 || !settled.CreditKnown || settled.Credits != 3 {
+		t.Fatalf("cell q0 p0 = %+v, want found rank 2 with known 3-credit charge", settled)
+	}
+	// A failed settlement stays a real error even with a canceled worker context.
+	if err := recordLocalCellSettlement(canceled, store, outcome); err == nil {
+		t.Fatal("want duplicate settlement error even with canceled worker context")
 	}
 }

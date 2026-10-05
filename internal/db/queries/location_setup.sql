@@ -28,7 +28,10 @@ WHERE l.id = $1 AND p.id = $2 AND m.user_id = $3
 FOR NO KEY UPDATE OF l;
 
 -- name: CreateLocationListingLookup :one
-INSERT INTO local_listing_lookups(location_id,query) VALUES($1,$2) RETURNING *;
+INSERT INTO local_listing_lookups(location_id,query,expected_credits,reserved_credits,candidate_key,source_latitude,source_longitude,created_at)
+VALUES(sqlc.arg(location_id)::uuid,sqlc.arg(query)::text,sqlc.arg(expected_credits)::integer,
+sqlc.arg(expected_credits)::integer,sqlc.arg(candidate_key)::text,
+sqlc.arg(source_latitude)::double precision,sqlc.arg(source_longitude)::double precision,clock_timestamp()) RETURNING *;
 
 -- name: GetLocationListingLookup :one
 SELECT s.*,p.organization_id FROM local_listing_lookups s
@@ -60,7 +63,15 @@ credit_known = $5, raw_response = $6, error = $7, completed_at = now()
 WHERE id = $1 AND status = 'running' RETURNING *;
 
 -- name: BindLocationListingForUser :one
-UPDATE project_locations l SET place_id = sqlc.arg(place_id)::text, updated_at = now()
+UPDATE project_locations l SET place_id = sqlc.arg(place_id)::text,
+latitude = sqlc.arg(latitude)::double precision, longitude = sqlc.arg(longitude)::double precision, updated_at = now()
+FROM projects p,organization_members m
+WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
+AND m.org_id = p.organization_id AND m.user_id = $3 AND l.place_id IS NULL
+RETURNING l.*;
+
+-- name: UnbindLocationListingForUser :one
+UPDATE project_locations l SET place_id = NULL, updated_at = now()
 FROM projects p,organization_members m
 WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
 AND m.org_id = p.organization_id AND m.user_id = $3
