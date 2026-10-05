@@ -54,7 +54,11 @@ type GeocodedAddress struct {
 	Latitude    float64 `json:"latitude"`
 	Longitude   float64 `json:"longitude"`
 	Locality    string  `json:"locality"`
-	CountryCode string  `json:"country_code"`
+	// Localities lists every distinct address level smallest to widest, so a
+	// query generator can use each level once instead of shuffling one level
+	// into several word orders that Google treats as the same search.
+	Localities  []string `json:"localities"`
+	CountryCode string   `json:"country_code"`
 }
 
 // NominatimClient is an HTTP client bound to one Nominatim base URL and one
@@ -250,13 +254,37 @@ func (p nominatimPlace) geocoded() (GeocodedAddress, error) {
 	if err != nil {
 		return GeocodedAddress{}, err
 	}
+	levels := distinctLocalities(p.Address.localityLadder())
+	primary := ""
+	if len(levels) > 0 {
+		primary = levels[0]
+	}
 	return GeocodedAddress{
 		DisplayName: p.DisplayName,
 		Latitude:    latitude,
 		Longitude:   longitude,
-		Locality:    p.Address.locality(),
+		Locality:    primary,
+		Localities:  levels,
 		CountryCode: p.Address.CountryCode,
 	}, nil
+}
+
+// distinctLocalities drops blanks and case-insensitive repeats, keeping the
+// smallest-first order so each level is a genuinely different search scope.
+func distinctLocalities(levels []string) []string {
+	seen := make(map[string]bool, len(levels))
+	out := make([]string, 0, len(levels))
+	for _, level := range levels {
+		level = strings.TrimSpace(level)
+		if level == "" {
+			continue
+		}
+		if key := strings.ToLower(level); !seen[key] {
+			seen[key] = true
+			out = append(out, level)
+		}
+	}
+	return out
 }
 
 // locality returns the smallest name a person would use for this place, not
