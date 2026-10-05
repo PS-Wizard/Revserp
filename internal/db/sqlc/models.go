@@ -159,6 +159,7 @@ type AiWorkerJob struct {
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
 	AuditID      pgtype.UUID
+	LocalRunID   pgtype.UUID
 }
 
 type AiWorkspaceMonthlyUsage struct {
@@ -375,6 +376,64 @@ type IssueWorkItem struct {
 	SourceIssueGroupID pgtype.UUID
 }
 
+type LocalListingLookup struct {
+	ID              pgtype.UUID
+	LocationID      pgtype.UUID
+	Query           string
+	Status          string
+	ExpectedCredits int32
+	ReservedCredits int64
+	CreditsUsed     int64
+	CreditKnown     bool
+	RawResponse     []byte
+	Error           pgtype.Text
+	CreatedAt       pgtype.Timestamptz
+	CompletedAt     pgtype.Timestamptz
+}
+
+type LocalRunCell struct {
+	RunID      pgtype.UUID
+	QueryIndex int16
+	PointIndex int16
+	StartedAt  pgtype.Timestamptz
+}
+
+type LocalVisibilityResult struct {
+	RunID       pgtype.UUID
+	QueryIndex  int16
+	PointIndex  int16
+	CallStatus  string
+	MatchStatus string
+	Rank        pgtype.Int4
+	Credits     int32
+	CreditKnown bool
+	RawResponse []byte
+	Error       pgtype.Text
+	CompletedAt pgtype.Timestamptz
+}
+
+type LocalVisibilityRun struct {
+	ID              pgtype.UUID
+	LocationID      pgtype.UUID
+	Status          string
+	RadiusM         int32
+	Snapshot        []byte
+	ExpectedCredits int32
+	ReservedCredits int32
+	CreditsUsed     int32
+	RetryCredits    int32
+	Error           pgtype.Text
+	CreatedAt       pgtype.Timestamptz
+	StartedAt       pgtype.Timestamptz
+	CompletedAt     pgtype.Timestamptz
+}
+
+type LocationGeographyCache struct {
+	CacheKey  string
+	Results   []byte
+	UpdatedAt pgtype.Timestamptz
+}
+
 type MapsListingRef struct {
 	ProjectID  pgtype.UUID
 	Cid        pgtype.Text
@@ -459,11 +518,25 @@ type OrganizationInvite struct {
 	CreatedAt       pgtype.Timestamptz
 }
 
+type OrganizationMapsCreditBudget struct {
+	OrganizationID   pgtype.UUID
+	RemainingCredits int64
+	ReservedCredits  int64
+	SpentCredits     int64
+}
+
 type OrganizationMember struct {
 	OrgID     pgtype.UUID
 	UserID    pgtype.UUID
 	Role      string
 	CreatedAt pgtype.Timestamptz
+}
+
+type PlatformMapsCreditBudget struct {
+	ID               bool
+	RemainingCredits int64
+	ReservedCredits  int64
+	SpentCredits     int64
 }
 
 type Project struct {
@@ -550,6 +623,21 @@ type ProjectKeyword struct {
 	Source            string
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+}
+
+type ProjectLocation struct {
+	ID           pgtype.UUID
+	ProjectID    pgtype.UUID
+	Name         string
+	PlaceID      pgtype.Text
+	Latitude     float64
+	Longitude    float64
+	Queries      []byte
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	Address      string
+	Locality     string
+	QueryService string
 }
 
 type ProjectMcpConnection struct {

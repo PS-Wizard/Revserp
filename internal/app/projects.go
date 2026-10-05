@@ -227,7 +227,11 @@ func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 			UserID: user.ID,
 		})
 		if err != nil {
-			serverError(w, r, err)
+			if isUnsettledMapsSpendError(err) {
+				writeJSONError(w, http.StatusConflict, "cannot delete project while Maps calls are active or their credits are unconfirmed")
+			} else {
+				serverError(w, r, err)
+			}
 			return err
 		}
 		if deletedRows == 0 {

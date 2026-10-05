@@ -1,4 +1,5 @@
 .env
+.env.bak.*
 bin/
 tmp/
 *.log

@@ -8,7 +8,7 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, job_type, project_id, audit_id, status, error_message, started_at, completed_at, created_at, updated_at;
+RETURNING id, job_type, project_id, audit_id, local_run_id, status, error_message, started_at, completed_at, created_at, updated_at;
 
 -- name: EnqueueAIWorkerJob :one
 INSERT INTO ai_worker_jobs (job_type, project_id, audit_id, status)

@@ -7,6 +7,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/ga"
+	"github.com/ps-wizard/revserp/internal/geography"
 	"github.com/ps-wizard/revserp/internal/gsc"
 )
 
@@ -20,6 +21,7 @@ type App struct {
 	SessionManager *internalauth.SessionManager
 	GSCService     *gsc.Service
 	GAService      *ga.Service
+	Nominatim      *geography.NominatimClient
 	// MCPConnect dials one generic session for connection validation
 	// (initialize plus tools/list discovery only, never tool execution).
 	// Wired by default in New; tests may replace it with a fake. A nil value
@@ -53,5 +55,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		GAService:      ga.NewService(cfg.MaxAPIResponseBytes),
 		OrgEvents:      newOrganizationEventHub(),
 		MCPConnect:     DefaultMCPConnect,
+		Nominatim:      geography.NewNominatimClient(cfg.NominatimEndpoint, cfg.NominatimUserAgent),
 	}
 }

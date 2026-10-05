@@ -89,6 +89,10 @@ func collectSchemaIdentityNames(jsonLD []byte) map[string]struct{} {
 
 func collectSchemaIdentityNamesInto(value any, identityNames map[string]struct{}) {
 	switch typedValue := value.(type) {
+	case string:
+		if embedded, ok := parseEmbeddedJSON(typedValue); ok {
+			collectSchemaIdentityNamesInto(embedded, identityNames)
+		}
 	case map[string]any:
 		for _, key := range []string{"author", "publisher"} {
 			if nestedValue, exists := typedValue[key]; exists {
@@ -108,6 +112,10 @@ func collectSchemaIdentityNamesInto(value any, identityNames map[string]struct{}
 func collectSchemaNamesFromIdentityValue(value any, identityNames map[string]struct{}) {
 	switch typedValue := value.(type) {
 	case string:
+		if embedded, ok := parseEmbeddedJSON(typedValue); ok {
+			collectSchemaNamesFromIdentityValue(embedded, identityNames)
+			return
+		}
 		addNormalizedName(identityNames, typedValue)
 	case map[string]any:
 		if rawName, exists := typedValue["name"]; exists {

@@ -14,6 +14,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/aichattools"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/localvisibility"
 	"github.com/ps-wizard/revserp/internal/mapsvisibility"
 	"github.com/ps-wizard/revserp/internal/projectsetup"
 )
@@ -106,6 +107,17 @@ func (w *Worker) reclaimStale(ctx context.Context) {
 	if err := w.queries.ReclaimStaleRunningAIAudits(ctx, cutoff); err != nil {
 		log.Printf("failed to reclaim stale running ai audits: %v", err)
 	}
+	runs, err := w.queries.ListInterruptedLocalVisibilityRuns(ctx)
+	if err != nil {
+		log.Printf("failed to list interrupted local visibility runs: %v", err)
+		return
+	}
+	store := localvisibility.LocalVisibilityStore{Pool: w.pool}
+	for _, runID := range runs {
+		if err := store.FinishRun(ctx, runID); err != nil {
+			log.Printf("failed to settle interrupted local visibility run %s: %v", runID.String(), err)
+		}
+	}
 }
 
 func (w *Worker) runLoop(ctx context.Context, workerID int) {
@@ -142,6 +154,8 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			visibilityStatus, jobErr = w.handleVisibilityRun(ctx, job)
 		case mapsVisibilityJobType:
 			jobErr = mapsvisibility.HandleMapsVisibilityCheck(ctx, w.queries, w.cfg, job.ProjectID)
+		case localvisibility.LocalVisibilityJobType:
+			jobErr = localvisibility.ExecuteLocalVisibilityRun(ctx, w.pool, w.cfg, job.LocalRunID, job.ProjectID)
 		case projectsetup.BusinessProfileBootstrapJobType:
 			jobErr = w.handleBusinessProfileBootstrap(ctx, job)
 		default:

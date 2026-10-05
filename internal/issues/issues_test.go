@@ -437,3 +437,13 @@ func TestCalculateScoresAppliesMissingLlmsTxtPenalty(t *testing.T) {
 		t.Fatalf("expected curated fix for missing_llms_txt")
 	}
 }
+
+func TestDeriveIssuesHandlesStoredDoubleEncodedJSONLD(t *testing.T) {
+	pageFacts := []shared.PageFact{
+		{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/", Depth: 0, Title: "Home", MetaDescription: "desc", H1: "Home", H1Count: 1, WordCount: 200, CanonicalURL: "https://example.com/", Viewport: "width=device-width", Lang: "en", OGTags: []byte(`{"og:title":"Home"}`), JSONLD: []byte(`["{\"@context\":\"https://schema.org\",\"@graph\":[{\"@type\":\"Organization\",\"name\":\"RevKeter.ai\",\"url\":\"https://revketer.ai\",\"description\":\"Growth partner\"},{\"@type\":\"WebSite\",\"name\":\"RevKeter.ai\",\"url\":\"https://revketer.ai\"}]}"]`)},
+	}
+	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
+	assertIssueTypeMissing(t, derivedIssues, "schema_missing_core_fields")
+	assertIssueTypeMissing(t, derivedIssues, "missing_website_schema")
+	assertIssueTypeMissing(t, derivedIssues, "missing_org_identity_schema")
+}

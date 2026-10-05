@@ -52,6 +52,8 @@ type Config struct {
 	SerperMapsEndpoint          string
 	SerperPlacesEndpoint        string
 	SerperReviewsEndpoint       string
+	NominatimEndpoint           string
+	NominatimUserAgent          string
 	TinyfishAPIKey              string
 	TinyfishSearchEndpoint      string
 	TinyfishFetchEndpoint       string
@@ -116,6 +118,8 @@ func Load() Config {
 		SerperMapsEndpoint:         getEnv("SERPER_MAPS_ENDPOINT", "https://google.serper.dev/maps"),
 		SerperPlacesEndpoint:       getEnv("SERPER_PLACES_ENDPOINT", "https://google.serper.dev/places"),
 		SerperReviewsEndpoint:      getEnv("SERPER_REVIEWS_ENDPOINT", "https://google.serper.dev/reviews"),
+		NominatimEndpoint:          getEnv("NOMINATIM_ENDPOINT", "https://nominatim.openstreetmap.org"),
+		NominatimUserAgent:         getEnv("NOMINATIM_USER_AGENT", "RevSerp/1.0"),
 		TinyfishAPIKey:             getEnv("TINYFISH_API_KEY", ""),
 		TinyfishSearchEndpoint:     getEnv("TINYFISH_SEARCH_ENDPOINT", "https://api.search.tinyfish.ai"),
 		TinyfishFetchEndpoint:      getEnv("TINYFISH_FETCH_ENDPOINT", "https://api.fetch.tinyfish.ai"),

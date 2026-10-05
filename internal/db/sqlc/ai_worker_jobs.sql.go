@@ -21,7 +21,7 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, job_type, project_id, audit_id, status, error_message, started_at, completed_at, created_at, updated_at
+RETURNING id, job_type, project_id, audit_id, local_run_id, status, error_message, started_at, completed_at, created_at, updated_at
 `
 
 type ClaimNextPendingAIWorkerJobRow struct {
@@ -29,6 +29,7 @@ type ClaimNextPendingAIWorkerJobRow struct {
 	JobType      string
 	ProjectID    pgtype.UUID
 	AuditID      pgtype.UUID
+	LocalRunID   pgtype.UUID
 	Status       string
 	ErrorMessage pgtype.Text
 	StartedAt    pgtype.Timestamptz
@@ -45,6 +46,7 @@ func (q *Queries) ClaimNextPendingAIWorkerJob(ctx context.Context) (ClaimNextPen
 		&i.JobType,
 		&i.ProjectID,
 		&i.AuditID,
+		&i.LocalRunID,
 		&i.Status,
 		&i.ErrorMessage,
 		&i.StartedAt,

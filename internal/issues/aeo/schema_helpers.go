@@ -23,6 +23,21 @@ func hasMeaningfulJSONLD(jsonLD []byte) bool {
 	return true
 }
 
+func parseEmbeddedJSON(raw string) (any, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return nil, false
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, false
+	}
+	return parsed, true
+}
+
 func hasArticleLikeJSONLDType(jsonLD []byte) bool {
 	var parsedJSONLD any
 	if err := json.Unmarshal(jsonLD, &parsedJSONLD); err != nil {
@@ -33,6 +48,11 @@ func hasArticleLikeJSONLDType(jsonLD []byte) bool {
 
 func hasArticleLikeJSONLDTypeValue(value any) bool {
 	switch typedValue := value.(type) {
+	case string:
+		if embedded, ok := parseEmbeddedJSON(typedValue); ok {
+			return hasArticleLikeJSONLDTypeValue(embedded)
+		}
+		return false
 	case map[string]any:
 		if rawGraphEntries, ok := typedValue["@graph"].([]any); ok {
 			if slices.ContainsFunc(rawGraphEntries, hasArticleLikeJSONLDTypeValue) {
@@ -110,6 +130,11 @@ func hasSchemaCoreFields(jsonLD []byte) bool {
 
 func hasSchemaCoreFieldsValue(value any) bool {
 	switch typedValue := value.(type) {
+	case string:
+		if embedded, ok := parseEmbeddedJSON(typedValue); ok {
+			return hasSchemaCoreFieldsValue(embedded)
+		}
+		return false
 	case map[string]any:
 		if hasAnyNonEmptyField(typedValue, "name") && (hasAnyNonEmptyField(typedValue, "url") || hasAnyNonEmptyField(typedValue, "description")) {
 			return true
@@ -139,6 +164,11 @@ func hasArticlePublisherIdentity(jsonLD []byte) bool {
 
 func hasArticlePublisherIdentityValue(value any) bool {
 	switch typedValue := value.(type) {
+	case string:
+		if embedded, ok := parseEmbeddedJSON(typedValue); ok {
+			return hasArticlePublisherIdentityValue(embedded)
+		}
+		return false
 	case map[string]any:
 		if hasArticleLikeSchemaType(typedValue["@type"]) && (hasAnyNonEmptyField(typedValue, "author") || hasAnyNonEmptyField(typedValue, "publisher") || hasAnyNonEmptyField(typedValue, "mainEntityOfPage")) {
 			return true
@@ -204,6 +234,10 @@ func collectSchemaTypeNames(jsonLD []byte) map[string]struct{} {
 
 func collectSchemaTypeNamesInto(value any, typeNames map[string]struct{}) {
 	switch typedValue := value.(type) {
+	case string:
+		if embedded, ok := parseEmbeddedJSON(typedValue); ok {
+			collectSchemaTypeNamesInto(embedded, typeNames)
+		}
 	case map[string]any:
 		if rawTypeValue, ok := typedValue["@type"]; ok {
 			switch typeValue := rawTypeValue.(type) {
