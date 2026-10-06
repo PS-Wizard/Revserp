@@ -2,7 +2,6 @@ package localvisibility
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -90,10 +89,9 @@ func newListingLookupFixture(t *testing.T) listingLookupFixture {
 		orgID, "ll-project-"+suffix).Scan(&projectID); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	queriesJSON, _ := json.Marshal([]string{"a", "b", "c", "d", "e"})
-	if err := pool.QueryRow(ctx, `INSERT INTO project_locations (project_id, name, latitude, longitude, queries, address, locality, query_service)
-		VALUES ($1, $2, 27.6942, 85.3123, $3, '1 Test Street', 'Testville', 'coffee') RETURNING id`,
-		projectID, "ll-location-"+suffix, queriesJSON).Scan(&locationID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO project_locations (project_id, name, latitude, longitude, address, locality, localities)
+		VALUES ($1, $2, 27.6942, 85.3123, '1 Test Street', 'Testville', '["Testville"]') RETURNING id`,
+		projectID, "ll-location-"+suffix).Scan(&locationID); err != nil {
 		t.Fatalf("create location: %v", err)
 	}
 
@@ -576,5 +574,171 @@ func TestListingLookupExplicitZeroCoordinatesValid(t *testing.T) {
 	}
 	if recorded.Status != "completed" || recorded.CreditsUsed != 3 || recorded.ReservedCredits != 0 {
 		t.Fatalf("zero lookup = %#v, want completed with charge settled", recorded)
+	}
+}
+
+// Free Places listing lookups: zero application credits, no budget movement,
+// and no reuse of historical paid Serper evidence.
+
+func TestPlacesListingLookupIsFreeAndReusesTerminalEvidence(t *testing.T) {
+	f := newListingLookupFixture(t)
+	store := ListingLookupStore{Pool: f.pool}
+	basePlatform := f.platformBudget(t)
+	baseOrg := f.orgBudget(t)
+
+	lookup, created, err := store.StartPlacesListingLookup(f.ctx, f.userID, f.projectID, f.locationID, listingLookupTestSelection("places-a"))
+	if err != nil {
+		t.Fatalf("start places lookup: %v", err)
+	}
+	if !created {
+		t.Fatalf("first places lookup created = false, want true")
+	}
+	if lookup.Status != "running" || lookup.ExpectedCredits != 0 || lookup.ReservedCredits != 0 || lookup.CreditsUsed != 0 || !lookup.CreditKnown {
+		t.Fatalf("started places lookup = %#v, want a free running row", lookup)
+	}
+	if got := f.platformBudget(t); got != basePlatform {
+		t.Fatalf("places start moved platform budget: %#v -> %#v", basePlatform, got)
+	}
+	if got := f.orgBudget(t); got != baseOrg {
+		t.Fatalf("places start moved org budget: %#v -> %#v", baseOrg, got)
+	}
+
+	recorded, err := store.RecordPlacesListingLookup(f.ctx, lookup.ID, serper.MapsListingResponse{Credits: 0, Places: []serper.MapsListingPlace{listingLookupPlace("places-place", 27.7, 85.3)}}, nil)
+	if err != nil {
+		t.Fatalf("record places lookup: %v", err)
+	}
+	if recorded.Status != "completed" || recorded.ExpectedCredits != 0 || recorded.CreditsUsed != 0 || recorded.ReservedCredits != 0 || !recorded.CreditKnown {
+		t.Fatalf("recorded places lookup = %#v, want completed free evidence", recorded)
+	}
+	if got := f.platformBudget(t); got != basePlatform {
+		t.Fatalf("places record moved platform budget: %#v -> %#v", basePlatform, got)
+	}
+	if got := f.orgBudget(t); got != baseOrg {
+		t.Fatalf("places record moved org budget: %#v -> %#v", baseOrg, got)
+	}
+
+	again, created, err := store.StartPlacesListingLookup(f.ctx, f.userID, f.projectID, f.locationID, listingLookupTestSelection("places-a"))
+	if err != nil {
+		t.Fatalf("dedup places lookup: %v", err)
+	}
+	if created {
+		t.Fatalf("terminal places dedup created = true, want false")
+	}
+	if again.ID != lookup.ID || again.Status != "completed" {
+		t.Fatalf("dedup places lookup = %#v, want the stored completed row", again)
+	}
+	if count := f.lookupCount(t); count != 1 {
+		t.Fatalf("lookup rows = %d, want 1", count)
+	}
+}
+
+func TestPlacesLookupDoesNotReuseHistoricalSerperEmptyResult(t *testing.T) {
+	f := newListingLookupFixture(t)
+	store := ListingLookupStore{Pool: f.pool}
+	// The old paid Serper attempt resolved empty near the pin and was recorded.
+	historical, _, err := store.ReserveListingLookup(f.ctx, f.userID, f.projectID, f.locationID, listingLookupTestSelection("shared-key"))
+	if err != nil {
+		t.Fatalf("reserve historical lookup: %v", err)
+	}
+	if _, err := store.RecordListingLookup(f.ctx, historical.ID, serper.MapsListingResponse{Credits: 3, Places: []serper.MapsListingPlace{}}, nil); err != nil {
+		t.Fatalf("record historical lookup: %v", err)
+	}
+	basePlatform := f.platformBudget(t)
+	baseOrg := f.orgBudget(t)
+
+	places, created, err := store.StartPlacesListingLookup(f.ctx, f.userID, f.projectID, f.locationID, listingLookupTestSelection("shared-key"))
+	if err != nil {
+		t.Fatalf("start places lookup: %v", err)
+	}
+	if !created {
+		t.Fatalf("a new Places lookup must not reuse historical Serper evidence")
+	}
+	if places.ExpectedCredits != 0 || places.ReservedCredits != 0 {
+		t.Fatalf("places lookup = %#v, want a fresh free row", places)
+	}
+	if count := f.lookupCount(t); count != 2 {
+		t.Fatalf("lookup rows = %d, want the historical row plus the new Places row", count)
+	}
+	// The historical paid charge and reservation state stay untouched.
+	if got := f.platformBudget(t); got != basePlatform {
+		t.Fatalf("platform budget changed: %#v -> %#v", basePlatform, got)
+	}
+	if got := f.orgBudget(t); got != baseOrg {
+		t.Fatalf("org budget changed: %#v -> %#v", baseOrg, got)
+	}
+	var status string
+	if err := f.pool.QueryRow(f.ctx, `SELECT status FROM local_listing_lookups WHERE id=$1`, historical.ID).Scan(&status); err != nil || status != "completed" {
+		t.Fatalf("historical row = %q, %v; want the recorded completed evidence", status, err)
+	}
+}
+
+func TestPlacesLookupRejectsPaidCreditsAndPaidEvidence(t *testing.T) {
+	f := newListingLookupFixture(t)
+	store := ListingLookupStore{Pool: f.pool}
+	if _, err := store.RecordPlacesListingLookup(f.ctx, pgtype.UUID{}, serper.MapsListingResponse{Credits: 3}, nil); err == nil {
+		t.Fatal("a nonzero application charge must be rejected")
+	}
+
+	historical, _, err := store.ReserveListingLookup(f.ctx, f.userID, f.projectID, f.locationID, listingLookupTestSelection("paid-key"))
+	if err != nil {
+		t.Fatalf("reserve paid lookup: %v", err)
+	}
+	basePlatform := f.platformBudget(t)
+	baseOrg := f.orgBudget(t)
+	if _, err := store.RecordPlacesListingLookup(f.ctx, historical.ID, serper.MapsListingResponse{Credits: 0, Places: []serper.MapsListingPlace{listingLookupPlace("paid-place", 27.7, 85.3)}}, nil); err == nil {
+		t.Fatal("a free record must not overwrite paid lookup evidence")
+	}
+	if got := f.platformBudget(t); got != basePlatform {
+		t.Fatalf("rejected paid record moved platform budget: %#v -> %#v", basePlatform, got)
+	}
+	if got := f.orgBudget(t); got != baseOrg {
+		t.Fatalf("rejected paid record moved org budget: %#v -> %#v", baseOrg, got)
+	}
+	var status string
+	if err := f.pool.QueryRow(f.ctx, `SELECT status FROM local_listing_lookups WHERE id=$1`, historical.ID).Scan(&status); err != nil || status != "running" {
+		t.Fatalf("paid row = %q, %v; want it left running", status, err)
+	}
+}
+
+func TestPlacesLookupEmptyCompletesAndNonBindableFailsWithoutCharge(t *testing.T) {
+	f := newListingLookupFixture(t)
+	store := ListingLookupStore{Pool: f.pool}
+	basePlatform := f.platformBudget(t)
+	baseOrg := f.orgBudget(t)
+
+	for _, tc := range []struct {
+		name       string
+		key        string
+		places     []serper.MapsListingPlace
+		wantStatus string
+	}{
+		{"genuine empty result completes", "places-empty", []serper.MapsListingPlace{}, "completed"},
+		{"place without coordinates fails", "places-nocoords", []serper.MapsListingPlace{listingLookupPlaceNoCoords("lonely-place")}, "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup, created, err := store.StartPlacesListingLookup(f.ctx, f.userID, f.projectID, f.locationID, listingLookupTestSelection(tc.key))
+			if err != nil {
+				t.Fatalf("start places lookup: %v", err)
+			}
+			if !created {
+				t.Fatalf("start places lookup created = false, want true")
+			}
+			recorded, err := store.RecordPlacesListingLookup(f.ctx, lookup.ID, serper.MapsListingResponse{Credits: 0, Places: tc.places}, nil)
+			if err != nil {
+				t.Fatalf("record places lookup: %v", err)
+			}
+			if recorded.Status != tc.wantStatus || recorded.CreditsUsed != 0 || recorded.ReservedCredits != 0 || !recorded.CreditKnown {
+				t.Fatalf("lookup = %#v, want %q with no application charge", recorded, tc.wantStatus)
+			}
+			if tc.wantStatus == "failed" && !recorded.Error.Valid {
+				t.Fatalf("non-bindable result must record an error: %#v", recorded)
+			}
+		})
+	}
+	if got := f.platformBudget(t); got != basePlatform {
+		t.Fatalf("free lookups moved platform budget: %#v -> %#v", basePlatform, got)
+	}
+	if got := f.orgBudget(t); got != baseOrg {
+		t.Fatalf("free lookups moved org budget: %#v -> %#v", baseOrg, got)
 	}
 }

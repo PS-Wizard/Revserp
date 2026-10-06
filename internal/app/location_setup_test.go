@@ -47,7 +47,7 @@ func (fx localVisibilityFixture) orgBudget(t *testing.T) mapsCreditBudget {
 
 func createUnboundLocation(t *testing.T, fx localVisibilityFixture, name string) localVisibilityLocationResponse {
 	t.Helper()
-	body := fmt.Sprintf(`{"name":%q,"address":"1 Test Street","locality":"Testville","query_service":"coffee","latitude":27.6942,"longitude":85.3123,"queries":["a","b","c","d","e"]}`, name)
+	body := fmt.Sprintf(`{"name":%q,"address":"1 Test Street","locality":"Testville","localities":["Testville"],"latitude":27.6942,"longitude":85.3123}`, name)
 	rr := callCreateLocation(t, fx.app, fx.ownerID, fx.projectID.String(), body)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create unbound location status = %d body=%s", rr.Code, rr.Body.String())
@@ -64,7 +64,7 @@ func createUnboundLocation(t *testing.T, fx localVisibilityFixture, name string)
 
 func createEmptyAddressLocation(t *testing.T, fx localVisibilityFixture, name string) localVisibilityLocationResponse {
 	t.Helper()
-	body := fmt.Sprintf(`{"name":%q,"latitude":27.6942,"longitude":85.3123,"queries":[]}`, name)
+	body := fmt.Sprintf(`{"name":%q,"latitude":27.6942,"longitude":85.3123}`, name)
 	rr := callCreateLocation(t, fx.app, fx.ownerID, fx.projectID.String(), body)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create empty-address location status = %d body=%s", rr.Code, rr.Body.String())
@@ -281,7 +281,7 @@ func TestCreateUnboundLocationAndQueryEdits(t *testing.T) {
 
 	// An explicit empty place_id is unbound, not a client-invented identity.
 	rr := callCreateLocation(t, fx.app, fx.ownerID, fx.projectID.String(),
-		`{"name":"Unbound","address":"1 Test Street","locality":"Testville","query_service":"coffee","place_id":"","latitude":27.6942,"longitude":85.3123,"queries":["a","b","c","d","e"]}`)
+		`{"name":"Unbound","address":"1 Test Street","locality":"Testville","localities":["Testville"],"place_id":"","latitude":27.6942,"longitude":85.3123}`)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create unbound status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -292,39 +292,42 @@ func TestCreateUnboundLocationAndQueryEdits(t *testing.T) {
 	if location.PlaceID != nil {
 		t.Fatalf("place_id = %q, want null", *location.PlaceID)
 	}
-	if location.Address != "1 Test Street" || location.Locality != "Testville" || location.QueryService != "coffee" {
+	if location.Address != "1 Test Street" || location.Locality != "Testville" || len(location.Localities) != 1 || location.Localities[0] != "Testville" {
 		t.Fatalf("location context = %#v", location)
 	}
+	if len(location.Services) != 0 || len(location.Queries) != 0 {
+		t.Fatalf("new location services/queries = %#v/%#v, want empty", location.Services, location.Queries)
+	}
 
-	// Zero queries save an empty list.
-	rr = callUpdateLocationQueries(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"queries":[]}`)
+	// An empty draft saves no records.
+	rr = callUpdateLocationQueries(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `[]`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("zero queries status = %d body=%s", rr.Code, rr.Body.String())
 	}
-	var zeroed localVisibilityLocationResponse
+	var zeroed []layer4LocationQueryRecord
 	if err := json.Unmarshal(rr.Body.Bytes(), &zeroed); err != nil {
-		t.Fatalf("decode zeroed location: %v", err)
+		t.Fatalf("decode zeroed draft: %v", err)
 	}
-	if len(zeroed.Queries) != 0 {
-		t.Fatalf("zero queries = %#v, want empty", zeroed.Queries)
+	if len(zeroed) != 0 {
+		t.Fatalf("zero queries = %#v, want empty", zeroed)
 	}
 
 	// A partial four-query edit is valid too.
-	rr = callUpdateLocationQueries(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"queries":["a","b","c","d"]}`)
+	rr = callUpdateLocationQueries(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, layer4DraftJSON("a", "b", "c", "d"))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("partial queries status = %d body=%s", rr.Code, rr.Body.String())
 	}
-	var partial localVisibilityLocationResponse
+	var partial []layer4LocationQueryRecord
 	if err := json.Unmarshal(rr.Body.Bytes(), &partial); err != nil {
-		t.Fatalf("decode partial location: %v", err)
+		t.Fatalf("decode partial draft: %v", err)
 	}
-	if len(partial.Queries) != 4 {
-		t.Fatalf("partial queries = %#v, want four", partial.Queries)
+	if len(partial) != 4 || partial[0].Text != "a" || partial[0].Ordinal != 0 {
+		t.Fatalf("partial queries = %#v, want four ordered records", partial)
 	}
 
 	// Enqueue rejects an unbound location before reserving any credits.
 	before := fx.orgBudget(t)
-	rr = callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"radius_m":5000}`)
+	rr = callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"radius_m":5000,"expected_credits":108}`)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("unbound enqueue status = %d, want 409; body=%s", rr.Code, rr.Body.String())
 	}
@@ -1350,5 +1353,160 @@ func TestLocationGeographyCacheAndRefreshFallback(t *testing.T) {
 	}
 	if reverse.Cached || len(reverse.Results) != 1 || reverse.Results[0].DisplayName == "" {
 		t.Fatalf("reverse envelope = %#v", reverse)
+	}
+}
+
+// bindListingLocality clears the permanent reverse cache key a bind test uses,
+// before and after, so a prior run cannot satisfy or pollute the case.
+func clearReverseGeographyCache(t *testing.T, fx localVisibilityFixture, latitude, longitude float64) {
+	t.Helper()
+	key := fmt.Sprintf("reverse:%.6f,%.6f", latitude, longitude)
+	clear := func() {
+		_, _ = fx.pool.Exec(context.Background(), `DELETE FROM location_geography_cache WHERE cache_key = $1`, key)
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
+// insertCompletedListingLookup stores one settled lookup row directly so a bind
+// test can exercise locality persistence without a paid provider call.
+func insertCompletedListingLookup(t *testing.T, fx localVisibilityFixture, locationID string, expectedCredits int32, placesFragment string) string {
+	t.Helper()
+	raw := fmt.Sprintf(`{"places":[%s]}`, placesFragment)
+	var lookupID pgtype.UUID
+	if err := fx.pool.QueryRow(fx.ctx, `INSERT INTO local_listing_lookups(location_id,query,status,expected_credits,reserved_credits,credits_used,credit_known,raw_response,completed_at)
+		VALUES($1,'bind-locality-test','completed',$2,0,$2,TRUE,$3::jsonb,now()) RETURNING id`, locationID, expectedCredits, raw).Scan(&lookupID); err != nil {
+		t.Fatalf("insert completed lookup: %v", err)
+	}
+	return lookupID.String()
+}
+
+func TestBindLocationListingPersistsReverseGeocodedLocalities(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	location := createUnboundLocation(t, fx, "bind-localities")
+	lookupID := insertCompletedListingLookup(t, fx, location.ID, 3,
+		`{"placeId":"bind-place-1","title":"Bind Cafe","address":"1 Test Street","latitude":26.5555,"longitude":87.6666}`)
+	clearReverseGeographyCache(t, fx, 26.5555, 87.6666)
+
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// Reverse coordinates deliberately differ from the chosen Google ones so
+		// the test proves the geocoder never overrides the bound coordinates.
+		_, _ = w.Write([]byte(`{"display_name":"Baneshwor, Kathmandu","lat":"27.0000","lon":"85.0000","address":{"suburb":"Baneshwor","city":"Kathmandu","country_code":"np"}}`))
+	}))
+	t.Cleanup(server.Close)
+	fx.app.Nominatim = geography.NewNominatimClient(server.URL, "revserp-test/1.0")
+
+	rr := callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"bind-place-1"}`, lookupID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var bound localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &bound); err != nil {
+		t.Fatalf("decode bound: %v", err)
+	}
+	if bound.Locality != "Baneshwor" || len(bound.Localities) != 2 || bound.Localities[0] != "Baneshwor" || bound.Localities[1] != "Kathmandu" {
+		t.Fatalf("bound locality ladder = %q %#v, want smallest-to-widest", bound.Locality, bound.Localities)
+	}
+	if bound.Latitude != 26.5555 || bound.Longitude != 87.6666 {
+		t.Fatalf("bound coords = %v,%v, want chosen 26.5555,87.6666", bound.Latitude, bound.Longitude)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("reverse provider hits = %d, want 1", hits.Load())
+	}
+
+	// A second bind after unbind reuses the cached reverse result.
+	if rr = callUnbindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID); rr.Code != http.StatusOK {
+		t.Fatalf("unbind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	rr = callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"bind-place-1"}`, lookupID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rebind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("reverse provider hits after cached rebind = %d, want 1", hits.Load())
+	}
+}
+
+func TestBindLocationListingSurvivesReverseProviderFailure(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	location := createUnboundLocation(t, fx, "bind-provider-down")
+	lookupID := insertCompletedListingLookup(t, fx, location.ID, 3,
+		`{"placeId":"bind-place-2","title":"Down Cafe","address":"2 Test Street","latitude":28.1111,"longitude":84.2222}`)
+	clearReverseGeographyCache(t, fx, 28.1111, 84.2222)
+
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "provider down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	fx.app.Nominatim = geography.NewNominatimClient(server.URL, "revserp-test/1.0")
+
+	rr := callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"bind-place-2"}`, lookupID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var bound localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &bound); err != nil {
+		t.Fatalf("decode bound: %v", err)
+	}
+	if bound.PlaceID == nil || *bound.PlaceID != "bind-place-2" {
+		t.Fatalf("bound place_id = %v, want provider failure to still bind", bound.PlaceID)
+	}
+	if bound.Locality != "" || len(bound.Localities) != 0 {
+		t.Fatalf("geocoder failure wrote locality %q %#v, want empty", bound.Locality, bound.Localities)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("reverse provider hits = %d, want 1", hits.Load())
+	}
+	var stored string
+	if err := fx.pool.QueryRow(fx.ctx, `SELECT localities::text FROM project_locations WHERE id = $1`, location.ID).Scan(&stored); err != nil {
+		t.Fatalf("read stored localities: %v", err)
+	}
+	if stored != "[]" {
+		t.Fatalf("stored localities = %q, want []", stored)
+	}
+}
+
+func TestBindLocationListingWithoutGeocoderClient(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	location := createUnboundLocation(t, fx, "bind-no-geocoder")
+	lookupID := insertCompletedListingLookup(t, fx, location.ID, 3,
+		`{"placeId":"bind-place-3","title":"Offline Cafe","address":"3 Test Street","latitude":29.3333,"longitude":83.4444}`)
+	clearReverseGeographyCache(t, fx, 29.3333, 83.4444)
+	fx.app.Nominatim = nil
+
+	rr := callBindLocationListing(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID,
+		fmt.Sprintf(`{"lookup_id":%q,"place_id":"bind-place-3"}`, lookupID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var bound localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &bound); err != nil {
+		t.Fatalf("decode bound: %v", err)
+	}
+	if bound.PlaceID == nil || *bound.PlaceID != "bind-place-3" {
+		t.Fatalf("bound place_id = %v, want bind to succeed without a client", bound.PlaceID)
+	}
+	if bound.Locality != "" || len(bound.Localities) != 0 {
+		t.Fatalf("nil client wrote locality %q %#v, want empty", bound.Locality, bound.Localities)
+	}
+}
+
+func TestEncodeBindListingLocalitiesNeverStoresJSONNull(t *testing.T) {
+	for _, localities := range [][]string{nil, {}} {
+		encoded, err := encodeBindListingLocalities(localities)
+		if err != nil {
+			t.Fatalf("encode %#v: %v", localities, err)
+		}
+		if string(encoded) != "[]" {
+			t.Fatalf("locality ladder %#v encoded as %s, want []", localities, encoded)
+		}
 	}
 }

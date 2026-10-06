@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,36 +27,35 @@ const (
 )
 
 type createProjectLocationRequest struct {
-	Name         string   `json:"name"`
-	PlaceID      string   `json:"place_id"`
-	Latitude     *float64 `json:"latitude"`
-	Longitude    *float64 `json:"longitude"`
-	Queries      []string `json:"queries"`
-	Address      string   `json:"address"`
-	Locality     string   `json:"locality"`
-	QueryService string   `json:"query_service"`
-}
-
-type updateLocationQueriesRequest struct {
-	Queries []string `json:"queries"`
+	Name       string   `json:"name"`
+	PlaceID    string   `json:"place_id"`
+	Latitude   *float64 `json:"latitude"`
+	Longitude  *float64 `json:"longitude"`
+	Address    string   `json:"address"`
+	Locality   string   `json:"locality"`
+	Localities []string `json:"localities"`
 }
 
 type createLocalVisibilityRunRequest struct {
-	RadiusM int `json:"radius_m"`
+	RadiusM         int  `json:"radius_m"`
+	ExpectedCredits *int `json:"expected_credits"`
 }
 
-// Queries is a JSON array, including when no editable queries are saved.
+// localVisibilityLocationResponse is the Layer 4 location DTO. Services is
+// the server-computed effective set and queries carries every draft record,
+// both JSON arrays even when empty.
 type localVisibilityLocationResponse struct {
-	ID           string   `json:"id"`
-	ProjectID    string   `json:"project_id"`
-	Name         string   `json:"name"`
-	PlaceID      *string  `json:"place_id"`
-	Address      string   `json:"address"`
-	Locality     string   `json:"locality"`
-	QueryService string   `json:"query_service"`
-	Latitude     float64  `json:"latitude"`
-	Longitude    float64  `json:"longitude"`
-	Queries      []string `json:"queries"`
+	ID         string                      `json:"id"`
+	ProjectID  string                      `json:"project_id"`
+	Name       string                      `json:"name"`
+	PlaceID    *string                     `json:"place_id"`
+	Address    string                      `json:"address"`
+	Locality   string                      `json:"locality"`
+	Localities []string                    `json:"localities"`
+	Services   []string                    `json:"services"`
+	Latitude   float64                     `json:"latitude"`
+	Longitude  float64                     `json:"longitude"`
+	Queries    []layer4LocationQueryRecord `json:"queries"`
 }
 
 // localVisibilityCellResponse is one planned grid call. Rank is null unless the
@@ -93,6 +93,8 @@ type localVisibilityRunResponse struct {
 	CreditsUsed      int                           `json:"credits_used"`
 	RetryCredits     int                           `json:"retry_credits"`
 	UnconfirmedCalls int                           `json:"unconfirmed_calls"`
+	CompletedCells   int                           `json:"completed_cells"`
+	TotalCells       int                           `json:"total_cells"`
 	Queries          []string                      `json:"queries"`
 	Cells            []localVisibilityCellResponse `json:"cells"`
 	Error            *string                       `json:"error"`
@@ -107,32 +109,70 @@ type localVisibilityRunCreatedResponse struct {
 	UnconfirmedCalls int    `json:"unconfirmed_calls"`
 }
 
-func newLocalVisibilityLocationResponse(id, projectID pgtype.UUID, name string, placeID pgtype.Text, latitude, longitude float64, queriesJSON []byte, address, locality, queryService string) (localVisibilityLocationResponse, error) {
-	var queries []string
-	if err := json.Unmarshal(queriesJSON, &queries); err != nil {
-		return localVisibilityLocationResponse{}, fmt.Errorf("local visibility location queries: %w", err)
+// assembleLocationResponse builds the Layer 4 location DTO from a location
+// row plus the server-computed effective services and every draft query
+// record, so all location endpoints share one shape.
+func (a *App) assembleLocationResponse(ctx context.Context, id, projectID pgtype.UUID, name string, placeID pgtype.Text, latitude, longitude float64, address, locality string, localitiesJSON []byte, userID pgtype.UUID) (localVisibilityLocationResponse, error) {
+	var localities []string
+	if err := json.Unmarshal(localitiesJSON, &localities); err != nil {
+		return localVisibilityLocationResponse{}, fmt.Errorf("location localities: %w", err)
 	}
-	if queries == nil {
-		queries = []string{}
+	if localities == nil {
+		localities = []string{}
+	}
+	effective, err := a.Queries.ListEffectiveProjectLocationServiceLabelsForUser(ctx, sqlc.ListEffectiveProjectLocationServiceLabelsForUserParams{LocationID: id, ProjectID: projectID, UserID: userID})
+	if err != nil {
+		return localVisibilityLocationResponse{}, err
+	}
+	services := make([]string, 0, len(effective))
+	for _, row := range effective {
+		services = append(services, row.Label)
+	}
+	rows, err := a.Queries.ListProjectLocationQueriesForUser(ctx, sqlc.ListProjectLocationQueriesForUserParams{LocationID: id, ProjectID: projectID, UserID: userID})
+	if err != nil {
+		return localVisibilityLocationResponse{}, err
+	}
+	records := make([]layer4LocationQueryRecord, 0, len(rows))
+	for _, row := range rows {
+		records = append(records, newLayer4LocationQueryRecord(row))
 	}
 	return localVisibilityLocationResponse{
-		ID:           id.String(),
-		ProjectID:    projectID.String(),
-		Name:         name,
-		PlaceID:      localVisibilityNullableText(placeID),
-		Address:      address,
-		Locality:     locality,
-		QueryService: queryService,
-		Latitude:     latitude,
-		Longitude:    longitude,
-		Queries:      queries,
+		ID:         id.String(),
+		ProjectID:  projectID.String(),
+		Name:       name,
+		PlaceID:    localVisibilityNullableText(placeID),
+		Address:    address,
+		Locality:   locality,
+		Localities: localities,
+		Services:   services,
+		Latitude:   latitude,
+		Longitude:  longitude,
+		Queries:    records,
 	}, nil
+}
+
+// normalizeLocalities trims, drops blanks and case-insensitive repeats,
+// keeping the caller's smallest-first order.
+func normalizeLocalities(raw []string) []string {
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, level := range raw {
+		level = strings.TrimSpace(level)
+		if level == "" {
+			continue
+		}
+		if key := strings.ToLower(level); !seen[key] {
+			seen[key] = true
+			out = append(out, level)
+		}
+	}
+	return out
 }
 
 // newLocalVisibilityRunResponse rebuilds all 45 planned cells from the frozen
 // snapshot points and the stored cell rows, keeping pending cells so an
 // incomplete run never looks finished.
-func newLocalVisibilityRunResponse(run sqlc.LocalVisibilityRun, cells []sqlc.GetLocalRunCellsRow) (localVisibilityRunResponse, error) {
+func newLocalVisibilityRunResponse(run sqlc.LocalVisibilityRun, cells []sqlc.GetLocalRunCellsRow, completedCells int) (localVisibilityRunResponse, error) {
 	var snapshot localvisibility.LocalRunSnapshot
 	if err := json.Unmarshal(run.Snapshot, &snapshot); err != nil {
 		return localVisibilityRunResponse{}, fmt.Errorf("local visibility run snapshot: %w", err)
@@ -158,6 +198,8 @@ func newLocalVisibilityRunResponse(run sqlc.LocalVisibilityRun, cells []sqlc.Get
 		ReservedCredits: int(run.ReservedCredits),
 		CreditsUsed:     int(run.CreditsUsed),
 		RetryCredits:    int(run.RetryCredits),
+		CompletedCells:  completedCells,
+		TotalCells:      len(snapshot.Queries) * len(snapshot.Points),
 		Queries:         snapshot.Queries,
 		Cells:           make([]localVisibilityCellResponse, 0, localvisibility.MapQueryCount*localvisibility.GridPointCount),
 	}
@@ -250,9 +292,9 @@ func normalizeLocalVisibilityRadiusM(radiusM int) (int, error) {
 	return radiusM, nil
 }
 
-func isLocalVisibilityActiveConflictError(err error) bool {
+func isPostgresUniqueConstraintConflict(err error, constraint string) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
 func (a *App) handleCreateProjectLocation(w http.ResponseWriter, r *http.Request) {
@@ -283,31 +325,40 @@ func (a *App) handleCreateProjectLocation(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if len(body.Address) > 1000 || len(body.Locality) > 500 || len(body.QueryService) > 500 {
-		writeJSONError(w, http.StatusBadRequest, "address or query context exceeds the allowed byte limit")
+	address := strings.TrimSpace(body.Address)
+	locality := strings.TrimSpace(body.Locality)
+	if len(address) > 1000 || len(locality) > 500 {
+		writeJSONError(w, http.StatusBadRequest, "address or locality exceeds the allowed byte limit")
 		return
 	}
-	queries, err := localvisibility.ValidateEditableMapQueries(body.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
+	localities := normalizeLocalities(body.Localities)
+	for _, level := range localities {
+		if len(level) > 500 {
+			writeJSONError(w, http.StatusBadRequest, "locality exceeds the allowed byte limit")
+			return
+		}
 	}
-	encodedQueries, err := json.Marshal(queries)
+	if locality == "" && len(localities) > 0 {
+		locality = localities[0]
+	}
+	if len(localities) == 0 && locality != "" {
+		localities = []string{locality}
+	}
+	encodedLocalities, err := json.Marshal(localities)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 
 	location, err := a.Queries.CreateLocationSetupForUser(r.Context(), sqlc.CreateLocationSetupForUserParams{
-		ProjectID:    projectID,
-		UserID:       principal.User.ID,
-		Name:         name,
-		Latitude:     *body.Latitude,
-		Longitude:    *body.Longitude,
-		Queries:      encodedQueries,
-		Address:      strings.TrimSpace(body.Address),
-		Locality:     strings.TrimSpace(body.Locality),
-		QueryService: strings.TrimSpace(body.QueryService),
+		ProjectID:  projectID,
+		UserID:     principal.User.ID,
+		Name:       name,
+		Latitude:   *body.Latitude,
+		Longitude:  *body.Longitude,
+		Address:    address,
+		Locality:   locality,
+		Localities: encodedLocalities,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -318,7 +369,7 @@ func (a *App) handleCreateProjectLocation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	response, err := newLocalVisibilityLocationResponse(location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Queries, location.Address, location.Locality, location.QueryService)
+	response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, principal.User.ID)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -358,7 +409,7 @@ func (a *App) handleGetProjectLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := newLocalVisibilityLocationResponse(location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Queries, location.Address, location.Locality, location.QueryService)
+	response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, principal.User.ID)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -366,63 +417,10 @@ func (a *App) handleGetProjectLocation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (a *App) handleUpdateLocationQueries(w http.ResponseWriter, r *http.Request) {
-	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid project id")
-		return
-	}
-	locationID, err := parseUUIDParam(chi.URLParam(r, "locationID"))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid location id")
-		return
-	}
-	principal, ok := a.getPrincipal(w, r)
-	if !ok {
-		return
-	}
-
-	var body updateLocationQueriesRequest
-	if !readStrictJSONOrRespond(w, r, &body) {
-		return
-	}
-	queries, err := localvisibility.ValidateEditableMapQueries(body.Queries)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	encodedQueries, err := json.Marshal(queries)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-
-	location, err := a.Queries.UpdateLocationQueriesForUser(r.Context(), sqlc.UpdateLocationQueriesForUserParams{
-		ID:      locationID,
-		ID_2:    projectID,
-		UserID:  principal.User.ID,
-		Queries: encodedQueries,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "location not found")
-			return
-		}
-		serverError(w, r, err)
-		return
-	}
-
-	response, err := newLocalVisibilityLocationResponse(location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Queries, location.Address, location.Locality, location.QueryService)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, response)
-}
-
-// handleCreateLocalVisibilityRun atomically reserves the 135-credit batch and
-// enqueues one run for the location. Budget exhaustion and an in-flight run
-// both answer 409.
+// handleCreateLocalVisibilityRun quotes the run from the enabled map draft,
+// compares it against the caller's expected_credits before reserving anything,
+// and enqueues one run for the location. A stale quote, budget exhaustion,
+// and an in-flight run all answer 409 without spending.
 func (a *App) handleCreateLocalVisibilityRun(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -448,9 +446,13 @@ func (a *App) handleCreateLocalVisibilityRun(w http.ResponseWriter, r *http.Requ
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if body.ExpectedCredits == nil {
+		writeJSONError(w, http.StatusBadRequest, "expected_credits is required")
+		return
+	}
 
 	store := localvisibility.LocalVisibilityStore{Pool: a.DB, MapsEndpoint: a.Config.SerperMapsEndpoint}
-	run, err := store.EnqueueRun(r.Context(), principal.User.ID, projectID, locationID, radiusM)
+	run, err := store.EnqueueRun(r.Context(), principal.User.ID, projectID, locationID, radiusM, *body.ExpectedCredits)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -461,8 +463,10 @@ func (a *App) handleCreateLocalVisibilityRun(w http.ResponseWriter, r *http.Requ
 			writeJSONError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, localvisibility.ErrMapQueriesInvalid):
 			writeJSONError(w, http.StatusConflict, err.Error())
-		case isLocalVisibilityActiveConflictError(err):
-			writeJSONError(w, http.StatusConflict, "a local visibility run is already in progress")
+		case errors.Is(err, localvisibility.ErrExpectedCreditsMismatch):
+			writeJSONError(w, http.StatusConflict, err.Error())
+		case isPostgresUniqueConstraintConflict(err, "local_visibility_runs_inflight_idx"):
+			writeJSONError(w, http.StatusConflict, "A run for this location is already in progress. No additional credits were charged.")
 		default:
 			serverError(w, r, err)
 		}
@@ -515,7 +519,17 @@ func (a *App) handleGetLatestLocalVisibilityRun(w http.ResponseWriter, r *http.R
 		serverError(w, r, err)
 		return
 	}
-	response, err := newLocalVisibilityRunResponse(run, cells)
+	completedCells, err := a.Queries.CountLocalVisibilityRunResultsForUser(r.Context(), sqlc.CountLocalVisibilityRunResultsForUserParams{
+		RunID:  run.ID,
+		ID:     locationID,
+		ID_2:   projectID,
+		UserID: principal.User.ID,
+	})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	response, err := newLocalVisibilityRunResponse(run, cells, int(completedCells))
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -565,7 +579,17 @@ func (a *App) handleGetLocalVisibilityRun(w http.ResponseWriter, r *http.Request
 		serverError(w, r, err)
 		return
 	}
-	response, err := newLocalVisibilityRunResponse(run, cells)
+	completedCells, err := a.Queries.CountLocalVisibilityRunResultsForUser(r.Context(), sqlc.CountLocalVisibilityRunResultsForUserParams{
+		RunID:  runID,
+		ID:     locationID,
+		ID_2:   projectID,
+		UserID: principal.User.ID,
+	})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	response, err := newLocalVisibilityRunResponse(run, cells, int(completedCells))
 	if err != nil {
 		serverError(w, r, err)
 		return

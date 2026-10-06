@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/localvisibility"
 )
 
 // Local visibility handler tests. Validation tests need no database. The
@@ -190,6 +193,16 @@ func callUpdateLocationQueries(t *testing.T, app *App, userID pgtype.UUID, proje
 	return rr
 }
 
+// layer4DraftJSON builds the bare ordered PUT array the draft endpoint owns:
+// position is the ordinal and absence of id means a new manual row.
+func layer4DraftJSON(texts ...string) string {
+	entries := make([]string, 0, len(texts))
+	for _, text := range texts {
+		entries = append(entries, fmt.Sprintf(`{"text":%q,"enabled":true,"kind":"map","source":"manual"}`, text))
+	}
+	return "[" + strings.Join(entries, ",") + "]"
+}
+
 func callCreateLocalVisibilityRun(t *testing.T, app *App, userID pgtype.UUID, projectID, locationID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := localVisibilityRequest(t, http.MethodPost, userID, map[string]string{"projectID": projectID, "locationID": locationID}, body)
@@ -216,26 +229,41 @@ func callGetLocalVisibilityRun(t *testing.T, app *App, userID pgtype.UUID, proje
 
 func createLocalVisibilityLocation(t *testing.T, fx localVisibilityFixture, userID, projectID pgtype.UUID, name string) localVisibilityLocationResponse {
 	t.Helper()
-	// Creation is deliberately unbound; a real flow binds a listing selected
-	// from a recorded paid lookup. Grid tests only need a synthetic identity,
-	// so bind it directly with SQL and never call the paid lookup provider.
-	body := fmt.Sprintf(`{"name":%q,"latitude":27.6942,"longitude":85.3123,"queries":["a","b","c","d","e"]}`, name)
+	// Creation is deliberately unbound and starts with an empty draft; a real
+	// flow binds a listing selected from a recorded paid lookup. Grid tests
+	// only need a synthetic identity, so bind it directly with SQL and never
+	// call the paid lookup provider.
+	body := fmt.Sprintf(`{"name":%q,"latitude":27.6942,"longitude":85.3123,"locality":"Testville","localities":["Testville"]}`, name)
 	rr := callCreateLocation(t, fx.app, userID, projectID.String(), body)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create location status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var created localVisibilityLocationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode location: %v body=%s", err, rr.Body.String())
+	}
+	if len(created.Queries) != 0 {
+		t.Fatalf("new location queries = %#v, want an empty draft", created.Queries)
+	}
+	rr = callUpdateLocationQueries(t, fx.app, userID, projectID.String(), created.ID, layer4DraftJSON("a", "b", "c", "d", "e"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("seed draft status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	placeID := "place-" + name
+	if _, err := fx.pool.Exec(fx.ctx, `UPDATE project_locations SET place_id=$1 WHERE id=$2`, placeID, created.ID); err != nil {
+		t.Fatalf("bind synthetic place: %v", err)
+	}
+	rr = callGetLocation(t, fx.app, userID, projectID.String(), created.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get location status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	var response localVisibilityLocationResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode location: %v body=%s", err, rr.Body.String())
 	}
-	if response.PlaceID != nil {
-		t.Fatalf("new location place_id = %q, want null before binding", *response.PlaceID)
+	if response.PlaceID == nil {
+		t.Fatalf("new location place_id is null, want bound before runs")
 	}
-	placeID := "place-" + name
-	if _, err := fx.pool.Exec(fx.ctx, `UPDATE project_locations SET place_id=$1 WHERE id=$2`, placeID, response.ID); err != nil {
-		t.Fatalf("bind synthetic place: %v", err)
-	}
-	response.PlaceID = &placeID
 	return response
 }
 
@@ -256,46 +284,47 @@ func TestLocalVisibilityValidation(t *testing.T) {
 	_ = userID.Scan("00000000-0000-0000-0000-000000000001")
 	projectID := "00000000-0000-0000-0000-000000000002"
 	locationID := "00000000-0000-0000-0000-000000000003"
-	longQuery := strings.Repeat("x", 501)
-	validBody := `{"name":"Head Office","latitude":27.6942,"longitude":85.3123,"queries":["a","b","c","d","e"]}`
+	longLocality := strings.Repeat("x", 501)
+	validBody := `{"name":"Head Office","latitude":27.6942,"longitude":85.3123}`
 
 	for _, tc := range []struct {
 		name string
 		call func() *httptest.ResponseRecorder
 	}{
-		{"create location six queries", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":85.3,"queries":["a","b","c","d","e","f"]}`)
+		{"create location legacy queries field", func() *httptest.ResponseRecorder {
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":85.3,"queries":["a"]}`)
 		}},
-		{"create location duplicate queries", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":85.3,"queries":["a","A","b","c","d"]}`)
+		{"create location legacy query service field", func() *httptest.ResponseRecorder {
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":85.3,"query_service":"coffee"}`)
 		}},
-		{"create location empty query", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":85.3,"queries":["a","","b","c","d"]}`)
+		{"create location oversized locality", func() *httptest.ResponseRecorder {
+			body := fmt.Sprintf(`{"name":"H","latitude":27.6,"longitude":85.3,"locality":%q}`, longLocality)
+			return callCreateLocation(t, app, userID, projectID, body)
 		}},
-		{"create location oversized query", func() *httptest.ResponseRecorder {
-			body := fmt.Sprintf(`{"name":"H","latitude":27.6,"longitude":85.3,"queries":["a","b","c","d",%q]}`, longQuery)
+		{"create location oversized localities entry", func() *httptest.ResponseRecorder {
+			body := fmt.Sprintf(`{"name":"H","latitude":27.6,"longitude":85.3,"localities":[%q]}`, longLocality)
 			return callCreateLocation(t, app, userID, projectID, body)
 		}},
 		{"create location empty name", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"  ","latitude":27.6,"longitude":85.3,"queries":["a","b","c","d","e"]}`)
+			return callCreateLocation(t, app, userID, projectID, `{"name":"  ","latitude":27.6,"longitude":85.3}`)
 		}},
 		{"create location missing latitude", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","longitude":85.3,"queries":["a","b","c","d","e"]}`)
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H","longitude":85.3}`)
 		}},
 		{"create location missing longitude", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"queries":["a","b","c","d","e"]}`)
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6}`)
 		}},
 		{"create location missing coordinates", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","queries":["a","b","c","d","e"]}`)
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H"}`)
 		}},
 		{"create location latitude out of range", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":91,"longitude":85.3,"queries":["a","b","c","d","e"]}`)
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":91,"longitude":85.3}`)
 		}},
 		{"create location longitude out of range", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":-181,"queries":["a","b","c","d","e"]}`)
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":-181}`)
 		}},
 		{"create location unknown field", func() *httptest.ResponseRecorder {
-			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":85.3,"queries":["a","b","c","d","e"],"extra":true}`)
+			return callCreateLocation(t, app, userID, projectID, `{"name":"H","latitude":27.6,"longitude":85.3,"extra":true}`)
 		}},
 		{"create location invalid json", func() *httptest.ResponseRecorder {
 			return callCreateLocation(t, app, userID, projectID, `{"name":`)
@@ -306,23 +335,32 @@ func TestLocalVisibilityValidation(t *testing.T) {
 		{"get location invalid location id", func() *httptest.ResponseRecorder {
 			return callGetLocation(t, app, userID, projectID, "not-a-uuid")
 		}},
-		{"update queries six queries", func() *httptest.ResponseRecorder {
-			return callUpdateLocationQueries(t, app, userID, projectID, locationID, `{"queries":["a","b","c","d","e","f"]}`)
+		{"update queries legacy object shape", func() *httptest.ResponseRecorder {
+			return callUpdateLocationQueries(t, app, userID, projectID, locationID, `{"queries":["a","b","c","d","e"]}`)
+		}},
+		{"update queries unknown entry field", func() *httptest.ResponseRecorder {
+			return callUpdateLocationQueries(t, app, userID, projectID, locationID, `[{"text":"a","enabled":true,"kind":"map","source":"manual","ordinal":0}]`)
+		}},
+		{"update queries null body", func() *httptest.ResponseRecorder {
+			return callUpdateLocationQueries(t, app, userID, projectID, locationID, `null`)
 		}},
 		{"update queries invalid json", func() *httptest.ResponseRecorder {
 			return callUpdateLocationQueries(t, app, userID, projectID, locationID, `nope`)
 		}},
 		{"create run radius below minimum", func() *httptest.ResponseRecorder {
-			return callCreateLocalVisibilityRun(t, app, userID, projectID, locationID, `{"radius_m":500}`)
+			return callCreateLocalVisibilityRun(t, app, userID, projectID, locationID, `{"radius_m":500,"expected_credits":135}`)
 		}},
 		{"create run radius above maximum", func() *httptest.ResponseRecorder {
-			return callCreateLocalVisibilityRun(t, app, userID, projectID, locationID, `{"radius_m":30000}`)
+			return callCreateLocalVisibilityRun(t, app, userID, projectID, locationID, `{"radius_m":30000,"expected_credits":135}`)
+		}},
+		{"create run missing expected credits", func() *httptest.ResponseRecorder {
+			return callCreateLocalVisibilityRun(t, app, userID, projectID, locationID, `{"radius_m":5000}`)
 		}},
 		{"create run unknown field", func() *httptest.ResponseRecorder {
-			return callCreateLocalVisibilityRun(t, app, userID, projectID, locationID, `{"radius_m":5000,"extra":1}`)
+			return callCreateLocalVisibilityRun(t, app, userID, projectID, locationID, `{"radius_m":5000,"expected_credits":135,"extra":1}`)
 		}},
 		{"create run invalid location id", func() *httptest.ResponseRecorder {
-			return callCreateLocalVisibilityRun(t, app, userID, projectID, "not-a-uuid", `{"radius_m":5000}`)
+			return callCreateLocalVisibilityRun(t, app, userID, projectID, "not-a-uuid", `{"radius_m":5000,"expected_credits":135}`)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -346,8 +384,11 @@ func TestLocalVisibilityCreateLocationShape(t *testing.T) {
 	if location.Latitude != 27.6942 || location.Longitude != 85.3123 {
 		t.Fatalf("coordinates = %v,%v", location.Latitude, location.Longitude)
 	}
-	if len(location.Queries) != 5 || location.Queries[0] != "a" {
+	if len(location.Queries) != 5 || location.Queries[0].Text != "a" {
 		t.Fatalf("queries = %#v", location.Queries)
+	}
+	if location.Locality != "Testville" || len(location.Localities) != 1 || location.Localities[0] != "Testville" {
+		t.Fatalf("localities = %#v locality = %q", location.Localities, location.Locality)
 	}
 
 	// Any member can read the location; an outsider cannot.
@@ -370,7 +411,7 @@ func TestLocalVisibilityCrossOrganizationAndWrongProject(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = fx.pool.Exec(context.Background(), `DELETE FROM projects WHERE id=$1`, secondProject) })
 
-	validQueries := `{"queries":["a","b","c","d","e"]}`
+	validQueries := layer4DraftJSON("a", "b", "c", "d", "e")
 	for _, tc := range []struct {
 		name string
 		call func() *httptest.ResponseRecorder
@@ -388,10 +429,10 @@ func TestLocalVisibilityCrossOrganizationAndWrongProject(t *testing.T) {
 			return callUpdateLocationQueries(t, fx.app, fx.ownerID, secondProject.String(), location.ID, validQueries)
 		}},
 		{"outsider create run", func() *httptest.ResponseRecorder {
-			return callCreateLocalVisibilityRun(t, fx.app, fx.outsider, fx.projectID.String(), location.ID, `{"radius_m":5000}`)
+			return callCreateLocalVisibilityRun(t, fx.app, fx.outsider, fx.projectID.String(), location.ID, `{"radius_m":5000,"expected_credits":135}`)
 		}},
 		{"wrong project create run", func() *httptest.ResponseRecorder {
-			return callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, secondProject.String(), location.ID, `{"radius_m":5000}`)
+			return callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, secondProject.String(), location.ID, `{"radius_m":5000,"expected_credits":135}`)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -412,7 +453,7 @@ func TestLocalVisibilityRunLifecycle(t *testing.T) {
 	}
 
 	// An omitted radius defaults to 5 km.
-	rr := callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{}`)
+	rr := callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"expected_credits":135}`)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("create run status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -444,6 +485,9 @@ func TestLocalVisibilityRunLifecycle(t *testing.T) {
 	if run.ReservedCredits != 135 || run.CreditsUsed != 0 || run.UnconfirmedCalls != 0 {
 		t.Fatalf("run credits = reserved %d used %d unconfirmed %d", run.ReservedCredits, run.CreditsUsed, run.UnconfirmedCalls)
 	}
+	if run.CompletedCells != 0 || run.TotalCells != 45 {
+		t.Fatalf("queued run progress = %d/%d, want 0/45", run.CompletedCells, run.TotalCells)
+	}
 	for _, cell := range run.Cells {
 		if cell.CallStatus != "pending" || cell.MatchStatus != "unknown" || cell.Rank != nil || cell.Error != nil {
 			t.Fatalf("pending cell = %#v", cell)
@@ -470,6 +514,9 @@ func TestLocalVisibilityRunLifecycle(t *testing.T) {
 	if latest.ID != created.ID {
 		t.Fatalf("latest id = %s, want %s", latest.ID, created.ID)
 	}
+	if latest.CompletedCells != 0 || latest.TotalCells != 45 {
+		t.Fatalf("latest queued progress = %d/%d, want 0/45", latest.CompletedCells, latest.TotalCells)
+	}
 
 	if _, err := fx.pool.Exec(fx.ctx, `INSERT INTO local_visibility_results
 		(run_id,query_index,point_index,call_status,match_status,rank,credits,credit_known)
@@ -491,9 +538,12 @@ func TestLocalVisibilityRunLifecycle(t *testing.T) {
 	if run.UnconfirmedCalls != 0 {
 		t.Fatalf("unconfirmed calls = %d, want 0 for never-started cells", run.UnconfirmedCalls)
 	}
+	if run.CompletedCells != 1 || run.TotalCells != 45 {
+		t.Fatalf("partial run progress = %d/%d, want 1/45", run.CompletedCells, run.TotalCells)
+	}
 
 	// Editing the location queries must not rewrite the frozen run snapshot.
-	if rr := callUpdateLocationQueries(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"queries":["v","w","x","y","z"]}`); rr.Code != http.StatusOK {
+	if rr := callUpdateLocationQueries(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, layer4DraftJSON("v", "w", "x", "y", "z")); rr.Code != http.StatusOK {
 		t.Fatalf("update queries status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	rr = callGetLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, created.ID)
@@ -510,7 +560,7 @@ func TestLocalVisibilityRunLifecycle(t *testing.T) {
 	}
 
 	// A second run while the first is still in flight is a conflict.
-	if rr := callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"radius_m":5000}`); rr.Code != http.StatusConflict {
+	if rr := callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"radius_m":5000,"expected_credits":135}`); rr.Code != http.StatusConflict {
 		t.Fatalf("second create run status = %d, want 409; body=%s", rr.Code, rr.Body.String())
 	}
 }
@@ -522,8 +572,96 @@ func TestLocalVisibilityBudgetUnavailable(t *testing.T) {
 	if _, err := fx.pool.Exec(context.Background(), `UPDATE organization_maps_credit_budgets SET remaining_credits = 0 WHERE organization_id = $1`, fx.orgID); err != nil {
 		t.Fatalf("exhaust organization allowance: %v", err)
 	}
-	rr := callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"radius_m":5000}`)
+	rr := callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"radius_m":5000,"expected_credits":135}`)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("unfunded create run status = %d, want 409; body=%s", rr.Code, rr.Body.String())
 	}
+}
+
+func TestNewLocalVisibilityRunResponseTotalCellsFromFrozenSnapshot(t *testing.T) {
+	points, err := localvisibility.BuildGeoGrid(27.6942, 85.3123, 5000)
+	if err != nil {
+		t.Fatalf("build grid: %v", err)
+	}
+	frozen := points[:4]
+	snapshot, err := json.Marshal(localvisibility.LocalRunSnapshot{Queries: []string{"a", "b", "c"}, Points: frozen})
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	response, err := newLocalVisibilityRunResponse(sqlc.LocalVisibilityRun{Snapshot: snapshot}, nil, 5)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	if response.TotalCells != 12 {
+		t.Fatalf("total_cells = %d, want 12 from 3 frozen queries x 4 frozen points", response.TotalCells)
+	}
+	if response.CompletedCells != 5 {
+		t.Fatalf("completed_cells = %d, want the settled count 5", response.CompletedCells)
+	}
+}
+
+func TestNewLocalVisibilityRunResponseCompletedCountsSettledFailures(t *testing.T) {
+	points, err := localvisibility.BuildGeoGrid(27.6942, 85.3123, 5000)
+	if err != nil {
+		t.Fatalf("build grid: %v", err)
+	}
+	snapshot, err := json.Marshal(localvisibility.LocalRunSnapshot{Queries: []string{"a", "b"}, Points: points})
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	cells := []sqlc.GetLocalRunCellsRow{
+		{QueryIndex: 0, PointIndex: 0, CallStatus: "error", MatchStatus: "unknown", StartedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}},
+		{QueryIndex: 0, PointIndex: 1, CallStatus: "success_nonempty", MatchStatus: "found", Credits: 3, CreditKnown: true},
+	}
+	response, err := newLocalVisibilityRunResponse(sqlc.LocalVisibilityRun{Snapshot: snapshot}, cells, 2)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	if response.CompletedCells != 2 || response.TotalCells != 18 {
+		t.Fatalf("progress = %d/%d, want 2/18", response.CompletedCells, response.TotalCells)
+	}
+}
+
+func localVisibilityQueryOperation(t *testing.T, sql, operation string) string {
+	t.Helper()
+	marker := "-- name: " + operation
+	start := strings.Index(sql, marker)
+	if start < 0 {
+		t.Fatalf("local_visibility.sql missing operation %q", operation)
+	}
+	rest := sql[start+len(marker):]
+	if next := strings.Index(rest, "-- name:"); next >= 0 {
+		rest = rest[:next]
+	}
+	return rest
+}
+
+func TestLocalVisibilityRunProgressCountQueryContract(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(currentFile), "..", "db", "queries", "local_visibility.sql"))
+	if err != nil {
+		t.Fatalf("read local visibility queries: %v", err)
+	}
+	block := localVisibilityQueryOperation(t, string(raw), "CountLocalVisibilityRunResultsForUser :one")
+	for _, needle := range []string{
+		"COUNT(*)",
+		"FROM local_visibility_results",
+		"JOIN organization_members",
+		"m.user_id = $4",
+	} {
+		if !strings.Contains(block, needle) {
+			t.Errorf("CountLocalVisibilityRunResultsForUser missing %q", needle)
+		}
+	}
+	if strings.Contains(block, "local_run_cells") {
+		t.Error("CountLocalVisibilityRunResultsForUser must count recorded results, not planned cells")
+	}
+}
+
+func TestLocalVisibilityRunProgressGeneratedSurface(t *testing.T) {
+	var q *sqlc.Queries
+	_ = q.CountLocalVisibilityRunResultsForUser
 }

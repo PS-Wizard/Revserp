@@ -16,7 +16,8 @@ import (
 
 var ErrMapsBudgetUnavailable = errors.New("Maps spending allowance is not provisioned or insufficient")
 var ErrLocationListingUnbound = errors.New("bind a Google Maps listing before starting a ranking run")
-var ErrMapQueriesInvalid = errors.New("ranking runs require exactly five valid queries")
+var ErrMapQueriesInvalid = errors.New("ranking runs require between one and five enabled map queries")
+var ErrExpectedCreditsMismatch = errors.New("expected credits do not match the current quote")
 
 const LocalVisibilityJobType = "local_visibility"
 
@@ -47,35 +48,46 @@ func ValidateMapQueries(queries []string) ([]string, error) {
 	return ValidateEditableMapQueries(queries)
 }
 
-func (s LocalVisibilityStore) EnqueueRun(ctx context.Context, userID, projectID, locationID pgtype.UUID, radiusM int) (sqlc.LocalVisibilityRun, error) {
+// EnqueueRun locks the parent location first, quotes the run from the enabled
+// map draft under that lock, and compares the quote against expectedCredits
+// before reserving anything: a stale quote answers ErrExpectedCreditsMismatch
+// with no spend and no retry.
+func (s LocalVisibilityStore) EnqueueRun(ctx context.Context, userID, projectID, locationID pgtype.UUID, radiusM, expectedCredits int) (sqlc.LocalVisibilityRun, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return sqlc.LocalVisibilityRun{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	q := sqlc.New(tx)
-	location, err := q.GetProjectLocationForUser(ctx, sqlc.GetProjectLocationForUserParams{ID: locationID, ID_2: projectID, UserID: userID})
+	locked, err := q.LockProjectLocationForQueryDraftForUser(ctx, sqlc.LockProjectLocationForQueryDraftForUserParams{LocationID: locationID, ProjectID: projectID, UserID: userID})
 	if err != nil {
 		return sqlc.LocalVisibilityRun{}, err
 	}
-	if !location.PlaceID.Valid || strings.TrimSpace(location.PlaceID.String) == "" {
+	if !locked.PlaceID.Valid || strings.TrimSpace(locked.PlaceID.String) == "" {
 		return sqlc.LocalVisibilityRun{}, ErrLocationListingUnbound
 	}
-	var queries []string
-	if err := json.Unmarshal(location.Queries, &queries); err != nil {
-		return sqlc.LocalVisibilityRun{}, fmt.Errorf("local visibility stored queries: %w", err)
+	enabled, err := q.ListEnabledMapQueriesForUser(ctx, sqlc.ListEnabledMapQueriesForUserParams{LocationID: locationID, ProjectID: projectID, UserID: userID})
+	if err != nil {
+		return sqlc.LocalVisibilityRun{}, err
 	}
-	queries, err = ValidateMapQueries(queries)
+	texts := make([]string, 0, len(enabled))
+	for _, row := range enabled {
+		texts = append(texts, row.Text)
+	}
+	queries, err := ValidateMapQueries(texts)
 	if err != nil {
 		return sqlc.LocalVisibilityRun{}, fmt.Errorf("%w: %v", ErrMapQueriesInvalid, err)
 	}
-	points, err := BuildGeoGrid(location.Latitude, location.Longitude, radiusM)
+	points, err := BuildGeoGrid(locked.Latitude, locked.Longitude, radiusM)
 	if err != nil {
 		return sqlc.LocalVisibilityRun{}, err
 	}
 	expected, err := ExpectedRunCredits(len(queries), len(points))
 	if err != nil {
 		return sqlc.LocalVisibilityRun{}, err
+	}
+	if expected != expectedCredits {
+		return sqlc.LocalVisibilityRun{}, fmt.Errorf("%w: quoted %d credits but the run costs %d", ErrExpectedCreditsMismatch, expectedCredits, expected)
 	}
 	viewports := make([]string, len(points))
 	for i, point := range points {
@@ -90,13 +102,13 @@ func (s LocalVisibilityStore) EnqueueRun(ctx context.Context, userID, projectID,
 		}
 		return sqlc.LocalVisibilityRun{}, err
 	}
-	if _, err = q.ReserveOrganizationMapsCredits(ctx, sqlc.ReserveOrganizationMapsCreditsParams{Credits: int64(expected), OrganizationID: location.OrganizationID}); err != nil {
+	if _, err = q.ReserveOrganizationMapsCredits(ctx, sqlc.ReserveOrganizationMapsCreditsParams{Credits: int64(expected), OrganizationID: locked.OrganizationID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return sqlc.LocalVisibilityRun{}, ErrMapsBudgetUnavailable
 		}
 		return sqlc.LocalVisibilityRun{}, err
 	}
-	snapshot, err := json.Marshal(LocalRunSnapshot{Queries: queries, TargetPlaceID: location.PlaceID.String, Points: points, Viewports: viewports, Provider: "serper", Endpoint: s.MapsEndpoint, Zoom: MapsZoom, Language: "en", GridGeometryVersion: 1, ComparisonVersion: 1, RequestedResultLimit: 20, ViewportToleranceM: serper.MapsViewportToleranceM})
+	snapshot, err := json.Marshal(LocalRunSnapshot{Queries: queries, TargetPlaceID: locked.PlaceID.String, Points: points, Viewports: viewports, Provider: "serper", Endpoint: s.MapsEndpoint, Zoom: MapsZoom, Language: "en", GridGeometryVersion: 1, ComparisonVersion: 1, RequestedResultLimit: 20, ViewportToleranceM: serper.MapsViewportToleranceM})
 	if err != nil {
 		return sqlc.LocalVisibilityRun{}, err
 	}
@@ -158,6 +170,60 @@ func (s LocalVisibilityStore) RecordCellOutcome(ctx context.Context, outcome sql
 	return tx.Commit(ctx)
 }
 
+type runOutcomeSummary struct {
+	status         string
+	total          int
+	successful     int
+	requestFailed  int
+	unstarted      int
+	startedPending int
+	ambiguous      int
+	held           int32
+}
+
+func summarizeRunOutcome(cells []sqlc.GetLocalRunCellsRow, reservedCredits int32) runOutcomeSummary {
+	s := runOutcomeSummary{total: len(cells)}
+	for _, cell := range cells {
+		if cell.CallStatus == "success_empty" || cell.CallStatus == "success_nonempty" {
+			s.successful++
+		}
+		if cell.CallStatus == "request_failed" {
+			s.requestFailed++
+		}
+		if !cell.StartedAt.Valid {
+			s.unstarted++
+		} else if cell.CallStatus == "pending" {
+			s.startedPending++
+		}
+		if cell.StartedAt.Valid && !cell.CreditKnown {
+			s.ambiguous++
+		}
+	}
+	s.status = "partial"
+	if s.successful == len(cells) && reservedCredits == 0 {
+		s.status = "completed"
+	} else if s.successful == 0 {
+		s.status = "failed"
+	}
+	s.held = reservedCredits - int32(s.unstarted*MapsCreditsPerCall)
+	return s
+}
+
+func (s runOutcomeSummary) message() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d of %d calls succeeded, %d failed, %d were not attempted, %d started but left no outcome",
+		s.successful, s.total, s.requestFailed, s.unstarted, s.startedPending)
+	if s.held > 0 {
+		fmt.Fprintf(&b, "; %d credits remain held pending reconciliation", s.held)
+	} else {
+		b.WriteString("; no credits remain held")
+	}
+	if s.ambiguous > 0 {
+		fmt.Fprintf(&b, "; calls with unconfirmed charges: %d. Their cost is not yet confirmed", s.ambiguous)
+	}
+	return b.String()
+}
+
 func (s LocalVisibilityStore) FinishRun(ctx context.Context, runID pgtype.UUID) error {
 	q := sqlc.New(s.Pool)
 	run, err := q.GetLocalVisibilityRun(ctx, runID)
@@ -187,26 +253,12 @@ func (s LocalVisibilityStore) FinishRun(ctx context.Context, runID pgtype.UUID) 
 	if err != nil {
 		return err
 	}
-	successful, unstarted := 0, 0
-	for _, cell := range cells {
-		if cell.CallStatus == "success_empty" || cell.CallStatus == "success_nonempty" {
-			successful++
-		}
-		if !cell.StartedAt.Valid {
-			unstarted++
-		}
-	}
-	status := "partial"
-	if successful == len(cells) && locked.ReservedCredits == 0 {
-		status = "completed"
-	} else if successful == 0 {
-		status = "failed"
-	}
+	summary := summarizeRunOutcome(cells, locked.ReservedCredits)
 	message := pgtype.Text{}
-	if status != "completed" {
-		message = pgtype.Text{String: "Some calls failed or were not performed; unconfirmed charges retain reservations", Valid: true}
+	if summary.status != "completed" {
+		message = pgtype.Text{String: summary.message(), Valid: true}
 	}
-	released := int32(unstarted * MapsCreditsPerCall)
+	released := int32(summary.unstarted * MapsCreditsPerCall)
 	if err = tq.SettlePlatformMapsCredits(ctx, sqlc.SettlePlatformMapsCreditsParams{Released: int64(released)}); err != nil {
 		return err
 	}
@@ -216,7 +268,7 @@ func (s LocalVisibilityStore) FinishRun(ctx context.Context, runID pgtype.UUID) 
 	if err = tq.SettleLocalRunCredits(ctx, sqlc.SettleLocalRunCreditsParams{ID: runID, Released: released}); err != nil {
 		return err
 	}
-	if err = tq.FinishLocalVisibilityRun(ctx, sqlc.FinishLocalVisibilityRunParams{ID: runID, Status: status, Error: message}); err != nil {
+	if err = tq.FinishLocalVisibilityRun(ctx, sqlc.FinishLocalVisibilityRunParams{ID: runID, Status: summary.status, Error: message}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

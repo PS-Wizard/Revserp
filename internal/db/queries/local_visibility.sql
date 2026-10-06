@@ -1,22 +1,8 @@
--- name: CreateProjectLocationForUser :one
-INSERT INTO project_locations(project_id,name,place_id,latitude,longitude,queries)
-SELECT p.id, $3, NULLIF(sqlc.arg(place_id)::text, ''), $4, $5, $6 FROM projects p
-JOIN organization_members m ON m.org_id = p.organization_id
-WHERE p.id = $1 AND m.user_id = $2
-RETURNING *;
-
 -- name: GetProjectLocationForUser :one
 SELECT l.*, p.organization_id FROM project_locations l
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
 WHERE l.id = $1 AND p.id = $2 AND m.user_id = $3;
-
--- name: UpdateLocationQueriesForUser :one
-UPDATE project_locations l SET queries = $4, updated_at = now()
-FROM projects p, organization_members m
-WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
-AND m.org_id = p.organization_id AND m.user_id = $3
-RETURNING l.*;
 
 -- name: ReservePlatformMapsCredits :one
 UPDATE platform_maps_credit_budget SET reserved_credits = reserved_credits + sqlc.arg(credits)::bigint
@@ -98,6 +84,14 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
 UPDATE local_visibility_runs SET reserved_credits = reserved_credits - sqlc.arg(released)::integer,
 credits_used = credits_used + sqlc.arg(spent)::integer
 WHERE id = sqlc.arg(id);
+
+-- name: CountLocalVisibilityRunResultsForUser :one
+SELECT COUNT(*)::bigint FROM local_visibility_results res
+JOIN local_visibility_runs r ON r.id = res.run_id
+JOIN project_locations l ON l.id = r.location_id
+JOIN projects p ON p.id = l.project_id
+JOIN organization_members m ON m.org_id = p.organization_id
+WHERE res.run_id = $1 AND l.id = $2 AND p.id = $3 AND m.user_id = $4;
 
 -- name: GetLocalRunCells :many
 SELECT c.query_index,c.point_index,c.started_at,

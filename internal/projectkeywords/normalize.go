@@ -4,17 +4,19 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ps-wizard/revserp/internal/textnormalization"
 )
 
 // NormalizeProjectKeywordDisplay trims a phrase and collapses inner whitespace
 // runs to single spaces, preserving the readable original casing.
 func NormalizeProjectKeywordDisplay(phrase string) string {
-	return strings.Join(strings.Fields(phrase), " ")
+	return textnormalization.NormalizeTextDisplay(phrase)
 }
 
 // NormalizeProjectKeywordKey folds a phrase to its dedupe key: display-normalized, lowercased.
 func NormalizeProjectKeywordKey(phrase string) string {
-	return strings.ToLower(NormalizeProjectKeywordDisplay(phrase))
+	return textnormalization.NormalizeTextKey(phrase)
 }
 
 // ValidateProjectKeywordKind rejects anything but brand and non_brand.

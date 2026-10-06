@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -237,11 +238,16 @@ func newLocalRunFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) l
 		t.Fatalf("fund platform budget: %v", err)
 	}
 	placeID := "lv-target-" + suffix
-	queriesJSON, _ := json.Marshal([]string{"lv q1 " + suffix, "lv q2 " + suffix, "lv q3 " + suffix, "lv q4 " + suffix, "lv q5 " + suffix})
-	if err := pool.QueryRow(ctx, `INSERT INTO project_locations (project_id, name, place_id, latitude, longitude, queries)
-		VALUES ($1, $2, $3, 40.0, -74.0, $4) RETURNING id`,
-		projectID, "lv-location-"+suffix, placeID, queriesJSON).Scan(&locationID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO project_locations (project_id, name, place_id, latitude, longitude, localities)
+		VALUES ($1, $2, $3, 40.0, -74.0, '[]') RETURNING id`,
+		projectID, "lv-location-"+suffix, placeID).Scan(&locationID); err != nil {
 		t.Fatalf("create location: %v", err)
+	}
+	for i, text := range []string{"lv q1 " + suffix, "lv q2 " + suffix, "lv q3 " + suffix, "lv q4 " + suffix, "lv q5 " + suffix} {
+		if _, err := pool.Exec(ctx, `INSERT INTO project_location_queries (location_id, text, normalized, ordinal, enabled, kind, source, origin)
+			VALUES ($1, $2, $3, $4, TRUE, 'map', 'manual', 'service')`, locationID, text, strings.ToLower(text), i); err != nil {
+			t.Fatalf("seed draft query: %v", err)
+		}
 	}
 	t.Cleanup(func() {
 		ctx := context.Background()
@@ -279,7 +285,7 @@ func startLocalMapsStub(t *testing.T, hits *atomic.Int64, targetPlaceID string, 
 func enqueueLocalStubRun(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f localRunFixture, mapsURL string) pgtype.UUID {
 	t.Helper()
 	store := LocalVisibilityStore{Pool: pool, MapsEndpoint: mapsURL}
-	run, err := store.EnqueueRun(ctx, f.userID, f.projectID, f.locationID, 5000)
+	run, err := store.EnqueueRun(ctx, f.userID, f.projectID, f.locationID, 5000, 135)
 	if err != nil {
 		t.Fatalf("enqueue run: %v", err)
 	}

@@ -1,7 +1,7 @@
 -- name: CreateLocationSetupForUser :one
-INSERT INTO project_locations(project_id,name,latitude,longitude,queries,address,locality,query_service)
+INSERT INTO project_locations(project_id,name,latitude,longitude,address,locality,localities)
 SELECT p.id,sqlc.arg(name)::text,sqlc.arg(latitude)::double precision,sqlc.arg(longitude)::double precision,
-sqlc.arg(queries)::jsonb,sqlc.arg(address)::text,sqlc.arg(locality)::text,sqlc.arg(query_service)::text
+sqlc.arg(address)::text,sqlc.arg(locality)::text,sqlc.arg(localities)::jsonb
 FROM projects p JOIN organization_members m ON m.org_id = p.organization_id
 WHERE p.id = sqlc.arg(project_id)::uuid AND m.user_id = sqlc.arg(user_id)::uuid
 RETURNING *;
@@ -13,12 +13,6 @@ JOIN organization_members m ON m.org_id = p.organization_id
 WHERE p.id = $1 AND m.user_id = $2
 ORDER BY l.created_at, l.id;
 
--- name: UpdateLocationSetupForUser :one
-UPDATE project_locations l SET address = $4, locality = $5, query_service = $6, updated_at = now()
-FROM projects p, organization_members m
-WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
-AND m.org_id = p.organization_id AND m.user_id = $3
-RETURNING l.*;
 
 -- name: GetLocationForListingLookup :one
 SELECT l.*, p.organization_id FROM project_locations l
@@ -31,6 +25,11 @@ FOR NO KEY UPDATE OF l;
 INSERT INTO local_listing_lookups(location_id,query,expected_credits,reserved_credits,candidate_key,source_latitude,source_longitude,created_at)
 VALUES(sqlc.arg(location_id)::uuid,sqlc.arg(query)::text,sqlc.arg(expected_credits)::integer,
 sqlc.arg(expected_credits)::integer,sqlc.arg(candidate_key)::text,
+sqlc.arg(source_latitude)::double precision,sqlc.arg(source_longitude)::double precision,clock_timestamp()) RETURNING *;
+
+-- name: CreatePlacesListingLookup :one
+INSERT INTO local_listing_lookups(location_id,query,expected_credits,reserved_credits,credit_known,candidate_key,source_latitude,source_longitude,created_at)
+VALUES(sqlc.arg(location_id)::uuid,sqlc.arg(query)::text,0,0,TRUE,sqlc.arg(candidate_key)::text,
 sqlc.arg(source_latitude)::double precision,sqlc.arg(source_longitude)::double precision,clock_timestamp()) RETURNING *;
 
 -- name: GetLocationListingLookup :one
@@ -64,7 +63,8 @@ WHERE id = $1 AND status = 'running' RETURNING *;
 
 -- name: BindLocationListingForUser :one
 UPDATE project_locations l SET place_id = sqlc.arg(place_id)::text,
-latitude = sqlc.arg(latitude)::double precision, longitude = sqlc.arg(longitude)::double precision, updated_at = now()
+latitude = sqlc.arg(latitude)::double precision, longitude = sqlc.arg(longitude)::double precision,
+locality = sqlc.arg(locality)::text, localities = COALESCE(sqlc.arg(localities)::jsonb, '[]'::jsonb), updated_at = now()
 FROM projects p,organization_members m
 WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
 AND m.org_id = p.organization_id AND m.user_id = $3 AND l.place_id IS NULL

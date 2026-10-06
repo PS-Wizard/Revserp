@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,17 +69,20 @@ func TestLayer1NepalLiveRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := sqlc.New(pool)
-	queryText := []string{"life insurance", "life insurance near me", "life insurance Kathmandu", "insurance company near me", "life insurance Baneshwor"}
-	queriesJSON, err := json.Marshal(queryText)
-	if err != nil {
+	var locationID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO project_locations (project_id, name, place_id, latitude, longitude, localities)
+		VALUES ($1, 'Nepal Life Insurance Company Ltd. live fixture', 'ChIJlSym_K4Z6zkRWAt9oU_H4rA', 27.715444, 85.340306, '[]') RETURNING id`,
+		projectID).Scan(&locationID); err != nil {
 		t.Fatal(err)
 	}
-	location, err := q.CreateProjectLocationForUser(ctx, sqlc.CreateProjectLocationForUserParams{ID: projectID, UserID: userID, Name: "Nepal Life Insurance Company Ltd. live fixture", PlaceID: "ChIJlSym_K4Z6zkRWAt9oU_H4rA", Latitude: 27.715444, Longitude: 85.340306, Queries: queriesJSON})
-	if err != nil {
-		t.Fatal(err)
+	for i, text := range []string{"life insurance", "life insurance near me", "life insurance Kathmandu", "insurance company near me", "life insurance Baneshwor"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO project_location_queries (location_id, text, normalized, ordinal, enabled, kind, source, origin)
+			VALUES ($1, $2, $3, $4, TRUE, 'map', 'manual', 'service')`, locationID, text, strings.ToLower(text), i); err != nil {
+			t.Fatal(err)
+		}
 	}
 	store := LocalVisibilityStore{Pool: pool, MapsEndpoint: cfg.SerperMapsEndpoint}
-	run, err := store.EnqueueRun(ctx, userID, projectID, location.ID, 5000)
+	run, err := store.EnqueueRun(ctx, userID, projectID, locationID, 5000, 135)
 	if err != nil {
 		t.Fatalf("reserve before live spend: %v", err)
 	}
@@ -156,7 +160,7 @@ func TestLayer1NepalLiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("run=%s location=%s project=%s status=%s credits=%d/%d reserved=%d observations=%d points=%d/9 fixture=%s", run.ID.String(), location.ID.String(), projectID.String(), saved.Status, saved.CreditsUsed, saved.ExpectedCredits, saved.ReservedCredits, evidence.FoundObservations, evidence.FoundGridPoints, fixturePath)
+	t.Logf("run=%s location=%s project=%s status=%s credits=%d/%d reserved=%d observations=%d points=%d/9 fixture=%s", run.ID.String(), locationID.String(), projectID.String(), saved.Status, saved.CreditsUsed, saved.ExpectedCredits, saved.ReservedCredits, evidence.FoundObservations, evidence.FoundGridPoints, fixturePath)
 	for _, cell := range evidence.Cells {
 		t.Logf("q%d p%d requested=%s echoed=%s drift=%v credits=%d known=%t status=%s match=%s rank=%v", cell.QueryIndex, cell.PointIndex, cell.RequestedLL, cell.EchoedLL, cell.DriftM, cell.Credits, cell.CreditKnown, cell.CallStatus, cell.MatchStatus, cell.Rank)
 	}

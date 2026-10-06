@@ -49,6 +49,7 @@ type Config struct {
 	DeepSeekModel               string
 	DeepSeekAPIKey              string
 	SerperAPIKey                string
+	GoogleMapsAPIKey            string
 	SerperMapsEndpoint          string
 	SerperPlacesEndpoint        string
 	SerperReviewsEndpoint       string
@@ -115,6 +116,7 @@ func Load() Config {
 		DeepSeekAPIKey:             getEnv("DEEPSEEK_API_KEY", ""),
 		DeepSeekModel:              getEnv("DEEPSEEK_MODEL", "deepseek-flash"),
 		SerperAPIKey:               getEnv("SERPER_KEY", ""),
+		GoogleMapsAPIKey:           getEnv("GOOGLE_MAPS_API_KEY", ""),
 		SerperMapsEndpoint:         getEnv("SERPER_MAPS_ENDPOINT", "https://google.serper.dev/maps"),
 		SerperPlacesEndpoint:       getEnv("SERPER_PLACES_ENDPOINT", "https://google.serper.dev/places"),
 		SerperReviewsEndpoint:      getEnv("SERPER_REVIEWS_ENDPOINT", "https://google.serper.dev/reviews"),

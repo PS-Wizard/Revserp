@@ -15,9 +15,10 @@ import (
 var errInvalidListingSelection = errors.New("listing resolution: provide a search term and valid viewport coordinates")
 
 type createListingLookupRequest struct {
-	SearchQuery string   `json:"search_query"`
-	Latitude    *float64 `json:"latitude"`
-	Longitude   *float64 `json:"longitude"`
+	SearchQuery     string   `json:"search_query"`
+	Latitude        *float64 `json:"latitude"`
+	Longitude       *float64 `json:"longitude"`
+	ExpectedCredits *int     `json:"expected_credits"`
 }
 
 func listingResolutionSelection(location sqlc.GetProjectLocationForUserRow, request createListingLookupRequest) (localvisibility.ListingLookupSelection, error) {

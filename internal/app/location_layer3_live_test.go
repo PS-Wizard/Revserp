@@ -140,7 +140,11 @@ func TestLocationLayer3LiveFlow(t *testing.T) {
 		evidence["locality_source"] = "known-geography-fixed"
 		save()
 
-		updateBody, _ := json.Marshal(map[string]any{"queries": generated.Queries})
+		draftEntries := make([]map[string]any, 0, len(generated.Queries))
+		for _, query := range generated.Queries {
+			draftEntries = append(draftEntries, map[string]any{"text": query, "enabled": true, "kind": "map", "source": "manual"})
+		}
+		updateBody, _ := json.Marshal(draftEntries)
 		rr := callUpdateLocationQueries(t, app, ownerID, layer3LiveProjectID, locationID, string(updateBody))
 		if rr.Code != http.StatusOK {
 			evidence["update_queries_status"] = rr.Code
@@ -151,7 +155,7 @@ func TestLocationLayer3LiveFlow(t *testing.T) {
 		evidence["queries_saved"] = json.RawMessage(rr.Body.Bytes())
 		save()
 
-		rr = callCreateLocalVisibilityRun(t, app, ownerID, layer3LiveProjectID, locationID, `{"radius_m":5000}`)
+		rr = callCreateLocalVisibilityRun(t, app, ownerID, layer3LiveProjectID, locationID, `{"radius_m":5000,"expected_credits":135}`)
 		if rr.Code != http.StatusAccepted {
 			evidence["enqueue_status"] = rr.Code
 			evidence["enqueue_body"] = rr.Body.String()
@@ -450,13 +454,12 @@ func TestLocationLayer3LiveFlow(t *testing.T) {
 	}
 
 	createBody, _ := json.Marshal(map[string]any{
-		"name":          label,
-		"address":       "",
-		"locality":      "Kamalpokhari",
-		"query_service": "life insurance",
-		"latitude":      layer3LiveSearchAreaLat,
-		"longitude":     layer3LiveSearchAreaLon,
-		"queries":       []string{},
+		"name":       label,
+		"address":    "",
+		"locality":   "Kamalpokhari",
+		"localities": []string{"Kamalpokhari", "Kathmandu-01", "Kathmandu Metropolitan City"},
+		"latitude":   layer3LiveSearchAreaLat,
+		"longitude":  layer3LiveSearchAreaLon,
 	})
 	rr := callCreateLocation(t, app, ownerID, layer3LiveProjectID, string(createBody))
 	if rr.Code != http.StatusCreated {

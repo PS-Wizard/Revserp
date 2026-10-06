@@ -13,20 +13,23 @@ import (
 
 const bindLocationListingForUser = `-- name: BindLocationListingForUser :one
 UPDATE project_locations l SET place_id = $4::text,
-latitude = $5::double precision, longitude = $6::double precision, updated_at = now()
+latitude = $5::double precision, longitude = $6::double precision,
+locality = $7::text, localities = COALESCE($8::jsonb, '[]'::jsonb), updated_at = now()
 FROM projects p,organization_members m
 WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
 AND m.org_id = p.organization_id AND m.user_id = $3 AND l.place_id IS NULL
-RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service
+RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities
 `
 
 type BindLocationListingForUserParams struct {
-	ID        pgtype.UUID
-	ID_2      pgtype.UUID
-	UserID    pgtype.UUID
-	PlaceID   string
-	Latitude  float64
-	Longitude float64
+	ID         pgtype.UUID
+	ID_2       pgtype.UUID
+	UserID     pgtype.UUID
+	PlaceID    string
+	Latitude   float64
+	Longitude  float64
+	Locality   string
+	Localities []byte
 }
 
 func (q *Queries) BindLocationListingForUser(ctx context.Context, arg BindLocationListingForUserParams) (ProjectLocation, error) {
@@ -37,6 +40,8 @@ func (q *Queries) BindLocationListingForUser(ctx context.Context, arg BindLocati
 		arg.PlaceID,
 		arg.Latitude,
 		arg.Longitude,
+		arg.Locality,
+		arg.Localities,
 	)
 	var i ProjectLocation
 	err := row.Scan(
@@ -46,12 +51,11 @@ func (q *Queries) BindLocationListingForUser(ctx context.Context, arg BindLocati
 		&i.PlaceID,
 		&i.Latitude,
 		&i.Longitude,
-		&i.Queries,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Address,
 		&i.Locality,
-		&i.QueryService,
+		&i.Localities,
 	)
 	return i, err
 }
@@ -150,24 +154,23 @@ func (q *Queries) CreateLocationListingLookup(ctx context.Context, arg CreateLoc
 }
 
 const createLocationSetupForUser = `-- name: CreateLocationSetupForUser :one
-INSERT INTO project_locations(project_id,name,latitude,longitude,queries,address,locality,query_service)
+INSERT INTO project_locations(project_id,name,latitude,longitude,address,locality,localities)
 SELECT p.id,$1::text,$2::double precision,$3::double precision,
-$4::jsonb,$5::text,$6::text,$7::text
+$4::text,$5::text,$6::jsonb
 FROM projects p JOIN organization_members m ON m.org_id = p.organization_id
-WHERE p.id = $8::uuid AND m.user_id = $9::uuid
-RETURNING id, project_id, name, place_id, latitude, longitude, queries, created_at, updated_at, address, locality, query_service
+WHERE p.id = $7::uuid AND m.user_id = $8::uuid
+RETURNING id, project_id, name, place_id, latitude, longitude, created_at, updated_at, address, locality, localities
 `
 
 type CreateLocationSetupForUserParams struct {
-	Name         string
-	Latitude     float64
-	Longitude    float64
-	Queries      []byte
-	Address      string
-	Locality     string
-	QueryService string
-	ProjectID    pgtype.UUID
-	UserID       pgtype.UUID
+	Name       string
+	Latitude   float64
+	Longitude  float64
+	Address    string
+	Locality   string
+	Localities []byte
+	ProjectID  pgtype.UUID
+	UserID     pgtype.UUID
 }
 
 func (q *Queries) CreateLocationSetupForUser(ctx context.Context, arg CreateLocationSetupForUserParams) (ProjectLocation, error) {
@@ -175,10 +178,9 @@ func (q *Queries) CreateLocationSetupForUser(ctx context.Context, arg CreateLoca
 		arg.Name,
 		arg.Latitude,
 		arg.Longitude,
-		arg.Queries,
 		arg.Address,
 		arg.Locality,
-		arg.QueryService,
+		arg.Localities,
 		arg.ProjectID,
 		arg.UserID,
 	)
@@ -190,12 +192,54 @@ func (q *Queries) CreateLocationSetupForUser(ctx context.Context, arg CreateLoca
 		&i.PlaceID,
 		&i.Latitude,
 		&i.Longitude,
-		&i.Queries,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Address,
 		&i.Locality,
-		&i.QueryService,
+		&i.Localities,
+	)
+	return i, err
+}
+
+const createPlacesListingLookup = `-- name: CreatePlacesListingLookup :one
+INSERT INTO local_listing_lookups(location_id,query,expected_credits,reserved_credits,credit_known,candidate_key,source_latitude,source_longitude,created_at)
+VALUES($1::uuid,$2::text,0,0,TRUE,$3::text,
+$4::double precision,$5::double precision,clock_timestamp()) RETURNING id, location_id, query, status, expected_credits, reserved_credits, credits_used, credit_known, raw_response, error, created_at, completed_at, candidate_key, source_latitude, source_longitude
+`
+
+type CreatePlacesListingLookupParams struct {
+	LocationID      pgtype.UUID
+	Query           string
+	CandidateKey    string
+	SourceLatitude  float64
+	SourceLongitude float64
+}
+
+func (q *Queries) CreatePlacesListingLookup(ctx context.Context, arg CreatePlacesListingLookupParams) (LocalListingLookup, error) {
+	row := q.db.QueryRow(ctx, createPlacesListingLookup,
+		arg.LocationID,
+		arg.Query,
+		arg.CandidateKey,
+		arg.SourceLatitude,
+		arg.SourceLongitude,
+	)
+	var i LocalListingLookup
+	err := row.Scan(
+		&i.ID,
+		&i.LocationID,
+		&i.Query,
+		&i.Status,
+		&i.ExpectedCredits,
+		&i.ReservedCredits,
+		&i.CreditsUsed,
+		&i.CreditKnown,
+		&i.RawResponse,
+		&i.Error,
+		&i.CreatedAt,
+		&i.CompletedAt,
+		&i.CandidateKey,
+		&i.SourceLatitude,
+		&i.SourceLongitude,
 	)
 	return i, err
 }
@@ -302,7 +346,7 @@ func (q *Queries) GetListingLookupForUser(ctx context.Context, arg GetListingLoo
 }
 
 const getLocationForListingLookup = `-- name: GetLocationForListingLookup :one
-SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service, p.organization_id FROM project_locations l
+SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, p.organization_id FROM project_locations l
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
 WHERE l.id = $1 AND p.id = $2 AND m.user_id = $3
@@ -322,12 +366,11 @@ type GetLocationForListingLookupRow struct {
 	PlaceID        pgtype.Text
 	Latitude       float64
 	Longitude      float64
-	Queries        []byte
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
 	Address        string
 	Locality       string
-	QueryService   string
+	Localities     []byte
 	OrganizationID pgtype.UUID
 }
 
@@ -341,12 +384,11 @@ func (q *Queries) GetLocationForListingLookup(ctx context.Context, arg GetLocati
 		&i.PlaceID,
 		&i.Latitude,
 		&i.Longitude,
-		&i.Queries,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Address,
 		&i.Locality,
-		&i.QueryService,
+		&i.Localities,
 		&i.OrganizationID,
 	)
 	return i, err
@@ -414,7 +456,7 @@ func (q *Queries) GetLocationListingLookup(ctx context.Context, id pgtype.UUID) 
 }
 
 const listProjectLocationsForUser = `-- name: ListProjectLocationsForUser :many
-SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service FROM project_locations l
+SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities FROM project_locations l
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
 WHERE p.id = $1 AND m.user_id = $2
@@ -442,12 +484,11 @@ func (q *Queries) ListProjectLocationsForUser(ctx context.Context, arg ListProje
 			&i.PlaceID,
 			&i.Latitude,
 			&i.Longitude,
-			&i.Queries,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Address,
 			&i.Locality,
-			&i.QueryService,
+			&i.Localities,
 		); err != nil {
 			return nil, err
 		}
@@ -506,7 +547,7 @@ UPDATE project_locations l SET place_id = NULL, updated_at = now()
 FROM projects p,organization_members m
 WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
 AND m.org_id = p.organization_id AND m.user_id = $3
-RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service
+RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities
 `
 
 type UnbindLocationListingForUserParams struct {
@@ -525,56 +566,11 @@ func (q *Queries) UnbindLocationListingForUser(ctx context.Context, arg UnbindLo
 		&i.PlaceID,
 		&i.Latitude,
 		&i.Longitude,
-		&i.Queries,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Address,
 		&i.Locality,
-		&i.QueryService,
-	)
-	return i, err
-}
-
-const updateLocationSetupForUser = `-- name: UpdateLocationSetupForUser :one
-UPDATE project_locations l SET address = $4, locality = $5, query_service = $6, updated_at = now()
-FROM projects p, organization_members m
-WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
-AND m.org_id = p.organization_id AND m.user_id = $3
-RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service
-`
-
-type UpdateLocationSetupForUserParams struct {
-	ID           pgtype.UUID
-	ID_2         pgtype.UUID
-	UserID       pgtype.UUID
-	Address      string
-	Locality     string
-	QueryService string
-}
-
-func (q *Queries) UpdateLocationSetupForUser(ctx context.Context, arg UpdateLocationSetupForUserParams) (ProjectLocation, error) {
-	row := q.db.QueryRow(ctx, updateLocationSetupForUser,
-		arg.ID,
-		arg.ID_2,
-		arg.UserID,
-		arg.Address,
-		arg.Locality,
-		arg.QueryService,
-	)
-	var i ProjectLocation
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.Name,
-		&i.PlaceID,
-		&i.Latitude,
-		&i.Longitude,
-		&i.Queries,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Address,
-		&i.Locality,
-		&i.QueryService,
+		&i.Localities,
 	)
 	return i, err
 }

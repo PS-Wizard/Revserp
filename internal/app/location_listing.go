@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/geography"
+	"github.com/ps-wizard/revserp/internal/googleplaces"
 	"github.com/ps-wizard/revserp/internal/localvisibility"
 	"github.com/ps-wizard/revserp/internal/serper"
 )
@@ -60,7 +63,7 @@ func listingLookupResponse(lookup sqlc.LocalListingLookup) (locationListingLooku
 		if strings.TrimSpace(place.PlaceID) == "" || seen[place.PlaceID] {
 			continue
 		}
-		if lookup.ExpectedCredits == 3 && !place.HasMapCoordinates() {
+		if (lookup.ExpectedCredits == 0 || lookup.ExpectedCredits == 3) && !place.HasMapCoordinates() {
 			continue
 		}
 		seen[place.PlaceID] = true
@@ -107,6 +110,10 @@ func (a *App) handleCreateListingLookup(w http.ResponseWriter, r *http.Request) 
 	if !readStrictJSONOrRespond(w, r, &body) {
 		return
 	}
+	if body.ExpectedCredits != nil && *body.ExpectedCredits != 0 {
+		writeJSONError(w, http.StatusBadRequest, "Places listing lookup requires zero expected credits")
+		return
+	}
 	if location.PlaceID.Valid {
 		writeJSONError(w, 409, "location already has a bound listing")
 		return
@@ -120,19 +127,17 @@ func (a *App) handleCreateListingLookup(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
-	if strings.TrimSpace(a.Config.SerperAPIKey) == "" || strings.TrimSpace(a.Config.SerperMapsEndpoint) == "" {
+	if strings.TrimSpace(a.Config.GoogleMapsAPIKey) == "" {
 		writeJSONError(w, 503, "Google Maps listing resolution provider is not configured")
 		return
 	}
 	store := localvisibility.ListingLookupStore{Pool: a.DB}
-	lookup, created, err := store.ReserveListingLookup(r.Context(), userID, location.ProjectID, location.ID, selection)
+	lookup, created, err := store.StartPlacesListingLookup(r.Context(), userID, location.ProjectID, location.ID, selection)
 	if err != nil {
 		switch {
-		case errors.Is(err, localvisibility.ErrMapsBudgetUnavailable):
-			writeJSONError(w, 409, err.Error())
 		case errors.Is(err, localvisibility.ErrListingAlreadyBound):
 			writeJSONError(w, http.StatusConflict, err.Error())
-		case isLocalVisibilityActiveConflictError(err):
+		case isPostgresUniqueConstraintConflict(err, "local_listing_lookups_unsettled_idx"):
 			writeJSONError(w, 409, "a listing lookup is active or has an unconfirmed charge")
 		case errors.Is(err, pgx.ErrNoRows):
 			writeJSONError(w, 404, "location not found")
@@ -151,12 +156,11 @@ func (a *App) handleCreateListingLookup(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 200, response)
 		return
 	}
-	provider := serper.NewClient(a.Config.SerperAPIKey, a.Config.SerperMapsEndpoint, a.Config.SerperPlacesEndpoint, a.Config.SerperReviewsEndpoint)
+	provider := googleplaces.NewPlacesListingClient(a.Config.GoogleMapsAPIKey, "")
 	result, providerErr := provider.LookupMapsListing(r.Context(), lookup.Query, lookup.SourceLatitude.Float64, lookup.SourceLongitude.Float64)
-	// Cancellation must not discard a paid response or release an unknown charge.
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
 	defer cancel()
-	recorded, err := store.RecordListingLookup(settleCtx, lookup.ID, result, providerErr)
+	recorded, err := store.RecordPlacesListingLookup(recordCtx, lookup.ID, result, providerErr)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -243,10 +247,16 @@ func (a *App) handleBindLocationListing(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	latitude, longitude := location.Latitude, location.Longitude
-	if lookup.ExpectedCredits == 3 {
+	if lookup.ExpectedCredits == 0 || lookup.ExpectedCredits == 3 {
 		latitude, longitude = chosen.Latitude, chosen.Longitude
 	}
-	bound, err := a.Queries.BindLocationListingForUser(r.Context(), sqlc.BindLocationListingForUserParams{ID: location.ID, ID_2: location.ProjectID, UserID: userID, PlaceID: selected, Latitude: latitude, Longitude: longitude})
+	locality, localities := a.bindListingLocality(r.Context(), latitude, longitude)
+	encodedLocalities, err := encodeBindListingLocalities(localities)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	bound, err := a.Queries.BindLocationListingForUser(r.Context(), sqlc.BindLocationListingForUserParams{ID: location.ID, ID_2: location.ProjectID, UserID: userID, PlaceID: selected, Latitude: latitude, Longitude: longitude, Locality: locality, Localities: encodedLocalities})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, 409, "listing binding changed; reload the location")
@@ -255,12 +265,41 @@ func (a *App) handleBindLocationListing(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
-	response, err := newLocalVisibilityLocationResponse(bound.ID, bound.ProjectID, bound.Name, bound.PlaceID, bound.Latitude, bound.Longitude, bound.Queries, bound.Address, bound.Locality, bound.QueryService)
+	response, err := a.assembleLocationResponse(r.Context(), bound.ID, bound.ProjectID, bound.Name, bound.PlaceID, bound.Latitude, bound.Longitude, bound.Address, bound.Locality, bound.Localities, userID)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, 200, response)
+}
+
+func (a *App) bindListingLocality(ctx context.Context, latitude, longitude float64) (string, []string) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	response, err := a.locationGeographyResults(ctx, fmt.Sprintf("reverse:%.6f,%.6f", latitude, longitude), false, func() ([]geography.GeocodedAddress, error) {
+		if a.Nominatim == nil {
+			return nil, errors.New("location geography provider is unavailable")
+		}
+		address, err := a.Nominatim.ReverseAddress(ctx, latitude, longitude)
+		if err != nil {
+			return nil, err
+		}
+		return []geography.GeocodedAddress{address}, nil
+	})
+	if err != nil || len(response.Results) == 0 {
+		return "", []string{}
+	}
+	return response.Results[0].Locality, normalizeLocalities(response.Results[0].Localities)
+}
+
+// encodeBindListingLocalities serializes a locality ladder, forcing JSON [] for a
+// nil or empty ladder so a missing reverse result never stores JSON null where
+// the project_locations.localities column expects an array.
+func encodeBindListingLocalities(localities []string) ([]byte, error) {
+	if localities == nil {
+		localities = []string{}
+	}
+	return json.Marshal(localities)
 }
 
 func (a *App) handleListProjectLocations(w http.ResponseWriter, r *http.Request) {
@@ -275,7 +314,7 @@ func (a *App) handleListProjectLocations(w http.ResponseWriter, r *http.Request)
 	}
 	responses := make([]localVisibilityLocationResponse, 0, len(locations))
 	for _, location := range locations {
-		response, err := newLocalVisibilityLocationResponse(location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Queries, location.Address, location.Locality, location.QueryService)
+		response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, userID)
 		if err != nil {
 			serverError(w, r, err)
 			return
@@ -321,7 +360,7 @@ func (a *App) handleUnbindLocationListing(w http.ResponseWriter, r *http.Request
 		}
 		return
 	}
-	response, err := newLocalVisibilityLocationResponse(unbound.ID, unbound.ProjectID, unbound.Name, unbound.PlaceID, unbound.Latitude, unbound.Longitude, unbound.Queries, unbound.Address, unbound.Locality, unbound.QueryService)
+	response, err := a.assembleLocationResponse(r.Context(), unbound.ID, unbound.ProjectID, unbound.Name, unbound.PlaceID, unbound.Latitude, unbound.Longitude, unbound.Address, unbound.Locality, unbound.Localities, userID)
 	if err != nil {
 		serverError(w, r, err)
 		return

@@ -437,6 +437,20 @@ type LocationGeographyCache struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type LocationLandmark struct {
+	ID            pgtype.UUID
+	LocationID    pgtype.UUID
+	Name          string
+	Latitude      float64
+	Longitude     float64
+	StraightLineM int32
+	Provider      string
+	ProviderRef   string
+	Categories    []string
+	FetchedAt     pgtype.Timestamptz
+	Selected      bool
+}
+
 type MapsListingRef struct {
 	ProjectID  pgtype.UUID
 	Cid        pgtype.Text
@@ -629,18 +643,43 @@ type ProjectKeyword struct {
 }
 
 type ProjectLocation struct {
-	ID           pgtype.UUID
-	ProjectID    pgtype.UUID
-	Name         string
-	PlaceID      pgtype.Text
-	Latitude     float64
-	Longitude    float64
-	Queries      []byte
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
-	Address      string
-	Locality     string
-	QueryService string
+	ID         pgtype.UUID
+	ProjectID  pgtype.UUID
+	Name       string
+	PlaceID    pgtype.Text
+	Latitude   float64
+	Longitude  float64
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	Address    string
+	Locality   string
+	Localities []byte
+}
+
+type ProjectLocationQuery struct {
+	ID         pgtype.UUID
+	LocationID pgtype.UUID
+	Text       string
+	Normalized string
+	Ordinal    int32
+	Enabled    bool
+	Kind       string
+	Source     string
+	Origin     string
+	LandmarkID pgtype.UUID
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
+type ProjectLocationService struct {
+	ID                     pgtype.UUID
+	LocationID             pgtype.UUID
+	ProjectID              pgtype.UUID
+	ServiceID              pgtype.UUID
+	ServiceLabel           pgtype.Text
+	NormalizedServiceLabel pgtype.Text
+	Mode                   string
+	CreatedAt              pgtype.Timestamptz
 }
 
 type ProjectMcpConnection struct {
@@ -662,6 +701,15 @@ type ProjectMcpToolPermission struct {
 	ToolName     string
 	Permission   string
 	UpdatedAt    pgtype.Timestamptz
+}
+
+type ProjectService struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	Label           string
+	NormalizedLabel string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type ProjectSetup struct {

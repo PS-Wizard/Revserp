@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countLocalVisibilityRunResultsForUser = `-- name: CountLocalVisibilityRunResultsForUser :one
+SELECT COUNT(*)::bigint FROM local_visibility_results res
+JOIN local_visibility_runs r ON r.id = res.run_id
+JOIN project_locations l ON l.id = r.location_id
+JOIN projects p ON p.id = l.project_id
+JOIN organization_members m ON m.org_id = p.organization_id
+WHERE res.run_id = $1 AND l.id = $2 AND p.id = $3 AND m.user_id = $4
+`
+
+type CountLocalVisibilityRunResultsForUserParams struct {
+	RunID  pgtype.UUID
+	ID     pgtype.UUID
+	ID_2   pgtype.UUID
+	UserID pgtype.UUID
+}
+
+func (q *Queries) CountLocalVisibilityRunResultsForUser(ctx context.Context, arg CountLocalVisibilityRunResultsForUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countLocalVisibilityRunResultsForUser,
+		arg.RunID,
+		arg.ID,
+		arg.ID_2,
+		arg.UserID,
+	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createLocalRunCells = `-- name: CreateLocalRunCells :exec
 INSERT INTO local_run_cells(run_id,query_index,point_index)
 SELECT $1, q::smallint, p::smallint
@@ -63,52 +91,6 @@ func (q *Queries) CreateLocalVisibilityRun(ctx context.Context, arg CreateLocalV
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.CompletedAt,
-	)
-	return i, err
-}
-
-const createProjectLocationForUser = `-- name: CreateProjectLocationForUser :one
-INSERT INTO project_locations(project_id,name,place_id,latitude,longitude,queries)
-SELECT p.id, $3, NULLIF($7::text, ''), $4, $5, $6 FROM projects p
-JOIN organization_members m ON m.org_id = p.organization_id
-WHERE p.id = $1 AND m.user_id = $2
-RETURNING id, project_id, name, place_id, latitude, longitude, queries, created_at, updated_at, address, locality, query_service
-`
-
-type CreateProjectLocationForUserParams struct {
-	ID        pgtype.UUID
-	UserID    pgtype.UUID
-	Name      string
-	Latitude  float64
-	Longitude float64
-	Queries   []byte
-	PlaceID   string
-}
-
-func (q *Queries) CreateProjectLocationForUser(ctx context.Context, arg CreateProjectLocationForUserParams) (ProjectLocation, error) {
-	row := q.db.QueryRow(ctx, createProjectLocationForUser,
-		arg.ID,
-		arg.UserID,
-		arg.Name,
-		arg.Latitude,
-		arg.Longitude,
-		arg.Queries,
-		arg.PlaceID,
-	)
-	var i ProjectLocation
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.Name,
-		&i.PlaceID,
-		&i.Latitude,
-		&i.Longitude,
-		&i.Queries,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Address,
-		&i.Locality,
-		&i.QueryService,
 	)
 	return i, err
 }
@@ -372,7 +354,7 @@ func (q *Queries) GetPlatformMapsCreditBudget(ctx context.Context) (PlatformMaps
 }
 
 const getProjectLocationForUser = `-- name: GetProjectLocationForUser :one
-SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service, p.organization_id FROM project_locations l
+SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, p.organization_id FROM project_locations l
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
 WHERE l.id = $1 AND p.id = $2 AND m.user_id = $3
@@ -391,12 +373,11 @@ type GetProjectLocationForUserRow struct {
 	PlaceID        pgtype.Text
 	Latitude       float64
 	Longitude      float64
-	Queries        []byte
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
 	Address        string
 	Locality       string
-	QueryService   string
+	Localities     []byte
 	OrganizationID pgtype.UUID
 }
 
@@ -410,12 +391,11 @@ func (q *Queries) GetProjectLocationForUser(ctx context.Context, arg GetProjectL
 		&i.PlaceID,
 		&i.Latitude,
 		&i.Longitude,
-		&i.Queries,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Address,
 		&i.Locality,
-		&i.QueryService,
+		&i.Localities,
 		&i.OrganizationID,
 	)
 	return i, err
@@ -648,46 +628,6 @@ func (q *Queries) StartLocalVisibilityRun(ctx context.Context, id pgtype.UUID) (
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.CompletedAt,
-	)
-	return i, err
-}
-
-const updateLocationQueriesForUser = `-- name: UpdateLocationQueriesForUser :one
-UPDATE project_locations l SET queries = $4, updated_at = now()
-FROM projects p, organization_members m
-WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
-AND m.org_id = p.organization_id AND m.user_id = $3
-RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.queries, l.created_at, l.updated_at, l.address, l.locality, l.query_service
-`
-
-type UpdateLocationQueriesForUserParams struct {
-	ID      pgtype.UUID
-	ID_2    pgtype.UUID
-	UserID  pgtype.UUID
-	Queries []byte
-}
-
-func (q *Queries) UpdateLocationQueriesForUser(ctx context.Context, arg UpdateLocationQueriesForUserParams) (ProjectLocation, error) {
-	row := q.db.QueryRow(ctx, updateLocationQueriesForUser,
-		arg.ID,
-		arg.ID_2,
-		arg.UserID,
-		arg.Queries,
-	)
-	var i ProjectLocation
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.Name,
-		&i.PlaceID,
-		&i.Latitude,
-		&i.Longitude,
-		&i.Queries,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Address,
-		&i.Locality,
-		&i.QueryService,
 	)
 	return i, err
 }
