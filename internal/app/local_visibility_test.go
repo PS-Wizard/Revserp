@@ -665,3 +665,170 @@ func TestLocalVisibilityRunProgressGeneratedSurface(t *testing.T) {
 	var q *sqlc.Queries
 	_ = q.CountLocalVisibilityRunResultsForUser
 }
+
+func TestNewLocalVisibilityRunResponseResultCount(t *testing.T) {
+	points, err := localvisibility.BuildGeoGrid(27.6942, 85.3123, 5000)
+	if err != nil {
+		t.Fatalf("build grid: %v", err)
+	}
+	snapshot, err := json.Marshal(localvisibility.LocalRunSnapshot{Queries: []string{"a", "b"}, Points: points})
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	cells := []sqlc.GetLocalRunCellsRow{
+		{QueryIndex: 0, PointIndex: 0, CallStatus: "success_nonempty", MatchStatus: "found", Rank: pgtype.Int4{Int32: 3, Valid: true}, Credits: 3, CreditKnown: true, ResultCount: 3},
+		{QueryIndex: 0, PointIndex: 1, CallStatus: "success_empty", MatchStatus: "absent", ResultCount: 0},
+		{QueryIndex: 0, PointIndex: 2, CallStatus: "success_nonempty", MatchStatus: "absent", ResultCount: -1},
+		{QueryIndex: 0, PointIndex: 3, CallStatus: "request_failed", MatchStatus: "unknown", ResultCount: -1},
+	}
+	response, err := newLocalVisibilityRunResponse(sqlc.LocalVisibilityRun{Snapshot: snapshot}, cells, len(cells))
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+
+	found := findLocalVisibilityCell(t, response, 0, 0)
+	if found.ResultCount == nil || *found.ResultCount != 3 {
+		t.Fatalf("found result_count = %#v, want 3", found.ResultCount)
+	}
+	if found.Rank == nil || *found.Rank != 3 {
+		t.Fatalf("found rank = %#v, want the stored 3", found.Rank)
+	}
+	empty := findLocalVisibilityCell(t, response, 0, 1)
+	if empty.ResultCount == nil || *empty.ResultCount != 0 {
+		t.Fatalf("empty result_count = %#v, want 0", empty.ResultCount)
+	}
+	unreadable := findLocalVisibilityCell(t, response, 0, 2)
+	if unreadable.ResultCount != nil {
+		t.Fatalf("unreadable result_count = %#v, want null", unreadable.ResultCount)
+	}
+	failed := findLocalVisibilityCell(t, response, 0, 3)
+	if failed.ResultCount != nil {
+		t.Fatalf("failed result_count = %#v, want null", failed.ResultCount)
+	}
+	pending := findLocalVisibilityCell(t, response, 1, 0)
+	if pending.ResultCount != nil {
+		t.Fatalf("pending result_count = %#v, want null", pending.ResultCount)
+	}
+}
+
+func TestLocalVisibilityResultCountQueryContract(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(currentFile), "..", "db", "queries", "local_visibility.sql"))
+	if err != nil {
+		t.Fatalf("read local visibility queries: %v", err)
+	}
+	block := localVisibilityQueryOperation(t, string(raw), "GetLocalRunCells :many")
+	for _, needle := range []string{
+		"result_count",
+		"jsonb_array_length(r.raw_response->'places')",
+		"jsonb_typeof(r.raw_response->'places') = 'array'",
+		"'success_nonempty','success_empty'",
+		"ELSE -1",
+	} {
+		if !strings.Contains(block, needle) {
+			t.Errorf("GetLocalRunCells missing %q", needle)
+		}
+	}
+	// The projection is a raw stored array length, never a distinct competitor
+	// count or a capped value.
+	for _, forbidden := range []string{"DISTINCT", "LEAST("} {
+		if strings.Contains(block, forbidden) {
+			t.Errorf("GetLocalRunCells result_count must not use %q", forbidden)
+		}
+	}
+}
+
+func TestLocalVisibilityResultCountProjection(t *testing.T) {
+	fx := newLocalVisibilityFixture(t)
+	fx.fundLocalVisibilityBudgets(t)
+	location := createLocalVisibilityLocation(t, fx, fx.ownerID, fx.projectID, "primary")
+
+	rr := callCreateLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, `{"radius_m":5000,"expected_credits":135}`)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("create run status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var created localVisibilityRunCreatedResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created run: %v body=%s", err, rr.Body.String())
+	}
+
+	insert := `INSERT INTO local_visibility_results
+		(run_id,query_index,point_index,call_status,match_status,rank,credits,credit_known,raw_response,error)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
+	// Three stored places including a repeated target id and an id-less entry:
+	// the count is the stored array length, never a unique-competitor count.
+	threePlaces := []byte(`{"ll":"27.6,85.3","places":[{"position":1,"placeId":"target"},{"position":2,"placeId":"target"},{"position":3}]}`)
+	if _, err := fx.pool.Exec(fx.ctx, insert, created.ID, 0, 4, "success_nonempty", "found", pgtype.Int4{Int32: 3, Valid: true}, 3, true, threePlaces, nil); err != nil {
+		t.Fatalf("insert found result: %v", err)
+	}
+	// A succeeded call with an empty stored array projects 0.
+	if _, err := fx.pool.Exec(fx.ctx, insert, created.ID, 0, 3, "success_empty", "absent", pgtype.Int4{}, 0, true, []byte(`{"ll":"27.6,85.3","places":[]}`), nil); err != nil {
+		t.Fatalf("insert empty result: %v", err)
+	}
+	// A succeeded call with no stored response projects null.
+	if _, err := fx.pool.Exec(fx.ctx, insert, created.ID, 0, 2, "success_nonempty", "absent", pgtype.Int4{}, 3, true, nil, nil); err != nil {
+		t.Fatalf("insert missing-raw result: %v", err)
+	}
+	// A succeeded call whose stored places is not an array projects null.
+	if _, err := fx.pool.Exec(fx.ctx, insert, created.ID, 0, 5, "success_nonempty", "absent", pgtype.Int4{}, 3, true, []byte(`{"ll":"27.6,85.3","places":{"not":"array"}}`), nil); err != nil {
+		t.Fatalf("insert bad-raw result: %v", err)
+	}
+	// A failed call projects null even though it carries no ranks.
+	if _, err := fx.pool.Exec(fx.ctx, insert, created.ID, 0, 1, "request_failed", "unknown", pgtype.Int4{}, 3, true, nil, "provider error"); err != nil {
+		t.Fatalf("insert failed result: %v", err)
+	}
+	// q0p0 stays pending: no result row exists for it.
+
+	rr = callGetLocalVisibilityRun(t, fx.app, fx.ownerID, fx.projectID.String(), location.ID, created.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get run status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var run localVisibilityRunResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v body=%s", err, rr.Body.String())
+	}
+
+	found := findLocalVisibilityCell(t, run, 0, 4)
+	if found.ResultCount == nil || *found.ResultCount != 3 {
+		t.Fatalf("found result_count = %#v, want 3", found.ResultCount)
+	}
+	if found.Rank == nil || *found.Rank != 3 {
+		t.Fatalf("found rank = %#v, want the stored 3", found.Rank)
+	}
+	empty := findLocalVisibilityCell(t, run, 0, 3)
+	if empty.ResultCount == nil || *empty.ResultCount != 0 {
+		t.Fatalf("empty result_count = %#v, want 0", empty.ResultCount)
+	}
+	missingRaw := findLocalVisibilityCell(t, run, 0, 2)
+	if missingRaw.ResultCount != nil {
+		t.Fatalf("missing-raw result_count = %#v, want null", missingRaw.ResultCount)
+	}
+	badRaw := findLocalVisibilityCell(t, run, 0, 5)
+	if badRaw.ResultCount != nil {
+		t.Fatalf("non-array-raw result_count = %#v, want null", badRaw.ResultCount)
+	}
+	failed := findLocalVisibilityCell(t, run, 0, 1)
+	if failed.ResultCount != nil {
+		t.Fatalf("failed result_count = %#v, want null", failed.ResultCount)
+	}
+	pending := findLocalVisibilityCell(t, run, 0, 0)
+	if pending.ResultCount != nil {
+		t.Fatalf("pending result_count = %#v, want null", pending.ResultCount)
+	}
+
+	// The latest-run endpoint shares the same projection.
+	rr = callLatestLocalVisibilityRun(t, fx.app, fx.memberID, fx.projectID.String(), location.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("latest run status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode latest run: %v body=%s", err, rr.Body.String())
+	}
+	latestFound := findLocalVisibilityCell(t, run, 0, 4)
+	if latestFound.ResultCount == nil || *latestFound.ResultCount != 3 {
+		t.Fatalf("latest found result_count = %#v, want 3", latestFound.ResultCount)
+	}
+}

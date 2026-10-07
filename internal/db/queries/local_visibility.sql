@@ -100,7 +100,9 @@ COALESCE(r.match_status,'unknown')::text AS match_status,
 r.rank,COALESCE(r.credits,0)::integer AS credits,
 COALESCE(r.credit_known,FALSE)::boolean AS credit_known,r.error,
 COALESCE(r.raw_response->>'ll','')::text AS echoed_ll,
-COALESCE((r.raw_response->>'viewport_drift_m')::double precision,-1)::double precision AS viewport_drift_m
+COALESCE((r.raw_response->>'viewport_drift_m')::double precision,-1)::double precision AS viewport_drift_m,
+-- sqlc infers a nullable CASE as int32; -1 prevents NULL scans and becomes null in the API.
+CASE WHEN r.call_status IN ('success_nonempty','success_empty') AND jsonb_typeof(r.raw_response->'places') = 'array' THEN jsonb_array_length(r.raw_response->'places') ELSE -1 END::integer AS result_count
 FROM local_run_cells c LEFT JOIN local_visibility_results r
 ON r.run_id = c.run_id AND r.query_index = c.query_index AND r.point_index = c.point_index
 WHERE c.run_id = $1 ORDER BY c.query_index,c.point_index;

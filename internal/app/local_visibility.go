@@ -59,7 +59,8 @@ type localVisibilityLocationResponse struct {
 }
 
 // localVisibilityCellResponse is one planned grid call. Rank is null unless the
-// match is found; error is null unless the call failed.
+// match is found; result_count is null unless a succeeded call returned a
+// readable places array; error is null unless the call failed.
 type localVisibilityCellResponse struct {
 	QueryIndex     int      `json:"query_index"`
 	PointIndex     int      `json:"point_index"`
@@ -76,6 +77,7 @@ type localVisibilityCellResponse struct {
 	RequestedLL    string   `json:"requested_ll"`
 	EchoedLL       *string  `json:"echoed_ll"`
 	ViewportDriftM *float64 `json:"viewport_drift_m"`
+	ResultCount    *int     `json:"result_count"`
 	Error          *string  `json:"error"`
 }
 
@@ -244,6 +246,10 @@ func newLocalVisibilityRunResponse(run sqlc.LocalVisibilityRun, cells []sqlc.Get
 			if row.EchoedLl != "" && row.ViewportDriftM >= 0 {
 				drift := row.ViewportDriftM
 				cell.ViewportDriftM = &drift
+			}
+			if row.ResultCount >= 0 {
+				count := int(row.ResultCount)
+				cell.ResultCount = &count
 			}
 			if row.Rank.Valid {
 				rank := int(row.Rank.Int32)
