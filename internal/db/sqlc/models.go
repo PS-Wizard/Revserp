@@ -19,6 +19,7 @@ type AiAudit struct {
 	CompletedAt  pgtype.Timestamptz
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
+	LocationID   pgtype.UUID
 }
 
 type AiAuditRun struct {
@@ -38,6 +39,7 @@ type AiAuditRun struct {
 	CompletedAt        pgtype.Timestamptz
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
+	MentionedBranch    pgtype.Bool
 }
 
 type AiConversation struct {

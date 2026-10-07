@@ -6,7 +6,8 @@ INSERT INTO ai_audits (
     score,
     error_message,
     started_at,
-    completed_at
+    completed_at,
+    location_id
 ) VALUES (
     $1,
     $2,
@@ -14,9 +15,10 @@ INSERT INTO ai_audits (
     $4,
     $5,
     $6,
-    $7
+    $7,
+    $8
 )
-RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at;
+RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id;
 
 -- name: GetAIAuditByIDForUser :one
 SELECT
@@ -29,7 +31,8 @@ SELECT
     aa.started_at,
     aa.completed_at,
     aa.created_at,
-    aa.updated_at
+    aa.updated_at,
+    aa.location_id
 FROM ai_audits AS aa
 INNER JOIN projects AS p ON p.id = aa.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -37,10 +40,18 @@ WHERE aa.id = $1
   AND om.user_id = $2
 LIMIT 1;
 
+-- name: GetAIAuditForWorker :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+FROM ai_audits
+WHERE id = sqlc.arg(id)::uuid
+  AND project_id = sqlc.arg(project_id)::uuid
+LIMIT 1;
+
 -- name: CountAIAuditsForProject :one
 SELECT COUNT(*)
 FROM ai_audits
 WHERE project_id = $1
+  AND location_id IS NULL
   AND ($2 = '' OR status = $2);
 
 -- name: ListAIAuditsForProject :many
@@ -54,27 +65,73 @@ SELECT
     started_at,
     completed_at,
     created_at,
-    updated_at
+    updated_at,
+    location_id
 FROM ai_audits
 WHERE project_id = $1
+  AND location_id IS NULL
   AND ($2 = '' OR status = $2)
 ORDER BY created_at DESC
 LIMIT $3
 OFFSET $4;
 
--- name: GetAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+-- name: CountAIAuditsForLocation :one
+SELECT COUNT(*)
 FROM ai_audits
-WHERE project_id = $1 AND crawl_id = $2
+WHERE project_id = sqlc.arg(project_id)::uuid
+  AND location_id = sqlc.arg(location_id)::uuid
+  AND (sqlc.arg(status_filter)::text = '' OR status = sqlc.arg(status_filter)::text);
+
+-- name: ListAIAuditsForLocation :many
+SELECT
+    id,
+    project_id,
+    crawl_id,
+    status,
+    score,
+    error_message,
+    started_at,
+    completed_at,
+    created_at,
+    updated_at,
+    location_id
+FROM ai_audits
+WHERE project_id = sqlc.arg(project_id)::uuid
+  AND location_id = sqlc.arg(location_id)::uuid
+  AND (sqlc.arg(status_filter)::text = '' OR status = sqlc.arg(status_filter)::text)
+ORDER BY created_at DESC
+LIMIT sqlc.arg(page_limit)
+OFFSET sqlc.arg(page_offset);
+
+-- name: GetAIAuditByCrawlAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+FROM ai_audits
+WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetAIAuditByLocationCrawlAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+FROM ai_audits
+WHERE project_id = sqlc.arg(project_id)::uuid
+  AND location_id = sqlc.arg(location_id)::uuid
+  AND crawl_id = sqlc.arg(crawl_id)::uuid
 ORDER BY created_at DESC
 LIMIT 1;
 
 -- name: GetActiveAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
 FROM ai_audits
-WHERE project_id = $1 AND crawl_id = $2 AND status IN ('queued', 'running')
+WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL AND status IN ('queued', 'running')
 LIMIT 1;
 
+-- name: GetActiveAIAuditByLocationAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+FROM ai_audits
+WHERE project_id = sqlc.arg(project_id)::uuid
+  AND location_id = sqlc.arg(location_id)::uuid
+  AND status IN ('queued', 'running')
+LIMIT 1;
 
 -- name: UpdateAIAuditStatus :exec
 UPDATE ai_audits
@@ -117,4 +174,5 @@ SET status = 'failed',
     updated_at = now()
 WHERE project_id = sqlc.arg(project_id)
   AND crawl_id = sqlc.arg(crawl_id)
+  AND location_id IS NULL
   AND status IN ('queued', 'running');

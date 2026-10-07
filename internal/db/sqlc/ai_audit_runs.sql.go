@@ -15,11 +15,11 @@ const insertAIAuditRun = `-- name: InsertAIAuditRun :one
 INSERT INTO ai_audit_runs (
     audit_id, question_text, display_order, model_name,
     status, raw_response, mentioned_target, target_rank, visibility_score,
-    error_message, started_at, completed_at
+    error_message, started_at, completed_at, mentioned_branch
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, audit_id, question_text, display_order, model_name, status, raw_response, parsed_response_json, mentioned_target, target_rank, visibility_score, error_message, started_at, completed_at, created_at, updated_at
+RETURNING id, audit_id, question_text, display_order, model_name, status, raw_response, parsed_response_json, mentioned_target, target_rank, visibility_score, error_message, started_at, completed_at, created_at, updated_at, mentioned_branch
 `
 
 type InsertAIAuditRunParams struct {
@@ -35,6 +35,7 @@ type InsertAIAuditRunParams struct {
 	ErrorMessage    pgtype.Text
 	StartedAt       pgtype.Timestamptz
 	CompletedAt     pgtype.Timestamptz
+	MentionedBranch pgtype.Bool
 }
 
 func (q *Queries) InsertAIAuditRun(ctx context.Context, arg InsertAIAuditRunParams) (AiAuditRun, error) {
@@ -51,6 +52,7 @@ func (q *Queries) InsertAIAuditRun(ctx context.Context, arg InsertAIAuditRunPara
 		arg.ErrorMessage,
 		arg.StartedAt,
 		arg.CompletedAt,
+		arg.MentionedBranch,
 	)
 	var i AiAuditRun
 	err := row.Scan(
@@ -70,6 +72,7 @@ func (q *Queries) InsertAIAuditRun(ctx context.Context, arg InsertAIAuditRunPara
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.MentionedBranch,
 	)
 	return i, err
 }
@@ -91,7 +94,8 @@ SELECT
     started_at,
     completed_at,
     created_at,
-    updated_at
+    updated_at,
+    mentioned_branch
 FROM ai_audit_runs
 WHERE audit_id = $1
 ORDER BY display_order ASC, model_name ASC
@@ -123,6 +127,7 @@ func (q *Queries) ListAIAuditRunsByAuditID(ctx context.Context, auditID pgtype.U
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.MentionedBranch,
 		); err != nil {
 			return nil, err
 		}

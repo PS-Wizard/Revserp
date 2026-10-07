@@ -11,10 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countAIAuditsForLocation = `-- name: CountAIAuditsForLocation :one
+SELECT COUNT(*)
+FROM ai_audits
+WHERE project_id = $1::uuid
+  AND location_id = $2::uuid
+  AND ($3::text = '' OR status = $3::text)
+`
+
+type CountAIAuditsForLocationParams struct {
+	ProjectID    pgtype.UUID
+	LocationID   pgtype.UUID
+	StatusFilter string
+}
+
+func (q *Queries) CountAIAuditsForLocation(ctx context.Context, arg CountAIAuditsForLocationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAIAuditsForLocation, arg.ProjectID, arg.LocationID, arg.StatusFilter)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countAIAuditsForProject = `-- name: CountAIAuditsForProject :one
 SELECT COUNT(*)
 FROM ai_audits
 WHERE project_id = $1
+  AND location_id IS NULL
   AND ($2 = '' OR status = $2)
 `
 
@@ -38,7 +60,8 @@ INSERT INTO ai_audits (
     score,
     error_message,
     started_at,
-    completed_at
+    completed_at,
+    location_id
 ) VALUES (
     $1,
     $2,
@@ -46,9 +69,10 @@ INSERT INTO ai_audits (
     $4,
     $5,
     $6,
-    $7
+    $7,
+    $8
 )
-RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
 `
 
 type CreateAIAuditParams struct {
@@ -59,6 +83,7 @@ type CreateAIAuditParams struct {
 	ErrorMessage pgtype.Text
 	StartedAt    pgtype.Timestamptz
 	CompletedAt  pgtype.Timestamptz
+	LocationID   pgtype.UUID
 }
 
 func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (AiAudit, error) {
@@ -70,6 +95,7 @@ func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (A
 		arg.ErrorMessage,
 		arg.StartedAt,
 		arg.CompletedAt,
+		arg.LocationID,
 	)
 	var i AiAudit
 	err := row.Scan(
@@ -83,6 +109,7 @@ func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (A
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LocationID,
 	)
 	return i, err
 }
@@ -95,6 +122,7 @@ SET status = 'failed',
     updated_at = now()
 WHERE project_id = $1
   AND crawl_id = $2
+  AND location_id IS NULL
   AND status IN ('queued', 'running')
 `
 
@@ -116,9 +144,9 @@ func (q *Queries) FailActiveAIAuditsForCrawl(ctx context.Context, arg FailActive
 }
 
 const getAIAuditByCrawlAndProject = `-- name: GetAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
 FROM ai_audits
-WHERE project_id = $1 AND crawl_id = $2
+WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL
 ORDER BY created_at DESC
 LIMIT 1
 `
@@ -142,6 +170,7 @@ func (q *Queries) GetAIAuditByCrawlAndProject(ctx context.Context, arg GetAIAudi
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LocationID,
 	)
 	return i, err
 }
@@ -157,7 +186,8 @@ SELECT
     aa.started_at,
     aa.completed_at,
     aa.created_at,
-    aa.updated_at
+    aa.updated_at,
+    aa.location_id
 FROM ai_audits AS aa
 INNER JOIN projects AS p ON p.id = aa.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -185,14 +215,82 @@ func (q *Queries) GetAIAuditByIDForUser(ctx context.Context, arg GetAIAuditByIDF
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LocationID,
+	)
+	return i, err
+}
+
+const getAIAuditByLocationCrawlAndProject = `-- name: GetAIAuditByLocationCrawlAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+FROM ai_audits
+WHERE project_id = $1::uuid
+  AND location_id = $2::uuid
+  AND crawl_id = $3::uuid
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetAIAuditByLocationCrawlAndProjectParams struct {
+	ProjectID  pgtype.UUID
+	LocationID pgtype.UUID
+	CrawlID    pgtype.UUID
+}
+
+func (q *Queries) GetAIAuditByLocationCrawlAndProject(ctx context.Context, arg GetAIAuditByLocationCrawlAndProjectParams) (AiAudit, error) {
+	row := q.db.QueryRow(ctx, getAIAuditByLocationCrawlAndProject, arg.ProjectID, arg.LocationID, arg.CrawlID)
+	var i AiAudit
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.CrawlID,
+		&i.Status,
+		&i.Score,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LocationID,
+	)
+	return i, err
+}
+
+const getAIAuditForWorker = `-- name: GetAIAuditForWorker :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+FROM ai_audits
+WHERE id = $1::uuid
+  AND project_id = $2::uuid
+LIMIT 1
+`
+
+type GetAIAuditForWorkerParams struct {
+	ID        pgtype.UUID
+	ProjectID pgtype.UUID
+}
+
+func (q *Queries) GetAIAuditForWorker(ctx context.Context, arg GetAIAuditForWorkerParams) (AiAudit, error) {
+	row := q.db.QueryRow(ctx, getAIAuditForWorker, arg.ID, arg.ProjectID)
+	var i AiAudit
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.CrawlID,
+		&i.Status,
+		&i.Score,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LocationID,
 	)
 	return i, err
 }
 
 const getActiveAIAuditByCrawlAndProject = `-- name: GetActiveAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
 FROM ai_audits
-WHERE project_id = $1 AND crawl_id = $2 AND status IN ('queued', 'running')
+WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL AND status IN ('queued', 'running')
 LIMIT 1
 `
 
@@ -215,8 +313,110 @@ func (q *Queries) GetActiveAIAuditByCrawlAndProject(ctx context.Context, arg Get
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LocationID,
 	)
 	return i, err
+}
+
+const getActiveAIAuditByLocationAndProject = `-- name: GetActiveAIAuditByLocationAndProject :one
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+FROM ai_audits
+WHERE project_id = $1::uuid
+  AND location_id = $2::uuid
+  AND status IN ('queued', 'running')
+LIMIT 1
+`
+
+type GetActiveAIAuditByLocationAndProjectParams struct {
+	ProjectID  pgtype.UUID
+	LocationID pgtype.UUID
+}
+
+func (q *Queries) GetActiveAIAuditByLocationAndProject(ctx context.Context, arg GetActiveAIAuditByLocationAndProjectParams) (AiAudit, error) {
+	row := q.db.QueryRow(ctx, getActiveAIAuditByLocationAndProject, arg.ProjectID, arg.LocationID)
+	var i AiAudit
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.CrawlID,
+		&i.Status,
+		&i.Score,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LocationID,
+	)
+	return i, err
+}
+
+const listAIAuditsForLocation = `-- name: ListAIAuditsForLocation :many
+SELECT
+    id,
+    project_id,
+    crawl_id,
+    status,
+    score,
+    error_message,
+    started_at,
+    completed_at,
+    created_at,
+    updated_at,
+    location_id
+FROM ai_audits
+WHERE project_id = $1::uuid
+  AND location_id = $2::uuid
+  AND ($3::text = '' OR status = $3::text)
+ORDER BY created_at DESC
+LIMIT $5
+OFFSET $4
+`
+
+type ListAIAuditsForLocationParams struct {
+	ProjectID    pgtype.UUID
+	LocationID   pgtype.UUID
+	StatusFilter string
+	PageOffset   int32
+	PageLimit    int32
+}
+
+func (q *Queries) ListAIAuditsForLocation(ctx context.Context, arg ListAIAuditsForLocationParams) ([]AiAudit, error) {
+	rows, err := q.db.Query(ctx, listAIAuditsForLocation,
+		arg.ProjectID,
+		arg.LocationID,
+		arg.StatusFilter,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AiAudit
+	for rows.Next() {
+		var i AiAudit
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.CrawlID,
+			&i.Status,
+			&i.Score,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LocationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAIAuditsForProject = `-- name: ListAIAuditsForProject :many
@@ -230,9 +430,11 @@ SELECT
     started_at,
     completed_at,
     created_at,
-    updated_at
+    updated_at,
+    location_id
 FROM ai_audits
 WHERE project_id = $1
+  AND location_id IS NULL
   AND ($2 = '' OR status = $2)
 ORDER BY created_at DESC
 LIMIT $3
@@ -271,6 +473,7 @@ func (q *Queries) ListAIAuditsForProject(ctx context.Context, arg ListAIAuditsFo
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.LocationID,
 		); err != nil {
 			return nil, err
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ps-wizard/revserp/internal/ai"
 	"github.com/ps-wizard/revserp/internal/aichattools"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
@@ -31,6 +32,9 @@ type Worker struct {
 	// bootstrap agent; nil leaves the web tools reporting an ordinary
 	// unavailable state. Orchestration wires it when a key is configured.
 	Web aichattools.WebClient
+
+	visibilityQueries     visibilityQueries
+	newVisibilityProvider func(modelSlug string) (ai.Provider, error)
 }
 
 // New builds an AI worker.
@@ -192,6 +196,13 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendi
 			return finalizePromptGenerationSuccess(ctx, q, job)
 		})
 	case visibilityRunJobType:
+		isLocation, scopeErr := w.isLocationVisibilityJob(ctx, job)
+		if scopeErr != nil {
+			return scopeErr
+		}
+		if isLocation {
+			return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
+		}
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizeVisibilitySuccess(ctx, q, job, visibilityStatus)
 		})
@@ -215,6 +226,13 @@ func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendi
 			return finalizePromptGenerationFailure(ctx, q, job, message)
 		})
 	case visibilityRunJobType:
+		isLocation, scopeErr := w.isLocationVisibilityJob(ctx, job)
+		if scopeErr != nil {
+			return scopeErr
+		}
+		if isLocation {
+			return w.failLocationVisibilityJob(ctx, job, message)
+		}
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizeVisibilityFailure(ctx, q, job, message)
 		})

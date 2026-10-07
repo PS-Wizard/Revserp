@@ -12,12 +12,31 @@ func TestReclaimStaleRunningAIWorkerJobsFailsSetupSteps(t *testing.T) {
 	for _, want := range []string{
 		"UPDATE ai_worker_jobs",
 		"UPDATE project_setup",
-		"WHERE status = 'running'",
+		"WHERE ai_worker_jobs.status = 'running'",
 		"WHEN 'business_profile_bootstrap' THEN 'profile_generation'",
 		"WHEN 'prompt_generation' THEN 'prompt_generation'",
 		"WHEN 'visibility_run' THEN 'visibility'",
 		"AND ps.status = CASE stale.job_type",
 		"'reclaimed: worker restarted during setup; retry'",
+		"FROM ai_audits a",
+		"a.location_id IS NOT NULL",
+	} {
+		if !strings.Contains(reclaimStaleRunningAIWorkerJobs, want) {
+			t.Errorf("reclaim SQL missing %q", want)
+		}
+	}
+}
+
+func TestReclaimStaleRunningAIWorkerJobsFailsLocationAudit(t *testing.T) {
+	for _, want := range []string{
+		"reclaimed_location_audits AS (",
+		"UPDATE ai_audits AS a",
+		"'reclaimed: worker restarted during location audit'",
+		"WHERE stale.job_type = 'visibility_run'",
+		"AND a.id = stale.audit_id",
+		"AND a.project_id = stale.project_id",
+		"AND a.location_id IS NOT NULL",
+		"AND a.status IN ('queued', 'running')",
 	} {
 		if !strings.Contains(reclaimStaleRunningAIWorkerJobs, want) {
 			t.Errorf("reclaim SQL missing %q", want)

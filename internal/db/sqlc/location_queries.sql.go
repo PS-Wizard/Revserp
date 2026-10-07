@@ -118,6 +118,36 @@ func (q *Queries) DisableProjectLocationQueryForUser(ctx context.Context, arg Di
 	return i, err
 }
 
+const getLocationForAIAuditWorker = `-- name: GetLocationForAIAuditWorker :one
+SELECT id, project_id, name, place_id, latitude, longitude, created_at, updated_at, address, locality, localities FROM project_locations
+WHERE id = $1::uuid
+  AND project_id = $2::uuid
+`
+
+type GetLocationForAIAuditWorkerParams struct {
+	LocationID pgtype.UUID
+	ProjectID  pgtype.UUID
+}
+
+func (q *Queries) GetLocationForAIAuditWorker(ctx context.Context, arg GetLocationForAIAuditWorkerParams) (ProjectLocation, error) {
+	row := q.db.QueryRow(ctx, getLocationForAIAuditWorker, arg.LocationID, arg.ProjectID)
+	var i ProjectLocation
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.PlaceID,
+		&i.Latitude,
+		&i.Longitude,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Address,
+		&i.Locality,
+		&i.Localities,
+	)
+	return i, err
+}
+
 const insertMissingGeneratedProjectLocationQueryForUser = `-- name: InsertMissingGeneratedProjectLocationQueryForUser :one
 INSERT INTO project_location_queries(location_id, text, normalized, ordinal, enabled, kind, source, origin, landmark_id)
 SELECT l.id, $1::text, $2::text, $3::integer,
@@ -236,6 +266,53 @@ func (q *Queries) InsertProjectLocationQueryForUser(ctx context.Context, arg Ins
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listEnabledMapQueriesForLocation = `-- name: ListEnabledMapQueriesForLocation :many
+SELECT q.id, q.location_id, q.text, q.normalized, q.ordinal, q.enabled, q.kind, q.source, q.origin, q.landmark_id, q.created_at, q.updated_at FROM project_location_queries q
+JOIN project_locations l ON l.id = q.location_id
+WHERE q.location_id = $1::uuid
+  AND l.project_id = $2::uuid
+  AND q.kind = 'map' AND q.enabled = TRUE
+ORDER BY q.ordinal, q.id
+`
+
+type ListEnabledMapQueriesForLocationParams struct {
+	LocationID pgtype.UUID
+	ProjectID  pgtype.UUID
+}
+
+func (q *Queries) ListEnabledMapQueriesForLocation(ctx context.Context, arg ListEnabledMapQueriesForLocationParams) ([]ProjectLocationQuery, error) {
+	rows, err := q.db.Query(ctx, listEnabledMapQueriesForLocation, arg.LocationID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ProjectLocationQuery
+	for rows.Next() {
+		var i ProjectLocationQuery
+		if err := rows.Scan(
+			&i.ID,
+			&i.LocationID,
+			&i.Text,
+			&i.Normalized,
+			&i.Ordinal,
+			&i.Enabled,
+			&i.Kind,
+			&i.Source,
+			&i.Origin,
+			&i.LandmarkID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listEnabledMapQueriesForUser = `-- name: ListEnabledMapQueriesForUser :many

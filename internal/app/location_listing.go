@@ -332,8 +332,15 @@ func (a *App) handleDeleteLocationSetup(w http.ResponseWriter, r *http.Request) 
 	count, err := a.Queries.DeleteLocationSetupForUser(r.Context(), sqlc.DeleteLocationSetupForUserParams{ID: location.ID, ID_2: location.ProjectID, UserID: userID})
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" && strings.Contains(pgErr.Message, "active or unconfirmed Maps spend") {
-			writeJSONError(w, http.StatusConflict, "settle active or unconfirmed spending before deleting this location")
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			switch {
+			case pgErr.ConstraintName == "ai_audits_location_id_project_id_fkey":
+				writeJSONError(w, http.StatusConflict, "this location has AI audit history and cannot be deleted")
+			case strings.Contains(pgErr.Message, "active or unconfirmed Maps spend"):
+				writeJSONError(w, http.StatusConflict, "settle active or unconfirmed spending before deleting this location")
+			default:
+				serverError(w, r, err)
+			}
 		} else {
 			serverError(w, r, err)
 		}

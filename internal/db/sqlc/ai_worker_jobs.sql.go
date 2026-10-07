@@ -170,9 +170,23 @@ const reclaimStaleRunningAIWorkerJobs = `-- name: ReclaimStaleRunningAIWorkerJob
 WITH stale AS (
     UPDATE ai_worker_jobs
     SET status = 'failed', error_message = 'reclaimed: worker restarted', completed_at = NOW(), updated_at = NOW()
-    WHERE status = 'running'
-      AND started_at < $1
-    RETURNING job_type, project_id
+    WHERE ai_worker_jobs.status = 'running'
+      AND ai_worker_jobs.started_at < $1
+    RETURNING job_type, project_id, audit_id
+),
+reclaimed_location_audits AS (
+    UPDATE ai_audits AS a
+    SET status = 'failed',
+        error_message = 'reclaimed: worker restarted during location audit',
+        completed_at = NOW(),
+        updated_at = NOW()
+    FROM stale
+    WHERE stale.job_type = 'visibility_run'
+      AND a.id = stale.audit_id
+      AND a.project_id = stale.project_id
+      AND a.location_id IS NOT NULL
+      AND a.status IN ('queued', 'running')
+    RETURNING a.id
 )
 UPDATE project_setup AS ps
 SET status = 'failed',
@@ -191,6 +205,9 @@ WHERE ps.project_id = stale.project_id
         WHEN 'prompt_generation' THEN 'prompt_generation'
         WHEN 'visibility_run' THEN 'visibility'
     END
+  AND (stale.job_type <> 'visibility_run'
+       OR NOT EXISTS (SELECT 1 FROM ai_audits a
+                      WHERE a.id = stale.audit_id AND a.location_id IS NOT NULL))
 `
 
 // Orphan recovery: any ai_worker_jobs row stuck in 'running' past the cutoff is

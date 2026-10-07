@@ -42,6 +42,19 @@ WHERE q.location_id = sqlc.arg(location_id)::uuid
   AND q.kind = 'map' AND q.enabled = TRUE
 ORDER BY q.ordinal, q.id;
 
+-- name: ListEnabledMapQueriesForLocation :many
+SELECT q.* FROM project_location_queries q
+JOIN project_locations l ON l.id = q.location_id
+WHERE q.location_id = sqlc.arg(location_id)::uuid
+  AND l.project_id = sqlc.arg(project_id)::uuid
+  AND q.kind = 'map' AND q.enabled = TRUE
+ORDER BY q.ordinal, q.id;
+
+-- name: GetLocationForAIAuditWorker :one
+SELECT * FROM project_locations
+WHERE id = sqlc.arg(location_id)::uuid
+  AND project_id = sqlc.arg(project_id)::uuid;
+
 -- name: InsertProjectLocationQueryForUser :one
 INSERT INTO project_location_queries(location_id, text, normalized, ordinal, enabled, kind, source, origin, landmark_id)
 SELECT l.id, sqlc.arg(text)::text, sqlc.arg(normalized)::text, sqlc.arg(ordinal)::integer,
