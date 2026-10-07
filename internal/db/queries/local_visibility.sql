@@ -105,6 +105,23 @@ FROM local_run_cells c LEFT JOIN local_visibility_results r
 ON r.run_id = c.run_id AND r.query_index = c.query_index AND r.point_index = c.point_index
 WHERE c.run_id = $1 ORDER BY c.query_index,c.point_index;
 
+-- name: GetLocalVisibilityPointResults :many
+SELECT c.query_index,
+COALESCE(r.call_status,'pending')::text AS call_status,
+COALESCE(r.match_status,'unknown')::text AS match_status,
+r.rank,r.raw_response,r.error
+FROM local_run_cells c LEFT JOIN local_visibility_results r
+ON r.run_id = c.run_id AND r.query_index = c.query_index AND r.point_index = c.point_index
+WHERE c.run_id = $1 AND c.point_index = $2 ORDER BY c.query_index;
+
+-- name: GetLocalVisibilityRunCompetitorResults :many
+SELECT c.query_index,c.point_index,
+COALESCE(r.call_status,'pending')::text AS call_status,
+r.raw_response
+FROM local_run_cells c LEFT JOIN local_visibility_results r
+ON r.run_id = c.run_id AND r.query_index = c.query_index AND r.point_index = c.point_index
+WHERE c.run_id = $1 ORDER BY c.query_index,c.point_index;
+
 -- name: FinishLocalVisibilityRun :exec
 UPDATE local_visibility_runs SET status = $2,error = $3,completed_at = now() WHERE id = $1;
 

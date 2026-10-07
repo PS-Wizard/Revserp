@@ -222,6 +222,57 @@ func (q *Queries) GetLocalRunCells(ctx context.Context, runID pgtype.UUID) ([]Ge
 	return items, nil
 }
 
+const getLocalVisibilityPointResults = `-- name: GetLocalVisibilityPointResults :many
+SELECT c.query_index,
+COALESCE(r.call_status,'pending')::text AS call_status,
+COALESCE(r.match_status,'unknown')::text AS match_status,
+r.rank,r.raw_response,r.error
+FROM local_run_cells c LEFT JOIN local_visibility_results r
+ON r.run_id = c.run_id AND r.query_index = c.query_index AND r.point_index = c.point_index
+WHERE c.run_id = $1 AND c.point_index = $2 ORDER BY c.query_index
+`
+
+type GetLocalVisibilityPointResultsParams struct {
+	RunID      pgtype.UUID
+	PointIndex int16
+}
+
+type GetLocalVisibilityPointResultsRow struct {
+	QueryIndex  int16
+	CallStatus  string
+	MatchStatus string
+	Rank        pgtype.Int4
+	RawResponse []byte
+	Error       pgtype.Text
+}
+
+func (q *Queries) GetLocalVisibilityPointResults(ctx context.Context, arg GetLocalVisibilityPointResultsParams) ([]GetLocalVisibilityPointResultsRow, error) {
+	rows, err := q.db.Query(ctx, getLocalVisibilityPointResults, arg.RunID, arg.PointIndex)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetLocalVisibilityPointResultsRow
+	for rows.Next() {
+		var i GetLocalVisibilityPointResultsRow
+		if err := rows.Scan(
+			&i.QueryIndex,
+			&i.CallStatus,
+			&i.MatchStatus,
+			&i.Rank,
+			&i.RawResponse,
+			&i.Error,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getLocalVisibilityRun = `-- name: GetLocalVisibilityRun :one
 SELECT r.id, r.location_id, r.status, r.radius_m, r.snapshot, r.expected_credits, r.reserved_credits, r.credits_used, r.retry_credits, r.error, r.created_at, r.started_at, r.completed_at,p.organization_id,l.project_id FROM local_visibility_runs r
 JOIN project_locations l ON l.id = r.location_id
@@ -268,6 +319,47 @@ func (q *Queries) GetLocalVisibilityRun(ctx context.Context, id pgtype.UUID) (Ge
 		&i.ProjectID,
 	)
 	return i, err
+}
+
+const getLocalVisibilityRunCompetitorResults = `-- name: GetLocalVisibilityRunCompetitorResults :many
+SELECT c.query_index,c.point_index,
+COALESCE(r.call_status,'pending')::text AS call_status,
+r.raw_response
+FROM local_run_cells c LEFT JOIN local_visibility_results r
+ON r.run_id = c.run_id AND r.query_index = c.query_index AND r.point_index = c.point_index
+WHERE c.run_id = $1 ORDER BY c.query_index,c.point_index
+`
+
+type GetLocalVisibilityRunCompetitorResultsRow struct {
+	QueryIndex  int16
+	PointIndex  int16
+	CallStatus  string
+	RawResponse []byte
+}
+
+func (q *Queries) GetLocalVisibilityRunCompetitorResults(ctx context.Context, runID pgtype.UUID) ([]GetLocalVisibilityRunCompetitorResultsRow, error) {
+	rows, err := q.db.Query(ctx, getLocalVisibilityRunCompetitorResults, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetLocalVisibilityRunCompetitorResultsRow
+	for rows.Next() {
+		var i GetLocalVisibilityRunCompetitorResultsRow
+		if err := rows.Scan(
+			&i.QueryIndex,
+			&i.PointIndex,
+			&i.CallStatus,
+			&i.RawResponse,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getLocalVisibilityRunForUser = `-- name: GetLocalVisibilityRunForUser :one
