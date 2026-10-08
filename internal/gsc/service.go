@@ -45,6 +45,7 @@ type Service struct {
 	// searchAnalyticsBaseURL is googleSearchAnalyticsURLBase in production and
 	// a stub server in tests.
 	searchAnalyticsBaseURL string
+	userinfoBaseURL        string
 
 	responseCacheMu sync.Mutex
 	responseCache   map[string]cacheEntry
@@ -109,16 +110,8 @@ func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, or
 // younger than responseCacheTTL, otherwise it calls fetch and caches the result.
 // Concurrent misses for one key are coalesced into a single upstream fetch.
 func (service *Service) fetchCached(cacheKey string, fetch func() (any, error)) (any, error) {
-	service.responseCacheMu.Lock()
-	entry, ok := service.responseCache[cacheKey]
-	if ok && time.Since(entry.fetchedAt) >= responseCacheTTL {
-		delete(service.responseCache, cacheKey)
-		ok = false
-	}
-	service.responseCacheMu.Unlock()
-
-	if ok {
-		return entry.payload, nil
+	if cached, ok := service.peekCached(cacheKey); ok {
+		return cached, nil
 	}
 
 	result, err, _ := service.responseGroup.Do(cacheKey, func() (any, error) {
@@ -141,6 +134,22 @@ func (service *Service) fetchCached(cacheKey string, fetch func() (any, error)) 
 		return nil, err
 	}
 	return result, nil
+}
+
+// peekCached returns the cached payload for cacheKey without calling Google,
+// reporting whether a fresh entry exists.
+func (service *Service) peekCached(cacheKey string) (any, bool) {
+	service.responseCacheMu.Lock()
+	defer service.responseCacheMu.Unlock()
+	entry, ok := service.responseCache[cacheKey]
+	if ok && time.Since(entry.fetchedAt) >= responseCacheTTL {
+		delete(service.responseCache, cacheKey)
+		ok = false
+	}
+	if !ok {
+		return nil, false
+	}
+	return entry.payload, true
 }
 
 // evictExpiredLocked removes all cache entries past responseCacheTTL.
@@ -183,7 +192,7 @@ func (service *Service) BuildAuthURL(state string) (string, error) {
 	params.Set("client_id", service.clientID)
 	params.Set("redirect_uri", service.redirectURL)
 	params.Set("response_type", "code")
-	params.Set("scope", googleWebmastersReadOnlyScope+" "+googleAnalyticsReadOnlyScope)
+	params.Set("scope", googleWebmastersReadOnlyScope+" "+googleAnalyticsReadOnlyScope+" openid email")
 	params.Set("access_type", "offline")
 	params.Set("include_granted_scopes", "true")
 	params.Set("prompt", "consent")

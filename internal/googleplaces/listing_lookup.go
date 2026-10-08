@@ -4,11 +4,8 @@
 package googleplaces
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -68,8 +65,7 @@ func (c *PlacesListingClient) LookupMapsListing(ctx context.Context, query strin
 	if err := validatePlacesListingInput(query, latitude, longitude); err != nil {
 		return response, fmt.Errorf("google places listing: %w", err)
 	}
-
-	body, err := json.Marshal(placesTextSearchRequest{
+	decoded, err := c.postPlacesTextSearch(ctx, placesTextSearchRequest{
 		TextQuery:    query,
 		LanguageCode: "en",
 		LocationBias: placesLocationBias{
@@ -80,48 +76,9 @@ func (c *PlacesListingClient) LookupMapsListing(ctx context.Context, query strin
 		},
 	})
 	if err != nil {
-		return response, fmt.Errorf("google places listing: encode request: %w", err)
+		return response, err
 	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return response, fmt.Errorf("google places listing: build request: %w", err)
-	}
-	request.Header.Set("X-Goog-Api-Key", c.apiKey)
-	request.Header.Set("X-Goog-FieldMask", PlacesListingFieldMask)
-	request.Header.Set("Content-Type", "application/json")
-
-	httpResponse, err := c.http.Do(request)
-	if err != nil {
-		return response, fmt.Errorf("google places listing: transport: %w", err)
-	}
-	defer func() { _ = httpResponse.Body.Close() }()
-
-	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
-		return response, fmt.Errorf("google places listing: status %d", httpResponse.StatusCode)
-	}
-
-	var decoded placesTextSearchResponse
-	if err := json.NewDecoder(io.LimitReader(httpResponse.Body, 2<<20)).Decode(&decoded); err != nil {
-		return response, fmt.Errorf("google places listing: decode response: %w", err)
-	}
-
-	response.Places = make([]serper.MapsListingPlace, 0, len(decoded.Places))
-	for _, place := range decoded.Places {
-		mapped := serper.MapsListingPlace{
-			PlaceID: place.ID,
-			Address: place.FormattedAddress,
-		}
-		if place.DisplayName != nil {
-			mapped.Title = place.DisplayName.Text
-		}
-		if place.Location != nil {
-			mapped.Latitude = place.Location.Latitude
-			mapped.Longitude = place.Location.Longitude
-		}
-		response.Places = append(response.Places, mapped)
-	}
-	return response, nil
+	return mapPlacesTextSearchResponse(decoded), nil
 }
 
 // validatePlacesListingInput rejects a blank query or out-of-range coordinates

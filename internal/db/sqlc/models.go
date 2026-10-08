@@ -49,6 +49,7 @@ type AiConversation struct {
 	Title           string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+	LocationID      pgtype.UUID
 }
 
 type AiMcpApproval struct {
@@ -162,6 +163,7 @@ type AiWorkerJob struct {
 	UpdatedAt    pgtype.Timestamptz
 	AuditID      pgtype.UUID
 	LocalRunID   pgtype.UUID
+	LocationID   pgtype.UUID
 }
 
 type AiWorkspaceMonthlyUsage struct {
@@ -336,14 +338,16 @@ type GoogleConnection struct {
 }
 
 type GoogleOauthState struct {
-	ID             pgtype.UUID
-	StateTokenHash string
-	OrganizationID pgtype.UUID
-	UserID         pgtype.UUID
-	ProjectID      pgtype.UUID
-	ReturnPath     string
-	ExpiresAt      pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
+	ID                 pgtype.UUID
+	StateTokenHash     string
+	OrganizationID     pgtype.UUID
+	UserID             pgtype.UUID
+	ProjectID          pgtype.UUID
+	ReturnPath         string
+	ExpiresAt          pgtype.Timestamptz
+	CreatedAt          pgtype.Timestamptz
+	GoogleConnectionID pgtype.UUID
+	Purpose            string
 }
 
 type IssueWorkAttempt struct {
@@ -398,14 +402,14 @@ type LocalListingLookup struct {
 
 type LocalRunCell struct {
 	RunID      pgtype.UUID
-	QueryIndex int16
+	QueryIndex int32
 	PointIndex int16
 	StartedAt  pgtype.Timestamptz
 }
 
 type LocalVisibilityResult struct {
 	RunID       pgtype.UUID
-	QueryIndex  int16
+	QueryIndex  int32
 	PointIndex  int16
 	CallStatus  string
 	MatchStatus string
@@ -433,10 +437,70 @@ type LocalVisibilityRun struct {
 	CompletedAt     pgtype.Timestamptz
 }
 
+type LocationAiQuestion struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	LocationID      pgtype.UUID
+	Questions       []byte
+	GenerationModel string
+	GeneratedAt     pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type LocationBusinessProfile struct {
+	ID                  pgtype.UUID
+	ProjectID           pgtype.UUID
+	LocationID          pgtype.UUID
+	BrandName           string
+	WebsiteUrl          string
+	PrimaryCategory     pgtype.Text
+	PrimaryLocation     pgtype.Text
+	BusinessDescription pgtype.Text
+	ProductDescription  pgtype.Text
+	TargetAudience      pgtype.Text
+	BusinessCompetitors []byte
+	SeedPrompts         []byte
+	Services            []byte
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
 type LocationGeographyCache struct {
 	CacheKey  string
 	Results   []byte
 	UpdatedAt pgtype.Timestamptz
+}
+
+type LocationGoogleAnalyticsConnection struct {
+	LocationID          pgtype.UUID
+	Mode                string
+	GoogleConnectionID  pgtype.UUID
+	PropertyID          pgtype.Text
+	PropertyDisplayName pgtype.Text
+	AccountDisplayName  pgtype.Text
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
+type LocationGscConnection struct {
+	LocationID         pgtype.UUID
+	Mode               string
+	GoogleConnectionID pgtype.UUID
+	SiteUrl            pgtype.Text
+	PermissionLevel    pgtype.Text
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+type LocationKeyword struct {
+	ID                pgtype.UUID
+	LocationID        pgtype.UUID
+	Keyword           string
+	NormalizedKeyword string
+	Kind              string
+	Source            string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
 }
 
 type LocationLandmark struct {
@@ -451,6 +515,28 @@ type LocationLandmark struct {
 	Categories    []string
 	FetchedAt     pgtype.Timestamptz
 	Selected      bool
+}
+
+type LocationListingSearch struct {
+	ID          pgtype.UUID
+	ProjectID   pgtype.UUID
+	UserID      pgtype.UUID
+	Query       string
+	Status      string
+	RawResponse []byte
+	Error       pgtype.Text
+	CreatedAt   pgtype.Timestamptz
+	ExpiresAt   pgtype.Timestamptz
+}
+
+type LocationWebsiteScope struct {
+	ID         pgtype.UUID
+	ProjectID  pgtype.UUID
+	LocationID pgtype.UUID
+	Revision   int32
+	Url        pgtype.Text
+	Match      string
+	CreatedAt  pgtype.Timestamptz
 }
 
 type MapsListingRef struct {
@@ -656,6 +742,7 @@ type ProjectLocation struct {
 	Address    string
 	Locality   string
 	Localities []byte
+	RadiusM    int32
 }
 
 type ProjectLocationQuery struct {

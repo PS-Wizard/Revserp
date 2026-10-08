@@ -40,6 +40,8 @@ func TestAcceptAITurnRequest(t *testing.T) {
 		{name: "invalid effort", body: aiTurnRequest{Content: "hello", ReasoningEffort: "fast", ClientRequestID: "request"}, wantErr: errInvalidTurnRequest},
 		{name: "invalid crawl", body: aiTurnRequest{Content: "hello", ReasoningEffort: "low", CrawlID: stringPtr("not-a-uuid"), ClientRequestID: "request"}, wantErr: errInvalidCrawl},
 		{name: "crawl", body: aiTurnRequest{Content: "hello", ReasoningEffort: "medium", CrawlID: &crawlID, ClientRequestID: "request"}, wantEffort: "high"},
+		{name: "invalid location", body: aiTurnRequest{Content: "hello", ReasoningEffort: "low", LocationID: stringPtr("not-a-uuid"), ClientRequestID: "request"}, wantErr: errInvalidLocation},
+		{name: "location", body: aiTurnRequest{Content: "hello", ReasoningEffort: "low", LocationID: stringPtr("018f39f7-0e1b-7e9c-9f3b-1e1d2c3b4a5f"), ClientRequestID: "request"}, wantEffort: "low"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := acceptAITurnRequest(test.body)

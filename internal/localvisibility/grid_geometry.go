@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	// MapQueryCount caps the queries tracked per location. Geography that can
-	// only supply fewer honest queries yields a smaller, cheaper run rather
-	// than padded word-order duplicates. A run may carry between one and
-	// MapQueryCount queries; cost always derives from the actual count.
-	MapQueryCount = 5
+	// MaxMapQueries is the largest query count whose total run cost still fits
+	// the INTEGER credit columns (expected_credits, reserved_credits,
+	// credits_used). It derives from that storage bound, not a product decision:
+	// every enabled query at or below it runs. Cost always derives from the
+	// actual count.
+	MaxMapQueries = maxRunCredits / (GridPointCount * MapsCreditsPerCall)
 	// GridPointCount is the fixed number of grid points sampled per run.
 	GridPointCount = 9
 	// MapsCreditsPerCall is the Serper Maps credit cost of one provider call.
@@ -22,6 +23,9 @@ const (
 	// MapsZoom is the fixed zoom level used for every grid request.
 	MapsZoom = 14
 )
+
+// maxRunCredits is the largest value the INTEGER run-credit columns can hold.
+const maxRunCredits = 1<<31 - 1
 
 const earthRadiusM = 6371000.0
 
@@ -43,14 +47,18 @@ type GridPoint struct {
 
 // ExpectedRunCredits returns the credits reserved for one location run, the
 // exact product of the query count, point count, and per-call credit cost. It
-// accepts between one and MapQueryCount queries so a thin geography costs
-// only what it actually searches; it still rejects anything above the cap.
+// requires at least one query and rejects any count whose total would overflow
+// the INTEGER credit columns, so a thin geography costs only what it actually
+// searches and a wide one still fits the storage.
 func ExpectedRunCredits(queryCount, pointCount int) (int, error) {
-	if queryCount < 1 || queryCount > MapQueryCount {
-		return 0, fmt.Errorf("expected run credits: query count = %d, want between 1 and %d", queryCount, MapQueryCount)
+	if queryCount < 1 {
+		return 0, fmt.Errorf("expected run credits: query count = %d, want at least 1", queryCount)
 	}
 	if pointCount != GridPointCount {
 		return 0, fmt.Errorf("expected run credits: grid point count = %d, want %d", pointCount, GridPointCount)
+	}
+	if queryCount > MaxMapQueries {
+		return 0, fmt.Errorf("expected run credits: query count = %d exceeds the INTEGER credit bound %d", queryCount, MaxMapQueries)
 	}
 	return queryCount * pointCount * MapsCreditsPerCall, nil
 }

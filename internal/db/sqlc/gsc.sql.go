@@ -11,6 +11,93 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adoptGoogleConnectionIdentity = `-- name: AdoptGoogleConnectionIdentity :exec
+UPDATE google_connections
+SET google_account_email = $2,
+    google_account_subject = $3,
+    updated_at = now()
+WHERE id = $1
+`
+
+type AdoptGoogleConnectionIdentityParams struct {
+	ID                   pgtype.UUID
+	GoogleAccountEmail   pgtype.Text
+	GoogleAccountSubject pgtype.Text
+}
+
+func (q *Queries) AdoptGoogleConnectionIdentity(ctx context.Context, arg AdoptGoogleConnectionIdentityParams) error {
+	_, err := q.db.Exec(ctx, adoptGoogleConnectionIdentity, arg.ID, arg.GoogleAccountEmail, arg.GoogleAccountSubject)
+	return err
+}
+
+const createGoogleConnection = `-- name: CreateGoogleConnection :one
+INSERT INTO google_connections (
+    organization_id,
+    connected_by_user_id,
+    google_account_email,
+    google_account_subject,
+    encrypted_refresh_token,
+    encrypted_access_token,
+    access_token_expires_at,
+    scope,
+    status,
+    last_error
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    'active',
+    NULL
+)
+RETURNING id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
+`
+
+type CreateGoogleConnectionParams struct {
+	OrganizationID        pgtype.UUID
+	ConnectedByUserID     pgtype.UUID
+	GoogleAccountEmail    pgtype.Text
+	GoogleAccountSubject  pgtype.Text
+	EncryptedRefreshToken string
+	EncryptedAccessToken  pgtype.Text
+	AccessTokenExpiresAt  pgtype.Timestamptz
+	Scope                 string
+}
+
+func (q *Queries) CreateGoogleConnection(ctx context.Context, arg CreateGoogleConnectionParams) (GoogleConnection, error) {
+	row := q.db.QueryRow(ctx, createGoogleConnection,
+		arg.OrganizationID,
+		arg.ConnectedByUserID,
+		arg.GoogleAccountEmail,
+		arg.GoogleAccountSubject,
+		arg.EncryptedRefreshToken,
+		arg.EncryptedAccessToken,
+		arg.AccessTokenExpiresAt,
+		arg.Scope,
+	)
+	var i GoogleConnection
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.ConnectedByUserID,
+		&i.GoogleAccountEmail,
+		&i.GoogleAccountSubject,
+		&i.EncryptedRefreshToken,
+		&i.EncryptedAccessToken,
+		&i.AccessTokenExpiresAt,
+		&i.Scope,
+		&i.Status,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createGoogleOAuthState = `-- name: CreateGoogleOAuthState :one
 INSERT INTO google_oauth_states (
     state_token_hash,
@@ -39,7 +126,18 @@ type CreateGoogleOAuthStateParams struct {
 	ExpiresAt      pgtype.Timestamptz
 }
 
-func (q *Queries) CreateGoogleOAuthState(ctx context.Context, arg CreateGoogleOAuthStateParams) (GoogleOauthState, error) {
+type CreateGoogleOAuthStateRow struct {
+	ID             pgtype.UUID
+	StateTokenHash string
+	OrganizationID pgtype.UUID
+	UserID         pgtype.UUID
+	ProjectID      pgtype.UUID
+	ReturnPath     string
+	ExpiresAt      pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) CreateGoogleOAuthState(ctx context.Context, arg CreateGoogleOAuthStateParams) (CreateGoogleOAuthStateRow, error) {
 	row := q.db.QueryRow(ctx, createGoogleOAuthState,
 		arg.StateTokenHash,
 		arg.OrganizationID,
@@ -48,7 +146,7 @@ func (q *Queries) CreateGoogleOAuthState(ctx context.Context, arg CreateGoogleOA
 		arg.ReturnPath,
 		arg.ExpiresAt,
 	)
-	var i GoogleOauthState
+	var i CreateGoogleOAuthStateRow
 	err := row.Scan(
 		&i.ID,
 		&i.StateTokenHash,
@@ -56,6 +154,80 @@ func (q *Queries) CreateGoogleOAuthState(ctx context.Context, arg CreateGoogleOA
 		&i.UserID,
 		&i.ProjectID,
 		&i.ReturnPath,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createGoogleOAuthStateWithPurpose = `-- name: CreateGoogleOAuthStateWithPurpose :one
+INSERT INTO google_oauth_states (
+    state_token_hash,
+    organization_id,
+    user_id,
+    project_id,
+    return_path,
+    purpose,
+    google_connection_id,
+    expires_at
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8
+)
+RETURNING id, state_token_hash, organization_id, user_id, project_id, return_path, purpose, google_connection_id, expires_at, created_at
+`
+
+type CreateGoogleOAuthStateWithPurposeParams struct {
+	StateTokenHash     string
+	OrganizationID     pgtype.UUID
+	UserID             pgtype.UUID
+	ProjectID          pgtype.UUID
+	ReturnPath         string
+	Purpose            string
+	GoogleConnectionID pgtype.UUID
+	ExpiresAt          pgtype.Timestamptz
+}
+
+type CreateGoogleOAuthStateWithPurposeRow struct {
+	ID                 pgtype.UUID
+	StateTokenHash     string
+	OrganizationID     pgtype.UUID
+	UserID             pgtype.UUID
+	ProjectID          pgtype.UUID
+	ReturnPath         string
+	Purpose            string
+	GoogleConnectionID pgtype.UUID
+	ExpiresAt          pgtype.Timestamptz
+	CreatedAt          pgtype.Timestamptz
+}
+
+func (q *Queries) CreateGoogleOAuthStateWithPurpose(ctx context.Context, arg CreateGoogleOAuthStateWithPurposeParams) (CreateGoogleOAuthStateWithPurposeRow, error) {
+	row := q.db.QueryRow(ctx, createGoogleOAuthStateWithPurpose,
+		arg.StateTokenHash,
+		arg.OrganizationID,
+		arg.UserID,
+		arg.ProjectID,
+		arg.ReturnPath,
+		arg.Purpose,
+		arg.GoogleConnectionID,
+		arg.ExpiresAt,
+	)
+	var i CreateGoogleOAuthStateWithPurposeRow
+	err := row.Scan(
+		&i.ID,
+		&i.StateTokenHash,
+		&i.OrganizationID,
+		&i.UserID,
+		&i.ProjectID,
+		&i.ReturnPath,
+		&i.Purpose,
+		&i.GoogleConnectionID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
@@ -88,6 +260,34 @@ func (q *Queries) DeleteProjectGSCConnectionByProjectID(ctx context.Context, pro
 	return result.RowsAffected(), nil
 }
 
+const getGoogleConnectionByID = `-- name: GetGoogleConnectionByID :one
+SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
+FROM google_connections
+WHERE id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetGoogleConnectionByID(ctx context.Context, id pgtype.UUID) (GoogleConnection, error) {
+	row := q.db.QueryRow(ctx, getGoogleConnectionByID, id)
+	var i GoogleConnection
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.ConnectedByUserID,
+		&i.GoogleAccountEmail,
+		&i.GoogleAccountSubject,
+		&i.EncryptedRefreshToken,
+		&i.EncryptedAccessToken,
+		&i.AccessTokenExpiresAt,
+		&i.Scope,
+		&i.Status,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getGoogleConnectionByOrganizationID = `-- name: GetGoogleConnectionByOrganizationID :one
 SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
 FROM google_connections
@@ -116,6 +316,39 @@ func (q *Queries) GetGoogleConnectionByOrganizationID(ctx context.Context, organ
 	return i, err
 }
 
+const getGoogleConnectionByOrganizationSubject = `-- name: GetGoogleConnectionByOrganizationSubject :one
+SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
+FROM google_connections
+WHERE organization_id = $1 AND google_account_subject = $2
+LIMIT 1
+`
+
+type GetGoogleConnectionByOrganizationSubjectParams struct {
+	OrganizationID       pgtype.UUID
+	GoogleAccountSubject pgtype.Text
+}
+
+func (q *Queries) GetGoogleConnectionByOrganizationSubject(ctx context.Context, arg GetGoogleConnectionByOrganizationSubjectParams) (GoogleConnection, error) {
+	row := q.db.QueryRow(ctx, getGoogleConnectionByOrganizationSubject, arg.OrganizationID, arg.GoogleAccountSubject)
+	var i GoogleConnection
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.ConnectedByUserID,
+		&i.GoogleAccountEmail,
+		&i.GoogleAccountSubject,
+		&i.EncryptedRefreshToken,
+		&i.EncryptedAccessToken,
+		&i.AccessTokenExpiresAt,
+		&i.Scope,
+		&i.Status,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getGoogleOAuthStateByTokenHash = `-- name: GetGoogleOAuthStateByTokenHash :one
 SELECT id, state_token_hash, organization_id, user_id, project_id, return_path, expires_at, created_at
 FROM google_oauth_states
@@ -123,9 +356,20 @@ WHERE state_token_hash = $1
 LIMIT 1
 `
 
-func (q *Queries) GetGoogleOAuthStateByTokenHash(ctx context.Context, stateTokenHash string) (GoogleOauthState, error) {
+type GetGoogleOAuthStateByTokenHashRow struct {
+	ID             pgtype.UUID
+	StateTokenHash string
+	OrganizationID pgtype.UUID
+	UserID         pgtype.UUID
+	ProjectID      pgtype.UUID
+	ReturnPath     string
+	ExpiresAt      pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) GetGoogleOAuthStateByTokenHash(ctx context.Context, stateTokenHash string) (GetGoogleOAuthStateByTokenHashRow, error) {
 	row := q.db.QueryRow(ctx, getGoogleOAuthStateByTokenHash, stateTokenHash)
-	var i GoogleOauthState
+	var i GetGoogleOAuthStateByTokenHashRow
 	err := row.Scan(
 		&i.ID,
 		&i.StateTokenHash,
@@ -133,6 +377,44 @@ func (q *Queries) GetGoogleOAuthStateByTokenHash(ctx context.Context, stateToken
 		&i.UserID,
 		&i.ProjectID,
 		&i.ReturnPath,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getGoogleOAuthStateWithPurpose = `-- name: GetGoogleOAuthStateWithPurpose :one
+SELECT id, state_token_hash, organization_id, user_id, project_id, return_path, purpose, google_connection_id, expires_at, created_at
+FROM google_oauth_states
+WHERE state_token_hash = $1
+LIMIT 1
+`
+
+type GetGoogleOAuthStateWithPurposeRow struct {
+	ID                 pgtype.UUID
+	StateTokenHash     string
+	OrganizationID     pgtype.UUID
+	UserID             pgtype.UUID
+	ProjectID          pgtype.UUID
+	ReturnPath         string
+	Purpose            string
+	GoogleConnectionID pgtype.UUID
+	ExpiresAt          pgtype.Timestamptz
+	CreatedAt          pgtype.Timestamptz
+}
+
+func (q *Queries) GetGoogleOAuthStateWithPurpose(ctx context.Context, stateTokenHash string) (GetGoogleOAuthStateWithPurposeRow, error) {
+	row := q.db.QueryRow(ctx, getGoogleOAuthStateWithPurpose, stateTokenHash)
+	var i GetGoogleOAuthStateWithPurposeRow
+	err := row.Scan(
+		&i.ID,
+		&i.StateTokenHash,
+		&i.OrganizationID,
+		&i.UserID,
+		&i.ProjectID,
+		&i.ReturnPath,
+		&i.Purpose,
+		&i.GoogleConnectionID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
@@ -159,6 +441,67 @@ func (q *Queries) GetProjectGSCConnectionByProjectID(ctx context.Context, projec
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listGoogleConnectionsByOrganizationID = `-- name: ListGoogleConnectionsByOrganizationID :many
+SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
+FROM google_connections
+WHERE organization_id = $1
+ORDER BY created_at ASC, id ASC
+`
+
+func (q *Queries) ListGoogleConnectionsByOrganizationID(ctx context.Context, organizationID pgtype.UUID) ([]GoogleConnection, error) {
+	rows, err := q.db.Query(ctx, listGoogleConnectionsByOrganizationID, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GoogleConnection
+	for rows.Next() {
+		var i GoogleConnection
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganizationID,
+			&i.ConnectedByUserID,
+			&i.GoogleAccountEmail,
+			&i.GoogleAccountSubject,
+			&i.EncryptedRefreshToken,
+			&i.EncryptedAccessToken,
+			&i.AccessTokenExpiresAt,
+			&i.Scope,
+			&i.Status,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeGoogleConnection = `-- name: RevokeGoogleConnection :exec
+UPDATE google_connections
+SET status = 'revoked',
+    encrypted_access_token = NULL,
+    access_token_expires_at = NULL,
+    last_error = $2,
+    updated_at = now()
+WHERE id = $1
+`
+
+type RevokeGoogleConnectionParams struct {
+	ID        pgtype.UUID
+	LastError pgtype.Text
+}
+
+func (q *Queries) RevokeGoogleConnection(ctx context.Context, arg RevokeGoogleConnectionParams) error {
+	_, err := q.db.Exec(ctx, revokeGoogleConnection, arg.ID, arg.LastError)
+	return err
 }
 
 const updateGoogleConnectionStatus = `-- name: UpdateGoogleConnectionStatus :exec
@@ -212,85 +555,6 @@ func (q *Queries) UpdateGoogleConnectionTokens(ctx context.Context, arg UpdateGo
 		arg.Scope,
 		arg.Status,
 		arg.LastError,
-	)
-	var i GoogleConnection
-	err := row.Scan(
-		&i.ID,
-		&i.OrganizationID,
-		&i.ConnectedByUserID,
-		&i.GoogleAccountEmail,
-		&i.GoogleAccountSubject,
-		&i.EncryptedRefreshToken,
-		&i.EncryptedAccessToken,
-		&i.AccessTokenExpiresAt,
-		&i.Scope,
-		&i.Status,
-		&i.LastError,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const upsertGoogleConnectionForOrganization = `-- name: UpsertGoogleConnectionForOrganization :one
-INSERT INTO google_connections (
-    organization_id,
-    connected_by_user_id,
-    google_account_email,
-    google_account_subject,
-    encrypted_refresh_token,
-    encrypted_access_token,
-    access_token_expires_at,
-    scope,
-    status,
-    last_error
-) VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
-    $5,
-    $6,
-    $7,
-    $8,
-    'active',
-    NULL
-)
-ON CONFLICT (organization_id) DO UPDATE SET
-    connected_by_user_id = excluded.connected_by_user_id,
-    google_account_email = COALESCE(excluded.google_account_email, google_connections.google_account_email),
-    google_account_subject = COALESCE(excluded.google_account_subject, google_connections.google_account_subject),
-    encrypted_refresh_token = COALESCE(excluded.encrypted_refresh_token, google_connections.encrypted_refresh_token),
-    encrypted_access_token = excluded.encrypted_access_token,
-    access_token_expires_at = excluded.access_token_expires_at,
-    scope = excluded.scope,
-    status = 'active',
-    last_error = NULL,
-    updated_at = now()
-RETURNING id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
-`
-
-type UpsertGoogleConnectionForOrganizationParams struct {
-	OrganizationID        pgtype.UUID
-	ConnectedByUserID     pgtype.UUID
-	GoogleAccountEmail    pgtype.Text
-	GoogleAccountSubject  pgtype.Text
-	EncryptedRefreshToken string
-	EncryptedAccessToken  pgtype.Text
-	AccessTokenExpiresAt  pgtype.Timestamptz
-	Scope                 string
-}
-
-func (q *Queries) UpsertGoogleConnectionForOrganization(ctx context.Context, arg UpsertGoogleConnectionForOrganizationParams) (GoogleConnection, error) {
-	row := q.db.QueryRow(ctx, upsertGoogleConnectionForOrganization,
-		arg.OrganizationID,
-		arg.ConnectedByUserID,
-		arg.GoogleAccountEmail,
-		arg.GoogleAccountSubject,
-		arg.EncryptedRefreshToken,
-		arg.EncryptedAccessToken,
-		arg.AccessTokenExpiresAt,
-		arg.Scope,
 	)
 	var i GoogleConnection
 	err := row.Scan(

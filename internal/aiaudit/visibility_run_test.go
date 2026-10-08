@@ -46,8 +46,7 @@ type fakeVisibilityQueries struct {
 	gotAuditArg    sqlc.GetAIAuditForWorkerParams
 	location       sqlc.ProjectLocation
 	locationErr    error
-	mapQueries     []sqlc.ProjectLocationQuery
-	mapErr         error
+	profileCalls   int
 	questions      []string
 	questionsErr   error
 	questionsCalls int
@@ -75,13 +74,6 @@ func (f *fakeVisibilityQueries) GetLocationForAIAuditWorker(_ context.Context, a
 	return f.location, nil
 }
 
-func (f *fakeVisibilityQueries) ListEnabledMapQueriesForLocation(_ context.Context, _ sqlc.ListEnabledMapQueriesForLocationParams) ([]sqlc.ProjectLocationQuery, error) {
-	if f.mapErr != nil {
-		return nil, f.mapErr
-	}
-	return f.mapQueries, nil
-}
-
 func (f *fakeVisibilityQueries) GetProjectAIQuestions(_ context.Context, _ pgtype.UUID) (sqlc.GetProjectAIQuestionsRow, error) {
 	f.questionsCalls++
 	if f.questionsErr != nil {
@@ -92,6 +84,7 @@ func (f *fakeVisibilityQueries) GetProjectAIQuestions(_ context.Context, _ pgtyp
 }
 
 func (f *fakeVisibilityQueries) GetProjectBusinessProfileByProjectID(_ context.Context, _ pgtype.UUID) (sqlc.GetProjectBusinessProfileByProjectIDRow, error) {
+	f.profileCalls++
 	if f.profileErr != nil {
 		return sqlc.GetProjectBusinessProfileByProjectIDRow{}, f.profileErr
 	}
@@ -118,13 +111,72 @@ func visibilityTestUUID(b byte) pgtype.UUID {
 	return pgtype.UUID{Bytes: [16]byte{b}, Valid: true}
 }
 
+type fakeLocationProfiles struct {
+	profile       LocationBusinessProfile
+	err           error
+	calls         int
+	gotLocationID pgtype.UUID
+	gotProjectID  pgtype.UUID
+}
+
+func (f *fakeLocationProfiles) GetLocationBusinessProfile(_ context.Context, locationID, projectID pgtype.UUID) (LocationBusinessProfile, error) {
+	f.calls++
+	f.gotLocationID = locationID
+	f.gotProjectID = projectID
+	if f.err != nil {
+		return LocationBusinessProfile{}, f.err
+	}
+	return f.profile, nil
+}
+
 func visibilityTestWorker(store visibilityQueries, provider *stubVisibilityProvider) *Worker {
+	return visibilityTestWorkerWithProfile(store, provider, &fakeLocationProfiles{})
+}
+
+type fakeLocationQuestions struct {
+	questions        []string
+	getErr           error
+	calls            int
+	gotLocationID    pgtype.UUID
+	gotProjectID     pgtype.UUID
+	upserts          int
+	upsertLocationID pgtype.UUID
+	upsertProjectID  pgtype.UUID
+	upsertModel      string
+}
+
+func (f *fakeLocationQuestions) GetLocationAIQuestions(_ context.Context, locationID, projectID pgtype.UUID) ([]string, error) {
+	f.calls++
+	f.gotLocationID = locationID
+	f.gotProjectID = projectID
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.questions, nil
+}
+
+func (f *fakeLocationQuestions) UpsertLocationAIQuestions(_ context.Context, locationID, projectID pgtype.UUID, questions []string, model string) error {
+	f.upserts++
+	f.questions = questions
+	f.upsertLocationID = locationID
+	f.upsertProjectID = projectID
+	f.upsertModel = model
+	return nil
+}
+
+func visibilityTestWorkerWithProfile(store visibilityQueries, provider *stubVisibilityProvider, profiles LocationProfileReader) *Worker {
+	return visibilityTestWorkerWithScope(store, provider, profiles, &fakeLocationQuestions{})
+}
+
+func visibilityTestWorkerWithScope(store visibilityQueries, provider *stubVisibilityProvider, profiles LocationProfileReader, questions LocationAIQuestionReader) *Worker {
 	return &Worker{
 		cfg:               config.Config{AIVisibilityModels: []string{"test-model"}},
 		visibilityQueries: store,
 		newVisibilityProvider: func(string) (ai.Provider, error) {
 			return provider, nil
 		},
+		locationProfiles:  profiles,
+		locationQuestions: questions,
 	}
 }
 
@@ -188,23 +240,23 @@ func TestParseVisibilityResponseUnchanged(t *testing.T) {
 	}
 }
 
-func TestLocationRunsUseDistinctLocationQueries(t *testing.T) {
+func TestLocationRunsUseOwnGeneratedQuestions(t *testing.T) {
 	projectID := visibilityTestUUID(1)
-	mkWorker := func(auditByte byte, office string, texts []string, answer string) (*Worker, *stubVisibilityProvider, *fakeVisibilityQueries) {
+	mkWorker := func(auditByte byte, office string, questions []string, answer string) (*Worker, *stubVisibilityProvider, *fakeVisibilityQueries, *fakeLocationProfiles, *fakeLocationQuestions) {
 		store := &fakeVisibilityQueries{
-			audit:    sqlc.AiAudit{ID: visibilityTestUUID(auditByte), ProjectID: projectID, LocationID: visibilityTestUUID(auditByte + 10)},
-			location: sqlc.ProjectLocation{ID: visibilityTestUUID(auditByte + 10), ProjectID: projectID, Name: office},
-			brand:    "Acme",
+			audit:     sqlc.AiAudit{ID: visibilityTestUUID(auditByte), ProjectID: projectID, LocationID: visibilityTestUUID(auditByte + 10)},
+			location:  sqlc.ProjectLocation{ID: visibilityTestUUID(auditByte + 10), ProjectID: projectID, Name: office},
+			brand:     "Parent Brand",
+			questions: []string{"parent map question"},
 		}
-		for i, text := range texts {
-			store.mapQueries = append(store.mapQueries, sqlc.ProjectLocationQuery{ID: visibilityTestUUID(byte(i + 20)), Text: text})
-		}
+		profiles := &fakeLocationProfiles{profile: LocationBusinessProfile{BrandName: "Acme"}}
+		questionStore := &fakeLocationQuestions{questions: questions}
 		provider := &stubVisibilityProvider{respond: func(string) (string, error) { return answer, nil }}
-		return visibilityTestWorker(store, provider), provider, store
+		return visibilityTestWorkerWithScope(store, provider, profiles, questionStore), provider, store, profiles, questionStore
 	}
 
-	wA, pA, sA := mkWorker(2, "Acme Downtown", []string{"downtown dentist map query", "downtown braces map query"}, "1. Acme Downtown\n2. Other")
-	wB, pB, sB := mkWorker(3, "Acme Uptown", []string{"uptown dentist map query"}, "1. Acme Uptown\n2. Other")
+	wA, pA, sA, prA, qA := mkWorker(2, "Acme Downtown", []string{"where downtown braces?", "downtown dentist near me?"}, "1. Acme Downtown\n2. Other")
+	wB, pB, sB, _, _ := mkWorker(3, "Acme Uptown", []string{"uptown dentist near me?"}, "1. Acme Uptown\n2. Other")
 
 	jobA := visibilityTestJob(projectID, visibilityTestUUID(2))
 	if status, err := wA.handleVisibilityRun(context.Background(), jobA); err != nil || status != "completed" {
@@ -215,54 +267,70 @@ func TestLocationRunsUseDistinctLocationQueries(t *testing.T) {
 		t.Fatalf("location B run = (%q,%v), want (completed,nil)", status, err)
 	}
 
-	for _, text := range []string{"downtown dentist map query", "downtown braces map query"} {
+	for _, text := range []string{"where downtown braces?", "downtown dentist near me?"} {
 		found := false
 		for _, prompt := range pA.prompts {
 			if strings.Contains(prompt, "Question: "+text) {
 				found = true
 			}
-			if strings.Contains(prompt, "uptown dentist map query") {
-				t.Fatal("location A provider saw location B query text")
+			if strings.Contains(prompt, "uptown dentist near me?") || strings.Contains(prompt, "parent map question") {
+				t.Fatal("location A provider saw another location's or the parent's question text")
 			}
 		}
 		if !found {
-			t.Fatalf("location A provider never got verbatim query %q", text)
+			t.Fatalf("location A provider never got local question %q", text)
 		}
 	}
-	if len(pB.prompts) != 1 || !strings.Contains(pB.prompts[0], "Question: uptown dentist map query") {
-		t.Fatalf("location B prompts = %v, want exactly its verbatim query", pB.prompts)
+	if len(pB.prompts) != 1 || !strings.Contains(pB.prompts[0], "Question: uptown dentist near me?") {
+		t.Fatalf("location B prompts = %v, want exactly its local question", pB.prompts)
 	}
-	if sA.questionsCalls != 0 || sB.questionsCalls != 0 {
-		t.Fatal("location runs must not fall back to project questions")
+	if sA.questionsCalls != 0 || sB.questionsCalls != 0 || sA.profileCalls != 0 || sB.profileCalls != 0 {
+		t.Fatal("location runs must not read the parent profile or project questions")
 	}
-	if len(sA.inserts) != 2 || sA.inserts[0].QuestionText != "downtown dentist map query" {
-		t.Fatalf("location A inserts = %+v, want verbatim query texts", sA.inserts)
+	if prA.calls != 1 || prA.gotLocationID != visibilityTestUUID(12) || prA.gotProjectID != projectID {
+		t.Fatalf("location A profile load = (%d,%v,%v), want one scoped load", prA.calls, prA.gotLocationID, prA.gotProjectID)
+	}
+	if qA.calls != 1 || qA.gotLocationID != visibilityTestUUID(12) || qA.gotProjectID != projectID {
+		t.Fatalf("location A question load = (%d,%v,%v), want one scoped load", qA.calls, qA.gotLocationID, qA.gotProjectID)
+	}
+	if len(sA.inserts) != 2 || sA.inserts[0].QuestionText != "where downtown braces?" {
+		t.Fatalf("location A inserts = %+v, want the local generated question texts", sA.inserts)
 	}
 	for _, in := range append(sA.inserts, sB.inserts...) {
+		if !in.MentionedTarget.Valid || !in.MentionedTarget.Bool {
+			t.Fatalf("location insert %+v must detect the local profile brand", in)
+		}
 		if !in.MentionedBranch.Valid || !in.MentionedBranch.Bool {
 			t.Fatalf("location insert %+v must carry mentioned_branch true", in)
 		}
 	}
 }
 
-func TestLocationRunValidatesQueryCountBeforeProvider(t *testing.T) {
-	for _, n := range []int{0, 6} {
-		store := &fakeVisibilityQueries{
-			audit:    sqlc.AiAudit{ID: visibilityTestUUID(2), LocationID: visibilityTestUUID(12)},
-			location: sqlc.ProjectLocation{Name: "Acme Downtown"},
-			brand:    "Acme",
-		}
-		for i := 0; i < n; i++ {
-			store.mapQueries = append(store.mapQueries, sqlc.ProjectLocationQuery{Text: "q"})
-		}
-		provider := &stubVisibilityProvider{}
-		w := visibilityTestWorker(store, provider)
-		if _, err := w.handleVisibilityRun(context.Background(), visibilityTestJob(visibilityTestUUID(1), visibilityTestUUID(2))); err == nil {
-			t.Fatalf("n=%d: want validation error", n)
-		}
-		if provider.calls() != 0 || len(store.inserts) != 0 {
-			t.Fatalf("n=%d: provider calls=%d inserts=%d, want none before validation", n, provider.calls(), len(store.inserts))
-		}
+func TestLocationRunValidatesScopeBeforeProvider(t *testing.T) {
+	projectID := visibilityTestUUID(1)
+	cases := []struct {
+		name      string
+		profiles  *fakeLocationProfiles
+		questions *fakeLocationQuestions
+	}{
+		{"missing profile", &fakeLocationProfiles{err: pgx.ErrNoRows}, &fakeLocationQuestions{questions: []string{"q"}}},
+		{"empty questions", &fakeLocationProfiles{profile: LocationBusinessProfile{BrandName: "Acme"}}, &fakeLocationQuestions{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeVisibilityQueries{
+				audit:    sqlc.AiAudit{ID: visibilityTestUUID(2), ProjectID: projectID, LocationID: visibilityTestUUID(12)},
+				location: sqlc.ProjectLocation{ID: visibilityTestUUID(12), ProjectID: projectID, Name: "Acme Downtown"},
+			}
+			provider := &stubVisibilityProvider{}
+			w := visibilityTestWorkerWithScope(store, provider, tc.profiles, tc.questions)
+			if _, err := w.handleVisibilityRun(context.Background(), visibilityTestJob(projectID, visibilityTestUUID(2))); err == nil {
+				t.Fatal("want validation error")
+			}
+			if provider.calls() != 0 || len(store.inserts) != 0 {
+				t.Fatalf("provider calls=%d inserts=%d, want none before validation", provider.calls(), len(store.inserts))
+			}
+		})
 	}
 }
 
@@ -289,24 +357,25 @@ func TestMentionedBranchNullForProjectAndFailedRuns(t *testing.T) {
 		brand:     "Acme",
 	}
 	provider := &stubVisibilityProvider{respond: func(string) (string, error) { return "1. Acme\n2. Other", nil }}
-	w := visibilityTestWorker(store, provider)
+	profiles := &fakeLocationProfiles{}
+	w := visibilityTestWorkerWithProfile(store, provider, profiles)
 	if _, err := w.handleVisibilityRun(context.Background(), visibilityTestJob(projectID, visibilityTestUUID(2))); err != nil {
 		t.Fatalf("project run: %v", err)
 	}
 	if len(store.inserts) != 1 || store.inserts[0].MentionedBranch.Valid {
 		t.Fatalf("project insert = %+v, want mentioned_branch NULL", store.inserts)
 	}
+	if profiles.calls != 0 || store.profileCalls != 1 {
+		t.Fatalf("project run must read the parent profile only: location=%d parent=%d", profiles.calls, store.profileCalls)
+	}
 
 	failStore := &fakeVisibilityQueries{
 		audit:    sqlc.AiAudit{ID: visibilityTestUUID(2), ProjectID: projectID, LocationID: visibilityTestUUID(12)},
 		location: sqlc.ProjectLocation{Name: "Acme Downtown"},
 		brand:    "Acme",
-		mapQueries: []sqlc.ProjectLocationQuery{
-			{Text: "downtown dentist map query"},
-		},
 	}
 	failProvider := &stubVisibilityProvider{respond: func(string) (string, error) { return "", errors.New("boom") }}
-	wFail := visibilityTestWorker(failStore, failProvider)
+	wFail := visibilityTestWorkerWithScope(failStore, failProvider, &fakeLocationProfiles{profile: LocationBusinessProfile{BrandName: "Acme"}}, &fakeLocationQuestions{questions: []string{"downtown dentist question?"}})
 	if status, err := wFail.handleVisibilityRun(context.Background(), visibilityTestJob(projectID, visibilityTestUUID(2))); err != nil || status != "failed" {
 		t.Fatalf("failed run = (%q,%v), want (failed,nil)", status, err)
 	}

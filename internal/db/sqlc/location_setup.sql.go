@@ -18,7 +18,7 @@ locality = $7::text, localities = COALESCE($8::jsonb, '[]'::jsonb), updated_at =
 FROM projects p,organization_members m
 WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
 AND m.org_id = p.organization_id AND m.user_id = $3 AND l.place_id IS NULL
-RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities
+RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, l.radius_m
 `
 
 type BindLocationListingForUserParams struct {
@@ -56,6 +56,7 @@ func (q *Queries) BindLocationListingForUser(ctx context.Context, arg BindLocati
 		&i.Address,
 		&i.Locality,
 		&i.Localities,
+		&i.RadiusM,
 	)
 	return i, err
 }
@@ -159,7 +160,7 @@ SELECT p.id,$1::text,$2::double precision,$3::double precision,
 $4::text,$5::text,$6::jsonb
 FROM projects p JOIN organization_members m ON m.org_id = p.organization_id
 WHERE p.id = $7::uuid AND m.user_id = $8::uuid
-RETURNING id, project_id, name, place_id, latitude, longitude, created_at, updated_at, address, locality, localities
+RETURNING id, project_id, name, place_id, latitude, longitude, created_at, updated_at, address, locality, localities, radius_m
 `
 
 type CreateLocationSetupForUserParams struct {
@@ -197,6 +198,7 @@ func (q *Queries) CreateLocationSetupForUser(ctx context.Context, arg CreateLoca
 		&i.Address,
 		&i.Locality,
 		&i.Localities,
+		&i.RadiusM,
 	)
 	return i, err
 }
@@ -346,7 +348,7 @@ func (q *Queries) GetListingLookupForUser(ctx context.Context, arg GetListingLoo
 }
 
 const getLocationForListingLookup = `-- name: GetLocationForListingLookup :one
-SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, p.organization_id FROM project_locations l
+SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, l.radius_m, p.organization_id FROM project_locations l
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
 WHERE l.id = $1 AND p.id = $2 AND m.user_id = $3
@@ -371,6 +373,7 @@ type GetLocationForListingLookupRow struct {
 	Address        string
 	Locality       string
 	Localities     []byte
+	RadiusM        int32
 	OrganizationID pgtype.UUID
 }
 
@@ -389,6 +392,7 @@ func (q *Queries) GetLocationForListingLookup(ctx context.Context, arg GetLocati
 		&i.Address,
 		&i.Locality,
 		&i.Localities,
+		&i.RadiusM,
 		&i.OrganizationID,
 	)
 	return i, err
@@ -456,7 +460,7 @@ func (q *Queries) GetLocationListingLookup(ctx context.Context, id pgtype.UUID) 
 }
 
 const listProjectLocationsForUser = `-- name: ListProjectLocationsForUser :many
-SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities FROM project_locations l
+SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, l.radius_m FROM project_locations l
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
 WHERE p.id = $1 AND m.user_id = $2
@@ -489,6 +493,7 @@ func (q *Queries) ListProjectLocationsForUser(ctx context.Context, arg ListProje
 			&i.Address,
 			&i.Locality,
 			&i.Localities,
+			&i.RadiusM,
 		); err != nil {
 			return nil, err
 		}
@@ -547,7 +552,7 @@ UPDATE project_locations l SET place_id = NULL, updated_at = now()
 FROM projects p,organization_members m
 WHERE l.id = $1 AND l.project_id = p.id AND p.id = $2
 AND m.org_id = p.organization_id AND m.user_id = $3
-RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities
+RETURNING l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, l.radius_m
 `
 
 type UnbindLocationListingForUserParams struct {
@@ -571,6 +576,7 @@ func (q *Queries) UnbindLocationListingForUser(ctx context.Context, arg UnbindLo
 		&i.Address,
 		&i.Locality,
 		&i.Localities,
+		&i.RadiusM,
 	)
 	return i, err
 }

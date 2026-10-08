@@ -275,8 +275,16 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	// executor, so the model cannot run a disabled or unexposed tool by
 	// guessing its name. MCP tools join the same registry for this turn
 	// only; nothing is shared across turns.
-	registry := aichattools.NewFilteredRegistry(claimed.DisabledTools)
-	mcpStatus, mcpHandles, closeMCP := w.setupMCP(ctx, scope, claimed.DisabledTools, registry)
+	var registry *aichattools.Registry
+	var mcpStatus string
+	var mcpHandles *mcpHandleSet
+	closeMCP := func() {}
+	if scope.LocationID.Valid {
+		registry = aichattools.NewLocationScopedRegistry(claimed.DisabledTools)
+	} else {
+		registry = aichattools.NewFilteredRegistry(claimed.DisabledTools)
+		mcpStatus, mcpHandles, closeMCP = w.setupMCP(ctx, scope, claimed.DisabledTools, registry)
+	}
 	if closeMCP != nil {
 		defer closeMCP()
 	}
@@ -289,6 +297,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		UserID:            scope.UserID,
 		ProjectID:         scope.ProjectID,
 		CrawlID:           scope.CrawlID,
+		LocationID:        scope.LocationID,
 		Queries:           queries,
 		DB:                w.pool,
 		GSC:               w.GSC,
@@ -838,9 +847,10 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 // turnScope carries the server-derived identity of one turn; tools never read
 // tenant IDs from model arguments.
 type turnScope struct {
-	UserID    pgtype.UUID
-	ProjectID pgtype.UUID
-	CrawlID   pgtype.UUID
+	UserID     pgtype.UUID
+	ProjectID  pgtype.UUID
+	CrawlID    pgtype.UUID
+	LocationID pgtype.UUID
 }
 
 func (w *Worker) loadContext(ctx context.Context, claimed turn) ([]ai.Message, turnScope, error) {
@@ -848,13 +858,15 @@ func (w *Worker) loadContext(ctx context.Context, claimed turn) ([]ai.Message, t
 	var baseURL string
 	var scope turnScope
 	var useInternalPrompt bool
+	var locationName, locationLocality string
 	if err := w.pool.QueryRow(ctx, `
-SELECT p.name, p.base_url, t.crawl_id, COALESCE(f.ai_use_internal_prompt, FALSE)::boolean, p.id, t.created_by_user_id
+SELECT p.name, p.base_url, t.crawl_id, COALESCE(f.ai_use_internal_prompt, FALSE)::boolean, p.id, t.created_by_user_id, c.location_id, COALESCE(l.name, ''), COALESCE(l.locality, '')
 FROM ai_turns AS t
 JOIN ai_conversations AS c ON c.id = t.conversation_id
 JOIN projects AS p ON p.id = c.project_id
+LEFT JOIN project_locations AS l ON l.id = c.location_id
 LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
-WHERE t.id = $1 AND t.conversation_id = $2`, claimed.ID, claimed.ConversationID).Scan(&projectName, &baseURL, &scope.CrawlID, &useInternalPrompt, &scope.ProjectID, &scope.UserID); err != nil {
+WHERE t.id = $1 AND t.conversation_id = $2`, claimed.ID, claimed.ConversationID).Scan(&projectName, &baseURL, &scope.CrawlID, &useInternalPrompt, &scope.ProjectID, &scope.UserID, &scope.LocationID, &locationName, &locationLocality); err != nil {
 		return nil, turnScope{}, err
 	}
 
@@ -880,7 +892,7 @@ WHERE crawl.id = $1
 		internalPrompt = configRow.InternalSystemPrompt
 		externalPrompt = configRow.ExternalSystemPrompt
 	}
-	system := composeSystemContext(aiprompt.ComposeSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt)
+	system := composeSystemContext(aiprompt.ComposeSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt, locationName, locationLocality)
 
 	var currentUser string
 	var currentBlocks []byte
@@ -951,13 +963,24 @@ func parseUserImages(blocks []byte) []ai.Image {
 	return images
 }
 
-func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtype.Timestamptz) string {
+func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtype.Timestamptz, locationName, locationLocality string) string {
 	var builder strings.Builder
 	builder.WriteString(prompt)
 	builder.WriteString("\n\n--- Editor links ---\n")
 	builder.WriteString("When opening a page would help the user and its exact URL is known from the user or tool data, add an editor link after the answer. Put each editor link on its own final line. Use [Open in editor: Page name](https://example.com/page \"revserp-editor\") as the format, replacing the label and URL. Only use pages from the selected crawl. Never invent or alter a URL.\n")
 	builder.WriteString("\n\n--- Project context ---\n")
 	fmt.Fprintf(&builder, "Name: %s\nURL: %s\n", projectName, baseURL)
+	if locationName != "" || locationLocality != "" {
+		builder.WriteString("\n--- Location context ---\n")
+		builder.WriteString("This conversation is scoped to ONE location of this project, not the whole project.\n")
+		if locationName != "" {
+			fmt.Fprintf(&builder, "Location: %s\n", locationName)
+		}
+		if locationLocality != "" {
+			fmt.Fprintf(&builder, "Locality: %s\n", locationLocality)
+		}
+		builder.WriteString("Answer about this location only. Use the location tools for its own profile and selected keywords. Never present parent project totals, parent keyword lists, or parent Search Console data as this location's data.\n")
+	}
 	if completedAt.Valid {
 		builder.WriteString("\n--- Crawl context ---\n")
 		fmt.Fprintf(&builder, "Selected crawl completed at %s.\n", completedAt.Time.UTC().Format(time.RFC3339))

@@ -1,6 +1,7 @@
 package localvisibility
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -74,7 +75,7 @@ func TestGenerateMapQueriesThinGeographyYieldsFewer(t *testing.T) {
 func TestGenerateMapQueriesRoundRobinsServices(t *testing.T) {
 	// Every service appears before going deep on any one: bare names first,
 	// then proximity, then area per level. Two services and one level yield
-	// both services bare and near, plus the first area query.
+	// both services bare and near, plus one area query per service.
 	queries, err := GenerateMapQueries([]string{"life insurance", "car repair"}, []string{"Gaucharan"})
 	if err != nil {
 		t.Fatalf("GenerateMapQueries returned error: %v", err)
@@ -85,6 +86,7 @@ func TestGenerateMapQueriesRoundRobinsServices(t *testing.T) {
 		"life insurance near me",
 		"car repair near me",
 		"life insurance in Gaucharan",
+		"car repair in Gaucharan",
 	}
 	if len(queries) != len(want) {
 		t.Fatalf("len(queries) = %d, want %d: %q", len(queries), len(want), queries)
@@ -96,13 +98,21 @@ func TestGenerateMapQueriesRoundRobinsServices(t *testing.T) {
 	}
 }
 
-func TestGenerateMapQueriesCapsAtFive(t *testing.T) {
+func TestGenerateMapQueriesKeepsEveryDistinctQuery(t *testing.T) {
+	// Five locality levels plus the bare and proximity forms are seven
+	// genuinely different searches. The old product cap silently dropped two.
 	queries, err := GenerateMapQueries([]string{"plumber"}, []string{"A", "B", "C", "D", "E"})
 	if err != nil {
 		t.Fatalf("GenerateMapQueries returned error: %v", err)
 	}
-	if len(queries) != MapQueryCount {
-		t.Fatalf("len(queries) = %d, want cap %d", len(queries), MapQueryCount)
+	want := []string{"plumber", "plumber near me", "plumber in A", "plumber in B", "plumber in C", "plumber in D", "plumber in E"}
+	if len(queries) != len(want) {
+		t.Fatalf("len(queries) = %d, want %d", len(queries), len(want))
+	}
+	for i, w := range want {
+		if queries[i] != w {
+			t.Errorf("queries[%d] = %q, want %q", i, queries[i], w)
+		}
 	}
 }
 
@@ -157,6 +167,7 @@ func TestValidateEditableMapQueriesAcceptsAndTrims(t *testing.T) {
 	}{
 		{"partial", []string{"  coffee shop ", "Paris coffee shop"}, []string{"coffee shop", "Paris coffee shop"}},
 		{"five", []string{"a", "b", "c", "d", "e"}, []string{"a", "b", "c", "d", "e"}},
+		{"seven beyond the old cap", distinctMapQueries(7), distinctMapQueries(7)},
 		{"boundary 500 bytes", []string{strings.Repeat("a", MaxMapQueryBytes)}, []string{strings.Repeat("a", MaxMapQueryBytes)}},
 		{"boundary 500 unicode bytes", []string{strings.Repeat("é", MaxMapQueryBytes/2)}, []string{strings.Repeat("é", MaxMapQueryBytes/2)}},
 	} {
@@ -182,7 +193,6 @@ func TestValidateEditableMapQueriesRejections(t *testing.T) {
 		name  string
 		input []string
 	}{
-		{"too many", []string{"a", "b", "c", "d", "e", "f"}},
 		{"blank middle", []string{"a", "   ", "b"}},
 		{"blank leading", []string{"", "b"}},
 		{"duplicate exact", []string{"coffee", "coffee"}},
@@ -196,4 +206,14 @@ func TestValidateEditableMapQueriesRejections(t *testing.T) {
 			}
 		})
 	}
+}
+
+// distinctMapQueries builds n distinct, valid query strings for the list-level
+// boundary tests, where the old five-query cap must no longer reject the list.
+func distinctMapQueries(n int) []string {
+	queries := make([]string, n)
+	for i := range queries {
+		queries[i] = fmt.Sprintf("query %d", i)
+	}
+	return queries
 }

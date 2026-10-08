@@ -38,6 +38,10 @@ Bad examples (never do this):
 - "What are the pricing plans for Northstar Reach?" (single-company lookup; not a list)`
 
 func (w *Worker) handlePromptGeneration(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow) error {
+	if job.LocationID.Valid {
+		return w.handleLocationPromptGeneration(ctx, job)
+	}
+
 	profile, err := w.queries.GetProjectBusinessProfileByProjectID(ctx, job.ProjectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

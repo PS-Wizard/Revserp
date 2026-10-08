@@ -26,7 +26,7 @@ func pointDetailsSnapshot() localvisibility.LocalRunSnapshot {
 	}
 }
 
-func pointDetailsRow(queryIndex int16, callStatus, matchStatus string) sqlc.GetLocalVisibilityPointResultsRow {
+func pointDetailsRow(queryIndex int32, callStatus, matchStatus string) sqlc.GetLocalVisibilityPointResultsRow {
 	return sqlc.GetLocalVisibilityPointResultsRow{
 		QueryIndex:  queryIndex,
 		CallStatus:  callStatus,

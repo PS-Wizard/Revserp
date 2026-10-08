@@ -35,6 +35,11 @@ type Worker struct {
 
 	visibilityQueries     visibilityQueries
 	newVisibilityProvider func(modelSlug string) (ai.Provider, error)
+	locationProfiles      LocationProfileReader
+	locationQuestions     LocationAIQuestionReader
+	locationTargets       LocationTargetReader
+	locationLandmarks     LocationLandmarkReader
+	newPromptProvider     func() (ai.Provider, error)
 }
 
 // New builds an AI worker.
@@ -46,11 +51,14 @@ func New(pool *pgxpool.Pool, cfg config.Config, concurrency int, pollInterval ti
 		pollInterval = 2 * time.Second
 	}
 	return &Worker{
-		pool:         pool,
-		queries:      sqlc.New(pool),
-		cfg:          cfg,
-		concurrency:  concurrency,
-		pollInterval: pollInterval,
+		pool:              pool,
+		queries:           sqlc.New(pool),
+		cfg:               cfg,
+		concurrency:       concurrency,
+		pollInterval:      pollInterval,
+		locationProfiles:  LocationProfileStore{Pool: pool},
+		locationQuestions: LocationQuestionStore{Pool: pool},
+		locationTargets:   LocationTargetStore{Pool: pool},
 	}
 }
 
@@ -192,6 +200,9 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendi
 			return finalizeBootstrapSuccess(ctx, q, job)
 		})
 	case promptGenerationJobType:
+		if w.isLocationPromptJob(job) {
+			return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
+		}
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizePromptGenerationSuccess(ctx, q, job)
 		})
@@ -222,6 +233,12 @@ func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendi
 			return finalizeBootstrapFailure(ctx, q, job, message)
 		})
 	case promptGenerationJobType:
+		if w.isLocationPromptJob(job) {
+			return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+				ID:           job.ID,
+				ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
+			})
+		}
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizePromptGenerationFailure(ctx, q, job, message)
 		})

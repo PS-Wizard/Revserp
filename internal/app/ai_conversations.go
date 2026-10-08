@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,7 @@ import (
 type aiConversationResponse struct {
 	ID              string  `json:"id"`
 	ProjectID       string  `json:"project_id"`
+	LocationID      *string `json:"location_id"`
 	CreatedByUserID string  `json:"created_by_user_id"`
 	Title           string  `json:"title"`
 	CreatedAt       string  `json:"created_at"`
@@ -23,46 +25,71 @@ type aiConversationResponse struct {
 	TurnStatus      *string `json:"turn_status"`
 }
 
+// createAIConversationRequest scopes a new conversation. A null or absent
+// location_id creates a parent conversation; a location id binds it to that
+// location of the project.
+type createAIConversationRequest struct {
+	LocationID *string `json:"location_id"`
+}
+
 type aiConversationDetailResponse struct {
 	aiConversationResponse
 	Messages []aiMessageResponse `json:"messages"`
 }
 
-// handleCreateAIConversation creates a conversation for a project member.
+// handleCreateAIConversation creates a parent or location conversation for a
+// project member. A location id is verified against the project before insert,
+// and the composite foreign key keeps the pair consistent.
 func (a *App) handleCreateAIConversation(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid project id")
 		return
 	}
-
-	var conversation sqlc.AiConversation
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		principal, ok := a.getPrincipal(w, r)
-
-		if !ok {
-
-			return errors.New("missing principal")
-
-		}
-		user := principal.User
-		conversation, err = queries.CreateAIConversationForUser(r.Context(), sqlc.CreateAIConversationForUserParams{
-			ProjectID: projectID,
-			UserID:    user.ID,
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "project not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
-		}
-		return nil
-	}) {
+	var body createAIConversationRequest
+	if !readOptionalStrictJSONOrRespond(w, r, &body) {
 		return
 	}
-
+	var locationID pgtype.UUID
+	if body.LocationID != nil {
+		trimmed := strings.TrimSpace(*body.LocationID)
+		if trimmed == "" || locationID.Scan(trimmed) != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid location id")
+			return
+		}
+	}
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
+		return
+	}
+	user := principal.User
+	if locationID.Valid {
+		if _, err := a.Queries.GetProjectLocationForUser(r.Context(), sqlc.GetProjectLocationForUserParams{
+			ID:     locationID,
+			ID_2:   projectID,
+			UserID: user.ID,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "location not found")
+			} else {
+				serverError(w, r, err)
+			}
+			return
+		}
+	}
+	conversation, err := a.Queries.CreateAIConversationForUser(r.Context(), sqlc.CreateAIConversationForUserParams{
+		UserID:     user.ID,
+		ProjectID:  projectID,
+		LocationID: locationID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, newAIConversationResponse(conversation, nil, nil))
 }
 
@@ -79,58 +106,67 @@ func (a *App) handleListAIConversations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var (
-		conversations []sqlc.AiConversation
-		total         int64
-		activeTurns   []sqlc.ListActiveTurnsForConversationsRow
-	)
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		principal, ok := a.getPrincipal(w, r)
-
-		if !ok {
-
-			return errors.New("missing principal")
-
+	locationID, ok := conversationLocationFilter(w, r)
+	if !ok {
+		return
+	}
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
+		return
+	}
+	user := principal.User
+	if _, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
+		ID:     projectID,
+		UserID: user.ID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
 		}
-		user := principal.User
-		if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
-			ID:     projectID,
+		serverError(w, r, err)
+		return
+	}
+	if locationID.Valid {
+		if _, err := a.Queries.GetProjectLocationForUser(r.Context(), sqlc.GetProjectLocationForUserParams{
+			ID:     locationID,
+			ID_2:   projectID,
 			UserID: user.ID,
 		}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "project not found")
-				return err
+				writeJSONError(w, http.StatusNotFound, "location not found")
+				return
 			}
 			serverError(w, r, err)
-			return err
+			return
 		}
-
-		total, err = queries.CountAIConversationsForProjectForUser(r.Context(), sqlc.CountAIConversationsForProjectForUserParams{
-			ProjectID: projectID,
-			UserID:    user.ID,
-		})
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-		conversations, err = queries.ListAIConversationsForProjectForUser(r.Context(), sqlc.ListAIConversationsForProjectForUserParams{
-			ProjectID:  projectID,
-			UserID:     user.ID,
-			PageLimit:  limit,
-			PageOffset: offset,
-		})
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-
-		activeTurns, err = queries.ListActiveTurnsForConversations(r.Context(), conversationUUIDs(conversations))
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-		return nil
-	}) {
+	}
+	total, err := a.Queries.CountAIConversationsForProjectForUser(r.Context(), sqlc.CountAIConversationsForProjectForUserParams{
+		ProjectID:  projectID,
+		UserID:     user.ID,
+		LocationID: locationID,
+	})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	conversations, err := a.Queries.ListAIConversationsForProjectForUser(r.Context(), sqlc.ListAIConversationsForProjectForUserParams{
+		ProjectID:  projectID,
+		UserID:     user.ID,
+		LocationID: locationID,
+		PageLimit:  limit,
+		PageOffset: offset,
+	})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	conversationIDs := make([]pgtype.UUID, 0, len(conversations))
+	for _, conversation := range conversations {
+		conversationIDs = append(conversationIDs, conversation.ID)
+	}
+	activeTurns, err := a.Queries.ListActiveTurnsForConversations(r.Context(), conversationIDs)
+	if err != nil {
+		serverError(w, r, err)
 		return
 	}
 
@@ -150,7 +186,7 @@ func (a *App) handleListAIConversations(w http.ResponseWriter, r *http.Request) 
 			turnID = &active.id
 			status = &active.status
 		}
-		responses = append(responses, newAIConversationResponse(conversation, turnID, status))
+		responses = append(responses, newAIConversationResponse(aiConversationFromListRow(conversation), turnID, status))
 	}
 
 	setNoStore(w)
@@ -174,7 +210,7 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		conversation sqlc.AiConversation
+		conversation sqlc.GetAIConversationByIDForUserRow
 		messages     []sqlc.ListAIMessagesForConversationRow
 		turns        []sqlc.ListAITurnsForConversationRow
 		toolCalls    []sqlc.ListAIToolCallsForConversationRow
@@ -220,7 +256,7 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var turnID, turnStatus *string
-	activeTurns, err := a.Queries.ListActiveTurnsForConversations(r.Context(), conversationUUIDs([]sqlc.AiConversation{{ID: conversationID}}))
+	activeTurns, err := a.Queries.ListActiveTurnsForConversations(r.Context(), []pgtype.UUID{conversationID})
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -252,7 +288,7 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := aiConversationDetailResponse{
-		aiConversationResponse: newAIConversationResponse(conversation, turnID, turnStatus),
+		aiConversationResponse: newAIConversationResponse(aiConversationFromGetRow(conversation), turnID, turnStatus),
 		Messages:               make([]aiMessageResponse, 0, len(messages)),
 	}
 	for _, message := range messages {
@@ -323,7 +359,7 @@ func newAIConversationResponse(
 	turnID *string,
 	turnStatus *string,
 ) aiConversationResponse {
-	return aiConversationResponse{
+	response := aiConversationResponse{
 		ID:              conversation.ID.String(),
 		ProjectID:       conversation.ProjectID.String(),
 		CreatedByUserID: conversation.CreatedByUserID.String(),
@@ -333,12 +369,41 @@ func newAIConversationResponse(
 		TurnID:          turnID,
 		TurnStatus:      turnStatus,
 	}
+	if conversation.LocationID.Valid {
+		value := conversation.LocationID.String()
+		response.LocationID = &value
+	}
+	return response
 }
 
-func conversationUUIDs(conversations []sqlc.AiConversation) []pgtype.UUID {
-	ids := make([]pgtype.UUID, 0, len(conversations))
-	for _, conversation := range conversations {
-		ids = append(ids, conversation.ID)
+// aiConversationFromListRow and aiConversationFromGetRow normalize the two
+// generated row shapes to the AiConversation the response builder reads.
+func aiConversationFromListRow(row sqlc.ListAIConversationsForProjectForUserRow) sqlc.AiConversation {
+	return sqlc.AiConversation{
+		ID: row.ID, ProjectID: row.ProjectID, CreatedByUserID: row.CreatedByUserID,
+		Title: row.Title, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, LocationID: row.LocationID,
 	}
-	return ids
+}
+
+func aiConversationFromGetRow(row sqlc.GetAIConversationByIDForUserRow) sqlc.AiConversation {
+	return sqlc.AiConversation{
+		ID: row.ID, ProjectID: row.ProjectID, CreatedByUserID: row.CreatedByUserID,
+		Title: row.Title, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, LocationID: row.LocationID,
+	}
+}
+
+// conversationLocationFilter reads the optional location_id query parameter.
+// Absent or empty selects the parent scope (location_id NULL); a malformed
+// value is a 400.
+func conversationLocationFilter(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("location_id"))
+	if raw == "" {
+		return pgtype.UUID{}, true
+	}
+	var locationID pgtype.UUID
+	if err := locationID.Scan(raw); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid location id")
+		return pgtype.UUID{}, false
+	}
+	return locationID, true
 }

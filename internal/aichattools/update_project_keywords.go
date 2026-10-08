@@ -29,6 +29,10 @@ const updateProjectKeywordsSchema = `{
 type updateProjectKeywordsArgs struct {
 	BrandKeywords    []string
 	NonBrandKeywords []string
+	// Source is the location write target ("selected" or "revserp"). Only the
+	// location parser sets it; the project parser rejects the field, so
+	// project-scope semantics never change.
+	Source string
 }
 
 func updateProjectKeywordsTool() Tool {
@@ -44,6 +48,9 @@ func updateProjectKeywordsTool() Tool {
 }
 
 func executeUpdateProjectKeywords(ctx context.Context, args json.RawMessage, s Scope) (Result, error) {
+	if s.LocationID.Valid {
+		return executeUpdateProjectKeywordsLocal(ctx, args, s)
+	}
 	if s.Queries == nil || s.DB == nil {
 		return Result{}, errors.New("update_project_keywords: scope has no queries or transaction support")
 	}

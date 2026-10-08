@@ -21,7 +21,7 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, job_type, project_id, audit_id, local_run_id, status, error_message, started_at, completed_at, created_at, updated_at
+RETURNING id, job_type, project_id, audit_id, local_run_id, location_id, status, error_message, started_at, completed_at, created_at, updated_at
 `
 
 type ClaimNextPendingAIWorkerJobRow struct {
@@ -30,6 +30,7 @@ type ClaimNextPendingAIWorkerJobRow struct {
 	ProjectID    pgtype.UUID
 	AuditID      pgtype.UUID
 	LocalRunID   pgtype.UUID
+	LocationID   pgtype.UUID
 	Status       string
 	ErrorMessage pgtype.Text
 	StartedAt    pgtype.Timestamptz
@@ -47,6 +48,7 @@ func (q *Queries) ClaimNextPendingAIWorkerJob(ctx context.Context) (ClaimNextPen
 		&i.ProjectID,
 		&i.AuditID,
 		&i.LocalRunID,
+		&i.LocationID,
 		&i.Status,
 		&i.ErrorMessage,
 		&i.StartedAt,
@@ -103,7 +105,7 @@ func (q *Queries) EnqueueAIWorkerJob(ctx context.Context, arg EnqueueAIWorkerJob
 const getLatestPromptGenerationJobByProject = `-- name: GetLatestPromptGenerationJobByProject :one
 SELECT id, job_type, project_id, audit_id, status, error_message, started_at, completed_at, created_at, updated_at
 FROM ai_worker_jobs
-WHERE project_id = $1 AND job_type = 'prompt_generation'
+WHERE project_id = $1 AND job_type = 'prompt_generation' AND location_id IS NULL
 ORDER BY created_at DESC
 LIMIT 1
 `
@@ -172,7 +174,7 @@ WITH stale AS (
     SET status = 'failed', error_message = 'reclaimed: worker restarted', completed_at = NOW(), updated_at = NOW()
     WHERE ai_worker_jobs.status = 'running'
       AND ai_worker_jobs.started_at < $1
-    RETURNING job_type, project_id, audit_id
+    RETURNING job_type, project_id, audit_id, location_id
 ),
 reclaimed_location_audits AS (
     UPDATE ai_audits AS a
@@ -200,6 +202,8 @@ SET status = 'failed',
     completed_at = now()
 FROM stale
 WHERE ps.project_id = stale.project_id
+  -- A location prompt job must never fail the parent project setup.
+  AND stale.location_id IS NULL
   AND ps.status = CASE stale.job_type
         WHEN 'business_profile_bootstrap' THEN 'profile_generation'
         WHEN 'prompt_generation' THEN 'prompt_generation'

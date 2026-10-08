@@ -19,7 +19,8 @@ import (
 const googleAnalyticsReadOnlyScope = "https://www.googleapis.com/auth/analytics.readonly"
 
 type selectProjectGoogleAnalyticsPropertyRequest struct {
-	PropertyID string `json:"property_id"`
+	PropertyID         string `json:"property_id"`
+	GoogleConnectionID string `json:"google_connection_id"`
 }
 
 type analyticsPropertyResponse struct {
@@ -29,17 +30,19 @@ type analyticsPropertyResponse struct {
 }
 
 type projectGoogleAnalyticsStatusResponse struct {
-	HasGoogleConnection bool                        `json:"has_google_connection"`
-	HasAnalyticsScope   bool                        `json:"has_analytics_scope"`
-	GoogleConnectionID  string                      `json:"google_connection_id,omitempty"`
-	GoogleAccountEmail  string                      `json:"google_account_email,omitempty"`
-	GoogleStatus        string                      `json:"google_status,omitempty"`
-	NeedsReconnect      bool                        `json:"needs_reconnect"`
-	CanManageConnection bool                        `json:"can_manage_connection"`
-	Connected           bool                        `json:"connected"`
-	SelectedProperty    *analyticsPropertyResponse  `json:"selected_property,omitempty"`
-	AvailableProperties []analyticsPropertyResponse `json:"available_properties"`
-	TokenError          string                      `json:"token_error,omitempty"`
+	HasGoogleConnection        bool                           `json:"has_google_connection"`
+	HasAnalyticsScope          bool                           `json:"has_analytics_scope"`
+	GoogleConnectionID         string                         `json:"google_connection_id,omitempty"`
+	GoogleAccountEmail         string                         `json:"google_account_email,omitempty"`
+	GoogleStatus               string                         `json:"google_status,omitempty"`
+	NeedsReconnect             bool                           `json:"needs_reconnect"`
+	CanManageConnection        bool                           `json:"can_manage_connection"`
+	Connected                  bool                           `json:"connected"`
+	SelectedProperty           *analyticsPropertyResponse     `json:"selected_property,omitempty"`
+	AvailableProperties        []analyticsPropertyResponse    `json:"available_properties"`
+	TokenError                 string                         `json:"token_error,omitempty"`
+	GoogleConnections          []projectGoogleAccountResponse `json:"google_connections,omitempty"`
+	SelectedGoogleConnectionID string                         `json:"selected_google_connection_id,omitempty"`
 }
 
 func (a *App) handleProjectGoogleAnalyticsStatus(w http.ResponseWriter, r *http.Request) {
@@ -61,19 +64,34 @@ func (a *App) handleProjectGoogleAnalyticsStatus(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	connection, connectedGoogle, err := getGoogleConnectionByOrganizationID(r.Context(), a.Queries, project.OrganizationID)
+	accounts, err := listGoogleAccountConnectionsByOrganizationID(r.Context(), a.DB, project.OrganizationID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	response := projectGoogleAnalyticsStatusResponse{HasGoogleConnection: connectedGoogle, CanManageConnection: membership.Role == "owner", AvailableProperties: []analyticsPropertyResponse{}}
-	if !connectedGoogle {
+	response := projectGoogleAnalyticsStatusResponse{HasGoogleConnection: len(accounts) > 0, CanManageConnection: membership.Role == "owner", AvailableProperties: []analyticsPropertyResponse{}, GoogleConnections: newProjectGoogleAccountResponses(accounts)}
+	if len(accounts) == 0 {
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
+	var boundConnectionID *pgtype.UUID
 	if selected {
 		response.Connected = true
 		response.SelectedProperty = analyticsPropertyResponseFromConnection(selection)
+		boundConnectionID = &selection.GoogleConnectionID
+		response.SelectedGoogleConnectionID = selection.GoogleConnectionID.String()
+	}
+	connection, err := matchGoogleAccountForSelect(accounts, boundConnectionID, nil)
+	if err != nil {
+		if errors.Is(err, errGoogleConnectionRequired) || errors.Is(err, errGoogleAccountNotFound) {
+			if errors.Is(err, errGoogleAccountNotFound) {
+				response.TokenError = "google account not found"
+			}
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
 	}
 	response.GoogleConnectionID = connection.ID.String()
 	response.GoogleAccountEmail = textValue(connection.GoogleAccountEmail)
@@ -120,12 +138,43 @@ func (a *App) handleSelectProjectGoogleAnalyticsProperty(w http.ResponseWriter, 
 		writeJSONError(w, http.StatusBadRequest, "property_id is required")
 		return
 	}
-	connection, found, err := getGoogleConnectionByOrganizationID(r.Context(), a.Queries, project.OrganizationID)
+	accounts, err := listGoogleAccountConnectionsByOrganizationID(r.Context(), a.DB, project.OrganizationID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if !found || !hasGoogleScope(connection.Scope, googleAnalyticsReadOnlyScope) {
+	if len(accounts) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "google analytics requires reconnect")
+		return
+	}
+	selection, hasSelection, err := getProjectGoogleAnalyticsConnectionByProjectID(r.Context(), a.Queries, project.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	var boundConnectionID *pgtype.UUID
+	if hasSelection {
+		boundConnectionID = &selection.GoogleConnectionID
+	}
+	var requestedConnectionID *pgtype.UUID
+	if strings.TrimSpace(request.GoogleConnectionID) != "" {
+		parsedConnectionID, err := parseUUIDParam(strings.TrimSpace(request.GoogleConnectionID))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid google connection id")
+			return
+		}
+		requestedConnectionID = &parsedConnectionID
+	}
+	connection, err := matchGoogleAccountForSelect(accounts, boundConnectionID, requestedConnectionID)
+	if err != nil {
+		if errors.Is(err, errGoogleConnectionRequired) {
+			writeJSONError(w, http.StatusBadRequest, "google_connection_id is required")
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "google account not found")
+		return
+	}
+	if !hasGoogleScope(connection.Scope, googleAnalyticsReadOnlyScope) {
 		writeJSONError(w, http.StatusBadRequest, "google analytics requires reconnect")
 		return
 	}
@@ -195,18 +244,8 @@ func (a *App) handleProjectGoogleAnalyticsOverview(w http.ResponseWriter, r *htt
 		writeJSONError(w, http.StatusBadRequest, "project is not connected to google analytics")
 		return
 	}
-	connection, found, err := getGoogleConnectionByOrganizationID(r.Context(), a.Queries, project.OrganizationID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if !found || !hasGoogleScope(connection.Scope, googleAnalyticsReadOnlyScope) {
-		writeJSONError(w, http.StatusBadRequest, "google analytics requires reconnect")
-		return
-	}
-	_, token, err := a.ensureFreshGoogleConnection(r.Context(), a.Queries, connection)
-	if err != nil {
-		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to refresh google connection")
+	connection, token, ok := a.googleAnalyticsSelectionConnection(w, r, selection)
+	if !ok {
 		return
 	}
 	overview, err := a.GAService.FetchOverviewCached(r.Context(), token, project.OrganizationID.String(), selection.PropertyID)
@@ -231,18 +270,8 @@ func (a *App) handleProjectGoogleAnalyticsRealtime(w http.ResponseWriter, r *htt
 		writeJSONError(w, http.StatusBadRequest, "project is not connected to google analytics")
 		return
 	}
-	connection, found, err := getGoogleConnectionByOrganizationID(r.Context(), a.Queries, project.OrganizationID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	if !found || !hasGoogleScope(connection.Scope, googleAnalyticsReadOnlyScope) {
-		writeJSONError(w, http.StatusBadRequest, "google analytics requires reconnect")
-		return
-	}
-	_, token, err := a.ensureFreshGoogleConnection(r.Context(), a.Queries, connection)
-	if err != nil {
-		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to refresh google connection")
+	_, token, ok := a.googleAnalyticsSelectionConnection(w, r, selection)
+	if !ok {
 		return
 	}
 	activeUsers, err := a.GAService.FetchRealtime(r.Context(), token, selection.PropertyID)
@@ -296,6 +325,65 @@ func getProjectGoogleAnalyticsConnectionByProjectID(ctx context.Context, queries
 		return sqlc.ProjectGoogleAnalyticsConnection{}, false, err
 	}
 	return connection, true, nil
+}
+
+// googleAnalyticsSelectionConnection resolves the Analytics token through the
+// selection's own google_connection_id, never an org-first account.
+func (a *App) googleAnalyticsSelectionConnection(w http.ResponseWriter, r *http.Request, selection sqlc.ProjectGoogleAnalyticsConnection) (sqlc.GoogleConnection, string, bool) {
+	connection, found, err := getGoogleAccountConnectionByID(r.Context(), a.DB, selection.GoogleConnectionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return sqlc.GoogleConnection{}, "", false
+	}
+	if !found || !hasGoogleScope(connection.Scope, googleAnalyticsReadOnlyScope) {
+		writeJSONError(w, http.StatusBadRequest, "google analytics requires reconnect")
+		return sqlc.GoogleConnection{}, "", false
+	}
+	connection, token, err := a.ensureFreshGoogleConnection(r.Context(), a.Queries, connection)
+	if err != nil {
+		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to refresh google connection")
+		return sqlc.GoogleConnection{}, "", false
+	}
+	return connection, token, true
+}
+
+// handleListGoogleAccountAnalyticsProperties lists Analytics properties for one
+// explicitly chosen account, so pickers work before anything is bound.
+func (a *App) handleListGoogleAccountAnalyticsProperties(w http.ResponseWriter, r *http.Request) {
+	account, project, ok := a.googleAccountForProject(w, r)
+	if !ok {
+		return
+	}
+	hasScope := hasGoogleScope(account.Scope, googleAnalyticsReadOnlyScope)
+	if !hasScope {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"google_connection_id": account.ID.String(),
+			"google_account_email": textValue(account.GoogleAccountEmail),
+			"google_status":        account.Status,
+			"has_analytics_scope":  false,
+			"needs_reconnect":      true,
+			"available_properties": []analyticsPropertyResponse{},
+		})
+		return
+	}
+	account, accessToken, err := a.ensureFreshGoogleConnection(r.Context(), a.Queries, account)
+	if err != nil {
+		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to refresh google connection")
+		return
+	}
+	properties, err := a.GAService.ListProperties(r.Context(), accessToken)
+	if err != nil {
+		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to fetch analytics properties")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"google_connection_id": account.ID.String(),
+		"google_account_email": textValue(account.GoogleAccountEmail),
+		"google_status":        account.Status,
+		"has_analytics_scope":  true,
+		"needs_reconnect":      false,
+		"available_properties": rankAnalyticsProperties(project.BaseUrl, project.Name, properties),
+	})
 }
 
 func hasGoogleScope(scope, wanted string) bool {

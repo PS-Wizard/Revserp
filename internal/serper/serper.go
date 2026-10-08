@@ -151,9 +151,16 @@ func FormatMapsViewport(latitude, longitude float64) (string, error) {
 // MapsAt runs one Serper maps search at the real latitude/longitude viewport,
 // always at the fixed zoom-14 grid scale, sending "q", "ll", and English "hl".
 //
+// The provider may centre its display viewport (top-level "ll") metres or
+// kilometres from the requested point, so a large measured drift is accepted,
+// not rejected: ViewportDriftM always records the delta and ranks must be read
+// as approximate to the returned viewport, never surveyed exact positions.
+// Only a malformed echoed viewport or a missing/null places array is rejected;
+// a real [] is an empty result.
+//
 // It returns the decoded MapsResponse alongside the error so a charged call's
-// credits are not lost when the echoed viewport is rejected; callers must not
-// rank places from a response returned with a non-nil error.
+// credits are not lost; callers must not rank places from a response returned
+// with a non-nil error.
 func (c *Client) MapsAt(ctx context.Context, query string, latitude, longitude float64) (MapsResponse, error) {
 	viewport, err := FormatMapsViewport(latitude, longitude)
 	if err != nil {
@@ -170,8 +177,8 @@ func (c *Client) MapsAt(ctx context.Context, query string, latitude, longitude f
 		return response, fmt.Errorf("serper maps viewport format: %w", err)
 	}
 	response.ViewportDriftM = &drift
-	if drift > MapsViewportToleranceM {
-		return response, fmt.Errorf("serper maps viewport drift: %.3f metres exceeds %.0f metres", drift, MapsViewportToleranceM)
+	if response.Places == nil {
+		return response, fmt.Errorf("serper maps: missing places array")
 	}
 	return response, nil
 }
@@ -254,15 +261,12 @@ func mapsViewportDrift(raw string, latitude, longitude float64) (float64, error)
 	if err := validateMapsCoordinates(latitude, longitude); err != nil {
 		return 0, err
 	}
-	echoLatitude, echoLongitude, zoom, err := parseMapsLLViewport(raw)
+	echoLatitude, echoLongitude, _, err := parseMapsLLViewport(raw)
 	if err != nil {
 		return 0, err
 	}
 	if err := validateMapsCoordinates(echoLatitude, echoLongitude); err != nil {
 		return 0, fmt.Errorf("viewport %q echoed invalid coordinates: %w", raw, err)
-	}
-	if zoom != serperMapsZoom {
-		return 0, fmt.Errorf("viewport %q zoom = %d, want %d", raw, zoom, serperMapsZoom)
 	}
 	toRadians := math.Pi / 180
 	deltaLatitude := (echoLatitude - latitude) * toRadians
@@ -272,10 +276,8 @@ func mapsViewportDrift(raw string, latitude, longitude float64) (float64, error)
 	return 6371008.8 * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a)), nil
 }
 
-// parseMapsLLViewport parses serper's "@lat,lon,zoomz" viewport string. The
-// zoom must carry its trailing "z"; a missing suffix is a malformed viewport,
-// not a zero zoom.
-func parseMapsLLViewport(raw string) (latitude, longitude float64, zoom int, err error) {
+// Serper can normalize the echoed zoom independently of the requested zoom.
+func parseMapsLLViewport(raw string) (latitude, longitude, zoom float64, err error) {
 	body, found := strings.CutPrefix(raw, "@")
 	if !found {
 		return 0, 0, 0, fmt.Errorf("viewport %q missing @ prefix", raw)
@@ -296,9 +298,12 @@ func parseMapsLLViewport(raw string) (latitude, longitude float64, zoom int, err
 	if !found {
 		return 0, 0, 0, fmt.Errorf("viewport %q zoom %q missing z suffix", raw, fields[2])
 	}
-	zoom, err = strconv.Atoi(zoomText)
+	zoom, err = strconv.ParseFloat(zoomText, 64)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("viewport %q zoom %q: %w", raw, fields[2], err)
+	}
+	if math.IsNaN(zoom) || math.IsInf(zoom, 0) || zoom < 0 || zoom > 22 {
+		return 0, 0, 0, fmt.Errorf("viewport %q zoom %q outside [0,22]", raw, fields[2])
 	}
 	return latitude, longitude, zoom, nil
 }

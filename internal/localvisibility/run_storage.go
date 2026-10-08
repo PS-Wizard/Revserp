@@ -16,7 +16,7 @@ import (
 
 var ErrMapsBudgetUnavailable = errors.New("Maps spending allowance is not provisioned or insufficient")
 var ErrLocationListingUnbound = errors.New("bind a Google Maps listing before starting a ranking run")
-var ErrMapQueriesInvalid = errors.New("ranking runs require between one and five enabled map queries")
+var ErrMapQueriesInvalid = errors.New("ranking runs require at least one enabled map query")
 var ErrExpectedCreditsMismatch = errors.New("expected credits do not match the current quote")
 
 const LocalVisibilityJobType = "local_visibility"
@@ -42,8 +42,8 @@ type LocalRunSnapshot struct {
 }
 
 func ValidateMapQueries(queries []string) ([]string, error) {
-	if len(queries) < 1 || len(queries) > MapQueryCount {
-		return nil, fmt.Errorf("local visibility requires between 1 and %d map queries, got %d", MapQueryCount, len(queries))
+	if len(queries) < 1 {
+		return nil, fmt.Errorf("local visibility requires at least one map query")
 	}
 	return ValidateEditableMapQueries(queries)
 }
@@ -85,6 +85,9 @@ func (s LocalVisibilityStore) EnqueueRun(ctx context.Context, userID, projectID,
 	expected, err := ExpectedRunCredits(len(queries), len(points))
 	if err != nil {
 		return sqlc.LocalVisibilityRun{}, err
+	}
+	if int64(expected) > maxRunCredits {
+		return sqlc.LocalVisibilityRun{}, fmt.Errorf("local visibility run cost %d does not fit the INTEGER credit columns", expected)
 	}
 	if expected != expectedCredits {
 		return sqlc.LocalVisibilityRun{}, fmt.Errorf("%w: quoted %d credits but the run costs %d", ErrExpectedCreditsMismatch, expectedCredits, expected)

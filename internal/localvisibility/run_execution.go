@@ -25,8 +25,8 @@ var localRunSectors = map[string]bool{
 	"centre": true, "N": true, "NE": true, "E": true, "SE": true, "S": true, "SW": true, "W": true, "NW": true,
 }
 
-// ExecuteLocalVisibilityRun executes one queued run with one to five frozen
-// queries across nine frozen points, settles each call, then finalizes the run.
+// ExecuteLocalVisibilityRun executes one queued run with its frozen queries
+// across nine frozen points, settles each call, then finalizes the run.
 //
 // The frozen snapshot is fully validated before any provider call is issued,
 // including the exact stored viewport strings. The run status row is
@@ -68,7 +68,7 @@ loop:
 			}
 			if _, err := queries.StartLocalRunCell(ctx, sqlc.StartLocalRunCellParams{
 				RunID:      runID,
-				QueryIndex: int16(queryIndex),
+				QueryIndex: int32(queryIndex),
 				PointIndex: int16(pointIndex),
 			}); err != nil {
 				// A claimed or already-recorded cell must not be called again:
@@ -118,8 +118,8 @@ loop:
 }
 
 func validateLocalRunSnapshot(snapshot LocalRunSnapshot, expectedCredits int32) error {
-	if len(snapshot.Queries) < 1 || len(snapshot.Queries) > MapQueryCount {
-		return fmt.Errorf("local visibility snapshot queries = %d, want between 1 and %d", len(snapshot.Queries), MapQueryCount)
+	if len(snapshot.Queries) < 1 || len(snapshot.Queries) > MaxMapQueries {
+		return fmt.Errorf("local visibility snapshot queries = %d, want between 1 and %d", len(snapshot.Queries), MaxMapQueries)
 	}
 	seenQueries := make(map[string]bool, len(snapshot.Queries))
 	for i, query := range snapshot.Queries {
@@ -211,7 +211,7 @@ func localCellOutcome(runID pgtype.UUID, queryIndex, pointIndex int, targetPlace
 	}
 	outcome := sqlc.InsertLocalVisibilityResultParams{
 		RunID:       runID,
-		QueryIndex:  int16(queryIndex),
+		QueryIndex:  int32(queryIndex),
 		PointIndex:  int16(pointIndex),
 		RawResponse: raw,
 	}

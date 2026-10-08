@@ -26,43 +26,6 @@ LIMIT 1;
 DELETE FROM google_oauth_states
 WHERE id = $1;
 
--- name: UpsertGoogleConnectionForOrganization :one
-INSERT INTO google_connections (
-    organization_id,
-    connected_by_user_id,
-    google_account_email,
-    google_account_subject,
-    encrypted_refresh_token,
-    encrypted_access_token,
-    access_token_expires_at,
-    scope,
-    status,
-    last_error
-) VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
-    $5,
-    $6,
-    $7,
-    $8,
-    'active',
-    NULL
-)
-ON CONFLICT (organization_id) DO UPDATE SET
-    connected_by_user_id = excluded.connected_by_user_id,
-    google_account_email = COALESCE(excluded.google_account_email, google_connections.google_account_email),
-    google_account_subject = COALESCE(excluded.google_account_subject, google_connections.google_account_subject),
-    encrypted_refresh_token = COALESCE(excluded.encrypted_refresh_token, google_connections.encrypted_refresh_token),
-    encrypted_access_token = excluded.encrypted_access_token,
-    access_token_expires_at = excluded.access_token_expires_at,
-    scope = excluded.scope,
-    status = 'active',
-    last_error = NULL,
-    updated_at = now()
-RETURNING id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at;
-
 -- name: GetGoogleConnectionByOrganizationID :one
 SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
 FROM google_connections
@@ -116,3 +79,91 @@ RETURNING id, project_id, google_connection_id, site_url, permission_level, crea
 -- name: DeleteProjectGSCConnectionByProjectID :execrows
 DELETE FROM project_gsc_connections
 WHERE project_id = $1;
+
+-- name: ListGoogleConnectionsByOrganizationID :many
+SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
+FROM google_connections
+WHERE organization_id = $1
+ORDER BY created_at ASC, id ASC;
+
+-- name: GetGoogleConnectionByID :one
+SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
+FROM google_connections
+WHERE id = $1
+LIMIT 1;
+
+-- name: GetGoogleConnectionByOrganizationSubject :one
+SELECT id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at
+FROM google_connections
+WHERE organization_id = $1 AND google_account_subject = $2
+LIMIT 1;
+
+-- name: CreateGoogleConnection :one
+INSERT INTO google_connections (
+    organization_id,
+    connected_by_user_id,
+    google_account_email,
+    google_account_subject,
+    encrypted_refresh_token,
+    encrypted_access_token,
+    access_token_expires_at,
+    scope,
+    status,
+    last_error
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    'active',
+    NULL
+)
+RETURNING id, organization_id, connected_by_user_id, google_account_email, google_account_subject, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope, status, last_error, created_at, updated_at;
+
+-- name: AdoptGoogleConnectionIdentity :exec
+UPDATE google_connections
+SET google_account_email = $2,
+    google_account_subject = $3,
+    updated_at = now()
+WHERE id = $1;
+
+-- name: RevokeGoogleConnection :exec
+UPDATE google_connections
+SET status = 'revoked',
+    encrypted_access_token = NULL,
+    access_token_expires_at = NULL,
+    last_error = $2,
+    updated_at = now()
+WHERE id = $1;
+
+-- name: CreateGoogleOAuthStateWithPurpose :one
+INSERT INTO google_oauth_states (
+    state_token_hash,
+    organization_id,
+    user_id,
+    project_id,
+    return_path,
+    purpose,
+    google_connection_id,
+    expires_at
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8
+)
+RETURNING id, state_token_hash, organization_id, user_id, project_id, return_path, purpose, google_connection_id, expires_at, created_at;
+
+-- name: GetGoogleOAuthStateWithPurpose :one
+SELECT id, state_token_hash, organization_id, user_id, project_id, return_path, purpose, google_connection_id, expires_at, created_at
+FROM google_oauth_states
+WHERE state_token_hash = $1
+LIMIT 1;

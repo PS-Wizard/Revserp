@@ -348,3 +348,33 @@ func conversationRequest(userID, conversationID pgtype.UUID) *http.Request {
 	ctx = withPrincipal(ctx, Principal{User: sqlc.User{ID: userID}})
 	return request.WithContext(ctx)
 }
+
+func TestConversationLocationFilter(t *testing.T) {
+	cases := []struct {
+		name      string
+		query     string
+		wantValid bool
+		wantOK    bool
+	}{
+		{name: "absent is parent", query: "", wantOK: true},
+		{name: "empty is parent", query: "?location_id=", wantOK: true},
+		{name: "valid location", query: "?location_id=018f39f7-0e1b-7e9c-9f3b-1e1d2c3b4a5f", wantValid: true, wantOK: true},
+		{name: "malformed location", query: "?location_id=nope", wantOK: false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/conversations"+test.query, nil)
+			id, ok := conversationLocationFilter(rec, req)
+			if ok != test.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, test.wantOK)
+			}
+			if id.Valid != test.wantValid {
+				t.Fatalf("valid = %v, want %v", id.Valid, test.wantValid)
+			}
+			if !test.wantOK && rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+		})
+	}
+}

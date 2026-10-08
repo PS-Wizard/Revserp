@@ -19,7 +19,7 @@ func TestMapsListingIdentityEvidence(t *testing.T) {
 		{"explicit zero coordinates are present", `{"credits":3,"ll":"@27.700000,85.300000,14z","places":[{"placeId":"test-place","latitude":0,"longitude":0}]}`, 200, false, true},
 		{"charged failure", `{"credits":3,"message":"provider failed"}`, 503, true, false},
 		{"charged missing array", `{"credits":3,"ll":"@27.700000,85.300000,14z"}`, 200, true, false},
-		{"charged wrong viewport", `{"credits":3,"ll":"@20.000000,80.000000,14z","places":[]}`, 200, true, false},
+		{"recentered viewport accepted with charge kept", `{"credits":3,"ll":"@20.000000,80.000000,14z","places":[]}`, 200, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32

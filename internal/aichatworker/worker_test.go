@@ -12,8 +12,8 @@ import (
 
 func TestComposeSystemContext(t *testing.T) {
 	completedAt := pgtype.Timestamptz{Valid: true}
-	context := composeSystemContext("selected prompt", "Example", "https://example.com", completedAt)
-	for _, want := range []string{"selected prompt", "--- Editor links ---", `"revserp-editor"`, "--- Project context ---", "Name: Example", "URL: https://example.com", "--- Crawl context ---"} {
+	context := composeSystemContext("selected prompt", "Example", "https://example.com", completedAt, "Acme Downtown", "Kathmandu")
+	for _, want := range []string{"selected prompt", "--- Editor links ---", `"revserp-editor"`, "--- Project context ---", "Name: Example", "URL: https://example.com", "--- Location context ---", "Location: Acme Downtown", "Locality: Kathmandu", "--- Crawl context ---"} {
 		if !strings.Contains(context, want) {
 			t.Errorf("system context missing %q: %q", want, context)
 		}
@@ -23,10 +23,17 @@ func TestComposeSystemContext(t *testing.T) {
 	}
 }
 
+func TestComposeSystemContextOmitsLocationForParent(t *testing.T) {
+	context := composeSystemContext("p", "Example", "https://example.com", pgtype.Timestamptz{}, "", "")
+	if strings.Contains(context, "--- Location context ---") {
+		t.Fatalf("parent context must omit the location section: %q", context)
+	}
+}
+
 func TestAllowedTools(t *testing.T) {
 	all := allowedTools(nil)
-	if len(all) != 14 {
-		t.Fatalf("allowedTools(nil) has %d tools, want 14: %+v", len(all), all)
+	if len(all) != 15 {
+		t.Fatalf("allowedTools(nil) has %d tools, want 15: %+v", len(all), all)
 	}
 	names := map[string]bool{}
 	for _, def := range all {
@@ -35,22 +42,22 @@ func TestAllowedTools(t *testing.T) {
 			t.Fatalf("tool %s missing description or schema: %+v", def.Name, def)
 		}
 	}
-	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage"} {
+	for _, name := range []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage", "get_location_landmarks"} {
 		if !names[name] {
 			t.Fatalf("allowedTools(nil) missing %s: %+v", name, all)
 		}
 	}
-	if got := allowedTools([]string{"read_issues"}); len(got) != 13 {
-		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other thirteen", got)
+	if got := allowedTools([]string{"read_issues"}); len(got) != 14 {
+		t.Fatalf("allowedTools(disabled read_issues) = %+v, want the other fourteen", got)
 	}
-	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage"}); len(got) != 0 {
+	if got := allowedTools([]string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage", "get_location_landmarks"}); len(got) != 0 {
 		t.Fatalf("allowedTools(all disabled) = %+v, want none", got)
 	}
-	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 13 {
-		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other thirteen", got)
+	if got := allowedTools([]string{"unknown", "read_issues"}); len(got) != 14 {
+		t.Fatalf("allowedTools(unknown+disabled) = %+v, want the other fourteen", got)
 	}
-	if got := allowedTools([]string{"update_project_keywords"}); len(got) != 13 {
-		t.Fatalf("allowedTools(disabled update_project_keywords) = %+v, want the other thirteen", got)
+	if got := allowedTools([]string{"update_project_keywords"}); len(got) != 14 {
+		t.Fatalf("allowedTools(disabled update_project_keywords) = %+v, want the other fourteen", got)
 	}
 }
 

@@ -17,17 +17,19 @@ const MaxMapQueryBytes = 500
 // query is a genuinely different search, never two word orders of the same
 // one. A thin geography yields fewer queries rather than padded duplicates,
 // so a run costs only what it actually searches. At least one service must be
-// non-empty; locality levels may be empty. Output is capped at MapQueryCount.
+// non-empty; locality levels may be empty. Output is capped at the safety-bound
+// MaxMapQueries, never at a product-specific count.
 func GenerateMapQueries(services []string, localities []string) ([]string, error) {
 	services = distinctQueryLevels(services)
 	if len(services) == 0 {
 		return nil, errors.New("generate map queries: at least one service must be non-empty")
 	}
 	levels := distinctQueryLevels(localities)
-	seen := make(map[string]bool, MapQueryCount)
-	candidates := make([]string, 0, MapQueryCount)
+	capacity := len(services) * (2 + len(levels))
+	seen := make(map[string]bool, capacity)
+	candidates := make([]string, 0, capacity)
 	add := func(query string) {
-		if len(candidates) >= MapQueryCount {
+		if len(candidates) >= MaxMapQueries {
 			return
 		}
 		if key := strings.ToLower(strings.TrimSpace(query)); key != "" && !seen[key] {
@@ -72,14 +74,11 @@ func distinctQueryLevels(levels []string) []string {
 }
 
 // ValidateEditableMapQueries normalises and validates an editable query list of
-// zero to MapQueryCount (five) queries. It strips outer whitespace, then rejects
-// blank entries, queries longer than MaxMapQueryBytes, and duplicates compared
-// case-insensitively. It returns a non-nil slice, so an empty list round-trips
-// as JSON [] rather than null, and it never pads a short list.
+// any length. It strips outer whitespace, then rejects blank entries, queries
+// longer than MaxMapQueryBytes, and duplicates compared case-insensitively. It
+// returns a non-nil slice, so an empty list round-trips as JSON [] rather than
+// null, and it never pads a short list.
 func ValidateEditableMapQueries(queries []string) ([]string, error) {
-	if len(queries) > MapQueryCount {
-		return nil, fmt.Errorf("local visibility editable queries: %d exceeds maximum %d", len(queries), MapQueryCount)
-	}
 	normalized := make([]string, 0, len(queries))
 	seen := make(map[string]bool, len(queries))
 	for i, query := range queries {

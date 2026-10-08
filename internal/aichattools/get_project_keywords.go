@@ -43,6 +43,9 @@ func getProjectKeywordsTool() Tool {
 }
 
 func executeGetProjectKeywords(ctx context.Context, args json.RawMessage, s Scope) (Result, error) {
+	if s.LocationID.Valid {
+		return executeGetProjectKeywordsLocal(ctx, args, s)
+	}
 	if s.Queries == nil {
 		return Result{}, errors.New("get_project_keywords: scope has no queries")
 	}

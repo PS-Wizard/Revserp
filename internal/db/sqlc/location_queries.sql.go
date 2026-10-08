@@ -119,7 +119,7 @@ func (q *Queries) DisableProjectLocationQueryForUser(ctx context.Context, arg Di
 }
 
 const getLocationForAIAuditWorker = `-- name: GetLocationForAIAuditWorker :one
-SELECT id, project_id, name, place_id, latitude, longitude, created_at, updated_at, address, locality, localities FROM project_locations
+SELECT id, project_id, name, place_id, latitude, longitude, created_at, updated_at, address, locality, localities, radius_m FROM project_locations
 WHERE id = $1::uuid
   AND project_id = $2::uuid
 `
@@ -144,6 +144,7 @@ func (q *Queries) GetLocationForAIAuditWorker(ctx context.Context, arg GetLocati
 		&i.Address,
 		&i.Locality,
 		&i.Localities,
+		&i.RadiusM,
 	)
 	return i, err
 }

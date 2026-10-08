@@ -29,7 +29,7 @@ func competitorsSnapshot() localvisibility.LocalRunSnapshot {
 func competitorsRow(pointIndex, queryIndex int, callStatus, raw string) sqlc.GetLocalVisibilityRunCompetitorResultsRow {
 	return sqlc.GetLocalVisibilityRunCompetitorResultsRow{
 		PointIndex:  int16(pointIndex),
-		QueryIndex:  int16(queryIndex),
+		QueryIndex:  int32(queryIndex),
 		CallStatus:  callStatus,
 		RawResponse: []byte(raw),
 	}
@@ -629,5 +629,218 @@ func TestLocalVisibilityPointCompetitorsEndpointAndSecurity(t *testing.T) {
 				t.Errorf("status = %d, want %d; body=%s", rr.Code, want, rr.Body.String())
 			}
 		})
+	}
+}
+
+func competitorAverage(t *testing.T, c localVisibilityCompetitorResponse) float64 {
+	t.Helper()
+	if c.AveragePosition == nil {
+		t.Fatalf("%s average_position = null, want non-null", c.PlaceID)
+	}
+	return *c.AveragePosition
+}
+
+func TestBuildCompetitorsAveragePositionMeanBeatsBestRank(t *testing.T) {
+	response, err := buildLocalVisibilityCompetitors("run-1", competitorsSnapshot(), []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", competitorsPlacesJSON(`{"position":1,"title":"Spike","address":"S","placeId":"id-spike"}`, `{"position":2,"title":"Steady","address":"S","placeId":"id-steady"}`)),
+		competitorsRow(1, 0, "success_nonempty", competitorsPlacesJSON(`{"position":9,"title":"Spike","address":"S","placeId":"id-spike"}`, `{"position":2,"title":"Steady","address":"S","placeId":"id-steady"}`)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spikeGot := findCompetitor(t, response, "id-spike")
+	steadyGot := findCompetitor(t, response, "id-steady")
+	if spikeGot.BestRank == nil || *spikeGot.BestRank != 1 {
+		t.Fatalf("spike best_rank = %#v, want 1", spikeGot.BestRank)
+	}
+	if got := competitorAverage(t, spikeGot); got != 5 {
+		t.Fatalf("spike average_position = %v, want 5", got)
+	}
+	if got := competitorAverage(t, steadyGot); got != 2 {
+		t.Fatalf("steady average_position = %v, want 2", got)
+	}
+	if len(response.Competitors) < 2 || response.Competitors[0].PlaceID != "id-steady" || response.Competitors[1].PlaceID != "id-spike" {
+		t.Fatalf("order = %#v, want steady (avg 2) before spike (avg 5) despite spike best 1", response.Competitors)
+	}
+}
+
+func TestBuildCompetitorsAveragePositionDedupesWithinCell(t *testing.T) {
+	dup := competitorsPlacesJSON(`{"position":8,"title":"Dup","address":"D","placeId":"id-a"}`, `{"position":2,"title":"Dup","address":"D","placeId":"id-a"}`)
+	second := competitorsPlacesJSON(`{"position":4,"title":"Dup","address":"D","placeId":"id-a"}`)
+	response, err := buildLocalVisibilityCompetitors("run-1", competitorsSnapshot(), []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", dup),
+		competitorsRow(1, 0, "success_nonempty", second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := findCompetitor(t, response, "id-a")
+	if got.QueryPointsSeen != 2 {
+		t.Fatalf("query_points_seen = %d, want 2", got.QueryPointsSeen)
+	}
+	if got.BestRank == nil || *got.BestRank != 2 {
+		t.Fatalf("best_rank = %#v, want 2", got.BestRank)
+	}
+	if avg := competitorAverage(t, got); avg != 3 {
+		t.Fatalf("average_position = %v, want (2+4)/2=3 not weighted by in-cell duplicate", avg)
+	}
+}
+
+func TestBuildCompetitorsAveragePositionScopeUnknownAndTies(t *testing.T) {
+	scopedRows := []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", competitorsPlacesJSON(`{"position":6,"title":"X","address":"X","placeId":"id-x"}`)),
+		competitorsRow(0, 1, "success_nonempty", competitorsPlacesJSON(`{"position":0,"title":"X","address":"X","placeId":"id-x"}`, `{"title":"N","address":"N","placeId":"id-n"}`)),
+		competitorsRow(1, 0, "success_nonempty", competitorsPlacesJSON(`{"position":1,"title":"Out","address":"O","placeId":"id-out"}`)),
+		competitorsRow(1, 1, "success_nonempty", competitorsPlacesJSON(`{"position":1,"title":"Out","address":"O","placeId":"id-out"}`)),
+	}
+	scoped, err := buildLocalVisibilityPointCompetitors("run-1", 0, competitorsSnapshot(), scopedRows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range scoped.Competitors {
+		if c.PlaceID == "id-out" {
+			t.Fatalf("id-out leaked from another point: %#v", scoped.Competitors)
+		}
+	}
+	x := findCompetitor(t, scoped, "id-x")
+	if x.QueryPointsSeen != 2 {
+		t.Fatalf("id-x query_points_seen = %d, want 2 (invalid zero still seen)", x.QueryPointsSeen)
+	}
+	if got := competitorAverage(t, x); got != 6 {
+		t.Fatalf("id-x average_position = %v, want 6 (zero excluded, never counted)", got)
+	}
+	n := findCompetitor(t, scoped, "id-n")
+	if n.AveragePosition != nil {
+		t.Fatalf("id-n average_position = %v, want null", *n.AveragePosition)
+	}
+	if n.QueryPointsSeen != 1 {
+		t.Fatalf("id-n query_points_seen = %d, want 1", n.QueryPointsSeen)
+	}
+
+	tieRows := []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", competitorsPlacesJSON(`{"position":2,"title":"X","address":"X","placeId":"id-x"}`, `{"position":4,"title":"Y","address":"Y","placeId":"id-y"}`, `{"title":"N","address":"N","placeId":"id-n"}`)),
+		competitorsRow(1, 0, "success_nonempty", competitorsPlacesJSON(`{"position":2,"title":"X","address":"X","placeId":"id-x"}`, `{"position":0,"title":"Y","address":"Y","placeId":"id-y"}`)),
+		competitorsRow(2, 0, "success_nonempty", competitorsPlacesJSON(`{"position":6,"title":"Y","address":"Y","placeId":"id-y"}`)),
+	}
+	tied, err := buildLocalVisibilityCompetitors("run-1", competitorsSnapshot(), tieRows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xAvg := competitorAverage(t, findCompetitor(t, tied, "id-x"))
+	yAvg := competitorAverage(t, findCompetitor(t, tied, "id-y"))
+	if xAvg != 2 || yAvg != 5 {
+		t.Fatalf("tie setup averages = %v/%v, want 2/5", xAvg, yAvg)
+	}
+	order := []string{}
+	for _, c := range tied.Competitors {
+		order = append(order, c.PlaceID)
+	}
+	want := "id-x,id-y,id-n"
+	if strings.Join(order, ",") != want {
+		t.Fatalf("order = %v, want %s (avg asc, null last)", order, want)
+	}
+
+	sameAvg := []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", competitorsPlacesJSON(`{"position":2,"title":"Few","address":"F","placeId":"id-few"}`, `{"position":2,"title":"Many","address":"M","placeId":"id-many"}`)),
+		competitorsRow(1, 0, "success_nonempty", competitorsPlacesJSON(`{"position":2,"title":"Many","address":"M","placeId":"id-many"}`)),
+	}
+	same, err := buildLocalVisibilityCompetitors("run-1", competitorsSnapshot(), sameAvg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(same.Competitors) != 2 || same.Competitors[0].PlaceID != "id-many" || same.Competitors[1].PlaceID != "id-few" {
+		t.Fatalf("equal averages order = %#v, want many (seen 2) before few (seen 1)", same.Competitors)
+	}
+}
+
+func TestBuildCompetitorsAveragePositionContractShape(t *testing.T) {
+	raw := `{"places":[{"position":1,"title":"T","address":"A","placeId":"id-a"}]}`
+	response, err := buildLocalVisibilityCompetitors("run-1", competitorsSnapshot(), []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", raw),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	competitor := decoded["competitors"].([]any)[0].(map[string]any)
+	avg, ok := competitor["average_position"]
+	if !ok || avg == nil {
+		t.Fatalf("missing/non-null average_position in %s", encoded)
+	}
+	if avg.(float64) != 1 {
+		t.Fatalf("average_position = %v, want 1", avg)
+	}
+	count, ok := competitor["average_result_count"]
+	if !ok || count == nil {
+		t.Fatalf("missing/non-null average_result_count in %s", encoded)
+	}
+	if count.(float64) != 1 {
+		t.Fatalf("average_result_count = %v, want 1 (single ranked listing)", count)
+	}
+	if _, ok := competitor["best_rank"]; !ok {
+		t.Fatalf("best_rank must stay for backward compatibility in %s", encoded)
+	}
+}
+
+func competitorAverageCount(t *testing.T, c localVisibilityCompetitorResponse) float64 {
+	t.Helper()
+	if c.AverageResultCount == nil {
+		t.Fatalf("%s average_result_count = null, want non-null", c.PlaceID)
+	}
+	return *c.AverageResultCount
+}
+
+func TestBuildCompetitorsAverageResultCountSizesDuplicatesAndNull(t *testing.T) {
+	big := competitorsPlacesJSON(
+		`{"position":1,"title":"Own","address":"O","placeId":"target-place"}`,
+		`{"position":2,"title":"Rival","address":"R","placeId":"id-r"}`,
+		`{"position":5,"title":"Rival","address":"R","placeId":"id-r"}`,
+		`{"title":"Ghost","address":"G","placeId":"id-ghost"},`+`{"position":3,"title":"NoID","address":"N"}`,
+	)
+	small := competitorsPlacesJSON(
+		`{"position":1,"title":"Own","address":"O","placeId":"target-place"},` + `{"position":4,"title":"Rival","address":"R","placeId":"id-r"}`,
+	)
+	response, err := buildLocalVisibilityCompetitors("run-1", competitorsSnapshot(), []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", big),
+		competitorsRow(1, 0, "success_nonempty", small),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := findCompetitor(t, response, "id-r")
+	if got := competitorAverage(t, r); got != 3 {
+		t.Fatalf("id-r average_position = %v, want (2+4)/2=3", got)
+	}
+	if got := competitorAverageCount(t, r); got != 2.5 {
+		t.Fatalf("id-r average_result_count = %v, want (3+2)/2=2.5: dup id counts once, ghost without position excluded, target included", got)
+	}
+	if r.BestRank == nil || *r.BestRank != 2 || r.QueryPointsSeen != 2 {
+		t.Fatalf("id-r best/seen = %#v/%d, want 2/2", r.BestRank, r.QueryPointsSeen)
+	}
+	ghost := findCompetitor(t, response, "id-ghost")
+	if ghost.AveragePosition != nil || ghost.AverageResultCount != nil {
+		t.Fatalf("ghost averages = %#v/%#v, want null/null", ghost.AveragePosition, ghost.AverageResultCount)
+	}
+	if ghost.QueryPointsSeen != 1 {
+		t.Fatalf("ghost query_points_seen = %d, want 1", ghost.QueryPointsSeen)
+	}
+
+	scoped, err := buildLocalVisibilityPointCompetitors("run-1", 0, competitorsSnapshot(), []sqlc.GetLocalVisibilityRunCompetitorResultsRow{
+		competitorsRow(0, 0, "success_nonempty", big),
+		competitorsRow(1, 0, "success_nonempty", small),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopedRival := findCompetitor(t, scoped, "id-r")
+	if got := competitorAverageCount(t, scopedRival); got != 3 {
+		t.Fatalf("scoped id-r average_result_count = %v, want 3 (only this point's cells)", got)
 	}
 }

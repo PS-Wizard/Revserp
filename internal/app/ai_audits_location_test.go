@@ -50,6 +50,10 @@ func locationAuditTestQueries(t *testing.T) (*sqlc.Queries, *pgxpool.Pool, conte
 	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ai_audits' AND column_name = 'location_id')`).Scan(&migrated); err != nil || !migrated {
 		t.Skip("ai_audits.location_id is not migrated in the test database")
 	}
+	var profilesReady bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.location_business_profiles') IS NOT NULL`).Scan(&profilesReady); err != nil || !profilesReady {
+		t.Skip("location_business_profiles is not migrated in the test database")
+	}
 	return sqlc.New(pool), pool, ctx
 }
 
@@ -64,20 +68,20 @@ func locationAuditTestDatabaseURL() (string, string) {
 }
 
 type locationAuditFixture struct {
-	app             *App
-	queries         *sqlc.Queries
-	pool            *pgxpool.Pool
-	ctx             context.Context
-	orgID           pgtype.UUID
-	ownerID         pgtype.UUID
-	outsiderID      pgtype.UUID
-	projectID       pgtype.UUID
-	otherProjectID  pgtype.UUID
-	locationID      pgtype.UUID
-	emptyLocationID pgtype.UUID
-	busyLocationID  pgtype.UUID
-	crawlID         pgtype.UUID
-	otherCrawlID    pgtype.UUID
+	app                 *App
+	queries             *sqlc.Queries
+	pool                *pgxpool.Pool
+	ctx                 context.Context
+	orgID               pgtype.UUID
+	ownerID             pgtype.UUID
+	outsiderID          pgtype.UUID
+	projectID           pgtype.UUID
+	otherProjectID      pgtype.UUID
+	locationID          pgtype.UUID
+	emptyLocationID     pgtype.UUID
+	noProfileLocationID pgtype.UUID
+	crawlID             pgtype.UUID
+	otherCrawlID        pgtype.UUID
 }
 
 func newLocationAuditFixture(t *testing.T) locationAuditFixture {
@@ -131,18 +135,18 @@ func newLocationAuditFixture(t *testing.T) locationAuditFixture {
 		return crawlID
 	}
 
-	newLocation := func(project pgtype.UUID, locationName string, queryCount int) pgtype.UUID {
+	newLocation := func(project pgtype.UUID, locationName string, seedPrompts []string) pgtype.UUID {
 		var locationID pgtype.UUID
 		if err := pool.QueryRow(ctx, `INSERT INTO project_locations (project_id, name, latitude, longitude) VALUES ($1,$2,27.7172,85.3240) RETURNING id`,
 			project, locationName).Scan(&locationID); err != nil {
 			t.Fatalf("create location: %v", err)
 		}
-		for i := 0; i < queryCount; i++ {
-			text := fmt.Sprintf("%s service %d", locationName, i)
-			if _, err := pool.Exec(ctx, `INSERT INTO project_location_queries (location_id, text, normalized, ordinal, enabled, kind, source, origin) VALUES ($1,$2,$3,$4,TRUE,'map','manual','locality')`,
-				locationID, text, strings.ToLower(text), i); err != nil {
-				t.Fatalf("create map query: %v", err)
-			}
+		prompts, err := json.Marshal(seedPrompts)
+		if err != nil {
+			t.Fatalf("marshal seed prompts: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE location_business_profiles SET seed_prompts = $1 WHERE location_id = $2`, prompts, locationID); err != nil {
+			t.Fatalf("set location seed prompts: %v", err)
 		}
 		return locationID
 	}
@@ -159,21 +163,30 @@ func newLocationAuditFixture(t *testing.T) locationAuditFixture {
 		t.Fatalf("seed project questions: %v", err)
 	}
 
+	if _, err := pool.Exec(ctx, `INSERT INTO project_business_profile (project_id, brand_name, website_url) VALUES ($1,'Location Parent','https://example.com')`, projectID); err != nil {
+		t.Fatalf("seed parent business profile: %v", err)
+	}
+
+	noProfileLocationID := newLocation(projectID, name+"-no-profile", []string{"what seo firms exist?"})
+	if _, err := pool.Exec(ctx, `DELETE FROM location_business_profiles WHERE location_id = $1`, noProfileLocationID); err != nil {
+		t.Fatalf("drop location profile: %v", err)
+	}
+
 	return locationAuditFixture{
-		app:             &App{DB: pool, Queries: queries},
-		queries:         queries,
-		pool:            pool,
-		ctx:             ctx,
-		orgID:           orgID,
-		ownerID:         ownerID,
-		outsiderID:      outsideID,
-		projectID:       projectID,
-		otherProjectID:  otherProjectID,
-		locationID:      newLocation(projectID, name+"-office", 2),
-		emptyLocationID: newLocation(projectID, name+"-empty", 0),
-		busyLocationID:  newLocation(projectID, name+"-busy", 6),
-		crawlID:         newCrawl(projectID),
-		otherCrawlID:    newCrawl(otherProjectID),
+		app:                 &App{DB: pool, Queries: queries},
+		queries:             queries,
+		pool:                pool,
+		ctx:                 ctx,
+		orgID:               orgID,
+		ownerID:             ownerID,
+		outsiderID:          outsideID,
+		projectID:           projectID,
+		otherProjectID:      otherProjectID,
+		locationID:          newLocation(projectID, name+"-office", []string{"what seo firms exist?"}),
+		emptyLocationID:     newLocation(projectID, name+"-empty", []string{}),
+		noProfileLocationID: noProfileLocationID,
+		crawlID:             newCrawl(projectID),
+		otherCrawlID:        newCrawl(otherProjectID),
 	}
 }
 
@@ -339,10 +352,10 @@ func TestCreateLocationAIAuditValidation(t *testing.T) {
 	}{
 		{"unknown location", func() pgtype.UUID { return fx.ownerID }, func() pgtype.UUID { return fx.projectID },
 			func() string { return `{"location_id":"00000000-0000-0000-0000-000000000000"}` }, http.StatusNotFound, "location not found"},
-		{"no enabled queries", func() pgtype.UUID { return fx.ownerID }, func() pgtype.UUID { return fx.projectID },
-			func() string { return `{"location_id":"` + fx.emptyLocationID.String() + `"}` }, http.StatusBadRequest, "between 1 and 5 enabled map queries"},
-		{"too many enabled queries", func() pgtype.UUID { return fx.ownerID }, func() pgtype.UUID { return fx.projectID },
-			func() string { return `{"location_id":"` + fx.busyLocationID.String() + `"}` }, http.StatusBadRequest, "between 1 and 5 enabled map queries"},
+		{"no AI questions", func() pgtype.UUID { return fx.ownerID }, func() pgtype.UUID { return fx.projectID },
+			func() string { return `{"location_id":"` + fx.emptyLocationID.String() + `"}` }, http.StatusBadRequest, "location AI questions must be set"},
+		{"no business profile", func() pgtype.UUID { return fx.ownerID }, func() pgtype.UUID { return fx.projectID },
+			func() string { return `{"location_id":"` + fx.noProfileLocationID.String() + `"}` }, http.StatusBadRequest, "location business profile must be configured"},
 		{"foreign crawl", func() pgtype.UUID { return fx.ownerID }, func() pgtype.UUID { return fx.projectID },
 			func() string {
 				return `{"location_id":"` + fx.locationID.String() + `","crawl_id":"` + fx.otherCrawlID.String() + `"}`

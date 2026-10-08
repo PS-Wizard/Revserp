@@ -41,9 +41,9 @@ func within(t *testing.T, name string, got, want, tolerance float64) {
 }
 
 func TestExpectedRunCredits(t *testing.T) {
-	credits, err := ExpectedRunCredits(MapQueryCount, GridPointCount)
+	credits, err := ExpectedRunCredits(5, GridPointCount)
 	if err != nil {
-		t.Fatalf("ExpectedRunCredits(%d,%d) returned error: %v", MapQueryCount, GridPointCount, err)
+		t.Fatalf("ExpectedRunCredits(5,%d) returned error: %v", GridPointCount, err)
 	}
 	// A thin geography yields a smaller honest run and pays less, because cost
 	// derives from the actual count rather than a padded constant.
@@ -54,11 +54,23 @@ func TestExpectedRunCredits(t *testing.T) {
 	if thin != 3*GridPointCount*MapsCreditsPerCall {
 		t.Fatalf("thin credits = %d, want 3 x points x per-call", thin)
 	}
-	if want := MapQueryCount * GridPointCount * MapsCreditsPerCall; credits != want {
+	if want := 5 * GridPointCount * MapsCreditsPerCall; credits != want {
 		t.Fatalf("credits = %d, want %d (query count x point count x per call)", credits, want)
 	}
 	if credits != 135 {
-		t.Fatalf("credits = %d, want 135 for the fixed five queries and nine points", credits)
+		t.Fatalf("credits = %d, want 135 for five queries and nine points", credits)
+	}
+	// Every enabled query above the old five-query product cap is priced in
+	// full: seven queries cost exactly seven grids, not a clamped five.
+	beyond, err := ExpectedRunCredits(7, GridPointCount)
+	if err != nil {
+		t.Fatalf("ExpectedRunCredits(7,%d) returned error: %v", GridPointCount, err)
+	}
+	if want := 7 * GridPointCount * MapsCreditsPerCall; beyond != want {
+		t.Fatalf("seven-query credits = %d, want %d (full count)", beyond, want)
+	}
+	if _, err := ExpectedRunCredits(MaxMapQueries, GridPointCount); err != nil {
+		t.Fatalf("ExpectedRunCredits(%d,%d) returned error: %v", MaxMapQueries, GridPointCount, err)
 	}
 
 	for _, tc := range []struct {
@@ -66,9 +78,9 @@ func TestExpectedRunCredits(t *testing.T) {
 		queryCount, point int
 	}{
 		{"zero queries", 0, GridPointCount},
-		{"too many queries", MapQueryCount + 1, GridPointCount},
-		{"too few points", MapQueryCount, GridPointCount - 1},
-		{"too many points", MapQueryCount, GridPointCount + 1},
+		{"unsafe query count", MaxMapQueries + 1, GridPointCount},
+		{"too few points", MaxMapQueries, GridPointCount - 1},
+		{"too many points", MaxMapQueries, GridPointCount + 1},
 		{"both wrong", 0, GridPointCount + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

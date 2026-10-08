@@ -123,13 +123,22 @@ func (a *App) handleCreateAIAudit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		enabled, err := queries.ListEnabledMapQueriesForUser(r.Context(), sqlc.ListEnabledMapQueriesForUserParams{LocationID: locationID, ProjectID: project.ID, UserID: user.ID})
+		_, hasProfile, err := a.getLocationBusinessProfile(r.Context(), project.ID, locationID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		if len(enabled) < 1 || len(enabled) > 5 {
-			writeJSONError(w, http.StatusBadRequest, "location requires between 1 and 5 enabled map queries")
+		if !hasProfile {
+			writeJSONError(w, http.StatusBadRequest, "location business profile must be configured before running a visibility audit")
+			return
+		}
+		hasQuestions, err := a.locationHasAIQuestions(r.Context(), project.ID, locationID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		if !hasQuestions {
+			writeJSONError(w, http.StatusBadRequest, "location AI questions must be set before running a visibility audit")
 			return
 		}
 

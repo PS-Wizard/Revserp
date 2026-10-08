@@ -28,6 +28,8 @@ type MapsListingResponse struct {
 }
 
 // LookupMapsListing preserves decoded charges on errors and never retries a paid request.
+// The display viewport may sit far from the request (see MapsAt), so only a
+// malformed echoed viewport or a missing/null places array is rejected.
 func (c *Client) LookupMapsListing(ctx context.Context, query string, latitude, longitude float64) (MapsListingResponse, error) {
 	var response MapsListingResponse
 	viewport, err := FormatMapsViewport(latitude, longitude)
@@ -40,12 +42,8 @@ func (c *Client) LookupMapsListing(ctx context.Context, query string, latitude, 
 	if response.Places == nil {
 		return response, fmt.Errorf("serper listing lookup: missing places array")
 	}
-	drift, err := mapsViewportDrift(response.LL, latitude, longitude)
-	if err != nil {
+	if _, err := mapsViewportDrift(response.LL, latitude, longitude); err != nil {
 		return response, fmt.Errorf("serper listing viewport: %w", err)
-	}
-	if drift > MapsViewportToleranceM {
-		return response, fmt.Errorf("serper listing viewport drift: %.3f metres exceeds %.0f metres", drift, MapsViewportToleranceM)
 	}
 	return response, nil
 }

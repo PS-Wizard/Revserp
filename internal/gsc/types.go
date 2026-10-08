@@ -45,6 +45,9 @@ type QueryPageOptions struct {
 	Search string
 	// QuestionsOnly restricts rows to questionQueryPattern.
 	QuestionsOnly bool
+	// PageScope restricts rows to one branch scope at Google. The zero value
+	// disables it, which keeps whole-property callers unchanged.
+	PageScope PageScopeFilter
 }
 
 // QueryPage holds one page of Search Console query rows.

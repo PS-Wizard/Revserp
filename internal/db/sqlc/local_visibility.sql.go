@@ -41,7 +41,7 @@ func (q *Queries) CountLocalVisibilityRunResultsForUser(ctx context.Context, arg
 
 const createLocalRunCells = `-- name: CreateLocalRunCells :exec
 INSERT INTO local_run_cells(run_id,query_index,point_index)
-SELECT $1, q::smallint, p::smallint
+SELECT $1, q::integer, p::smallint
 FROM generate_series(0,$2::integer-1) q,
 generate_series(0,$3::integer-1) p
 `
@@ -178,7 +178,7 @@ WHERE c.run_id = $1 ORDER BY c.query_index,c.point_index
 `
 
 type GetLocalRunCellsRow struct {
-	QueryIndex     int16
+	QueryIndex     int32
 	PointIndex     int16
 	StartedAt      pgtype.Timestamptz
 	CallStatus     string
@@ -242,7 +242,7 @@ type GetLocalVisibilityPointResultsParams struct {
 }
 
 type GetLocalVisibilityPointResultsRow struct {
-	QueryIndex  int16
+	QueryIndex  int32
 	CallStatus  string
 	MatchStatus string
 	Rank        pgtype.Int4
@@ -335,7 +335,7 @@ WHERE c.run_id = $1 ORDER BY c.query_index,c.point_index
 `
 
 type GetLocalVisibilityRunCompetitorResultsRow struct {
-	QueryIndex  int16
+	QueryIndex  int32
 	PointIndex  int16
 	CallStatus  string
 	RawResponse []byte
@@ -450,7 +450,7 @@ func (q *Queries) GetPlatformMapsCreditBudget(ctx context.Context) (PlatformMaps
 }
 
 const getProjectLocationForUser = `-- name: GetProjectLocationForUser :one
-SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, p.organization_id FROM project_locations l
+SELECT l.id, l.project_id, l.name, l.place_id, l.latitude, l.longitude, l.created_at, l.updated_at, l.address, l.locality, l.localities, l.radius_m, p.organization_id FROM project_locations l
 JOIN projects p ON p.id = l.project_id
 JOIN organization_members m ON m.org_id = p.organization_id
 WHERE l.id = $1 AND p.id = $2 AND m.user_id = $3
@@ -474,6 +474,7 @@ type GetProjectLocationForUserRow struct {
 	Address        string
 	Locality       string
 	Localities     []byte
+	RadiusM        int32
 	OrganizationID pgtype.UUID
 }
 
@@ -492,6 +493,7 @@ func (q *Queries) GetProjectLocationForUser(ctx context.Context, arg GetProjectL
 		&i.Address,
 		&i.Locality,
 		&i.Localities,
+		&i.RadiusM,
 		&i.OrganizationID,
 	)
 	return i, err
@@ -504,7 +506,7 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 
 type InsertLocalVisibilityResultParams struct {
 	RunID       pgtype.UUID
-	QueryIndex  int16
+	QueryIndex  int32
 	PointIndex  int16
 	CallStatus  string
 	MatchStatus string
@@ -686,7 +688,7 @@ RETURNING run_id, query_index, point_index, started_at
 
 type StartLocalRunCellParams struct {
 	RunID      pgtype.UUID
-	QueryIndex int16
+	QueryIndex int32
 	PointIndex int16
 }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -282,5 +283,27 @@ func TestSaveLayer4QueryDraftRejectsDuplicateIDs(t *testing.T) {
 	}
 	if len(store.updates)+len(store.inserts)+len(store.deletes) != 0 {
 		t.Fatal("invalid draft performed writes")
+	}
+}
+
+func TestSaveLayer4QueryDraftKeepsEveryEntryBeyondFive(t *testing.T) {
+	// The 1-5 Maps query product cap is gone: a draft save accepts any count
+	// and never truncates. Seven enabled entries must all persist in order.
+	store := &recordingLayer4DraftStore{}
+	entries := make([]layer4QueryDraftEntry, 7)
+	for i := range entries {
+		entries[i] = draftEntry(nil, fmt.Sprintf("query %d", i), true)
+	}
+	records, err := saveLayer4QueryDraft(context.Background(), store, entries)
+	if err != nil {
+		t.Fatalf("save seven-entry draft: %v", err)
+	}
+	if len(store.inserts) != 7 || len(records) != 7 {
+		t.Fatalf("inserts = %d records = %d, want 7 each (no truncation)", len(store.inserts), len(records))
+	}
+	for i, record := range records {
+		if int(record.Ordinal) != i {
+			t.Fatalf("record %d ordinal = %d, want %d", i, record.Ordinal, i)
+		}
 	}
 }

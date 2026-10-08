@@ -37,11 +37,12 @@ type Transactor interface {
 // Scope carries server-derived identity and data access for one tool call.
 // Tool schemas never contain tenant IDs; the loop fills these fields instead.
 type Scope struct {
-	UserID    pgtype.UUID
-	ProjectID pgtype.UUID
-	CrawlID   pgtype.UUID
-	Queries   *sqlc.Queries
-	DB        Transactor
+	UserID     pgtype.UUID
+	ProjectID  pgtype.UUID
+	CrawlID    pgtype.UUID
+	LocationID pgtype.UUID
+	Queries    *sqlc.Queries
+	DB         Transactor
 	// GSC is the search console data fetcher, nil when the worker has none.
 	GSC GSCFetcher
 	// RowBudget caps how many database rows one turn may fetch through tools.
@@ -228,7 +229,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool(), getLocationLandmarksTool()}}
 }
 
 // CatalogDefs lists every native tool definition in catalog order, including
@@ -238,7 +239,7 @@ func NewRegistry() *Registry {
 // connection tools are not here: they exist per connection and are gated by
 // the canonical aliases MCPModelToolName builds.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def, getLocationLandmarksTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag
@@ -312,4 +313,50 @@ func NewFilteredRegistry(blocked []string) *Registry {
 		registry.tools = append(registry.tools, tool)
 	}
 	return registry
+}
+
+// LocationUnsupportedNativeTools lists native tools that read or write parent
+// project data and have no location branch. A location-scoped turn denies them,
+// so the model can never report parent totals or edit the parent while the user
+// is inside a location.
+func LocationUnsupportedNativeTools() []string {
+	return []string{
+		"get_score_summary",
+		"read_issues",
+		"read_issue_work",
+		"get_search_console_data",
+	}
+}
+
+const locationUpdateProjectKeywordsSchema = `{
+  "type": "object",
+  "required": ["brand_keywords", "non_brand_keywords", "source"],
+  "properties": {
+    "brand_keywords": {"type": "array", "items": {"type": "string", "maxLength": 200}, "description": "Complete keyword list for the chosen source. Replaces that source atomically; an empty array clears the selected list. Suggested (revserp) lists must be non-empty. Any count is allowed for selected."},
+    "non_brand_keywords": {"type": "array", "items": {"type": "string", "maxLength": 200}, "description": "Complete keyword list for the chosen source. Replaces that source atomically; an empty array clears the selected list. Suggested (revserp) lists must be non-empty. Any count is allowed for selected."},
+    "source": {"type": "string", "enum": ["selected", "revserp"], "description": "Required location-only write target. Pass selected only after the user explicitly asks to select Maps queries: it replaces the location selected list and syncs future paid Maps draft queries. Pass revserp from the Find-keywords flow to save a small relevant set of suggested lists; revserp writes never touch user-defined, selected, or Maps state."}
+  },
+  "additionalProperties": false
+}`
+
+const locationUpdateProjectKeywordsDescription = "Replace one of the current location's keyword lists. Both brand_keywords and non_brand_keywords are required as complete lists, plus the required location-only source naming the target: pass selected only after the user explicitly asks to select Maps queries (it replaces the selected list and syncs future paid Maps draft queries, and either list may be empty to clear it); pass revserp from the Find-keywords flow to save a small relevant set of suggested lists (must be non-empty, never touches user-defined, selected, or Maps state). Generated or suggested keywords never become selected Maps queries without an explicit selected write. Writes the location lists only, never the parent project keywords. Requires organization owner; non-owners are denied. Ground suggestions in the location profile, saved landmarks, and crawled content; never invent search volume or rank numbers. Keyword edits never trigger question generation."
+
+func NewLocationScopedRegistry(blocked []string) *Registry {
+	combined := make([]string, 0, len(blocked)+len(LocationUnsupportedNativeTools()))
+	combined = append(combined, blocked...)
+	combined = append(combined, LocationUnsupportedNativeTools()...)
+	registry := NewFilteredRegistry(combined)
+	registry.applyLocationDefs()
+	return registry
+}
+
+func (r *Registry) applyLocationDefs() {
+	for i := range r.tools {
+		if r.tools[i].Def.Name != updateProjectKeywordsName {
+			continue
+		}
+		r.tools[i].Def.Label = "Update location selected keywords"
+		r.tools[i].Def.Description = locationUpdateProjectKeywordsDescription
+		r.tools[i].Def.Schema = json.RawMessage(locationUpdateProjectKeywordsSchema)
+	}
 }

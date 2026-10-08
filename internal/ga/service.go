@@ -166,6 +166,57 @@ func (service *Service) FetchOverviewCached(ctx context.Context, accessToken, or
 	return value.(Overview), nil
 }
 
+// FetchOverviewCachedWithPagePathFilter returns the cached location overview for
+// organization+connection+property+filter, fetching live once on a miss. The
+// connection is part of the key so two accounts over one property never share rows.
+func (service *Service) FetchOverviewCachedWithPagePathFilter(ctx context.Context, accessToken, organizationID, connectionID, propertyID string, filter PagePathFilter) (Overview, error) {
+	key := locationOverviewCacheKey(organizationID, connectionID, propertyID, filter)
+	if cached, ok := service.peekOverviewCache(key); ok {
+		return cached, nil
+	}
+	value, err, _ := service.group.Do(key, func() (any, error) {
+		if cached, ok := service.peekOverviewCache(key); ok {
+			return cached, nil
+		}
+		overview, err := service.FetchOverviewWithPagePathFilter(ctx, accessToken, propertyID, filter)
+		if err != nil {
+			return nil, err
+		}
+		service.cacheMu.Lock()
+		service.evictExpiredLocked()
+		if _, exists := service.cache[key]; !exists && len(service.cache) >= cacheMaxEntries {
+			service.evictOldestLocked()
+		}
+		service.cache[key] = cacheEntry{overview: overview, fetchedAt: time.Now()}
+		service.cacheMu.Unlock()
+		return overview, nil
+	})
+	if err != nil {
+		return Overview{}, err
+	}
+	return value.(Overview), nil
+}
+
+// PeekOverviewCachedWithPagePathFilter returns the stored location overview
+// without calling Google, reporting whether one exists.
+func (service *Service) PeekOverviewCachedWithPagePathFilter(organizationID, connectionID, propertyID string, filter PagePathFilter) (Overview, bool) {
+	return service.peekOverviewCache(locationOverviewCacheKey(organizationID, connectionID, propertyID, filter))
+}
+
+func (service *Service) peekOverviewCache(key string) (Overview, bool) {
+	service.cacheMu.Lock()
+	defer service.cacheMu.Unlock()
+	entry, ok := service.cache[key]
+	if ok && time.Since(entry.fetchedAt) >= cacheTTL {
+		delete(service.cache, key)
+		ok = false
+	}
+	if !ok {
+		return Overview{}, false
+	}
+	return entry.overview, true
+}
+
 func (service *Service) evictExpiredLocked() {
 	for key, entry := range service.cache {
 		if time.Since(entry.fetchedAt) >= cacheTTL {
@@ -187,6 +238,12 @@ func (service *Service) evictOldestLocked() {
 
 // FetchOverview gets the fixed 360-day Analytics overview for one property.
 func (service *Service) FetchOverview(ctx context.Context, accessToken, propertyID string) (Overview, error) {
+	return service.FetchOverviewWithPagePathFilter(ctx, accessToken, propertyID, PagePathFilter{})
+}
+
+// FetchOverviewWithPagePathFilter gets the fixed 360-day Analytics overview,
+// restricted to the branch path at Google when the filter is active.
+func (service *Service) FetchOverviewWithPagePathFilter(ctx context.Context, accessToken, propertyID string, filter PagePathFilter) (Overview, error) {
 	if strings.TrimSpace(propertyID) == "" {
 		return Overview{}, &Error{Message: "missing Analytics property ID"}
 	}
@@ -202,16 +259,16 @@ func (service *Service) FetchOverview(ctx context.Context, accessToken, property
 	// reportRequest is the single source of truth for every report shape; the
 	// batch calls below just re-order those requests into two HTTP round trips.
 	batchA := []map[string]any{
-		reportRequest(rangeValue.CurrentStart, rangeValue.CurrentEnd, "", 0),
-		reportRequest(rangeValue.PreviousStart, rangeValue.PreviousEnd, "", 0),
-		reportRequest(rangeValue.PreviousStart, rangeValue.CurrentEnd, "date", 0),
-		reportRequest(rangeValue.CurrentStart, rangeValue.CurrentEnd, "landingPagePlusQueryString", 50),
-		reportRequest(rangeValue.CurrentStart, rangeValue.CurrentEnd, "sessionDefaultChannelGroup", 25),
+		reportRequestWithPagePathFilter(rangeValue.CurrentStart, rangeValue.CurrentEnd, "", 0, filter),
+		reportRequestWithPagePathFilter(rangeValue.PreviousStart, rangeValue.PreviousEnd, "", 0, filter),
+		reportRequestWithPagePathFilter(rangeValue.PreviousStart, rangeValue.CurrentEnd, "date", 0, filter),
+		reportRequestWithPagePathFilter(rangeValue.CurrentStart, rangeValue.CurrentEnd, "landingPagePlusQueryString", 50, filter),
+		reportRequestWithPagePathFilter(rangeValue.CurrentStart, rangeValue.CurrentEnd, "sessionDefaultChannelGroup", 25, filter),
 	}
 	batchB := []map[string]any{
-		reportRequest(rangeValue.CurrentStart, rangeValue.CurrentEnd, "sessionSourceMedium", 50),
-		reportRequest(rangeValue.CurrentStart, rangeValue.CurrentEnd, "country", 25),
-		reportRequest(rangeValue.CurrentStart, rangeValue.CurrentEnd, "deviceCategory", 25),
+		reportRequestWithPagePathFilter(rangeValue.CurrentStart, rangeValue.CurrentEnd, "sessionSourceMedium", 50, filter),
+		reportRequestWithPagePathFilter(rangeValue.CurrentStart, rangeValue.CurrentEnd, "country", 25, filter),
+		reportRequestWithPagePathFilter(rangeValue.CurrentStart, rangeValue.CurrentEnd, "deviceCategory", 25, filter),
 	}
 
 	var reportsA, reportsB []reportResponse
@@ -251,6 +308,8 @@ func (service *Service) FetchOverview(ctx context.Context, accessToken, property
 }
 
 // FetchRealtime returns the currently active user count without caching it.
+// The Realtime API has no pagePath dimension, so realtime counts are always
+// property-wide and must never be presented as branch-scoped figures.
 func (service *Service) FetchRealtime(ctx context.Context, accessToken, propertyID string) (float64, error) {
 	if strings.TrimSpace(propertyID) == "" {
 		return 0, &Error{Message: "missing Analytics property ID"}
@@ -277,9 +336,16 @@ type reportResponse struct {
 }
 
 func reportRequest(start, end, dimension string, limit int) map[string]any {
+	return reportRequestWithPagePathFilter(start, end, dimension, limit, PagePathFilter{})
+}
+
+func reportRequestWithPagePathFilter(start, end, dimension string, limit int, filter PagePathFilter) map[string]any {
 	request := map[string]any{
 		"dateRanges": []map[string]string{{"startDate": start, "endDate": end}},
 		"metrics":    []map[string]string{{"name": "activeUsers"}, {"name": "sessions"}, {"name": "engagementRate"}, {"name": "keyEvents"}},
+	}
+	if filter.active() {
+		request["dimensionFilter"] = filter.dimensionFilter()
 	}
 	if dimension != "" {
 		request["dimensions"] = []map[string]string{{"name": dimension}}

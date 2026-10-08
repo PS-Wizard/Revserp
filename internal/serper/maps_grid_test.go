@@ -96,10 +96,14 @@ func TestMapsAtRejectsBadViewportEcho(t *testing.T) {
 		name string
 		ll   string
 	}{
-		{"coordinate mismatch", "@37.700000,-122.419400,14z"},
+		// Valid recentered coordinates are accepted with the drift recorded;
+		// only malformed echoes reject. A swapped latitude is still out of range.
 		{"swapped coordinates", "@-122.419400,37.774900,14z"},
 		{"missing zoom suffix", "@37.774900,-122.419400,140"},
-		{"wrong zoom", "@37.774900,-122.419400,15z"},
+		{"zoom above range", "@37.774900,-122.419400,23z"},
+		{"negative zoom", "@37.774900,-122.419400,-1z"},
+		{"zoom NaN", "@37.774900,-122.419400,NaNz"},
+		{"zoom infinite", "@37.774900,-122.419400,+Infz"},
 		{"missing at prefix", "37.774900,-122.419400,14z"},
 		{"empty echo", ""},
 		{"echoed latitude NaN", "@NaN,-122.419400,14z"},
@@ -131,20 +135,47 @@ func TestMapsAtRejectsBadViewportEcho(t *testing.T) {
 // TestMapsAtAcceptsEchoedRoundedPrecision allows the provider echoing extra
 // decimals of the same six-decimal request.
 func TestMapsAtAcceptsEchoedRoundedPrecision(t *testing.T) {
-	client, _ := newMapsServer(t, `{"ll":"@37.774900123,-122.419400456,14z","credits":3}`)
+	client, _ := newMapsServer(t, `{"ll":"@37.774900123,-122.419400456,14z","credits":3,"places":[]}`)
 	if _, err := client.MapsAt(context.Background(), "coffee", 37.7749, -122.4194); err != nil {
 		t.Fatalf("echo with trailing precision rejected: %v", err)
 	}
 }
 
-func TestMapsAtRejectsEchoedCoordinateDrift(t *testing.T) {
-	client, _ := newMapsServer(t, `{"ll":"@37.775100,-122.419400,14z","credits":3}`)
+// TestMapsAtAcceptsKilometreViewportDrift is the user-failure regression:
+// provider recenters of 2.5-3.3km are accepted with the measured delta,
+// returned LL, and credits preserved. Ranks stay approximate by construction.
+func TestMapsAtAcceptsKilometreViewportDrift(t *testing.T) {
+	client, _ := newMapsServer(t, `{"ll":"@37.744900,-122.419400,14z","credits":3,"places":[{"position":1,"title":"Example Cafe"}]}`)
 	response, err := client.MapsAt(context.Background(), "coffee", 37.7749, -122.4194)
-	if err == nil || !strings.Contains(err.Error(), "viewport drift") {
-		t.Fatalf("want separately classified drift error, got %v", err)
+	if err != nil {
+		t.Fatalf("kilometre drift rejected: %v", err)
 	}
-	if response.Credits != 3 || response.ViewportDriftM == nil || *response.ViewportDriftM <= MapsViewportToleranceM {
-		t.Fatalf("charged suspect viewport evidence lost: %#v", response)
+	if response.Credits != 3 || len(response.Places) != 1 {
+		t.Fatalf("charged evidence lost: %#v", response)
+	}
+	if response.LL != "@37.744900,-122.419400,14z" {
+		t.Fatalf("returned ll not preserved: %q", response.LL)
+	}
+	if response.ViewportDriftM == nil || *response.ViewportDriftM < 3000 {
+		t.Fatalf("display drift not recorded: %v", response.ViewportDriftM)
+	}
+}
+
+// TestMapsAtRejectsMissingPlacesArray proves a missing/null places array is
+// malformed, not an empty result: only a real [] counts as empty downstream.
+func TestMapsAtRejectsMissingPlacesArray(t *testing.T) {
+	for _, body := range []string{
+		`{"ll":"@37.774900,-122.419400,14z","credits":3}`,
+		`{"ll":"@37.774900,-122.419400,14z","credits":3,"places":null}`,
+	} {
+		client, _ := newMapsServer(t, body)
+		response, err := client.MapsAt(context.Background(), "coffee", 37.7749, -122.4194)
+		if err == nil || !strings.Contains(err.Error(), "missing places array") {
+			t.Fatalf("body %s: want missing-array rejection, got %v", body, err)
+		}
+		if response.Credits != 3 {
+			t.Fatalf("body %s: credits = %d, want 3 retained with error", body, response.Credits)
+		}
 	}
 }
 
@@ -237,7 +268,7 @@ func TestMapsGridLiveFixture(t *testing.T) {
 		t.Fatalf("parse live fixture viewport %q: %v", response.LL, err)
 	}
 	if zoom != serperMapsZoom {
-		t.Fatalf("live fixture zoom = %d, want %d", zoom, serperMapsZoom)
+		t.Fatalf("live fixture zoom = %g, want %d", zoom, serperMapsZoom)
 	}
 	if latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
 		t.Fatalf("live fixture coordinates out of range: %v,%v", latitude, longitude)
@@ -284,4 +315,21 @@ func TestMapsAtLiveGridViewportEcho(t *testing.T) {
 		t.Fatalf("live credits = %d, want 3 for one maps call", response.Credits)
 	}
 	t.Logf("live maps ok: ll=%q places=%d credits=%d", response.LL, len(response.Places), response.Credits)
+}
+
+func TestMapsAtAcceptsProviderNormalizedZoom(t *testing.T) {
+	for _, zoom := range []string{"18.0536", "17.0536", "15", "14.0"} {
+		t.Run(zoom, func(t *testing.T) {
+			viewport := "@27.7358925,85.3221043," + zoom + "z"
+			body := fmt.Sprintf(`{"ll":%q,"credits":3,"places":[{"position":1,"title":"Example Cafe"}]}`, viewport)
+			client, _ := newMapsServer(t, body)
+			response, err := client.MapsAt(context.Background(), "coffee", 27.7358925, 85.3221043)
+			if err != nil {
+				t.Fatalf("normalized viewport rejected: %v", err)
+			}
+			if response.LL != viewport || response.Credits != 3 || len(response.Places) != 1 {
+				t.Fatalf("saved evidence changed: %#v", response)
+			}
+		})
+	}
 }

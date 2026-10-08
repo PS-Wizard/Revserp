@@ -9,7 +9,6 @@ import (
 	"github.com/ps-wizard/revserp/internal/textnormalization"
 )
 
-// GenerateMapQueryCandidates leaves the run's five-query cap to enqueue, not draft generation.
 func GenerateMapQueryCandidates(services, localities []string) ([]string, error) {
 	serviceNames, err := normalizeMapQueryInputs("service", services)
 	if err != nil {

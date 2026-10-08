@@ -904,3 +904,54 @@ func TestTruncatedToolArgsContinueTurn(t *testing.T) {
 		t.Fatalf("round 2 messages lack the failed truncated-args tool result: %+v", provider.requests[1].Messages)
 	}
 }
+
+func TestLoadContextUsesSavedConversationLocation(t *testing.T) {
+	a, _, user, project := testWorker(t)
+	ctx := context.Background()
+	var location pgtype.UUID
+	if err := a.pool.QueryRow(ctx, `INSERT INTO project_locations(project_id,name,latitude,longitude) VALUES($1,'Acme Kathmandu',27.7,85.3) RETURNING id`, project).Scan(&location); err != nil {
+		t.Fatal(err)
+	}
+	newTurn := func(conversation pgtype.UUID) pgtype.UUID {
+		t.Helper()
+		var id pgtype.UUID
+		if err := a.pool.QueryRow(ctx, `INSERT INTO ai_turns(conversation_id,created_by_user_id,status,requested_effort,effective_effort,model,prompt_version,client_request_id,request_hash,queued_at) VALUES($1,$2,'queued','none','none','m','v',$3,decode(repeat('00',32),'hex'),now()) RETURNING id`, conversation, user, fmt.Sprint(time.Now().UnixNano())).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.pool.Exec(ctx, `INSERT INTO ai_messages(turn_id,role,status,content) VALUES($1,'user','complete','hi')`, id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	var locConversation, parentConversation pgtype.UUID
+	if err := a.pool.QueryRow(ctx, `INSERT INTO ai_conversations(project_id,created_by_user_id,title,location_id) VALUES($1,$2,'loc',$3) RETURNING id`, project, user, location).Scan(&locConversation); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.pool.QueryRow(ctx, `INSERT INTO ai_conversations(project_id,created_by_user_id,title) VALUES($1,$2,'parent') RETURNING id`, project, user).Scan(&parentConversation); err != nil {
+		t.Fatal(err)
+	}
+
+	locTurn := newTurn(locConversation)
+	messages, scope, err := a.loadContext(ctx, turn{ID: locTurn, ConversationID: locConversation, Effort: "none", Model: "m"})
+	if err != nil {
+		t.Fatalf("loadContext location: %v", err)
+	}
+	if scope.LocationID != location {
+		t.Fatalf("scope location = %v, want %v", scope.LocationID, location)
+	}
+	if !strings.Contains(messages[0].Content, "--- Location context ---") || !strings.Contains(messages[0].Content, "Acme Kathmandu") {
+		t.Fatalf("location system context missing scope:\n%s", messages[0].Content)
+	}
+
+	parentTurn := newTurn(parentConversation)
+	messages, scope, err = a.loadContext(ctx, turn{ID: parentTurn, ConversationID: parentConversation, Effort: "none", Model: "m"})
+	if err != nil {
+		t.Fatalf("loadContext parent: %v", err)
+	}
+	if scope.LocationID.Valid {
+		t.Fatalf("parent scope location = %v, want invalid", scope.LocationID)
+	}
+	if strings.Contains(messages[0].Content, "--- Location context ---") {
+		t.Fatalf("parent system context must omit location scope:\n%s", messages[0].Content)
+	}
+}

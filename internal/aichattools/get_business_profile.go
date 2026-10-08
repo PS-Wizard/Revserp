@@ -59,6 +59,10 @@ func executeGetBusinessProfile(ctx context.Context, args json.RawMessage, s Scop
 	if s.Queries == nil {
 		return Result{}, errors.New("get_business_profile: scope has no queries")
 	}
+	if s.LocationID.Valid {
+		exec := businessProfileLocalExecutor{locations: s.Queries}
+		return exec.runLocal(ctx, args, s.ProjectID, s.LocationID, s.UserID)
+	}
 	exec := businessProfileExecutor{profiles: s.Queries}
 	return exec.run(ctx, args, s.ProjectID, s.UserID)
 }
@@ -222,4 +226,105 @@ func capBusinessProfilePrompts(prompts []string) []string {
 		capped[i] = capBusinessProfileText(prompt, businessProfileMaxPromptRune)
 	}
 	return capped
+}
+
+// businessProfileLocationReader reads one location's independent profile
+// through the generated location queries, so tests substitute fakes.
+type businessProfileLocationReader interface {
+	GetProjectLocationForUser(ctx context.Context, arg sqlc.GetProjectLocationForUserParams) (sqlc.GetProjectLocationForUserRow, error)
+	GetLocationBusinessProfile(ctx context.Context, arg sqlc.GetLocationBusinessProfileParams) (sqlc.LocationBusinessProfile, error)
+}
+
+// businessProfileLocalResponse is the model-facing local profile: the
+// project shape plus location identity and the local services snapshot.
+// Keyword lists stay empty; location keywords live in the keyword layer.
+type businessProfileLocalResponse struct {
+	businessProfileResponse
+	LocationID string   `json:"location_id"`
+	Services   []string `json:"services"`
+}
+
+type businessProfileLocalExecutor struct {
+	locations businessProfileLocationReader
+}
+
+func (e *businessProfileLocalExecutor) runLocal(ctx context.Context, raw json.RawMessage, projectID, locationID, userID pgtype.UUID) (Result, error) {
+	args, err := parseBusinessProfileArgs(raw)
+	if err != nil {
+		return Result{Content: businessProfileName + " error: " + err.Error()}, nil
+	}
+	if _, err := e.locations.GetProjectLocationForUser(ctx, sqlc.GetProjectLocationForUserParams{ID: locationID, ID_2: projectID, UserID: userID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Result{
+				Content: "That location was not found in this project.",
+				Summary: "location not found",
+			}, nil
+		}
+		return Result{}, fmt.Errorf("%s: read location: %w", businessProfileName, err)
+	}
+	profile, err := e.locations.GetLocationBusinessProfile(ctx, sqlc.GetLocationBusinessProfileParams{ProjectID: projectID, LocationID: locationID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Result{
+				Content: "No business profile is configured for this location yet. An owner can add it in the location's business profile settings.",
+				Summary: "location business profile not configured",
+			}, nil
+		}
+		return Result{}, fmt.Errorf("%s: read location profile: %w", businessProfileName, err)
+	}
+	response := newBusinessProfileLocalResponse(profile, locationID, args.IncludeSeedPrompts)
+	content, err := json.Marshal(response)
+	if err != nil {
+		return Result{}, fmt.Errorf("%s: marshal location profile: %w", businessProfileName, err)
+	}
+	summary := fmt.Sprintf("location business profile: %s", response.BrandName)
+	if response.PrimaryCategory != "" {
+		summary = fmt.Sprintf("%s (%s)", summary, response.PrimaryCategory)
+	}
+	return Result{Content: string(content), Summary: summary}, nil
+}
+
+func newBusinessProfileLocalResponse(profile sqlc.LocationBusinessProfile, locationID pgtype.UUID, includeSeeds bool) businessProfileLocalResponse {
+	response := businessProfileLocalResponse{
+		LocationID: locationID.String(),
+		Services:   []string{},
+	}
+	response.BrandName = capBusinessProfileText(profile.BrandName, businessProfileMaxFieldRune)
+	response.WebsiteURL = profile.WebsiteUrl
+	response.PrimaryCategory = profileText(profile.PrimaryCategory)
+	response.PrimaryLocation = profileText(profile.PrimaryLocation)
+	response.BusinessDescription = capBusinessProfileText(profileText(profile.BusinessDescription), businessProfileMaxFieldRune)
+	response.ProductDescription = capBusinessProfileText(profileText(profile.ProductDescription), businessProfileMaxFieldRune)
+	response.TargetAudience = capBusinessProfileText(profileText(profile.TargetAudience), businessProfileMaxFieldRune)
+	response.TargetKeywords = []string{}
+	response.BrandedKeywords = []string{}
+	response.NonBrandedKeywords = []string{}
+	if competitors, err := businessprofile.DecodeBusinessCompetitors(profile.BusinessCompetitors); err == nil {
+		response.BusinessCompetitors = competitors
+		if response.BusinessCompetitors == nil {
+			response.BusinessCompetitors = []string{}
+		}
+	} else {
+		response.BusinessCompetitors = []string{}
+	}
+	if services, err := businessprofile.DecodeStringSlice(profile.Services); err == nil {
+		response.Services = services
+		if response.Services == nil {
+			response.Services = []string{}
+		}
+	}
+	if includeSeeds {
+		prompts := []string{}
+		if len(profile.SeedPrompts) > 0 {
+			var stored []string
+			if err := json.Unmarshal(profile.SeedPrompts, &stored); err == nil {
+				prompts = capBusinessProfilePrompts(stored)
+				if prompts == nil {
+					prompts = []string{}
+				}
+			}
+		}
+		response.SeedPrompts = &prompts
+	}
+	return response
 }

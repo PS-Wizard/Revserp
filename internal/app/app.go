@@ -8,6 +8,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/ga"
 	"github.com/ps-wizard/revserp/internal/geography"
+	"github.com/ps-wizard/revserp/internal/googleplaces"
 	"github.com/ps-wizard/revserp/internal/gsc"
 	"github.com/ps-wizard/revserp/internal/locationlandmarks"
 )
@@ -24,6 +25,7 @@ type App struct {
 	GAService      *ga.Service
 	Nominatim      *geography.NominatimClient
 	Landmarks      *locationlandmarks.Client
+	PlacesListings *googleplaces.PlacesListingClient
 	// MCPConnect dials one generic session for connection validation
 	// (initialize plus tools/list discovery only, never tool execution).
 	// Wired by default in New; tests may replace it with a fake. A nil value
@@ -59,5 +61,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		MCPConnect:     DefaultMCPConnect,
 		Nominatim:      geography.NewNominatimClient(cfg.NominatimEndpoint, cfg.NominatimUserAgent),
 		Landmarks:      locationlandmarks.NewClient(locationlandmarks.Config{APIKey: cfg.GoogleMapsAPIKey}),
+		PlacesListings: googleplaces.NewPlacesListingClient(cfg.GoogleMapsAPIKey, ""),
 	}
 }

@@ -56,6 +56,7 @@ type localVisibilityLocationResponse struct {
 	Latitude   float64                     `json:"latitude"`
 	Longitude  float64                     `json:"longitude"`
 	Queries    []layer4LocationQueryRecord `json:"queries"`
+	RadiusM    int                         `json:"radius_m,omitempty"`
 }
 
 // localVisibilityCellResponse is one planned grid call. Rank is null unless the
@@ -114,7 +115,7 @@ type localVisibilityRunCreatedResponse struct {
 // assembleLocationResponse builds the Layer 4 location DTO from a location
 // row plus the server-computed effective services and every draft query
 // record, so all location endpoints share one shape.
-func (a *App) assembleLocationResponse(ctx context.Context, id, projectID pgtype.UUID, name string, placeID pgtype.Text, latitude, longitude float64, address, locality string, localitiesJSON []byte, userID pgtype.UUID) (localVisibilityLocationResponse, error) {
+func (a *App) assembleLocationResponse(ctx context.Context, id, projectID pgtype.UUID, name string, placeID pgtype.Text, latitude, longitude float64, address, locality string, localitiesJSON []byte, radiusM int32, userID pgtype.UUID) (localVisibilityLocationResponse, error) {
 	var localities []string
 	if err := json.Unmarshal(localitiesJSON, &localities); err != nil {
 		return localVisibilityLocationResponse{}, fmt.Errorf("location localities: %w", err)
@@ -147,6 +148,7 @@ func (a *App) assembleLocationResponse(ctx context.Context, id, projectID pgtype
 		Locality:   locality,
 		Localities: localities,
 		Services:   services,
+		RadiusM:    int(radiusM),
 		Latitude:   latitude,
 		Longitude:  longitude,
 		Queries:    records,
@@ -171,7 +173,7 @@ func normalizeLocalities(raw []string) []string {
 	return out
 }
 
-// newLocalVisibilityRunResponse rebuilds all 45 planned cells from the frozen
+// newLocalVisibilityRunResponse rebuilds every planned cell from the frozen
 // snapshot points and the stored cell rows, keeping pending cells so an
 // incomplete run never looks finished.
 func newLocalVisibilityRunResponse(run sqlc.LocalVisibilityRun, cells []sqlc.GetLocalRunCellsRow, completedCells int) (localVisibilityRunResponse, error) {
@@ -203,7 +205,7 @@ func newLocalVisibilityRunResponse(run sqlc.LocalVisibilityRun, cells []sqlc.Get
 		CompletedCells:  completedCells,
 		TotalCells:      len(snapshot.Queries) * len(snapshot.Points),
 		Queries:         snapshot.Queries,
-		Cells:           make([]localVisibilityCellResponse, 0, localvisibility.MapQueryCount*localvisibility.GridPointCount),
+		Cells:           make([]localVisibilityCellResponse, 0, len(snapshot.Queries)*localvisibility.GridPointCount),
 	}
 	if response.Queries == nil {
 		response.Queries = []string{}
@@ -374,8 +376,7 @@ func (a *App) handleCreateProjectLocation(w http.ResponseWriter, r *http.Request
 		serverError(w, r, err)
 		return
 	}
-
-	response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, principal.User.ID)
+	response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, location.RadiusM, principal.User.ID)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -415,7 +416,7 @@ func (a *App) handleGetProjectLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, principal.User.ID)
+	response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, location.RadiusM, principal.User.ID)
 	if err != nil {
 		serverError(w, r, err)
 		return

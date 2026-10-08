@@ -18,37 +18,40 @@ INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ac.project_id = $1
   AND om.user_id = $2
+  AND ac.location_id IS NOT DISTINCT FROM $3
 `
 
 type CountAIConversationsForProjectForUserParams struct {
-	ProjectID pgtype.UUID
-	UserID    pgtype.UUID
+	ProjectID  pgtype.UUID
+	UserID     pgtype.UUID
+	LocationID pgtype.UUID
 }
 
 func (q *Queries) CountAIConversationsForProjectForUser(ctx context.Context, arg CountAIConversationsForProjectForUserParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countAIConversationsForProjectForUser, arg.ProjectID, arg.UserID)
+	row := q.db.QueryRow(ctx, countAIConversationsForProjectForUser, arg.ProjectID, arg.UserID, arg.LocationID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const createAIConversationForUser = `-- name: CreateAIConversationForUser :one
-INSERT INTO ai_conversations (project_id, created_by_user_id, title)
-SELECT p.id, $1, 'New conversation'
+INSERT INTO ai_conversations (project_id, created_by_user_id, title, location_id)
+SELECT p.id, $1, 'New conversation', $2::uuid
 FROM projects AS p
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE p.id = $2
+WHERE p.id = $3
   AND om.user_id = $1
-RETURNING id, project_id, created_by_user_id, title, created_at, updated_at
+RETURNING id, project_id, created_by_user_id, title, created_at, updated_at, location_id
 `
 
 type CreateAIConversationForUserParams struct {
-	UserID    pgtype.UUID
-	ProjectID pgtype.UUID
+	UserID     pgtype.UUID
+	LocationID pgtype.UUID
+	ProjectID  pgtype.UUID
 }
 
 func (q *Queries) CreateAIConversationForUser(ctx context.Context, arg CreateAIConversationForUserParams) (AiConversation, error) {
-	row := q.db.QueryRow(ctx, createAIConversationForUser, arg.UserID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, createAIConversationForUser, arg.UserID, arg.LocationID, arg.ProjectID)
 	var i AiConversation
 	err := row.Scan(
 		&i.ID,
@@ -57,6 +60,7 @@ func (q *Queries) CreateAIConversationForUser(ctx context.Context, arg CreateAIC
 		&i.Title,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LocationID,
 	)
 	return i, err
 }
@@ -88,6 +92,7 @@ SELECT
     ac.id,
     ac.project_id,
     ac.created_by_user_id,
+    ac.location_id,
     COALESCE(
         (
             SELECT COALESCE(
@@ -118,13 +123,24 @@ type GetAIConversationByIDForUserParams struct {
 	UserID         pgtype.UUID
 }
 
-func (q *Queries) GetAIConversationByIDForUser(ctx context.Context, arg GetAIConversationByIDForUserParams) (AiConversation, error) {
+type GetAIConversationByIDForUserRow struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	LocationID      pgtype.UUID
+	Title           string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) GetAIConversationByIDForUser(ctx context.Context, arg GetAIConversationByIDForUserParams) (GetAIConversationByIDForUserRow, error) {
 	row := q.db.QueryRow(ctx, getAIConversationByIDForUser, arg.ConversationID, arg.UserID)
-	var i AiConversation
+	var i GetAIConversationByIDForUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
 		&i.CreatedByUserID,
+		&i.LocationID,
 		&i.Title,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -137,6 +153,7 @@ SELECT
     ac.id,
     ac.project_id,
     ac.created_by_user_id,
+    ac.location_id,
     COALESCE(
         (
             SELECT COALESCE(
@@ -159,21 +176,34 @@ INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ac.project_id = $1
   AND om.user_id = $2
+  AND ac.location_id IS NOT DISTINCT FROM $3
 ORDER BY ac.updated_at DESC, ac.id DESC
-LIMIT $4 OFFSET $3
+LIMIT $5 OFFSET $4
 `
 
 type ListAIConversationsForProjectForUserParams struct {
 	ProjectID  pgtype.UUID
 	UserID     pgtype.UUID
+	LocationID pgtype.UUID
 	PageOffset int32
 	PageLimit  int32
 }
 
-func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg ListAIConversationsForProjectForUserParams) ([]AiConversation, error) {
+type ListAIConversationsForProjectForUserRow struct {
+	ID              pgtype.UUID
+	ProjectID       pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	LocationID      pgtype.UUID
+	Title           string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg ListAIConversationsForProjectForUserParams) ([]ListAIConversationsForProjectForUserRow, error) {
 	rows, err := q.db.Query(ctx, listAIConversationsForProjectForUser,
 		arg.ProjectID,
 		arg.UserID,
+		arg.LocationID,
 		arg.PageOffset,
 		arg.PageLimit,
 	)
@@ -181,13 +211,14 @@ func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg 
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AiConversation
+	var items []ListAIConversationsForProjectForUserRow
 	for rows.Next() {
-		var i AiConversation
+		var i ListAIConversationsForProjectForUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
 			&i.CreatedByUserID,
+			&i.LocationID,
 			&i.Title,
 			&i.CreatedAt,
 			&i.UpdatedAt,

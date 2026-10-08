@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
-	"github.com/ps-wizard/revserp/internal/issues/shared"
 	"github.com/ps-wizard/revserp/internal/keywords"
 	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
@@ -109,6 +108,9 @@ func getKeywordCoverageTool() Tool {
 			Schema:      json.RawMessage(getKeywordCoverageSchema),
 		},
 		Execute: func(ctx context.Context, args json.RawMessage, s Scope) (Result, error) {
+			if s.LocationID.Valid {
+				return executeGetLocationKeywordCoverage(ctx, args, s)
+			}
 			if s.Queries == nil {
 				return Result{}, errors.New("get_keyword_coverage: scope has no queries")
 			}
@@ -212,18 +214,7 @@ func (e *keywordCoverageExecutor) cachedSeeds(ctx context.Context, projectID, us
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: list coverage pages: %w", getKeywordCoverageName, err)
 	}
-	pages := make([]keywords.Page, 0, len(pageRows))
-	for _, row := range pageRows {
-		if !shared.IsScoreablePage(shared.CrawlPageSignal{
-			StatusCode:  row.StatusCode,
-			ContentType: row.ContentType,
-			Soft404:     row.Soft404,
-			FetchError:  row.FetchError,
-		}) {
-			continue
-		}
-		pages = append(pages, keywords.Page{URL: row.Url, Title: row.Title, H1: row.H1})
-	}
+	pages := keywordCoveragePagesFromRows(pageRows)
 
 	seeds := e.coverFunc()(pages, targetKeywords, primaryLocation)
 	if seeds == nil {

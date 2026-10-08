@@ -17,13 +17,15 @@ import (
 )
 
 type localVisibilityCompetitorResponse struct {
-	PlaceID         string `json:"place_id"`
-	Title           string `json:"title"`
-	Address         string `json:"address"`
-	QueryPointsSeen int    `json:"query_points_seen"`
-	BestRank        *int   `json:"best_rank"`
-	QueryIndexes    []int  `json:"query_indexes"`
-	SameBrandDomain bool   `json:"same_brand_domain"`
+	PlaceID            string   `json:"place_id"`
+	Title              string   `json:"title"`
+	Address            string   `json:"address"`
+	QueryPointsSeen    int      `json:"query_points_seen"`
+	BestRank           *int     `json:"best_rank"`
+	AveragePosition    *float64 `json:"average_position"`
+	AverageResultCount *float64 `json:"average_result_count"`
+	QueryIndexes       []int    `json:"query_indexes"`
+	SameBrandDomain    bool     `json:"same_brand_domain"`
 }
 
 type localVisibilityCompetitorsResponse struct {
@@ -50,11 +52,14 @@ type localVisibilityCompetitorWebsiteRawResponse struct {
 }
 
 type localVisibilityCompetitorAccumulator struct {
-	title        string
-	address      string
-	bestRank     *int
-	seen         map[[2]int]struct{}
-	queryIndexes map[int]struct{}
+	title          string
+	address        string
+	bestRank       *int
+	rankSum        int
+	rankCount      int
+	resultCountSum int
+	seen           map[[2]int]struct{}
+	queryIndexes   map[int]struct{}
 }
 
 var errLocalVisibilityPointNotInSnapshot = errors.New("local visibility competitors: point index not in frozen snapshot")
@@ -154,6 +159,8 @@ func aggregateLocalVisibilityCompetitors(runID string, snapshot localvisibility.
 				if !inScope {
 					continue
 				}
+				cellBest := make(map[string]int)
+				cellMeta := make(map[string]localVisibilityPointPlaceResponse)
 				for _, place := range places {
 					if place.PlaceID == nil || *place.PlaceID == "" {
 						idless++
@@ -163,23 +170,40 @@ func aggregateLocalVisibilityCompetitors(runID string, snapshot localvisibility.
 					if placeID == snapshot.TargetPlaceID {
 						continue
 					}
+					if _, ok := cellMeta[placeID]; !ok {
+						cellMeta[placeID] = place
+					}
+					if place.Position != nil && *place.Position > 0 {
+						if best, ok := cellBest[placeID]; !ok || *place.Position < best {
+							cellBest[placeID] = *place.Position
+						}
+					}
+				}
+				cellResultCount := countLocalVisibilityRankedUniverse(places)
+				for placeID, meta := range cellMeta {
 					accumulator, ok := accumulators[placeID]
 					if !ok {
 						accumulator = &localVisibilityCompetitorAccumulator{
-							title:        place.Title,
-							address:      place.Address,
+							title:        meta.Title,
+							address:      meta.Address,
 							seen:         make(map[[2]int]struct{}),
 							queryIndexes: make(map[int]struct{}),
 						}
 						accumulators[placeID] = accumulator
 					}
+					if _, dup := accumulator.seen[key]; dup {
+						continue
+					}
 					accumulator.seen[key] = struct{}{}
 					accumulator.queryIndexes[queryIndex] = struct{}{}
-					if place.Position != nil && *place.Position > 0 {
-						if accumulator.bestRank == nil || *place.Position < *accumulator.bestRank {
-							rank := *place.Position
+					if best, ok := cellBest[placeID]; ok {
+						if accumulator.bestRank == nil || best < *accumulator.bestRank {
+							rank := best
 							accumulator.bestRank = &rank
 						}
+						accumulator.rankSum += best
+						accumulator.rankCount++
+						accumulator.resultCountSum += cellResultCount
 					}
 				}
 			default:
@@ -204,22 +228,32 @@ func aggregateLocalVisibilityCompetitors(runID string, snapshot localvisibility.
 				break
 			}
 		}
+		var average *float64
+		var averageCount *float64
+		if accumulator.rankCount > 0 {
+			mean := float64(accumulator.rankSum) / float64(accumulator.rankCount)
+			average = &mean
+			meanCount := float64(accumulator.resultCountSum) / float64(accumulator.rankCount)
+			averageCount = &meanCount
+		}
 		competitors = append(competitors, localVisibilityCompetitorResponse{
-			PlaceID:         placeID,
-			Title:           accumulator.title,
-			Address:         accumulator.address,
-			QueryPointsSeen: len(accumulator.seen),
-			BestRank:        accumulator.bestRank,
-			QueryIndexes:    queryIndexes,
-			SameBrandDomain: sameBrand,
+			PlaceID:            placeID,
+			Title:              accumulator.title,
+			Address:            accumulator.address,
+			QueryPointsSeen:    len(accumulator.seen),
+			BestRank:           accumulator.bestRank,
+			AveragePosition:    average,
+			AverageResultCount: averageCount,
+			QueryIndexes:       queryIndexes,
+			SameBrandDomain:    sameBrand,
 		})
 	}
 	sort.Slice(competitors, func(i, j int) bool {
+		if cmp := compareLocalVisibilityAverageRanks(competitors[i].AveragePosition, competitors[j].AveragePosition); cmp != 0 {
+			return cmp < 0
+		}
 		if competitors[i].QueryPointsSeen != competitors[j].QueryPointsSeen {
 			return competitors[i].QueryPointsSeen > competitors[j].QueryPointsSeen
-		}
-		if cmp := compareLocalVisibilityRanks(competitors[i].BestRank, competitors[j].BestRank); cmp != 0 {
-			return cmp < 0
 		}
 		return competitors[i].PlaceID < competitors[j].PlaceID
 	})
@@ -299,6 +333,39 @@ func compareLocalVisibilityRanks(a, b *int) int {
 	default:
 		return 0
 	}
+}
+
+func compareLocalVisibilityAverageRanks(a, b *float64) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	case *a < *b:
+		return -1
+	case *a > *b:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// ponytail: idless rows have no stable identity, so each counts once, same as idless_entries.
+func countLocalVisibilityRankedUniverse(places []localVisibilityPointPlaceResponse) int {
+	universe := make(map[string]struct{}, len(places))
+	for i, place := range places {
+		if place.Position == nil || *place.Position <= 0 {
+			continue
+		}
+		if place.PlaceID == nil || *place.PlaceID == "" {
+			universe["idless:"+strconv.Itoa(i)] = struct{}{}
+			continue
+		}
+		universe[*place.PlaceID] = struct{}{}
+	}
+	return len(universe)
 }
 
 func (a *App) loadLocalVisibilityCompetitorRun(w http.ResponseWriter, r *http.Request) (string, localvisibility.LocalRunSnapshot, []sqlc.GetLocalVisibilityRunCompetitorResultsRow, bool) {

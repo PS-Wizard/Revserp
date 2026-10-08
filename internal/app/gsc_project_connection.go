@@ -16,6 +16,8 @@ import (
 )
 
 // handleProjectGSCStatus returns one project's current Google connection and property selection state.
+// With several org accounts the bound account backs the selection; without a
+// binding only a single-account org resolves implicitly.
 func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -32,11 +34,8 @@ func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 
 	queries := a.Queries.WithTx(tx)
 	principal, ok := a.getPrincipal(w, r)
-
 	if !ok {
-
 		return
-
 	}
 	user := principal.User
 	project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID})
@@ -59,7 +58,7 @@ func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	googleConnection, hasGoogleConnection, err := getGoogleConnectionByOrganizationID(r.Context(), queries, project.OrganizationID)
+	accounts, err := listGoogleAccountConnectionsByOrganizationID(r.Context(), tx, project.OrganizationID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -71,11 +70,12 @@ func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := projectGSCStatusResponse{
-		HasGoogleConnection: hasGoogleConnection,
+		HasGoogleConnection: len(accounts) > 0,
 		CanManageConnection: membership.Role == "owner",
 		AvailableSites:      []projectGSCSiteResponse{},
+		GoogleConnections:   newProjectGoogleAccountResponses(accounts),
 	}
-	if !hasGoogleConnection {
+	if len(accounts) == 0 {
 		if err := tx.Commit(r.Context()); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal server error")
 			return
@@ -84,24 +84,44 @@ func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.GoogleConnectionID = googleConnection.ID.String()
-	response.GoogleStatus = googleConnection.Status
-	response.GoogleAccountEmail = textValue(googleConnection.GoogleAccountEmail)
-	response.NeedsReconnect = googleConnection.Status == "reauth_required"
-
+	var boundConnectionID *pgtype.UUID
 	if hasProjectConnection {
+		boundConnectionID = &projectConnection.GoogleConnectionID
 		response.SelectedSite = &projectGSCSiteResponse{
 			SiteURL:         projectConnection.SiteUrl,
 			PermissionLevel: textValue(projectConnection.PermissionLevel),
 		}
 		response.Connected = true
+		response.SelectedGoogleConnectionID = projectConnection.GoogleConnectionID.String()
 	}
 
-	if googleConnection.Status == "active" {
-		googleConnection, accessToken, refreshErr := a.ensureFreshGoogleConnection(r.Context(), queries, googleConnection)
+	displayConnection, err := matchGoogleAccountForSelect(accounts, boundConnectionID, nil)
+	if err != nil {
+		if errors.Is(err, errGoogleConnectionRequired) || errors.Is(err, errGoogleAccountNotFound) {
+			if errors.Is(err, errGoogleAccountNotFound) {
+				response.TokenError = "google account not found"
+			}
+			if err := tx.Commit(r.Context()); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	response.GoogleConnectionID = displayConnection.ID.String()
+	response.GoogleStatus = displayConnection.Status
+	response.GoogleAccountEmail = textValue(displayConnection.GoogleAccountEmail)
+	response.NeedsReconnect = displayConnection.Status == "reauth_required"
+
+	if displayConnection.Status == "active" {
+		displayConnection, accessToken, refreshErr := a.ensureFreshGoogleConnection(r.Context(), queries, displayConnection)
 		if refreshErr != nil {
-			response.GoogleStatus = googleConnection.Status
-			response.NeedsReconnect = googleConnection.Status == "reauth_required"
+			response.GoogleStatus = displayConnection.Status
+			response.NeedsReconnect = displayConnection.Status == "reauth_required"
 			response.TokenError = refreshErr.Error()
 		} else {
 			sites, fetchErr := a.GSCService.FetchSites(r.Context(), accessToken)
@@ -122,6 +142,8 @@ func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSelectProjectGSCSite stores one owner-selected Search Console property for a project.
+// The property is validated against the explicitly chosen or already-bound
+// account, never an arbitrary organization-first account.
 func (a *App) handleSelectProjectGSCSite(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -169,13 +191,41 @@ func (a *App) handleSelectProjectGSCSite(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	googleConnection, hasGoogleConnection, err := getGoogleConnectionByOrganizationID(r.Context(), queries, project.OrganizationID)
+	accounts, err := listGoogleAccountConnectionsByOrganizationID(r.Context(), tx, project.OrganizationID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if !hasGoogleConnection {
+	if len(accounts) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "google search console is not connected")
+		return
+	}
+
+	projectConnection, hasProjectConnection, err := getProjectGSCConnectionByProjectID(r.Context(), queries, project.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	var boundConnectionID *pgtype.UUID
+	if hasProjectConnection {
+		boundConnectionID = &projectConnection.GoogleConnectionID
+	}
+	var requestedConnectionID *pgtype.UUID
+	if strings.TrimSpace(requestBody.GoogleConnectionID) != "" {
+		parsedConnectionID, err := parseUUIDParam(strings.TrimSpace(requestBody.GoogleConnectionID))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid google connection id")
+			return
+		}
+		requestedConnectionID = &parsedConnectionID
+	}
+	googleConnection, err := matchGoogleAccountForSelect(accounts, boundConnectionID, requestedConnectionID)
+	if err != nil {
+		if errors.Is(err, errGoogleConnectionRequired) {
+			writeJSONError(w, http.StatusBadRequest, "google_connection_id is required")
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "google account not found")
 		return
 	}
 
@@ -287,6 +337,104 @@ func getGoogleConnectionByOrganizationID(ctx context.Context, queries *sqlc.Quer
 	return connection, true, nil
 }
 
+// handleListProjectGoogleAccounts lists every org-owned Google account for one project.
+func (a *App) handleListProjectGoogleAccounts(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
+		return
+	}
+	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: principal.User.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	membership, err := a.Queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: project.OrganizationID, UserID: principal.User.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	accounts, err := listGoogleAccountConnectionsByOrganizationID(r.Context(), a.DB, project.OrganizationID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"google_connections":    newProjectGoogleAccountResponses(accounts),
+		"can_manage_connection": membership.Role == "owner",
+	})
+}
+
+// handleRevokeProjectGoogleAccount marks one org-owned Google account revoked without
+// deleting the row: project and location bindings plus stored reports are preserved.
+func (a *App) handleRevokeProjectGoogleAccount(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	connectionID, err := parseUUIDParam(chi.URLParam(r, "connectionID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid google connection id")
+		return
+	}
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
+		return
+	}
+	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: principal.User.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if err := requireOrganizationOwner(r.Context(), a.Queries, project.OrganizationID, principal.User.ID); err != nil {
+		writeInvitePermissionError(w, err)
+		return
+	}
+	account, found, err := getGoogleAccountConnectionByID(r.Context(), a.DB, connectionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if !found || !uuidEqual(account.OrganizationID, project.OrganizationID) {
+		writeJSONError(w, http.StatusNotFound, "google account not found")
+		return
+	}
+	if err := revokeGoogleAccountConnection(r.Context(), a.DB, connectionID, "revoked by organization owner"); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func newProjectGoogleAccountResponses(accounts []sqlc.GoogleConnection) []projectGoogleAccountResponse {
+	responses := make([]projectGoogleAccountResponse, 0, len(accounts))
+	for _, account := range accounts {
+		responses = append(responses, projectGoogleAccountResponse{
+			ID:                 account.ID.String(),
+			GoogleAccountEmail: textValue(account.GoogleAccountEmail),
+			GoogleStatus:       account.Status,
+		})
+	}
+	return responses
+}
+
 func getProjectGSCConnectionByProjectID(ctx context.Context, queries *sqlc.Queries, projectID pgtype.UUID) (sqlc.ProjectGscConnection, bool, error) {
 	connection, err := queries.GetProjectGSCConnectionByProjectID(ctx, projectID)
 	if err != nil {
@@ -296,6 +444,77 @@ func getProjectGSCConnectionByProjectID(ctx context.Context, queries *sqlc.Queri
 		return sqlc.ProjectGscConnection{}, false, err
 	}
 	return connection, true, nil
+}
+
+// googleAccountForProject loads one org-owned Google account in project scope.
+// Any project member may read; writes enforce ownership at the handler.
+func (a *App) googleAccountForProject(w http.ResponseWriter, r *http.Request) (sqlc.GoogleConnection, sqlc.Project, bool) {
+	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid project id")
+		return sqlc.GoogleConnection{}, sqlc.Project{}, false
+	}
+	connectionID, err := parseUUIDParam(chi.URLParam(r, "connectionID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid google connection id")
+		return sqlc.GoogleConnection{}, sqlc.Project{}, false
+	}
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
+		return sqlc.GoogleConnection{}, sqlc.Project{}, false
+	}
+	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: principal.User.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return sqlc.GoogleConnection{}, sqlc.Project{}, false
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return sqlc.GoogleConnection{}, sqlc.Project{}, false
+	}
+	if _, err := a.Queries.GetOrganizationMember(r.Context(), sqlc.GetOrganizationMemberParams{OrgID: project.OrganizationID, UserID: principal.User.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+			return sqlc.GoogleConnection{}, sqlc.Project{}, false
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return sqlc.GoogleConnection{}, sqlc.Project{}, false
+	}
+	account, found, err := getGoogleAccountConnectionByID(r.Context(), a.DB, connectionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return sqlc.GoogleConnection{}, sqlc.Project{}, false
+	}
+	if !found || !uuidEqual(account.OrganizationID, project.OrganizationID) {
+		writeJSONError(w, http.StatusNotFound, "google account not found")
+		return sqlc.GoogleConnection{}, sqlc.Project{}, false
+	}
+	return account, project, true
+}
+
+// handleListGoogleAccountGSCSites lists Search Console properties for one explicitly
+// chosen account, so account/property pickers work before anything is bound.
+func (a *App) handleListGoogleAccountGSCSites(w http.ResponseWriter, r *http.Request) {
+	account, project, ok := a.googleAccountForProject(w, r)
+	if !ok {
+		return
+	}
+	account, accessToken, err := a.ensureFreshGoogleConnection(r.Context(), a.Queries, account)
+	if err != nil {
+		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to refresh google connection")
+		return
+	}
+	sites, err := a.GSCService.FetchSites(r.Context(), accessToken)
+	if err != nil {
+		writeGoogleAPIError(w, err, http.StatusBadRequest, "failed to fetch search console sites")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"google_connection_id": account.ID.String(),
+		"google_account_email": textValue(account.GoogleAccountEmail),
+		"google_status":        account.Status,
+		"available_sites":      newProjectGSCSiteResponses(a.GSCService.RankSitesForProject(project.BaseUrl, sites)),
+	})
 }
 
 func newProjectGSCSiteResponses(sites []gsc.SiteEntry) []projectGSCSiteResponse {

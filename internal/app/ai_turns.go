@@ -42,6 +42,7 @@ type aiTurnRequest struct {
 	Images          []aiTurnImage `json:"images"`
 	ReasoningEffort string        `json:"reasoning_effort"`
 	CrawlID         *string       `json:"crawl_id"`
+	LocationID      *string       `json:"location_id"`
 	ClientRequestID string        `json:"client_request_id"`
 }
 
@@ -52,13 +53,14 @@ type acceptedAITurnImage struct {
 }
 
 type acceptedAITurnRequest struct {
-	content         string
-	contentBlocks   []byte
-	images          []acceptedAITurnImage
-	effort          string
-	suppliedCrawlID pgtype.UUID
-	clientRequestID string
-	requestHash     []byte
+	content            string
+	contentBlocks      []byte
+	images             []acceptedAITurnImage
+	effort             string
+	suppliedCrawlID    pgtype.UUID
+	suppliedLocationID pgtype.UUID
+	clientRequestID    string
+	requestHash        []byte
 }
 
 type aiTurnSubmission struct {
@@ -83,6 +85,7 @@ func (err turnSubmissionError) Error() string { return string(err) }
 const (
 	errInvalidTurnRequest   = turnSubmissionError("invalid_request")
 	errInvalidCrawl         = turnSubmissionError("invalid_crawl")
+	errInvalidLocation      = turnSubmissionError("invalid_location")
 	errConversationNotFound = turnSubmissionError("conversation_not_found")
 	errAIChatDisabled       = turnSubmissionError("ai_chat_disabled")
 	errReasoningNotAllowed  = turnSubmissionError("reasoning_not_allowed")
@@ -155,18 +158,25 @@ func acceptAITurnRequest(body aiTurnRequest) (acceptedAITurnRequest, error) {
 			return acceptedAITurnRequest{}, errInvalidCrawl
 		}
 	}
+	var suppliedLocationID pgtype.UUID
+	if body.LocationID != nil {
+		if err := suppliedLocationID.Scan(strings.TrimSpace(*body.LocationID)); err != nil {
+			return acceptedAITurnRequest{}, errInvalidLocation
+		}
+	}
 	contentBlocks, err := marshalAITurnContentBlocks(images)
 	if err != nil {
 		return acceptedAITurnRequest{}, errInvalidTurnRequest
 	}
 	return acceptedAITurnRequest{
-		content:         body.Content,
-		contentBlocks:   contentBlocks,
-		images:          images,
-		effort:          effort,
-		suppliedCrawlID: suppliedCrawlID,
-		clientRequestID: clientRequestID,
-		requestHash:     aiTurnRequestHash(body.Content, effort, suppliedCrawlID, images),
+		content:            body.Content,
+		contentBlocks:      contentBlocks,
+		images:             images,
+		effort:             effort,
+		suppliedCrawlID:    suppliedCrawlID,
+		suppliedLocationID: suppliedLocationID,
+		clientRequestID:    clientRequestID,
+		requestHash:        aiTurnRequestHash(body.Content, effort, suppliedCrawlID, images),
 	}, nil
 }
 
@@ -327,6 +337,19 @@ func (a *App) submitAITurnTx(ctx context.Context, tx pgx.Tx, userID, conversatio
 			return aiTurnSubmission{}, errConversationNotFound
 		}
 		return aiTurnSubmission{}, fmt.Errorf("lock ai conversation: %w", err)
+	}
+
+	if request.suppliedLocationID.Valid {
+		scoped, err := queries.GetAIConversationByIDForUser(ctx, sqlc.GetAIConversationByIDForUserParams{
+			ConversationID: conversationID,
+			UserID:         userID,
+		})
+		if err != nil {
+			return aiTurnSubmission{}, fmt.Errorf("read ai conversation scope: %w", err)
+		}
+		if scoped.LocationID != request.suppliedLocationID {
+			return aiTurnSubmission{}, errInvalidLocation
+		}
 	}
 
 	if err := recoverExpiredAITurnsForConversation(ctx, queries, conversationID); err != nil {
@@ -564,7 +587,7 @@ func writeAITurnSubmissionError(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch code {
-	case errInvalidTurnRequest, errInvalidCrawl:
+	case errInvalidTurnRequest, errInvalidCrawl, errInvalidLocation:
 		writeJSONError(w, http.StatusBadRequest, code.Error())
 	case errConversationNotFound:
 		writeJSONError(w, http.StatusNotFound, "conversation not found")

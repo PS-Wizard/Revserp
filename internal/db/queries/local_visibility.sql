@@ -34,7 +34,7 @@ VALUES($1,$2,$3,$4,$4) RETURNING *;
 
 -- name: CreateLocalRunCells :exec
 INSERT INTO local_run_cells(run_id,query_index,point_index)
-SELECT $1, q::smallint, p::smallint
+SELECT $1, q::integer, p::smallint
 FROM generate_series(0,sqlc.arg(query_count)::integer-1) q,
 generate_series(0,sqlc.arg(point_count)::integer-1) p;
 

@@ -11,12 +11,12 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage"}) {
-		t.Fatalf("Names() = %v, want the fourteen served tools", names)
+	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage", "get_location_landmarks"}) {
+		t.Fatalf("Names() = %v, want the fifteen served tools", names)
 	}
 	defs := registry.Defs()
-	if len(defs) != 14 {
-		t.Fatalf("Defs() = %d defs, want 14", len(defs))
+	if len(defs) != 15 {
+		t.Fatalf("Defs() = %d defs, want 15", len(defs))
 	}
 	for _, def := range defs {
 		if def.Name == "" || def.Label == "" || def.Description == "" || len(def.Schema) == 0 {
@@ -153,5 +153,57 @@ func TestEveryCatalogToolHasADescription(t *testing.T) {
 		if len(def.Schema) == 0 {
 			t.Errorf("tool %q has an empty schema", def.Name)
 		}
+	}
+}
+
+func TestLocationScopedRegistryDeniesParentOnlyTools(t *testing.T) {
+	catalog := make(map[string]bool, len(CatalogDefs()))
+	for _, def := range CatalogDefs() {
+		catalog[def.Name] = true
+	}
+	for _, name := range LocationUnsupportedNativeTools() {
+		if !catalog[name] {
+			t.Fatalf("location-unsupported tool %q is not in the native catalog", name)
+		}
+	}
+	registry := NewLocationScopedRegistry(nil)
+	for _, name := range LocationUnsupportedNativeTools() {
+		if _, ok := registry.Get(name); ok {
+			t.Fatalf("location-scoped registry still serves %q", name)
+		}
+	}
+	for _, name := range []string{"web_search", "fetch_url", "get_search_suggestions", "render_chart", "read_page"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("location-scoped registry dropped safe tool %q", name)
+		}
+	}
+	for _, name := range []string{"get_business_profile", "update_business_profile", "get_project_keywords", "update_project_keywords", "get_keyword_coverage", "get_location_landmarks"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("location-scoped registry dropped wired local tool %q", name)
+		}
+	}
+	if _, ok := NewLocationScopedRegistry([]string{"read_issues"}).Get("get_score_summary"); ok {
+		t.Fatal("combined registry still served a parent-only tool")
+	}
+}
+
+func TestLocationKeywordToolSchemaHasNoListCap(t *testing.T) {
+	parent, ok := NewFilteredRegistry(nil).Get(updateProjectKeywordsName)
+	if !ok {
+		t.Fatalf("%s not served", updateProjectKeywordsName)
+	}
+	if !strings.Contains(string(parent.Def.Schema), "maxItems") {
+		t.Fatalf("parent keyword schema lost its cap: %s", parent.Def.Schema)
+	}
+	local, ok := NewLocationScopedRegistry(nil).Get(updateProjectKeywordsName)
+	if !ok {
+		t.Fatalf("%s not served in location mode", updateProjectKeywordsName)
+	}
+	if strings.Contains(string(local.Def.Schema), "maxItems") || strings.Contains(string(local.Def.Schema), "minItems") {
+		t.Fatalf("location keyword schema still limits list size: %s", local.Def.Schema)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(local.Def.Schema, &schema); err != nil {
+		t.Fatalf("location keyword schema is not valid JSON: %v", err)
 	}
 }

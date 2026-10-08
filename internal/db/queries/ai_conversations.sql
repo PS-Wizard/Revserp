@@ -1,11 +1,11 @@
 -- name: CreateAIConversationForUser :one
-INSERT INTO ai_conversations (project_id, created_by_user_id, title)
-SELECT p.id, sqlc.arg(user_id), 'New conversation'
+INSERT INTO ai_conversations (project_id, created_by_user_id, title, location_id)
+SELECT p.id, sqlc.arg(user_id), 'New conversation', sqlc.narg(location_id)::uuid
 FROM projects AS p
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE p.id = sqlc.arg(project_id)
   AND om.user_id = sqlc.arg(user_id)
-RETURNING id, project_id, created_by_user_id, title, created_at, updated_at;
+RETURNING id, project_id, created_by_user_id, title, created_at, updated_at, location_id;
 
 -- name: CountAIConversationsForProjectForUser :one
 SELECT COUNT(*)
@@ -13,13 +13,15 @@ FROM ai_conversations AS ac
 INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ac.project_id = sqlc.arg(project_id)
-  AND om.user_id = sqlc.arg(user_id);
+  AND om.user_id = sqlc.arg(user_id)
+  AND ac.location_id IS NOT DISTINCT FROM sqlc.narg(location_id);
 
 -- name: ListAIConversationsForProjectForUser :many
 SELECT
     ac.id,
     ac.project_id,
     ac.created_by_user_id,
+    ac.location_id,
     COALESCE(
         (
             SELECT COALESCE(
@@ -42,6 +44,7 @@ INNER JOIN projects AS p ON p.id = ac.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ac.project_id = sqlc.arg(project_id)
   AND om.user_id = sqlc.arg(user_id)
+  AND ac.location_id IS NOT DISTINCT FROM sqlc.narg(location_id)
 ORDER BY ac.updated_at DESC, ac.id DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
@@ -50,6 +53,7 @@ SELECT
     ac.id,
     ac.project_id,
     ac.created_by_user_id,
+    ac.location_id,
     COALESCE(
         (
             SELECT COALESCE(

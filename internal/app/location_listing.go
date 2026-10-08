@@ -265,7 +265,7 @@ func (a *App) handleBindLocationListing(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
-	response, err := a.assembleLocationResponse(r.Context(), bound.ID, bound.ProjectID, bound.Name, bound.PlaceID, bound.Latitude, bound.Longitude, bound.Address, bound.Locality, bound.Localities, userID)
+	response, err := a.assembleLocationResponse(r.Context(), bound.ID, bound.ProjectID, bound.Name, bound.PlaceID, bound.Latitude, bound.Longitude, bound.Address, bound.Locality, bound.Localities, bound.RadiusM, userID)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -314,7 +314,7 @@ func (a *App) handleListProjectLocations(w http.ResponseWriter, r *http.Request)
 	}
 	responses := make([]localVisibilityLocationResponse, 0, len(locations))
 	for _, location := range locations {
-		response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, userID)
+		response, err := a.assembleLocationResponse(r.Context(), location.ID, location.ProjectID, location.Name, location.PlaceID, location.Latitude, location.Longitude, location.Address, location.Locality, location.Localities, location.RadiusM, userID)
 		if err != nil {
 			serverError(w, r, err)
 			return
@@ -324,20 +324,115 @@ func (a *App) handleListProjectLocations(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, 200, responses)
 }
 
+// handleDeleteLocationSetup permanently deletes one location and its
+// location-only terminal Maps, AI audit, Revbot chat and settings history.
+// The endpoint keeps its contract: success is 204, deletion is owner-only,
+// the parent project, sibling locations and shared Google auth are untouched,
+// and active Maps runs, unconfirmed Maps spend and live AI/chat worker state
+// block with 409. Settled spend stays settled: budget ledgers are never
+// refunded or deleted, only the location-scoped evidence rows go away.
 func (a *App) handleDeleteLocationSetup(w http.ResponseWriter, r *http.Request) {
-	location, userID, ok := a.locationSetupLocation(w, r)
+	projectID, userID, ok := a.locationSetupProjectUser(w, r)
 	if !ok {
 		return
 	}
-	count, err := a.Queries.DeleteLocationSetupForUser(r.Context(), sqlc.DeleteLocationSetupForUserParams{ID: location.ID, ID_2: location.ProjectID, UserID: userID})
+	locationID, err := parseUUIDParam(chi.URLParam(r, "locationID"))
+	if err != nil {
+		writeJSONError(w, 400, "invalid location id")
+		return
+	}
+
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	queries := a.Queries.WithTx(tx)
+
+	// Authorized scope transaction: lock the location row through project
+	// membership so concurrent deletes serialize instead of racing.
+	var organizationID pgtype.UUID
+	err = tx.QueryRow(r.Context(), `SELECT p.organization_id FROM project_locations l
+		JOIN projects p ON p.id = l.project_id
+		JOIN organization_members m ON m.org_id = p.organization_id
+		WHERE l.id = $1 AND p.id = $2 AND m.user_id = $3
+		FOR UPDATE OF l`, locationID, projectID, userID).Scan(&organizationID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "location not found")
+		} else {
+			serverError(w, r, err)
+		}
+		return
+	}
+
+	// Owner-only permanent deletion: members may read and edit, but only an
+	// owner may destroy location history.
+	if err := requireOrganizationOwner(r.Context(), queries, organizationID, userID); err != nil {
+		writeInvitePermissionError(w, err)
+		return
+	}
+
+	blockMessage, blocked, err := locationDeleteBlocker(r.Context(), tx, projectID, locationID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if blocked {
+		writeJSONError(w, http.StatusConflict, blockMessage)
+		return
+	}
+
+	// Location-only terminal Revbot chat history. The composite FK has no
+	// cascade, so terminal conversations are removed explicitly; their turns,
+	// messages and tool state cascade. Live turns were blocked above, and the
+	// locked conversation rows keep a worker from starting one mid-delete.
+	lockedConversations, err := tx.Query(r.Context(), `SELECT id FROM ai_conversations WHERE project_id = $1 AND location_id = $2 FOR UPDATE`, projectID, locationID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	lockedConversations.Close()
+	if _, err := tx.Exec(r.Context(), `DELETE FROM ai_conversations WHERE project_id = $1 AND location_id = $2`, projectID, locationID); err != nil {
+		serverError(w, r, err)
+		return
+	}
+
+	// Location-only terminal AI audit history. Active audits were blocked
+	// above; only terminal rows go, and their runs cascade. The recount
+	// catches an audit queued by a concurrent worker after the guard.
+	if _, err := tx.Exec(r.Context(), `DELETE FROM ai_audits WHERE project_id = $1 AND location_id = $2 AND status NOT IN ('queued','running')`, projectID, locationID); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	var remainingAudits int
+	if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM ai_audits WHERE project_id = $1 AND location_id = $2`, projectID, locationID).Scan(&remainingAudits); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if remainingAudits > 0 {
+		writeJSONError(w, http.StatusConflict, "this location has an active AI audit and cannot be deleted")
+		return
+	}
+
+	// The existing location delete cascades every location-scoped child with
+	// ON DELETE CASCADE (terminal Maps runs and lookups, services, queries,
+	// landmarks, business profile, website scopes, keywords, Google bindings,
+	// AI questions) while the unsettled-spend trigger still guards unconfirmed
+	// Maps charges. No budget ledger row is touched, so settled spend is
+	// preserved and nothing is refunded.
+	count, err := queries.DeleteLocationSetupForUser(r.Context(), sqlc.DeleteLocationSetupForUserParams{ID: locationID, ID_2: projectID, UserID: userID})
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			switch {
 			case pgErr.ConstraintName == "ai_audits_location_id_project_id_fkey":
 				writeJSONError(w, http.StatusConflict, "this location has AI audit history and cannot be deleted")
+			case pgErr.ConstraintName == "ai_conversations_location_project_fkey":
+				writeJSONError(w, http.StatusConflict, "this location has Revbot conversations and cannot be deleted")
 			case strings.Contains(pgErr.Message, "active or unconfirmed Maps spend"):
-				writeJSONError(w, http.StatusConflict, "settle active or unconfirmed spending before deleting this location")
+				writeJSONError(w, http.StatusConflict, "location has active or unconfirmed Maps spend; settle active or unconfirmed spending before deleting this location")
 			default:
 				serverError(w, r, err)
 			}
@@ -350,7 +445,56 @@ func (a *App) handleDeleteLocationSetup(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusNotFound, "location not found")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		serverError(w, r, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// locationDeleteBlocker reports the 409 that must stop a permanent location
+// deletion: active Maps runs, unconfirmed Maps spend, live AI audits, queued
+// or running AI worker jobs, and live Revbot chat turns. It returns
+// blocked=false when only terminal location history remains.
+func locationDeleteBlocker(ctx context.Context, tx pgx.Tx, projectID, locationID pgtype.UUID) (string, bool, error) {
+	var blocked bool
+	// Existing Maps spend guards, mirrored without relaxing: a queued or
+	// running run, or any reserved (unconfirmed) credit, blocks deletion.
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM local_visibility_runs WHERE location_id = $1 AND (status IN ('queued','running') OR reserved_credits > 0)
+			UNION ALL SELECT 1 FROM local_listing_lookups WHERE location_id = $1 AND (status = 'running' OR reserved_credits > 0)
+		)`, locationID).Scan(&blocked); err != nil {
+		return "", false, err
+	}
+	if blocked {
+		return "location has active or unconfirmed Maps spend; settle active or unconfirmed spending before deleting this location", true, nil
+	}
+	// Live AI audit or location-scoped worker state blocks deletion so a
+	// worker never loses the row it is paid to produce.
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ai_audits WHERE project_id = $1 AND location_id = $2 AND status IN ('queued','running'))`, projectID, locationID).Scan(&blocked); err != nil {
+		return "", false, err
+	}
+	if blocked {
+		return "this location has an active AI audit and cannot be deleted", true, nil
+	}
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ai_worker_jobs j WHERE j.status IN ('pending','running')
+			AND (j.location_id = $2
+				OR EXISTS (SELECT 1 FROM ai_audits a WHERE a.id = j.audit_id AND a.project_id = $1 AND a.location_id = $2)
+				OR EXISTS (SELECT 1 FROM local_visibility_runs r WHERE r.id = j.local_run_id AND r.location_id = $2)))`, projectID, locationID).Scan(&blocked); err != nil {
+		return "", false, err
+	}
+	if blocked {
+		return "this location has a queued or running AI job and cannot be deleted", true, nil
+	}
+	// Live Revbot chat turns block deletion so worker message state survives.
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ai_turns t JOIN ai_conversations c ON c.id = t.conversation_id
+			WHERE c.project_id = $1 AND c.location_id = $2 AND t.status IN ('queued','running','waiting','waiting_for_user'))`, projectID, locationID).Scan(&blocked); err != nil {
+		return "", false, err
+	}
+	if blocked {
+		return "this location has an active Revbot conversation turn and cannot be deleted", true, nil
+	}
+	return "", false, nil
 }
 
 func (a *App) handleUnbindLocationListing(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +511,7 @@ func (a *App) handleUnbindLocationListing(w http.ResponseWriter, r *http.Request
 		}
 		return
 	}
-	response, err := a.assembleLocationResponse(r.Context(), unbound.ID, unbound.ProjectID, unbound.Name, unbound.PlaceID, unbound.Latitude, unbound.Longitude, unbound.Address, unbound.Locality, unbound.Localities, userID)
+	response, err := a.assembleLocationResponse(r.Context(), unbound.ID, unbound.ProjectID, unbound.Name, unbound.PlaceID, unbound.Latitude, unbound.Longitude, unbound.Address, unbound.Locality, unbound.Localities, unbound.RadiusM, userID)
 	if err != nil {
 		serverError(w, r, err)
 		return

@@ -9,8 +9,8 @@ import (
 )
 
 func TestGenerateMapQueryCandidatesExceedsFive(t *testing.T) {
-	// The editable draft stores any candidate count; only enqueue caps at five.
-	// Two services and three locality levels must all survive untruncated.
+	// The editable draft stores any candidate count and enqueue runs every
+	// enabled query. Two services and three locality levels all survive.
 	services := []string{"life insurance", "car repair"}
 	localities := []string{"Kalikasthan", "Kathmandu-29", "Kathmandu Metropolitan City"}
 
@@ -30,8 +30,8 @@ func TestGenerateMapQueryCandidatesExceedsFive(t *testing.T) {
 		"life insurance in Kathmandu Metropolitan City",
 		"car repair in Kathmandu Metropolitan City",
 	}
-	if len(got) <= MapQueryCount {
-		t.Fatalf("len(got) = %d, want more than the %d run cap", len(got), MapQueryCount)
+	if len(got) <= 5 {
+		t.Fatalf("len(got) = %d, want more than the old five-query product cap", len(got))
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q, want %q", got, want)

@@ -146,18 +146,26 @@ func (options QueryPageOptions) dimensionFilters() []map[string]any {
 			"expression": options.Search,
 		})
 	}
+	if options.PageScope.active() {
+		filters = append(filters, options.PageScope.googleFilter())
+	}
 	return filters
 }
 
 func (options QueryPageOptions) cacheKey(organizationID, siteURL string) string {
+	return strings.Join(append([]string{"queries", organizationID, siteURL}, options.cacheKeyTail()...), "|")
+}
+
+func (options QueryPageOptions) locationCacheKey(organizationID, connectionID, siteURL string) string {
+	return strings.Join(append([]string{"location-queries", organizationID, connectionID, siteURL}, options.cacheKeyTail()...), "|")
+}
+
+func (options QueryPageOptions) cacheKeyTail() []string {
 	days := strconv.Itoa(options.Days)
 	if options.StartDate != "" && options.EndDate != "" {
 		days = ""
 	}
-	return strings.Join([]string{
-		"queries",
-		organizationID,
-		siteURL,
+	return []string{
 		days,
 		options.StartDate,
 		options.EndDate,
@@ -166,7 +174,8 @@ func (options QueryPageOptions) cacheKey(organizationID, siteURL string) string 
 		options.dimension(),
 		strconv.FormatBool(options.QuestionsOnly),
 		strings.ToLower(options.Search),
-	}, "|")
+		options.PageScope.cacheKeyPart(),
+	}
 }
 
 func clampInt(value, fallback, minimum, maximum int) int {

@@ -21,15 +21,9 @@ import (
 
 var numberedItemRe = regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`)
 
-const (
-	locationVisibilityMinQueries = 1
-	locationVisibilityMaxQueries = 5
-)
-
 type visibilityQueries interface {
 	GetAIAuditForWorker(ctx context.Context, arg sqlc.GetAIAuditForWorkerParams) (sqlc.AiAudit, error)
 	GetLocationForAIAuditWorker(ctx context.Context, arg sqlc.GetLocationForAIAuditWorkerParams) (sqlc.ProjectLocation, error)
-	ListEnabledMapQueriesForLocation(ctx context.Context, arg sqlc.ListEnabledMapQueriesForLocationParams) ([]sqlc.ProjectLocationQuery, error)
 	GetProjectAIQuestions(ctx context.Context, projectID pgtype.UUID) (sqlc.GetProjectAIQuestionsRow, error)
 	GetProjectBusinessProfileByProjectID(ctx context.Context, projectID pgtype.UUID) (sqlc.GetProjectBusinessProfileByProjectIDRow, error)
 	UpdateAIAuditStatus(ctx context.Context, arg sqlc.UpdateAIAuditStatusParams) error
@@ -53,6 +47,86 @@ func (w *Worker) visibilityProvider(modelSlug string) (ai.Provider, error) {
 		APIKey: w.cfg.OpenRouterAPIKey,
 		Model:  modelSlug,
 	})
+}
+
+// LocationBusinessProfile is a location's independent copy of profile facts.
+// Only this copy feeds a location run: a parent profile edit never changes it.
+type LocationBusinessProfile struct {
+	BrandName           string
+	WebsiteURL          string
+	PrimaryCategory     string
+	PrimaryLocation     string
+	BusinessDescription string
+	ProductDescription  string
+	TargetAudience      string
+	BusinessCompetitors []string
+	Services            []string
+	SeedPrompts         []string
+}
+
+// LocationProfileReader loads the independent profile copy for one location.
+type LocationProfileReader interface {
+	GetLocationBusinessProfile(ctx context.Context, locationID, projectID pgtype.UUID) (LocationBusinessProfile, error)
+}
+
+// LocationProfileStore reads location_business_profiles with pgx.
+type LocationProfileStore struct {
+	Pool locationProfileRowQuerier
+}
+
+type locationProfileRowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// GetLocationBusinessProfile returns the copied profile scoped to its owning
+// project. pgx.ErrNoRows means the location has no profile copy yet.
+func (s LocationProfileStore) GetLocationBusinessProfile(ctx context.Context, locationID, projectID pgtype.UUID) (LocationBusinessProfile, error) {
+	var (
+		profile                            LocationBusinessProfile
+		competitors, services, seedPrompts []byte
+	)
+	err := s.Pool.QueryRow(ctx,
+		`SELECT brand_name, website_url,
+		 COALESCE(primary_category,''), COALESCE(primary_location,''),
+		 COALESCE(business_description,''), COALESCE(product_description,''),
+		 COALESCE(target_audience,''), business_competitors, services, seed_prompts
+		 FROM location_business_profiles WHERE location_id = $1 AND project_id = $2`,
+		locationID, projectID,
+	).Scan(&profile.BrandName, &profile.WebsiteURL, &profile.PrimaryCategory, &profile.PrimaryLocation,
+		&profile.BusinessDescription, &profile.ProductDescription, &profile.TargetAudience,
+		&competitors, &services, &seedPrompts)
+	if err != nil {
+		return LocationBusinessProfile{}, err
+	}
+	if profile.BusinessCompetitors, err = decodeJSONStringArray(competitors); err != nil {
+		return LocationBusinessProfile{}, fmt.Errorf("decode location competitors: %w", err)
+	}
+	if profile.Services, err = decodeJSONStringArray(services); err != nil {
+		return LocationBusinessProfile{}, fmt.Errorf("decode location services: %w", err)
+	}
+	if profile.SeedPrompts, err = decodeJSONStringArray(seedPrompts); err != nil {
+		return LocationBusinessProfile{}, fmt.Errorf("decode location seed prompts: %w", err)
+	}
+	return profile, nil
+}
+
+// decodeJSONStringArray decodes a jsonb string array, treating null/empty as nil.
+func decodeJSONStringArray(raw []byte) ([]string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func (w *Worker) locationProfileReader() LocationProfileReader {
+	if w.locationProfiles != nil {
+		return w.locationProfiles
+	}
+	return LocationProfileStore{Pool: w.pool}
 }
 
 func (w *Worker) isLocationVisibilityJob(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow) (bool, error) {
@@ -185,28 +259,25 @@ func (w *Worker) handleLocationVisibilityRun(ctx context.Context, store visibili
 		return "", fmt.Errorf("load visibility location: %w", err)
 	}
 
-	profile, err := store.GetProjectBusinessProfileByProjectID(ctx, job.ProjectID)
+	profile, err := w.locationProfileReader().GetLocationBusinessProfile(ctx, audit.LocationID, job.ProjectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", fmt.Errorf("no business profile for project %s", job.ProjectID.String())
+			return "", fmt.Errorf("no location business profile for %s", audit.LocationID.String())
 		}
-		return "", fmt.Errorf("load business profile: %w", err)
+		return "", fmt.Errorf("load location business profile: %w", err)
 	}
 
-	mapQueries, err := store.ListEnabledMapQueriesForLocation(ctx, sqlc.ListEnabledMapQueriesForLocationParams{
-		LocationID: audit.LocationID,
-		ProjectID:  job.ProjectID,
-	})
+	questions, err := w.locationQuestionReader().GetLocationAIQuestions(ctx, audit.LocationID, job.ProjectID)
 	if err != nil {
-		return "", fmt.Errorf("load enabled map queries: %w", err)
+		return "", fmt.Errorf("load location ai questions: %w", err)
 	}
-	if len(mapQueries) < locationVisibilityMinQueries || len(mapQueries) > locationVisibilityMaxQueries {
-		return "", fmt.Errorf("location %s has %d enabled map queries, want 1-5", audit.LocationID.String(), len(mapQueries))
+	if len(questions) == 0 {
+		return "", fmt.Errorf("location %s has no AI questions", audit.LocationID.String())
 	}
 
-	items := make([]visibilityQuestion, len(mapQueries))
-	for i, q := range mapQueries {
-		items[i] = visibilityQuestion{order: i + 1, text: q.Text, officeName: location.Name}
+	items := make([]visibilityQuestion, len(questions))
+	for i, question := range questions {
+		items[i] = visibilityQuestion{order: i + 1, text: question, officeName: location.Name}
 	}
 	return w.runVisibilityQuestions(ctx, store, audit.ID, items, profile.BrandName)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/pgnull"
 	"github.com/ps-wizard/revserp/internal/projectkeywords"
+	"github.com/ps-wizard/revserp/internal/textnormalization"
 )
 
 const updateBusinessProfileName = "update_business_profile"
@@ -66,8 +67,15 @@ func updateBusinessProfileTool() Tool {
 }
 
 func executeUpdateBusinessProfile(ctx context.Context, args json.RawMessage, s Scope) (Result, error) {
-	if s.Queries == nil || s.DB == nil {
-		return Result{}, errors.New("update_business_profile: scope has no queries or transaction support")
+	if s.Queries == nil {
+		return Result{}, errors.New("update_business_profile: scope has no queries")
+	}
+	if s.LocationID.Valid {
+		exec := updateBusinessProfileLocalExecutor{locations: s.Queries}
+		return exec.runLocal(ctx, args, s.ProjectID, s.LocationID, s.UserID)
+	}
+	if s.DB == nil {
+		return Result{}, errors.New("update_business_profile: scope has no transaction support")
 	}
 	exec := updateBusinessProfileExecutor{queries: s.Queries, db: s.DB, suppressPromptGeneration: s.SuppressPromptGeneration, keywords: contractProjectKeywordService{}}
 	return exec.run(ctx, args, s.ProjectID, s.UserID)
@@ -669,6 +677,438 @@ func parseUpdateBusinessProfileArgs(raw json.RawMessage) (updateBusinessProfileA
 				v = []string{}
 			}
 			args.SeedPrompts = &v
+		default:
+			return args, fmt.Errorf("unknown argument %q", key)
+		}
+	}
+	return args, nil
+}
+
+// updateBusinessProfileLocationQuerier is the generated-query surface the
+// location branch needs, implemented by *sqlc.Queries and fakes.
+type updateBusinessProfileLocationQuerier interface {
+	GetProjectLocationForUser(ctx context.Context, arg sqlc.GetProjectLocationForUserParams) (sqlc.GetProjectLocationForUserRow, error)
+	GetOrganizationMember(ctx context.Context, arg sqlc.GetOrganizationMemberParams) (sqlc.OrganizationMember, error)
+	GetLocationBusinessProfile(ctx context.Context, arg sqlc.GetLocationBusinessProfileParams) (sqlc.LocationBusinessProfile, error)
+	UpsertLocationBusinessProfile(ctx context.Context, arg sqlc.UpsertLocationBusinessProfileParams) (sqlc.LocationBusinessProfile, error)
+}
+
+type updateBusinessProfileLocalArgs struct {
+	BrandName           *string
+	WebsiteURL          *string
+	PrimaryCategory     *string
+	PrimaryLocation     *string
+	BusinessDescription *string
+	ProductDescription  *string
+	TargetAudience      *string
+	BusinessCompetitors *[]string
+	SeedPrompts         *[]string
+	Services            *[]string
+}
+
+type updateBusinessProfileLocalExecutor struct {
+	locations updateBusinessProfileLocationQuerier
+}
+
+func (e *updateBusinessProfileLocalExecutor) runLocal(ctx context.Context, raw json.RawMessage, projectID, locationID, userID pgtype.UUID) (Result, error) {
+	args, err := parseUpdateBusinessProfileLocalArgs(raw)
+	if err != nil {
+		return Result{Content: updateBusinessProfileName + " error: " + err.Error()}, nil
+	}
+	res, _, _, err := e.patchLocal(ctx, args, projectID, locationID, userID, e.locations)
+	if err != nil {
+		if isModelError(err) {
+			return Result{Content: updateBusinessProfileName + " error: " + err.Error()}, nil
+		}
+		return Result{}, err
+	}
+	return res, nil
+}
+
+// patchLocal merges one location update and returns the model-facing
+// result, the changed field names, and whether the profile existed. Omitted
+// fields keep their stored values; a nil services list preserves the
+// snapshot while an empty list clears it.
+func (e *updateBusinessProfileLocalExecutor) patchLocal(ctx context.Context, args updateBusinessProfileLocalArgs, projectID, locationID, userID pgtype.UUID, q updateBusinessProfileLocationQuerier) (Result, []string, bool, error) {
+	location, err := q.GetProjectLocationForUser(ctx, sqlc.GetProjectLocationForUserParams{ID: locationID, ID_2: projectID, UserID: userID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Result{}, nil, false, &modelError{msg: "location not found or access denied"}
+		}
+		return Result{}, nil, false, fmt.Errorf("%s: read location: %w", updateBusinessProfileName, err)
+	}
+	member, err := q.GetOrganizationMember(ctx, sqlc.GetOrganizationMemberParams{OrgID: location.OrganizationID, UserID: userID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
+		}
+		return Result{}, nil, false, fmt.Errorf("%s: get membership: %w", updateBusinessProfileName, err)
+	}
+	if member.Role != "owner" {
+		return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
+	}
+
+	existing, err := q.GetLocationBusinessProfile(ctx, sqlc.GetLocationBusinessProfileParams{ProjectID: projectID, LocationID: locationID})
+	exists := true
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			exists = false
+		} else {
+			return Result{}, nil, false, fmt.Errorf("%s: read location profile: %w", updateBusinessProfileName, err)
+		}
+	}
+	if !exists {
+		if args.BrandName == nil || strings.TrimSpace(*args.BrandName) == "" || args.WebsiteURL == nil || strings.TrimSpace(*args.WebsiteURL) == "" {
+			return Result{}, nil, false, &modelError{msg: "no business profile exists for this location yet; to create one, provide non-empty brand_name and website_url"}
+		}
+	}
+
+	var existingSeed, existingCompetitors, existingServices []string
+	if exists {
+		if v, err := businessprofile.DecodeSeedPrompts(existing.SeedPrompts); err == nil {
+			existingSeed = v
+		} else if args.SeedPrompts == nil {
+			return Result{}, nil, true, fmt.Errorf("%s: decode seed_prompts: %w", updateBusinessProfileName, err)
+		} else {
+			existingSeed = []string{}
+		}
+		if v, err := businessprofile.DecodeBusinessCompetitors(existing.BusinessCompetitors); err == nil {
+			existingCompetitors = v
+		} else if args.BusinessCompetitors == nil {
+			return Result{}, nil, true, fmt.Errorf("%s: decode business_competitors: %w", updateBusinessProfileName, err)
+		} else {
+			existingCompetitors = []string{}
+		}
+		if v, err := businessprofile.DecodeStringSlice(existing.Services); err == nil {
+			existingServices = v
+		} else if args.Services == nil {
+			return Result{}, nil, true, fmt.Errorf("%s: decode services: %w", updateBusinessProfileName, err)
+		} else {
+			existingServices = []string{}
+		}
+	} else {
+		existingSeed = []string{}
+		existingCompetitors = []string{}
+		existingServices = []string{}
+	}
+
+	var finalBrand, finalWebsite string
+	var finalCategory, finalLocation, finalDesc, finalProduct, finalAudience pgtype.Text
+	var finalSeed, finalCompetitors, finalServices []string
+	var servicesColumn any
+	changed := []string{}
+
+	mergeText := func(arg *string, field string, current pgtype.Text) pgtype.Text {
+		if arg == nil {
+			return current
+		}
+		trim := strings.TrimSpace(*arg)
+		existingVal := ""
+		if current.Valid {
+			existingVal = current.String
+		}
+		if trim != existingVal {
+			changed = append(changed, field)
+		}
+		return pgnull.Text(trim)
+	}
+
+	if args.BrandName != nil {
+		trim := strings.TrimSpace(*args.BrandName)
+		if trim == "" {
+			return Result{}, nil, exists, &modelError{msg: "brand_name cannot be empty"}
+		}
+		finalBrand = trim
+		if !exists || trim != existing.BrandName {
+			changed = append(changed, "brand_name")
+		}
+	} else if exists {
+		finalBrand = existing.BrandName
+	}
+	if args.WebsiteURL != nil {
+		trim := strings.TrimSpace(*args.WebsiteURL)
+		if trim == "" {
+			return Result{}, nil, exists, &modelError{msg: "website_url cannot be empty"}
+		}
+		finalWebsite = trim
+		if !exists || trim != existing.WebsiteUrl {
+			changed = append(changed, "website_url")
+		}
+	} else if exists {
+		finalWebsite = existing.WebsiteUrl
+	}
+	if exists && (strings.TrimSpace(finalBrand) == "" || strings.TrimSpace(finalWebsite) == "") {
+		return Result{}, nil, exists, &modelError{msg: "brand_name and website_url are required"}
+	}
+	if exists {
+		finalCategory = mergeText(args.PrimaryCategory, "primary_category", existing.PrimaryCategory)
+		finalLocation = mergeText(args.PrimaryLocation, "primary_location", existing.PrimaryLocation)
+		finalDesc = mergeText(args.BusinessDescription, "business_description", existing.BusinessDescription)
+		finalProduct = mergeExactText(args.ProductDescription, existing.ProductDescription, &changed)
+		finalAudience = mergeText(args.TargetAudience, "target_audience", existing.TargetAudience)
+	} else {
+		finalCategory = pgnull.Text(trimArg(args.PrimaryCategory))
+		finalLocation = pgnull.Text(trimArg(args.PrimaryLocation))
+		finalDesc = pgnull.Text(trimArg(args.BusinessDescription))
+		finalProduct = pgnull.Text(exactArg(args.ProductDescription))
+		finalAudience = pgnull.Text(trimArg(args.TargetAudience))
+	}
+
+	if args.SeedPrompts != nil {
+		norm, err := businessprofile.NormalizeSeedPrompts(*args.SeedPrompts)
+		if err != nil {
+			return Result{}, nil, exists, &modelError{msg: err.Error()}
+		}
+		finalSeed = norm
+		if !reflect.DeepEqual(norm, existingSeed) {
+			changed = append(changed, "seed_prompts")
+		}
+	} else {
+		finalSeed = existingSeed
+	}
+	if args.BusinessCompetitors != nil {
+		norm := businessprofile.NormalizeBusinessCompetitors(*args.BusinessCompetitors)
+		finalCompetitors = norm
+		if !reflect.DeepEqual(norm, existingCompetitors) {
+			changed = append(changed, "business_competitors")
+		}
+	} else {
+		finalCompetitors = existingCompetitors
+	}
+	if args.Services != nil {
+		norm, err := normalizeLocationServices(*args.Services)
+		if err != nil {
+			return Result{}, nil, exists, &modelError{msg: err.Error()}
+		}
+		finalServices = norm
+		if !reflect.DeepEqual(norm, existingServices) {
+			changed = append(changed, "services")
+		}
+		encoded, err := json.Marshal(finalServices)
+		if err != nil {
+			return Result{}, nil, exists, fmt.Errorf("%s: marshal services: %w", updateBusinessProfileName, err)
+		}
+		servicesColumn = encoded
+	} else {
+		finalServices = existingServices
+	}
+	if finalSeed == nil {
+		finalSeed = []string{}
+	}
+	if finalCompetitors == nil {
+		finalCompetitors = []string{}
+	}
+	if finalServices == nil {
+		finalServices = []string{}
+	}
+
+	seedJSON, err := json.Marshal(finalSeed)
+	if err != nil {
+		return Result{}, nil, exists, fmt.Errorf("%s: marshal seed: %w", updateBusinessProfileName, err)
+	}
+	competitorsJSON, err := json.Marshal(finalCompetitors)
+	if err != nil {
+		return Result{}, nil, exists, fmt.Errorf("%s: marshal competitors: %w", updateBusinessProfileName, err)
+	}
+
+	upserted, err := q.UpsertLocationBusinessProfile(ctx, sqlc.UpsertLocationBusinessProfileParams{
+		ProjectID:           projectID,
+		LocationID:          locationID,
+		BrandName:           finalBrand,
+		WebsiteUrl:          finalWebsite,
+		PrimaryCategory:     finalCategory,
+		PrimaryLocation:     finalLocation,
+		BusinessDescription: finalDesc,
+		ProductDescription:  finalProduct,
+		TargetAudience:      finalAudience,
+		BusinessCompetitors: competitorsJSON,
+		SeedPrompts:         seedJSON,
+		Column12:            servicesColumn,
+	})
+	if err != nil {
+		return Result{}, nil, exists, fmt.Errorf("%s: upsert location profile: %w", updateBusinessProfileName, err)
+	}
+
+	resp := map[string]interface{}{
+		"location_id":          locationID.String(),
+		"brand_name":           upserted.BrandName,
+		"website_url":          upserted.WebsiteUrl,
+		"primary_category":     profileText(upserted.PrimaryCategory),
+		"primary_location":     profileText(upserted.PrimaryLocation),
+		"business_description": profileText(upserted.BusinessDescription),
+		"product_description":  profileText(upserted.ProductDescription),
+		"target_audience":      profileText(upserted.TargetAudience),
+		"business_competitors": finalCompetitors,
+		"seed_prompts":         finalSeed,
+		"services":             finalServices,
+	}
+	content, err := json.Marshal(resp)
+	if err != nil {
+		return Result{}, nil, exists, fmt.Errorf("%s: marshal response: %w", updateBusinessProfileName, err)
+	}
+	sort.Strings(changed)
+	summary := "no changes"
+	if len(changed) > 0 {
+		summary = "updated " + strings.Join(changed, ", ")
+		if !exists {
+			summary = "created location business profile: " + strings.Join(changed, ", ")
+		}
+	} else if !exists {
+		summary = "created location business profile"
+	}
+	return Result{Content: string(content), Summary: summary}, changed, exists, nil
+}
+
+// mergeExactText merges product_description byte-exact: leading/trailing
+// whitespace and newlines are significant content copied verbatim from the
+// parent, never normalized. Only this field merges exact; metadata trims.
+func mergeExactText(arg *string, current pgtype.Text, changed *[]string) pgtype.Text {
+	if arg == nil {
+		return current
+	}
+	existingVal := ""
+	if current.Valid {
+		existingVal = current.String
+	}
+	if *arg != existingVal {
+		*changed = append(*changed, "product_description")
+	}
+	return pgnull.Text(*arg)
+}
+
+// exactArg passes an optional argument through byte-exact, treating
+// absence as empty.
+func exactArg(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// trimArg trims an optional scalar argument, treating absence as empty.
+func trimArg(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func normalizeLocationServices(raw []string) ([]string, error) {
+	services := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, label := range raw {
+		if strings.ContainsRune(label, 0) {
+			return nil, errors.New("service label must not contain nul")
+		}
+		display := textnormalization.NormalizeTextDisplay(label)
+		if display == "" {
+			continue
+		}
+		if len(display) > 200 {
+			return nil, errors.New("service label must fit within 200 bytes")
+		}
+		key := textnormalization.NormalizeTextKey(label)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		services = append(services, display)
+	}
+	return services, nil
+}
+
+func parseUpdateBusinessProfileLocalArgs(raw json.RawMessage) (updateBusinessProfileLocalArgs, error) {
+	args := updateBusinessProfileLocalArgs{}
+	fields, err := strictJSONFields(raw)
+	if err != nil {
+		return args, err
+	}
+	if len(fields) == 0 {
+		return args, errors.New("no fields provided; provide at least one of brand_name, website_url, primary_category, primary_location, business_description, product_description, target_audience, business_competitors, seed_prompts, services")
+	}
+	for key, value := range fields {
+		if key == "branded_keywords" || key == "non_branded_keywords" || key == "target_keywords" {
+			return args, fmt.Errorf("argument %q is managed through location keyword lists, not here", key)
+		}
+		trimmedVal := strings.TrimSpace(string(value))
+		if trimmedVal == "null" {
+			switch key {
+			case "seed_prompts", "business_competitors", "services":
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			default:
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+		}
+		switch key {
+		case "brand_name":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.BrandName = &v
+		case "website_url":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.WebsiteURL = &v
+		case "primary_category":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.PrimaryCategory = &v
+		case "primary_location":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.PrimaryLocation = &v
+		case "business_description":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.BusinessDescription = &v
+		case "product_description":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.ProductDescription = &v
+		case "target_audience":
+			var v string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be a string", key)
+			}
+			args.TargetAudience = &v
+		case "business_competitors":
+			var v []string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			}
+			if v == nil {
+				v = []string{}
+			}
+			args.BusinessCompetitors = &v
+		case "seed_prompts":
+			var v []string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			}
+			if v == nil {
+				v = []string{}
+			}
+			args.SeedPrompts = &v
+		case "services":
+			var v []string
+			if err := json.Unmarshal(value, &v); err != nil {
+				return args, fmt.Errorf("argument %q must be an array of strings", key)
+			}
+			if v == nil {
+				v = []string{}
+			}
+			args.Services = &v
 		default:
 			return args, fmt.Errorf("unknown argument %q", key)
 		}

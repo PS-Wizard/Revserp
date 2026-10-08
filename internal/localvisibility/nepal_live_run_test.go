@@ -167,7 +167,7 @@ func TestLayer1NepalLiveRun(t *testing.T) {
 	if executeErr != nil {
 		t.Fatalf("live run failed or partial; evidence retained, no automatic rerun: %v", executeErr)
 	}
-	if len(evidence.Cells) != MapQueryCount*GridPointCount || saved.CreditsUsed != saved.ExpectedCredits || saved.ReservedCredits != 0 {
+	if len(evidence.Cells) != len(evidence.Snapshot.Queries)*GridPointCount || saved.CreditsUsed != saved.ExpectedCredits || saved.ReservedCredits != 0 {
 		t.Fatal("live outcome/count/settlement mismatch; evidence retained")
 	}
 }
@@ -188,7 +188,7 @@ func TestRecordedNepalGridLiveEvidence(t *testing.T) {
 	if err != nil || int(evidence.ExpectedCredits) != expected {
 		t.Fatalf("recorded expected cost invalid: %v", err)
 	}
-	if len(evidence.Cells) != MapQueryCount*GridPointCount {
+	if len(evidence.Cells) != len(evidence.Snapshot.Queries)*GridPointCount {
 		t.Fatal("recorded run lacks planned cells")
 	}
 	total := int32(0)
