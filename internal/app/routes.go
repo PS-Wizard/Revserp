@@ -283,6 +283,7 @@ func (a *App) Router() http.Handler {
 				admin.Get("/admin/organizations/{orgID}/projects", a.handleAdminListOrgProjects)
 				admin.Get("/admin/projects/{projectID}/crawls", a.handleAdminListProjectCrawls)
 				admin.Get("/admin/crawls/{crawlID}/score-breakdown", a.handleAdminGetCrawlScoreBreakdown)
+				admin.Get("/admin/skills", a.handleAdminListSkills)
 			})
 		})
 	})

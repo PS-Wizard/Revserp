@@ -78,6 +78,7 @@ type Config struct {
 	CrawlTimeout                time.Duration
 	AnalysisTimeout             time.Duration
 	MaxAPIResponseBytes         int64
+	AISkillsDir                 string
 }
 
 // Load reads configuration from the environment.
@@ -146,6 +147,7 @@ func Load() Config {
 		CrawlTimeout:                getEnvDuration("CRAWL_TIMEOUT", 60*time.Minute),
 		AnalysisTimeout:             getEnvDuration("CRAWL_ANALYSIS_TIMEOUT", 15*time.Minute),
 		MaxAPIResponseBytes:         getEnvInt64("MAX_API_RESPONSE_BYTES", 10<<20),
+		AISkillsDir:                 getEnv("AI_SKILLS_DIR", "skills"),
 	}
 }
 

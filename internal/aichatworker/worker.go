@@ -19,6 +19,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/ai"
 	"github.com/ps-wizard/revserp/internal/aichattools"
 	"github.com/ps-wizard/revserp/internal/aiprompt"
+	"github.com/ps-wizard/revserp/internal/aiskills"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -43,6 +44,9 @@ const (
 	suggestCallsPerTurn    = 4
 	suggestRequestsPerTurn = 40
 	toolResultContentCap   = 32 << 10
+	// Skill files are committed guidance, so one turn gets room for a full
+	// 64KiB skill root plus opening chunks of references.
+	skillBytesPerTurn = 96 << 10
 )
 
 // Config contains the AI chat worker settings.
@@ -79,6 +83,12 @@ type Worker struct {
 	// leaves MCP tools disconnected and native chat working. Wired in
 	// cmd/ai-chat-worker.
 	MCPDial MCPConnector
+
+	// Skills is the read-only filesystem catalog of Git-managed guidance
+	// skills for tool calls; nil when unwired (tests construct Workers
+	// without it). A nil catalog leaves the skill tools unavailable and
+	// native chat working. Wired in cmd/ai-chat-worker.
+	Skills *aiskills.Catalog
 
 	lease     time.Duration
 	heartbeat time.Duration
@@ -307,6 +317,8 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		PageContentBudget: aichattools.NewPageContentBudget(pageContentBudgetBytes, pageContentBudgetPages),
 		WebBudget:         aichattools.NewWebBudget(webSearchBudgetPerTurn, webFetchBudgetPerTurn),
 		SuggestBudget:     aichattools.NewSuggestBudget(suggestCallsPerTurn, suggestRequestsPerTurn),
+		Skills:            w.Skills,
+		SkillsBudget:      aichattools.NewSkillBudget(skillBytesPerTurn),
 	}
 
 	flushTicker := time.NewTicker(w.flushInterval)

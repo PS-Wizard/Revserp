@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ps-wizard/revserp/internal/aiskills"
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
@@ -26,6 +27,10 @@ type App struct {
 	Nominatim      *geography.NominatimClient
 	Landmarks      *locationlandmarks.Client
 	PlacesListings *googleplaces.PlacesListingClient
+	// Skills is the read-only filesystem catalog of Git-managed AI skill
+	// folders. A nil catalog (tests that build App without New) serves an
+	// empty skill list.
+	Skills *aiskills.Catalog
 	// MCPConnect dials one generic session for connection validation
 	// (initialize plus tools/list discovery only, never tool execution).
 	// Wired by default in New; tests may replace it with a fake. A nil value
@@ -62,5 +67,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		Nominatim:      geography.NewNominatimClient(cfg.NominatimEndpoint, cfg.NominatimUserAgent),
 		Landmarks:      locationlandmarks.NewClient(locationlandmarks.Config{APIKey: cfg.GoogleMapsAPIKey}),
 		PlacesListings: googleplaces.NewPlacesListingClient(cfg.GoogleMapsAPIKey, ""),
+		Skills:         aiskills.New(cfg.AISkillsDir),
 	}
 }

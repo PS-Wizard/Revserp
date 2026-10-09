@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/aiskills"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -68,6 +69,11 @@ type Scope struct {
 	// transaction owns that enqueue once it advances setup status. Chat leaves it
 	// false, so a saved profile still triggers question generation.
 	SuppressPromptGeneration bool
+	// Skills is the read-only filesystem catalog of Git-managed guidance
+	// skills, nil when unwired. The skill tools report nil as unavailable.
+	Skills *aiskills.Catalog
+	// SkillsBudget caps total skill file bytes read per turn. Nil means no cap.
+	SkillsBudget *SkillBudget
 }
 
 // Budget is a thread-safe counter of rows a turn may still fetch.
@@ -229,7 +235,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool(), getLocationLandmarksTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool(), getLocationLandmarksTool(), listSkillsTool(), readSkillTool()}}
 }
 
 // CatalogDefs lists every native tool definition in catalog order, including
@@ -239,7 +245,7 @@ func NewRegistry() *Registry {
 // connection tools are not here: they exist per connection and are gated by
 // the canonical aliases MCPModelToolName builds.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def, getLocationLandmarksTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def, getLocationLandmarksTool().Def, listSkillsTool().Def, readSkillTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag

@@ -200,3 +200,18 @@ func TestLoadAITurnTimeout(t *testing.T) {
 		t.Errorf("AITurnTimeout 60m: got %s, want 60m", got)
 	}
 }
+
+func TestLoadAISkillsDir(t *testing.T) {
+	unsetEnv(t, "AI_SKILLS_DIR")
+	setEnv(t, "DATABASE_URL", "postgres://test:test@localhost/test")
+
+	if got := Load().AISkillsDir; got != "skills" {
+		t.Errorf("AISkillsDir default: got %q, want skills", got)
+	}
+
+	setEnv(t, "AI_SKILLS_DIR", "/app/skills")
+	if got := Load().AISkillsDir; got != "/app/skills" {
+		t.Errorf("AISkillsDir override: got %q, want /app/skills", got)
+	}
+	unsetEnv(t, "AI_SKILLS_DIR")
+}

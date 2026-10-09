@@ -25,7 +25,8 @@ import "strings"
 // chat-v1 predates the code-owned base prompt: it used a full prompt stored in
 // ai_prompt_configs. chat-v2 composes the base prompt with an optional audience
 // delta and treats a tool's own description as the source of its behaviour.
-const Version = "chat-v2"
+// chat-v3 offers the skills tools alongside the chat-v2 contract.
+const Version = "chat-v3"
 
 // DefaultSystemPrompt is the code-owned base system prompt. It always applies.
 //

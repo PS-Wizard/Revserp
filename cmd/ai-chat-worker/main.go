@@ -11,6 +11,7 @@ import (
 
 	"github.com/ps-wizard/revserp/internal/ai"
 	"github.com/ps-wizard/revserp/internal/aichatworker"
+	"github.com/ps-wizard/revserp/internal/aiskills"
 	"github.com/ps-wizard/revserp/internal/config"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
 	"github.com/ps-wizard/revserp/internal/googlesuggest"
@@ -59,6 +60,10 @@ func run() error {
 	// Google autocomplete is keyless, so the reader is always wired; a call
 	// reports unavailable only when the endpoint cannot be reached at call time.
 	worker.Suggest = googlesuggest.NewClient("", cfg.MaxAPIResponseBytes, 0)
+	// The skill tools read the same Git-managed catalog the admin listing
+	// serves, rooted at AI_SKILLS_DIR. A missing checkout leaves the tools
+	// reporting an empty list rather than failing turns.
+	worker.Skills = aiskills.New(cfg.AISkillsDir)
 	// The web tools stay unregistered as unavailable when no key is set: the
 	// handler layer reports that as an ordinary state rather than failing turns.
 	if strings.TrimSpace(cfg.TinyfishAPIKey) != "" {

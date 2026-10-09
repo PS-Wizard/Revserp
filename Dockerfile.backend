@@ -42,6 +42,7 @@ COPY --from=build /out/ai-audit-worker /app/ai-audit-worker
 COPY --from=build /out/ai-chat-worker  /app/ai-chat-worker
 COPY --from=build /out/migrate         /app/migrate
 COPY migrations /app/migrations
+COPY skills /app/skills
 
 EXPOSE 8080
 # Default command; each Compose service overrides this with its own `command:`.
