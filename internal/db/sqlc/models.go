@@ -151,6 +151,42 @@ type AiTurnEvent struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type AiTurnTranscript struct {
+	TurnID     pgtype.UUID
+	Transcript []byte
+	Budgets    []byte
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
+type AiUserQuestionCheckpoint struct {
+	TurnID            pgtype.UUID
+	QuestionRequestID pgtype.UUID
+	Messages          []byte
+	Usage             []byte
+	Budgets           []byte
+	Rundown           []byte
+	DeferredCalls     []byte
+	Round             int32
+	NextSeq           int32
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
+type AiUserQuestionRequest struct {
+	ID         pgtype.UUID
+	TurnID     pgtype.UUID
+	ToolCallID string
+	Questions  []byte
+	Answers    []byte
+	Reply      string
+	Status     string
+	DecidedBy  pgtype.UUID
+	CreatedAt  pgtype.Timestamptz
+	AnsweredAt pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type AiWorkerJob struct {
 	ID           pgtype.UUID
 	JobType      string

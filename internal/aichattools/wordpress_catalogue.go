@@ -140,7 +140,7 @@ var wordpressTools = []wordpressTool{
 	{Name: "delete_page_element", Group: "builders", Label: "Delete page element", Effect: wpEffectWrite, Description: "Delete one element from a builder page."},
 	{Name: "list_builder_templates", Group: "builders", Label: "List builder templates", Effect: wpEffectRead, Description: "List the saved templates of a page builder."},
 	{Name: "manage_global_styles", Group: "builders", Label: "Manage global styles", Effect: wpEffectReadWrite, Description: "Read or write the theme's global styles and colors."},
-	{Name: "render_page_preview", Group: "builders", Label: "Render page preview", Effect: wpEffectRead, Description: "Render one page as preview text to check the result of an edit."},
+	{Name: "render_page_preview", Group: "builders", Label: "Render page preview", Effect: wpEffectRead, Description: "Render one page as preview text to check the result of an edit. Preview text is not proof of raw live script or schema absence unless the provider explicitly supplies it."},
 	{Name: "list_menus", Group: "appearance", Label: "List menus", Effect: wpEffectRead, Description: "List the navigation menus."},
 	{Name: "list_menu_items", Group: "appearance", Label: "List menu items", Effect: wpEffectRead, Description: "List the items of one navigation menu."},
 	{Name: "save_menu", Group: "appearance", Label: "Create or update a menu", Effect: wpEffectWrite, Description: "Create or rename a navigation menu and set its locations."},

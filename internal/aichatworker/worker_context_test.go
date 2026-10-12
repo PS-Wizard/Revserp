@@ -1,6 +1,7 @@
 package aichatworker
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -100,17 +101,22 @@ func TestChatContinuationCountsCompletionOnce(t *testing.T) {
 	}
 }
 
-// TestSelectHistoryPairsKeepsOrder checks chronological order is preserved
+// TestFitHistoryExchangesKeepsOrder checks chronological order is preserved
 // around the mandatory system/current messages.
-func TestSelectHistoryPairsKeepsOrder(t *testing.T) {
+func TestFitHistoryExchangesKeepsOrder(t *testing.T) {
 	system := ai.Message{Role: "system", Content: "sys"}
 	current := ai.Message{Role: "user", Content: "now"}
-	newestFirst := []historyPair{
-		{user: "newest", assistant: "a3"},
-		{user: "middle", assistant: "a2"},
-		{user: "oldest", assistant: "a1"},
+	pair := func(user, assistant string) historyExchange {
+		return historyExchange{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: user},
+			{Role: ai.RoleAssistant, Content: assistant},
+		}}
 	}
-	got := selectHistoryPairs(system, current, newestFirst, "", "high", nil)
+	newestFirst := []historyExchange{pair("newest", "a3"), pair("middle", "a2"), pair("oldest", "a1")}
+	got, dropped, _ := fitHistoryExchanges(system, current, newestFirst, "", "high", nil)
+	if dropped != 0 {
+		t.Fatalf("dropped=%d, want 0", dropped)
+	}
 	want := []string{"sys", "oldest", "a1", "middle", "a2", "newest", "a3", "now"}
 	if len(got) != len(want) {
 		t.Fatalf("messages=%d, want %d", len(got), len(want))
@@ -122,19 +128,21 @@ func TestSelectHistoryPairsKeepsOrder(t *testing.T) {
 	}
 }
 
-// TestSelectHistoryPairsDropsOldestFirst uses the small legacy capacity so
-// only the newest pair still fits; an oversized middle pair is skipped
-// without dropping older pairs that fit.
-func TestSelectHistoryPairsDropsOldestFirst(t *testing.T) {
+// TestFitHistoryExchangesDropsOldestFirst uses the small legacy capacity so
+// only the newest exchange still fits; an oversized middle exchange stops the
+// scan without pulling older exchanges past the gap.
+func TestFitHistoryExchangesDropsOldestFirst(t *testing.T) {
 	system := ai.Message{Role: "system", Content: "sys"}
 	current := ai.Message{Role: "user", Content: "now"}
-	big := strings.Repeat("w", 300000)
-	newestFirst := []historyPair{
-		{user: "newest " + big, assistant: "a3"},
-		{user: "middle " + big, assistant: "a2"},
-		{user: "oldest " + big, assistant: "a1"},
+	pair := func(user, assistant string) historyExchange {
+		return historyExchange{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: user},
+			{Role: ai.RoleAssistant, Content: assistant},
+		}}
 	}
-	got := selectHistoryPairs(system, current, newestFirst, "legacy-model", "high", nil)
+	big := strings.Repeat("w", 300000)
+	newestFirst := []historyExchange{pair("newest "+big, "a3"), pair("middle "+big, "a2"), pair("oldest "+big, "a1")}
+	got, dropped, _ := fitHistoryExchanges(system, current, newestFirst, "legacy-model", "high", nil)
 	found := map[string]bool{}
 	for _, message := range got {
 		for _, name := range []string{"newest", "middle", "oldest"} {
@@ -144,26 +152,197 @@ func TestSelectHistoryPairsDropsOldestFirst(t *testing.T) {
 		}
 	}
 	if !found["newest"] || found["middle"] || found["oldest"] {
-		t.Fatalf("want only newest pair kept, found=%v", found)
+		t.Fatalf("want only newest exchange kept, found=%v", found)
+	}
+	if dropped != 2 {
+		t.Fatalf("dropped=%d, want 2", dropped)
 	}
 
 	huge := strings.Repeat("w", 5000000)
-	mixed := []historyPair{
-		{user: "newest", assistant: "a3"},
-		{user: huge, assistant: huge},
-		{user: "oldest", assistant: "a1"},
-	}
-	got = selectHistoryPairs(system, current, mixed, "", "high", nil)
+	mixed := []historyExchange{pair("newest", "a3"), pair(huge, huge), pair("oldest", "a1")}
+	got, _, _ = fitHistoryExchanges(system, current, mixed, "", "high", nil)
 	var order []string
 	for _, message := range got {
 		order = append(order, message.Content)
 	}
 	joined := strings.Join(order, "\n")
 	if strings.Contains(joined, "oldest") || !strings.Contains(joined, "newest") {
-		t.Fatal("history must retain the newest contiguous pairs, not older pairs beyond a gap")
+		t.Fatal("history must retain the newest contiguous exchanges, not older exchanges beyond a gap")
 	}
 	if strings.Contains(joined, huge[:100]) {
-		t.Fatal("oversized pair must not be selected")
+		t.Fatal("oversized exchange must not be selected")
+	}
+}
+
+// TestFitHistoryExchangesChargesToolSchemaOnce pins the capacity regression:
+// many tiny exchanges plus a large tool schema must all fit under the actual
+// request limit. The schema is charged once, never per exchange.
+func TestFitHistoryExchangesChargesToolSchemaOnce(t *testing.T) {
+	system := ai.Message{Role: "system", Content: "sys"}
+	current := ai.Message{Role: "user", Content: "now"}
+	schemaDesc := strings.Repeat("a", 300000)
+	tools := []ai.ToolDef{{Name: "big_tool", Description: schemaDesc, Schema: json.RawMessage(`{"type":"object","properties":{"body":{"type":"string"}}}`)}}
+	newestFirst := make([]historyExchange, 0, 20)
+	for i := 0; i < 20; i++ {
+		newestFirst = append(newestFirst, historyExchange{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "tiny question"},
+			{Role: ai.RoleAssistant, Content: "tiny answer", ReasoningContent: "tiny reasoning", ToolCalls: []ai.ToolCall{{ID: "c", Name: "big_tool", Args: "{}"}}},
+			{Role: ai.RoleTool, Content: "tiny result", ToolCallID: "c", Name: "big_tool"},
+		}})
+	}
+	got, dropped, newestOver := fitHistoryExchanges(system, current, newestFirst, "deepseek-flash", "high", tools)
+	if newestOver {
+		t.Fatal("newest tiny exchange must fit its own guard")
+	}
+	if dropped != 0 {
+		t.Fatalf("dropped=%d, want 0: schema must not crowd out tiny history", dropped)
+	}
+	request := ai.Request{Model: "deepseek-flash", Effort: "high", Messages: got, Tools: tools}
+	if tokens := ai.EstimateChatInputTokens(request); tokens > chatInputBudgetTokens("deepseek-flash") {
+		t.Fatalf("fitted request=%d tokens over budget=%d", tokens, chatInputBudgetTokens("deepseek-flash"))
+	}
+}
+
+// TestFitHistoryExchangesFlagsOversizeNewest forces the explicit failure path:
+// a newest exchange alone over the guard must report over instead of letting
+// the terminal stub trim it into a pseudo fit.
+func TestFitHistoryExchangesFlagsOversizeNewest(t *testing.T) {
+	system := ai.Message{Role: "system", Content: "sys"}
+	current := ai.Message{Role: "user", Content: "now"}
+	newestFirst := []historyExchange{{messages: []ai.Message{
+		{Role: ai.RoleUser, Content: "newest"},
+		{Role: ai.RoleAssistant, Content: "answer", ToolCalls: []ai.ToolCall{{ID: "c1", Name: "read_page", Args: "{}"}}},
+		{Role: ai.RoleTool, Content: strings.Repeat("result data ", 200000), ToolCallID: "c1", Name: "read_page"},
+	}}}
+	_, _, newestOver := fitHistoryExchanges(system, current, newestFirst, "legacy-model", "high", nil)
+	if !newestOver {
+		t.Fatal("oversize newest exchange must report over-guard")
+	}
+	_, notice, over := fitHistoryWithLedger(system, current, []historyExchange{newestFirst[0]}, "legacy-model", "high", nil)
+	if !over || notice == "" {
+		t.Fatalf("over=%v notice=%q, want explicit failure signal", over, notice)
+	}
+}
+
+// TestFitHistoryWithLedgerKeepsOmittedWrites lists executed writes from dropped
+// exchanges in the system prompt under the same guard, with full args so a
+// trailing target ID stays identifiable.
+func TestFitHistoryWithLedgerKeepsOmittedWrites(t *testing.T) {
+	system := ai.Message{Role: "system", Content: "sys"}
+	current := ai.Message{Role: "user", Content: "now"}
+	bigArgs := `{"html": "` + strings.Repeat("x", 50000) + `", "post_id": "trailing-target-9"}`
+	oldestFirst := []historyExchange{
+		{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "old"},
+			{Role: ai.RoleAssistant, Content: "wrote", ToolCalls: []ai.ToolCall{{ID: "c1", Name: "update_page", Args: bigArgs}}},
+			{Role: ai.RoleTool, Content: strings.Repeat("result data ", 200000), ToolCallID: "c1", Name: "update_page"},
+		},
+			writes: []ledgerWrite{{Turn: "old12345", CallID: "c1", Name: "update_page", Args: bigArgs, Status: "completed", Summary: "page updated"}}},
+		{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "new"},
+			{Role: ai.RoleAssistant, Content: "done"},
+		}},
+	}
+	got, notice, over := fitHistoryWithLedger(system, current, oldestFirst, "legacy-model", "high", nil)
+	if over {
+		t.Fatal("newest small exchange must fit")
+	}
+	if notice == "" || !strings.Contains(notice, "system prompt") {
+		t.Fatalf("notice=%q, want ledger pointer", notice)
+	}
+	if !strings.Contains(got[0].Content, "Omitted write ledger") {
+		t.Fatalf("system missing ledger:\n%s", got[0].Content)
+	}
+	for _, want := range []string{"update_page", "c1", "completed", "page updated", "trailing-target-9"} {
+		if !strings.Contains(got[0].Content, want) {
+			t.Errorf("ledger missing %q", want)
+		}
+	}
+	if !strings.Contains(got[0].Content, bigArgs) {
+		t.Error("ledger missing full large-write args")
+	}
+	request := ai.Request{Messages: got}
+	if ai.EstimateChatInputTokens(request) > chatInputBudgetTokens("legacy-model") {
+		t.Fatal("ledger fit must hold the same guard")
+	}
+}
+
+// TestFitHistoryWithLedgerLeavesFullContextAlone keeps read-only full history
+// byte-identical when everything fits.
+func TestFitHistoryWithLedgerLeavesFullContextAlone(t *testing.T) {
+	system := ai.Message{Role: "system", Content: "sys"}
+	current := ai.Message{Role: "user", Content: "now"}
+	oldestFirst := []historyExchange{
+		{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "old"},
+			{Role: ai.RoleAssistant, Content: "a", ToolCalls: []ai.ToolCall{{ID: "c1", Name: "read_page", Args: "{}"}}},
+			{Role: ai.RoleTool, Content: "r", ToolCallID: "c1", Name: "read_page"},
+		},
+			writes: []ledgerWrite{{Turn: "old", CallID: "c1", Name: "read_page", Args: "{}", Status: "completed", Summary: "ok"}}},
+	}
+	got, notice, over := fitHistoryWithLedger(system, current, oldestFirst, "deepseek-flash", "high", nil)
+	if over || notice != "" {
+		t.Fatalf("over=%v notice=%q, want clean full fit", over, notice)
+	}
+	if got[0].Content != "sys" {
+		t.Fatalf("system=%q, want untouched", got[0].Content)
+	}
+	if len(got) != 5 {
+		t.Fatalf("messages=%d, want system+3+current", len(got))
+	}
+}
+
+// TestFitHistoryWithLedgerNeverOrphansToolResults keeps each assistant call
+// with its results when capacity forces a cut.
+func TestFitHistoryWithLedgerNeverOrphansToolResults(t *testing.T) {
+	system := ai.Message{Role: ai.RoleSystem, Content: "sys"}
+	current := ai.Message{Role: ai.RoleUser, Content: "now"}
+	oldestFirst := []historyExchange{
+		{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "old"},
+			{Role: ai.RoleAssistant, Content: "working", ToolCalls: []ai.ToolCall{{ID: "c1", Name: "read_page", Args: "{}"}}},
+			{Role: ai.RoleTool, Content: strings.Repeat("result data ", 200000), ToolCallID: "c1", Name: "read_page"},
+		},
+			writes: []ledgerWrite{{Turn: "old", CallID: "c1", Name: "read_page", Args: "{}", Status: "completed", Summary: "ok"}}},
+		{messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "new"},
+			{Role: ai.RoleAssistant, Content: "also working", ToolCalls: []ai.ToolCall{{ID: "c2", Name: "read_page", Args: "{}"}}},
+			{Role: ai.RoleTool, Content: "small", ToolCallID: "c2", Name: "read_page"},
+		},
+			writes: []ledgerWrite{{Turn: "new", CallID: "c2", Name: "read_page", Args: "{}", Status: "completed", Summary: "ok"}}},
+	}
+	got, notice, over := fitHistoryWithLedger(system, current, oldestFirst, "legacy-model", "high", nil)
+	if over {
+		t.Fatal("newest small exchange must fit")
+	}
+	if notice == "" {
+		t.Fatal("dropping history must produce an explicit context notice")
+	}
+	joined := ""
+	for _, message := range got {
+		joined += "\n" + message.Content
+	}
+	if strings.Contains(joined, "result data result") {
+		t.Fatal("oldest exchange result must drop whole, never partially")
+	}
+	if !strings.Contains(joined, "new") || !strings.Contains(joined, "small") {
+		t.Fatalf("newest exchange must stay whole: %q", joined)
+	}
+	if !strings.Contains(got[0].Content, "read_page") || !strings.Contains(got[0].Content, `"c1"`) {
+		t.Fatalf("omitted old write must survive in the ledger:\n%s", got[0].Content)
+	}
+	// Every kept tool result still follows its assistant call.
+	wantCall := ""
+	for _, message := range got {
+		for _, call := range message.ToolCalls {
+			wantCall = call.ID
+		}
+		if message.Role == ai.RoleTool && message.ToolCallID != wantCall && wantCall != "" {
+			t.Fatalf("orphaned tool result %q without its call", message.ToolCallID)
+		}
+		if message.Role == ai.RoleUser {
+			wantCall = ""
+		}
 	}
 }
 

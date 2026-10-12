@@ -35,6 +35,10 @@ type createAIConversationRequest struct {
 type aiConversationDetailResponse struct {
 	aiConversationResponse
 	Messages []aiMessageResponse `json:"messages"`
+	// QuestionRequests restores every user question card (pending plus
+	// resolved) so history shows answered summaries and the pending card
+	// even once the turn is complete.
+	QuestionRequests []map[string]any `json:"question_requests"`
 }
 
 // handleCreateAIConversation creates a parent or location conversation for a
@@ -209,58 +213,59 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var (
-		conversation sqlc.GetAIConversationByIDForUserRow
-		messages     []sqlc.ListAIMessagesForConversationRow
-		turns        []sqlc.ListAITurnsForConversationRow
-		toolCalls    []sqlc.ListAIToolCallsForConversationRow
-	)
-	if !a.withTx(w, r, func(queries *sqlc.Queries) error {
-		principal, ok := a.getPrincipal(w, r)
-
-		if !ok {
-
-			return errors.New("missing principal")
-
-		}
-		user := principal.User
-		conversation, err = queries.GetAIConversationByIDForUser(r.Context(), sqlc.GetAIConversationByIDForUserParams{
-			ConversationID: conversationID,
-			UserID:         user.ID,
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeJSONError(w, http.StatusNotFound, "conversation not found")
-				return err
-			}
-			serverError(w, r, err)
-			return err
-		}
-		messages, err = queries.ListAIMessagesForConversation(r.Context(), conversationID)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-		turns, err = queries.ListAITurnsForConversation(r.Context(), conversationID)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-		toolCalls, err = queries.ListAIToolCallsForConversation(r.Context(), conversationID)
-		if err != nil {
-			serverError(w, r, err)
-			return err
-		}
-		return nil
-	}) {
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
 		return
 	}
-	var turnID, turnStatus *string
-	activeTurns, err := a.Queries.ListActiveTurnsForConversations(r.Context(), []pgtype.UUID{conversationID})
+	tx, err := a.DB.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	queries := a.Queries.WithTx(tx)
+	conversation, err := queries.GetAIConversationByIDForUser(r.Context(), sqlc.GetAIConversationByIDForUserParams{
+		ConversationID: conversationID,
+		UserID:         principal.User.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSONError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	messages, err := queries.ListAIMessagesForConversation(r.Context(), conversationID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	turns, err := queries.ListAITurnsForConversation(r.Context(), conversationID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	toolCalls, err := queries.ListAIToolCallsForConversation(r.Context(), conversationID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	questions, err := queries.ListUserQuestionRequestsForConversation(r.Context(), conversationID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	activeTurns, err := queries.ListActiveTurnsForConversations(r.Context(), []pgtype.UUID{conversationID})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	var turnID, turnStatus *string
 	if len(activeTurns) > 0 {
 		turnIDValue := activeTurns[0].TurnID.String()
 		turnID = &turnIDValue
@@ -290,11 +295,21 @@ func (a *App) handleGetAIConversation(w http.ResponseWriter, r *http.Request) {
 	response := aiConversationDetailResponse{
 		aiConversationResponse: newAIConversationResponse(aiConversationFromGetRow(conversation), turnID, turnStatus),
 		Messages:               make([]aiMessageResponse, 0, len(messages)),
+		QuestionRequests:       make([]map[string]any, 0, len(questions)),
+	}
+	for _, row := range questions {
+		entity, err := userQuestionRequestJSON(row)
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		response.QuestionRequests = append(response.QuestionRequests, entity)
 	}
 	for _, message := range messages {
 		item := aiMessageResponse{
 			ID: message.ID.String(), Role: message.Role, Status: message.Status, Content: message.Content,
 			Images:    imagesFromContentBlocks(message.Role, message.ContentBlocks),
+			Activity:  activityFromContentBlocks(message.Role, message.ContentBlocks),
 			CreatedAt: message.CreatedAt.Time, UpdatedAt: message.UpdatedAt.Time,
 		}
 		if message.Role == "assistant" {

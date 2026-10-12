@@ -273,7 +273,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	ctx, cancel := context.WithTimeout(parent, w.cfg.TurnTimeout)
 	defer cancel()
 
-	messages, scope, err := w.loadContext(ctx, claimed)
+	loaded, scope, baseRound, err := w.loadContext(ctx, claimed)
 	if err != nil {
 		log.Printf("ai chat context load failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
 		w.finalizeAndLog(claimed, "failed", "worker_interrupted", "failed", ai.Usage{})
@@ -298,11 +298,11 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	if closeMCP != nil {
 		defer closeMCP()
 	}
-	if mcpStatus != "" && len(messages) > 0 {
-		messages[0].Content += "\n\n--- MCP context ---\n" + mcpStatus
+	if mcpStatus != "" {
+		loaded.system.Content += "\n\n--- MCP context ---\n" + mcpStatus
 	}
 	allowed := allowedToolsFromRegistry(registry)
-	messages = fitHistoryToTools(messages, claimed.Model, claimed.Effort, allowed)
+	messages, trimNotice, historyOver := fitHistoryWithLedger(loaded.system, loaded.current, loaded.past, claimed.Model, claimed.Effort, allowed)
 	toolScope := aichattools.Scope{
 		UserID:            scope.UserID,
 		ProjectID:         scope.ProjectID,
@@ -335,7 +335,10 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	timedOut := false
 	ctxDone := ctx.Done()
 
-	flush := func(freshContext bool) error {
+	// flushRound persists one round's provisional progress text as PUBLIC
+	// activity plus its tagged text_delta event, atomically under the
+	// owner/lease guard. Tagged deltas never touch the final-answer content.
+	flushRound := func(freshContext bool, round int) error {
 		if buffer.Len() == 0 {
 			return nil
 		}
@@ -346,13 +349,45 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 			flushCtx, cancelFlush = w.persistenceContext()
 			defer cancelFlush()
 		}
-		if err := w.flush(flushCtx, claimed, text); err != nil {
+		if err := w.flushRoundActivity(flushCtx, claimed, round, text); err != nil {
 			return err
 		}
 		buffer.Reset()
 		output = true
 		return nil
 	}
+
+	live := messages
+	// turnLocal is this run's turn-local provider history. Saves reconcile new
+	// live appends into it, so a resume under a different history length can
+	// never duplicate earlier history or skip current messages.
+	var turnLocal []ai.Message
+	// savedLiveLen anchors the diff; negative means unanchored and saves skip.
+	savedLiveLen := -1
+	// roundForFlush numbers provisional activity when the round loop is out of scope.
+	roundForFlush := 0
+	// saveProgress reconciles live appends since the last save into turnLocal
+	// and persists it once. It skips empty writes.
+	saveProgress := func() error {
+		if savedLiveLen < 0 {
+			return nil
+		}
+		if len(live) > savedLiveLen {
+			turnLocal = append(turnLocal, live[savedLiveLen:]...)
+			savedLiveLen = len(live)
+		}
+		if len(turnLocal) == 0 {
+			return nil
+		}
+		persistCtx := ctx
+		cancelPersist := context.CancelFunc(func() {})
+		if ctx.Err() != nil {
+			persistCtx, cancelPersist = w.persistenceContext()
+		}
+		defer cancelPersist()
+		return saveTurnTranscript(persistCtx, w.pool, claimed, w.cfg.ID, turnLocal, snapshotUserQuestionBudgets(toolScope))
+	}
+	var providerErr error
 
 	// fail maps a tool-phase error to the round-loop control flow: whether
 	// rounds must stop and whether run must abandon the turn entirely (lost
@@ -362,8 +397,11 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 			return false, false
 		}
 		if parent.Err() != nil {
-			if flushErr := flush(true); flushErr != nil {
+			if flushErr := flushRound(true, roundForFlush); flushErr != nil {
 				log.Printf("ai chat shutdown flush failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), flushErr)
+			}
+			if saveErr := saveProgress(); saveErr != nil {
+				log.Printf("ai chat shutdown transcript save failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), saveErr)
 			}
 			log.Printf("ai chat turn abandoned: worker_id=%s turn_id=%s reason=parent_gone", w.cfg.ID, claimed.ID.String())
 			return true, true
@@ -378,23 +416,135 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 
 	failTurn := func(reason string, err error) {
 		log.Printf("ai chat turn failed: worker_id=%s turn_id=%s reason=%s error=%v", w.cfg.ID, claimed.ID.String(), reason, err)
+		if saveErr := saveProgress(); saveErr != nil {
+			log.Printf("ai chat transcript save failed: worker_id=%s turn_id=%s reason=%s error=%v", w.cfg.ID, claimed.ID.String(), reason, saveErr)
+		}
 		w.finalizeAndLog(claimed, "failed", "worker_interrupted", messageStatusForOutput(output), usage)
 		cancel()
 	}
 
-	live := messages
-	var emittedText bool
-	var providerErr error
 	var currentRequest ai.Request
 	var currentRequestInputTokens, currentRound int
 	tracker := &chatContextTracker{}
 	rundown := map[string]string{}
 	modelBudget := chatInputBudgetTokens(claimed.Model)
+	startRound := 0
+	// A requeued answered turn resumes from its checkpoint with unrefreshed
+	// budgets; the fresh tracker falls back to a full context estimate.
+	resumedQuestion, err := w.resumeUserQuestionIfParked(ctx, claimed, registry)
+	if err != nil {
+		// A stop racing the resume stops with no writes and no provider request.
+		if errors.Is(err, errUserQuestionStopRaced) {
+			w.finalizeAndLog(claimed, "stopped", "cancelled", "partial", ai.Usage{})
+			return
+		}
+		failTurn("resume_question", err)
+		return
+	}
+	// turnLocal starts from the durable row so pause/resume and retries extend
+	// it instead of rewriting it. A missing row means a legacy turn.
+	loadedTranscript, loadedBudgets, loadErr := loadTurnTranscript(ctx, w.pool, claimed.ID)
+	if loadErr != nil {
+		failTurn("transcript_load", loadErr)
+		return
+	}
+	turnLocal = loadedTranscript
+	if resumedQuestion != nil {
+		live = resumedQuestion.live
+		usage = resumedQuestion.usage
+		rundown = resumedQuestion.rundown
+		startRound = resumedQuestion.round
+		turnLocal = append(turnLocal, resumedQuestion.added...)
+		row, page, web, suggest, skill := resumedQuestion.budgets.restore()
+		toolScope.RowBudget = row
+		toolScope.PageContentBudget = page
+		toolScope.WebBudget = web
+		toolScope.SuggestBudget = suggest
+		toolScope.SkillsBudget = skill
+		output = true
+	} else if len(turnLocal) > 0 {
+		// Retry without a question checkpoint: replay current-turn evidence
+		// after the current user message so the provider sees executed calls
+		// and never repeats writes. Dangling calls complete from durable tool
+		// rows with recorded results or explicit unknown markers.
+		var turnCalls []historyToolCall
+		callRows, callErr := w.pool.Query(ctx, `
+SELECT call_id, name, args::text, status, result_content, summary
+FROM ai_tool_calls WHERE turn_id = $1 ORDER BY seq ASC`, claimed.ID)
+		if callErr != nil {
+			failTurn("transcript_calls", callErr)
+			return
+		}
+		for callRows.Next() {
+			var call historyToolCall
+			if err := callRows.Scan(&call.CallID, &call.Name, &call.Args, &call.Status, &call.ResultContent, &call.Summary); err != nil {
+				callRows.Close()
+				failTurn("transcript_calls", err)
+				return
+			}
+			turnCalls = append(turnCalls, call)
+		}
+		if err := callRows.Err(); err != nil {
+			callRows.Close()
+			failTurn("transcript_calls", err)
+			return
+		}
+		callRows.Close()
+		turnLocal = completeDanglingTranscriptCalls(turnLocal, turnCalls)
+		for _, call := range turnCalls {
+			status := call.Status
+			if status != "completed" && status != "failed" {
+				status = "unknown (recorded " + status + ")"
+			}
+			recordToolRundown(rundown, call.CallID, status, call.Summary)
+		}
+		live = append(live, turnLocal...)
+		output = true
+		if loadedBudgets != nil {
+			row, page, web, suggest, skill := loadedBudgets.restore()
+			toolScope.RowBudget = row
+			toolScope.PageContentBudget = page
+			toolScope.WebBudget = web
+			toolScope.SuggestBudget = suggest
+			toolScope.SkillsBudget = skill
+		}
+	}
+	for callID, outcome := range loaded.statuses {
+		if _, ok := rundown[callID]; !ok {
+			rundown[callID] = outcome
+		}
+	}
+	savedLiveLen = len(live)
 
-	for round := 0; ; round++ {
+	// Public round identities continue from persisted activity, never resetting
+	// over visible earlier progress. A capacity trim gets its own complete
+	// notice block before provider rounds continue after it.
+	loopStart := startRound
+	if baseRound > loopStart {
+		loopStart = baseRound
+	}
+	if historyOver && resumedQuestion == nil {
+		if err := w.closeAssistantRound(ctx, claimed, loopStart, assistantRoundKind(true), trimNotice); err != nil {
+			failTurn("context_notice", err)
+			return
+		}
+		w.finalizeAndLog(claimed, "failed", "context_too_large", "partial", usage)
+		return
+	}
+	if trimNotice != "" && resumedQuestion == nil {
+		if err := w.closeAssistantRound(ctx, claimed, loopStart, assistantRoundKind(true), trimNotice); err != nil {
+			failTurn("context_notice", err)
+			return
+		}
+		output = true
+		loopStart++
+	}
+	roundForFlush = loopStart
+	for round := loopStart; ; round++ {
+		roundForFlush = round
 		reqMessages := live
 		reqTools := allowed
-		final := round >= maxAgentRounds
+		final := countAssistantToolRounds(turnLocal) >= maxAgentRounds
 		currentRound = round
 		currentRequest = ai.Request{Model: claimed.Model, Effort: claimed.Effort, Messages: reqMessages, Tools: reqTools}
 		currentRequestInputTokens = tracker.inputTokens(currentRequest, live)
@@ -490,17 +640,11 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 						}
 						writing = true
 					}
-					if needParagraphBreak(emittedText, roundText.String(), event.Text) {
-						buffer.WriteString("\n\n")
-					}
 					roundText.WriteString(event.Text)
 					buffer.WriteString(event.Text)
-					if strings.TrimSpace(event.Text) != "" {
-						emittedText = true
-					}
 					if buffer.Len() >= 4096 {
-						if err := flush(cancelRequested); err != nil {
-							failTurn("flush", err)
+						if err := flushRound(cancelRequested, round); err != nil {
+							failTurn("flush_round", err)
 							return
 						}
 					}
@@ -509,8 +653,8 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 				providerErr = err
 				result = nil
 			case <-flushTicker.C:
-				if err := flush(cancelRequested); err != nil {
-					failTurn("flush", err)
+				if err := flushRound(cancelRequested, round); err != nil {
+					failTurn("flush_round", err)
 					return
 				}
 			case <-heartbeatTicker.C:
@@ -532,8 +676,11 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 				switch {
 				case cancelRequested:
 				case parent.Err() != nil:
-					if err := flush(true); err != nil {
+					if err := flushRound(true, round); err != nil {
 						log.Printf("ai chat shutdown flush failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
+					}
+					if err := saveProgress(); err != nil {
+						log.Printf("ai chat shutdown transcript save failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
 					}
 					return
 				default:
@@ -546,9 +693,40 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		if haveRoundUsage {
 			tracker.noteUsage(roundUsage)
 		}
-		if err := flush(cancelRequested || timedOut); err != nil {
-			failTurn("flush", err)
+		if err := flushRound(cancelRequested || timedOut, round); err != nil {
+			failTurn("flush_round", err)
 			return
+		}
+		roundKind := assistantRoundKind(len(roundCalls) > 0)
+		interrupted := cancelRequested || timedOut || providerErr != nil
+		// Interrupted rounds stay running activity with blank content; only
+		// non-empty rounds join the private transcript, so retries never see
+		// an empty assistant message on the wire.
+		if len(roundCalls) > 0 {
+			live = append(live, ai.Message{Role: ai.RoleAssistant, Content: roundText.String(), ToolCalls: roundCalls, ReasoningContent: roundReasoning.String()})
+			// Durable before the first dispatch: a crash mid-batch must leave
+			// the assistant calls plus reasoning behind for recovery pairing.
+			if err := saveProgress(); err != nil {
+				failTurn("transcript", err)
+				return
+			}
+		} else if strings.TrimSpace(roundText.String()) != "" || strings.TrimSpace(roundReasoning.String()) != "" {
+			live = append(live, ai.Message{Role: ai.RoleAssistant, Content: roundText.String(), ReasoningContent: roundReasoning.String()})
+			// The final answer saves privately before its public close, so a
+			// crash between them never loses it.
+			if err := saveProgress(); err != nil {
+				failTurn("transcript", err)
+				return
+			}
+		}
+		if !interrupted {
+			if closeErr := w.closeAssistantRound(ctx, claimed, round, roundKind, roundText.String()); closeErr != nil {
+				failTurn("close_round", closeErr)
+				return
+			}
+		}
+		if roundText.Len() > 0 || len(roundCalls) > 0 {
+			output = true
 		}
 		if cancelRequested || timedOut || providerErr != nil || final || len(roundCalls) == 0 {
 			break
@@ -566,10 +744,20 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 			return
 		}
 
-		live = append(live, ai.Message{Role: ai.RoleAssistant, Content: roundText.String(), ToolCalls: roundCalls, ReasoningContent: roundReasoning.String()})
 		toolStop := false
 		first := true
-		for _, call := range roundCalls {
+		for callIndex, call := range roundCalls {
+			// Checkpoint each completed result before the next dispatch, so
+			// budgets and evidence survive a crash anywhere in the batch.
+			if err := saveProgress(); err != nil {
+				if ctx.Err() != nil {
+					log.Printf("ai chat stopping transcript save failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
+					toolStop = true
+					break
+				}
+				failTurn("transcript", err)
+				return
+			}
 			if ctx.Err() != nil {
 				timedOut = true
 				cancel()
@@ -622,6 +810,49 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(toolStart))
 				live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
 				continue
+			}
+			// ask_user_question parks instead of dispatching; later siblings
+			// defer unexecuted, and disabled/invalid calls fail without parking.
+			if call.Name == aichattools.AskUserQuestionName {
+				if _, questionRegistered := registry.Get(call.Name); questionRegistered {
+					questions, argsErr := aichattools.ValidateAskUserQuestionArgs(json.RawMessage(call.Args))
+					if argsErr != nil {
+						questionStart := time.Now()
+						nextSeq++
+						status, result := invalidUserQuestionArgsResult(call, argsErr)
+						recordToolRundown(rundown, call.ID, status, result.Summary)
+						result.Content = capToolResultContent(result.Content)
+						if err := w.event(ctx, claimed, "tool_result", map[string]string{"id": call.ID, "name": call.Name, "summary": result.Summary, "status": status}); err != nil {
+							failTurn("tool_result_event", err)
+							return
+						}
+						log.Printf("ai chat tool call finished: worker_id=%s turn_id=%s call_id=%s name=%s status=%s duration=%s", w.cfg.ID, claimed.ID.String(), call.ID, call.Name, status, time.Since(questionStart))
+						live = append(live, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
+						continue
+					}
+					if err := flushRound(false, round); err != nil {
+						failTurn("flush_round", err)
+						return
+					}
+					if err := saveProgress(); err != nil {
+						failTurn("transcript", err)
+						return
+					}
+					deferred := append([]ai.ToolCall(nil), roundCalls[callIndex+1:]...)
+					parked, err := w.parkTurnForUserQuestion(ctx, claimed, call, questions, live, usage, snapshotUserQuestionBudgets(toolScope), rundown, deferred, round, nextSeq)
+					if stop, abandon := fail(err); stop {
+						if abandon {
+							return
+						}
+						toolStop = true
+						break
+					}
+					if !parked {
+						w.finalizeAndLog(claimed, "stopped", "cancelled", "partial", usage)
+						return
+					}
+					return
+				}
 			}
 			// MCP calls consult the saved user policy before anything runs. The
 			// gate only covers a tool this turn's active registry still serves
@@ -689,8 +920,8 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 					// an Ask that landed after this gate blocks instead of
 					// running.
 					if permission != "allow" {
-						if err := flush(false); err != nil {
-							failTurn("flush", err)
+						if err := flushRound(false, round); err != nil {
+							failTurn("flush_round", err)
 							return
 						}
 						requested, err := w.requestMCPApproval(ctx, claimed, call, handle, remote, liveDigest, proposal, proposalSummary(proposal))
@@ -817,14 +1048,25 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 				}
 			}
 		}
+		if err := saveProgress(); err != nil {
+			if toolStop {
+				log.Printf("ai chat stopping transcript save failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
+			} else {
+				failTurn("transcript", err)
+				return
+			}
+		}
 		if toolStop {
 			break
 		}
 	}
 
-	if err := flush(cancelRequested || timedOut); err != nil {
-		failTurn("flush", err)
+	if err := flushRound(cancelRequested || timedOut, roundForFlush); err != nil {
+		failTurn("flush_round", err)
 		return
+	}
+	if err := saveProgress(); err != nil {
+		log.Printf("ai chat terminal transcript save failed: worker_id=%s turn_id=%s error=%v", w.cfg.ID, claimed.ID.String(), err)
 	}
 	if cancelRequested {
 		w.finalizeAndLog(claimed, "stopped", "cancelled", "partial", usage)
@@ -865,7 +1107,7 @@ type turnScope struct {
 	LocationID pgtype.UUID
 }
 
-func (w *Worker) loadContext(ctx context.Context, claimed turn) ([]ai.Message, turnScope, error) {
+func (w *Worker) loadContext(ctx context.Context, claimed turn) (turnHistory, turnScope, int, error) {
 	var projectName string
 	var baseURL string
 	var scope turnScope
@@ -879,7 +1121,7 @@ JOIN projects AS p ON p.id = c.project_id
 LEFT JOIN project_locations AS l ON l.id = c.location_id
 LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
 WHERE t.id = $1 AND t.conversation_id = $2`, claimed.ID, claimed.ConversationID).Scan(&projectName, &baseURL, &scope.CrawlID, &useInternalPrompt, &scope.ProjectID, &scope.UserID, &scope.LocationID, &locationName, &locationLocality); err != nil {
-		return nil, turnScope{}, err
+		return turnHistory{}, turnScope{}, 0, err
 	}
 
 	var completedAt pgtype.Timestamptz
@@ -891,13 +1133,13 @@ JOIN ai_conversations AS conversation ON conversation.id = $2
 WHERE crawl.id = $1
   AND crawl.project_id = conversation.project_id
   AND crawl.status = 'completed'`, scope.CrawlID, claimed.ConversationID).Scan(&completedAt); err != nil {
-			return nil, turnScope{}, fmt.Errorf("validate turn crawl: %w", err)
+			return turnHistory{}, turnScope{}, 0, fmt.Errorf("validate turn crawl: %w", err)
 		}
 	}
 
 	configRow, err := sqlc.New(w.pool).GetAIPromptConfig(ctx)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, turnScope{}, fmt.Errorf("load AI prompt config: %w", err)
+		return turnHistory{}, turnScope{}, 0, fmt.Errorf("load AI prompt config: %w", err)
 	}
 	internalPrompt, externalPrompt := "", ""
 	if err == nil {
@@ -912,42 +1154,215 @@ WHERE crawl.id = $1
 SELECT content, content_blocks
 FROM ai_messages
 WHERE turn_id = $1 AND role = 'user' AND status = 'complete'`, claimed.ID).Scan(&currentUser, &currentBlocks); err != nil {
-		return nil, turnScope{}, err
-	}
-
-	rows, err := w.pool.Query(ctx, `
-SELECT user_message.content, user_message.content_blocks, assistant_message.content
-FROM ai_turns AS historical_turn
-JOIN ai_messages AS user_message ON user_message.turn_id = historical_turn.id
-    AND user_message.role = 'user' AND user_message.status = 'complete'
-JOIN ai_messages AS assistant_message ON assistant_message.turn_id = historical_turn.id
-    AND assistant_message.role = 'assistant' AND assistant_message.status = 'complete'
-WHERE historical_turn.conversation_id = $1
-  AND historical_turn.status = 'completed'
-  AND historical_turn.id <> $2
-ORDER BY historical_turn.created_at DESC, historical_turn.id DESC`, claimed.ConversationID, claimed.ID)
-	if err != nil {
-		return nil, turnScope{}, err
-	}
-	defer rows.Close()
-
-	newestFirst := make([]historyPair, 0, 16)
-	for rows.Next() {
-		var historical historyPair
-		var blocks []byte
-		if err := rows.Scan(&historical.user, &blocks, &historical.assistant); err != nil {
-			return nil, turnScope{}, err
-		}
-		historical.images = parseUserImages(blocks)
-		newestFirst = append(newestFirst, historical)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, turnScope{}, err
+		return turnHistory{}, turnScope{}, 0, err
 	}
 
 	systemMsg := ai.Message{Role: "system", Content: system}
 	currentMsg := ai.Message{Role: "user", Content: currentUser, Images: parseUserImages(currentBlocks)}
-	return selectHistoryPairs(systemMsg, currentMsg, newestFirst, claimed.Model, claimed.Effort, nil), scope, nil
+	history, crawlChanged, err := w.loadHistory(ctx, claimed, scope)
+	if err != nil {
+		return turnHistory{}, turnScope{}, 0, err
+	}
+	systemMsg.Content = annotateHistoryCrawlScope(systemMsg.Content, crawlIDString(scope.CrawlID), crawlChanged)
+	loaded := turnHistory{system: systemMsg, current: currentMsg, past: history, statuses: historyStatuses(history)}
+
+	var assistantBlocks []byte
+	if err := w.pool.QueryRow(ctx, `
+SELECT content_blocks
+FROM ai_messages
+WHERE turn_id = $1 AND role = 'assistant'`, claimed.ID).Scan(&assistantBlocks); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return turnHistory{}, turnScope{}, 0, err
+	}
+	return loaded, scope, maxAssistantActivityRoundRaw(assistantBlocks) + 1, nil
+}
+
+// turnHistory is the unfitted conversation history: system and current user
+// plus prior exchanges oldest-first. The single capacity guard applies later.
+type turnHistory struct {
+	system   ai.Message
+	current  ai.Message
+	past     []historyExchange
+	statuses map[string]string
+}
+
+func crawlIDString(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	text := id.String()
+	if len(text) > 8 {
+		return text[:8]
+	}
+	return text
+}
+
+// loadHistory replays prior turns chronologically: user messages plus exact
+// turn-local transcripts (assistant rounds with reasoning, tool messages),
+// falling back to labelled legacy tool evidence. It returns full unfitted
+// history; fitHistoryWithLedger applies the single capacity guard.
+func (w *Worker) loadHistory(ctx context.Context, claimed turn, scope turnScope) ([]historyExchange, []string, error) {
+	rows, err := w.pool.Query(ctx, `
+SELECT historical_turn.id, historical_turn.status, historical_turn.crawl_id,
+    user_message.content, user_message.content_blocks,
+    assistant_message.content,
+    COALESCE(transcript.transcript, '[]'::jsonb)
+FROM ai_turns AS historical_turn
+JOIN ai_messages AS user_message ON user_message.turn_id = historical_turn.id
+    AND user_message.role = 'user' AND user_message.status = 'complete'
+JOIN ai_messages AS assistant_message ON assistant_message.turn_id = historical_turn.id
+    AND assistant_message.role = 'assistant' AND assistant_message.status <> 'pending'
+LEFT JOIN ai_turn_transcripts AS transcript ON transcript.turn_id = historical_turn.id
+WHERE historical_turn.conversation_id = $1
+  AND historical_turn.status IN ('completed', 'failed', 'stopped')
+  AND historical_turn.id <> $2
+ORDER BY historical_turn.created_at ASC, historical_turn.id ASC`, claimed.ConversationID, claimed.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	type priorTurn struct {
+		id               pgtype.UUID
+		status           string
+		crawlID          pgtype.UUID
+		userContent      string
+		userBlocks       []byte
+		assistantContent string
+		transcriptRaw    []byte
+	}
+	prior := make([]priorTurn, 0, 16)
+	for rows.Next() {
+		var item priorTurn
+		if err := rows.Scan(&item.id, &item.status, &item.crawlID, &item.userContent, &item.userBlocks, &item.assistantContent, &item.transcriptRaw); err != nil {
+			return nil, nil, err
+		}
+		prior = append(prior, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	rows.Close()
+
+	callsByTurn := map[string][]historyToolCall{}
+	if len(prior) > 0 {
+		ids := make([]string, 0, len(prior))
+		for _, item := range prior {
+			ids = append(ids, item.id.String())
+		}
+		callRows, err := w.pool.Query(ctx, `
+SELECT turn_calls.turn_id, turn_calls.call_id, turn_calls.name,
+    turn_calls.args::text, turn_calls.status,
+    turn_calls.result_content, turn_calls.summary
+FROM ai_tool_calls AS turn_calls
+JOIN ai_turns AS historical_turn ON historical_turn.id = turn_calls.turn_id
+WHERE historical_turn.conversation_id = $1
+  AND historical_turn.id <> $2
+  AND historical_turn.status IN ('completed', 'failed', 'stopped')
+ORDER BY historical_turn.created_at ASC, historical_turn.id ASC, turn_calls.seq ASC`, claimed.ConversationID, claimed.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer callRows.Close()
+		for callRows.Next() {
+			var turnID pgtype.UUID
+			var call historyToolCall
+			if err := callRows.Scan(&turnID, &call.CallID, &call.Name, &call.Args, &call.Status, &call.ResultContent, &call.Summary); err != nil {
+				return nil, nil, err
+			}
+			callsByTurn[turnID.String()] = append(callsByTurn[turnID.String()], call)
+		}
+		if err := callRows.Err(); err != nil {
+			return nil, nil, err
+		}
+		callRows.Close()
+	}
+
+	crawlStatus := map[string]string{}
+	crawlIDs := make([]string, 0, len(prior))
+	for _, item := range prior {
+		if item.crawlID.Valid {
+			crawlIDs = append(crawlIDs, item.crawlID.String())
+		}
+	}
+	if scope.CrawlID.Valid {
+		crawlIDs = append(crawlIDs, scope.CrawlID.String())
+	}
+	if len(crawlIDs) > 0 {
+		statusRows, err := w.pool.Query(ctx, `
+SELECT id::text, status FROM crawls WHERE project_id = $1 AND id = ANY($2)`, scope.ProjectID, crawlIDs)
+		if err == nil {
+			defer statusRows.Close()
+			for statusRows.Next() {
+				var id, status string
+				if err := statusRows.Scan(&id, &status); err != nil {
+					return nil, nil, err
+				}
+				crawlStatus[id] = status
+			}
+			if err := statusRows.Err(); err != nil {
+				return nil, nil, err
+			}
+			statusRows.Close()
+		}
+	}
+
+	history := make([]historyExchange, 0, len(prior))
+	var changed []string
+	for _, item := range prior {
+		userMsg := ai.Message{Role: ai.RoleUser, Content: item.userContent, Images: parseUserImages(item.userBlocks)}
+		var stored []transcriptMessage
+		var transcript []ai.Message
+		if len(item.transcriptRaw) > 0 {
+			if err := json.Unmarshal(item.transcriptRaw, &stored); err != nil {
+				return nil, nil, fmt.Errorf("decode turn transcript: %w", err)
+			}
+			transcript = restoreTranscriptMessages(stored)
+		}
+		var exchange []ai.Message
+		calls := callsByTurn[item.id.String()]
+		transcript = completeDanglingTranscriptCalls(transcript, calls)
+		var writes []ledgerWrite
+		if len(transcript) > 0 {
+			statusByCall := make(map[string]historyToolCall, len(calls))
+			for _, call := range calls {
+				statusByCall[call.CallID] = call
+			}
+			exchange = append(exchange, userMsg)
+			writes = make([]ledgerWrite, 0, len(calls))
+			for _, call := range calls {
+				writes = append(writes, ledgerWrite{
+					Turn: item.id.String(), CallID: call.CallID, Name: call.Name,
+					Args: call.Args, Status: call.Status, Summary: call.Summary,
+				})
+			}
+			for _, message := range transcript {
+				if message.Role == ai.RoleTool {
+					if call, ok := statusByCall[message.ToolCallID]; ok && call.Status != "completed" {
+						message.Content = labelToolHistory(message.Content, message.Name, message.ToolCallID, call.Status, call.Summary)
+					}
+				}
+				exchange = append(exchange, message)
+			}
+		} else {
+			exchange = legacyHistoryMessages(item.userContent, parseUserImages(item.userBlocks), item.assistantContent, item.status, calls)
+			writes = make([]ledgerWrite, 0, len(calls))
+			for _, call := range calls {
+				writes = append(writes, ledgerWrite{
+					Turn: item.id.String(), CallID: call.CallID, Name: call.Name,
+					Args: call.Args, Status: call.Status, Summary: call.Summary,
+				})
+			}
+		}
+		history = append(history, historyExchange{messages: exchange, writes: writes})
+		if item.crawlID.String() != scope.CrawlID.String() {
+			status := crawlStatus[item.crawlID.String()]
+			if status == "" {
+				status = "unknown status"
+			}
+			changed = append(changed, "turn "+item.id.String()[:8]+" ran under crawl "+crawlIDString(item.crawlID)+" ("+status+")")
+		}
+	}
+	return history, changed, nil
 }
 
 func parseUserImages(blocks []byte) []ai.Image {
@@ -1010,8 +1425,11 @@ RETURNING cancel_requested_at IS NOT NULL`, claimed.ID, w.cfg.ID, w.lease.String
 	return cancelled, err
 }
 
-func (w *Worker) flush(ctx context.Context, claimed turn, text string) error {
-	if text == "" {
+// flushRoundActivity persists one round's provisional progress text as a
+// PUBLIC activity block plus its tagged text_delta event, atomically under
+// the owner/lease guard. Tagged deltas never touch the final-answer content.
+func (w *Worker) flushRoundActivity(ctx context.Context, claimed turn, round int, delta string) error {
+	if delta == "" {
 		return nil
 	}
 	tx, err := w.pool.Begin(ctx)
@@ -1020,16 +1438,29 @@ func (w *Worker) flush(ctx context.Context, claimed turn, text string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	var blocks []byte
+	if err := tx.QueryRow(ctx, `
+SELECT message.content_blocks
+FROM ai_messages AS message
+JOIN ai_turns AS turn ON turn.id = message.turn_id
+WHERE message.turn_id = $1
+  AND message.role = 'assistant'
+  AND turn.status = 'running'
+  AND turn.claimed_by = $2
+  AND turn.lease_expires_at > now()`, claimed.ID, w.cfg.ID).Scan(&blocks); err != nil {
+		return err
+	}
+	merged := upsertAssistantActivityText(blocks, round, delta)
 	tag, err := tx.Exec(ctx, `
 UPDATE ai_messages AS message
-SET content = message.content || $3, status = 'partial', updated_at = now()
+SET content_blocks = $3::jsonb, updated_at = now()
 FROM ai_turns AS turn
 WHERE message.turn_id = turn.id
   AND message.role = 'assistant'
   AND turn.id = $1
   AND turn.status = 'running'
   AND turn.claimed_by = $2
-  AND turn.lease_expires_at > now()`, claimed.ID, w.cfg.ID, text)
+  AND turn.lease_expires_at > now()`, claimed.ID, w.cfg.ID, string(merged))
 	if err != nil {
 		return err
 	}
@@ -1046,7 +1477,89 @@ WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > 
 	if tag.RowsAffected() != 1 {
 		return pgx.ErrNoRows
 	}
-	if err := w.eventTx(ctx, tx, claimed, "text_delta", map[string]string{"text": text}); err != nil {
+	if err := w.eventTx(ctx, tx, claimed, "text_delta", map[string]any{"text": delta, "round": round}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// closeAssistantRound classifies a finished provider round and persists the
+// outcome atomically: tool rounds pin their PUBLIC activity block complete,
+// answer rounds move the text to the message content (never concatted across
+// rounds) and drop the provisional block. Empty rounds persist nothing.
+func (w *Worker) closeAssistantRound(ctx context.Context, claimed turn, round int, kind, fullText string) error {
+	if fullText == "" {
+		return nil
+	}
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var blocks []byte
+	if err := tx.QueryRow(ctx, `
+SELECT message.content_blocks
+FROM ai_messages AS message
+JOIN ai_turns AS turn ON turn.id = message.turn_id
+WHERE message.turn_id = $1
+  AND message.role = 'assistant'
+  AND turn.status = 'running'
+  AND turn.claimed_by = $2
+  AND turn.lease_expires_at > now()`, claimed.ID, w.cfg.ID).Scan(&blocks); err != nil {
+		return err
+	}
+	var payload map[string]any
+	if kind == "activity" {
+		merged := completeAssistantActivityRoundRaw(blocks, round, fullText)
+		tag, err := tx.Exec(ctx, `
+UPDATE ai_messages AS message
+SET content_blocks = $3::jsonb, updated_at = now()
+FROM ai_turns AS turn
+WHERE message.turn_id = turn.id
+  AND message.role = 'assistant'
+  AND turn.id = $1
+  AND turn.status = 'running'
+  AND turn.claimed_by = $2
+  AND turn.lease_expires_at > now()`, claimed.ID, w.cfg.ID, string(merged))
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return pgx.ErrNoRows
+		}
+		payload = map[string]any{"round": round, "kind": "activity", "text": fullText}
+	} else {
+		merged := removeAssistantActivityRoundRaw(blocks, round)
+		tag, err := tx.Exec(ctx, `
+UPDATE ai_messages AS message
+SET content = $3, content_blocks = $4::jsonb, updated_at = now()
+FROM ai_turns AS turn
+WHERE message.turn_id = turn.id
+  AND message.role = 'assistant'
+  AND turn.id = $1
+  AND turn.status = 'running'
+  AND turn.claimed_by = $2
+  AND turn.lease_expires_at > now()`, claimed.ID, w.cfg.ID, fullText, string(merged))
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return pgx.ErrNoRows
+		}
+		payload = map[string]any{"round": round, "kind": "answer", "text": fullText}
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE ai_turns
+SET output_started_at = COALESCE(output_started_at, now()), updated_at = now()
+WHERE id = $1 AND status = 'running' AND claimed_by = $2 AND lease_expires_at > now()`, claimed.ID, w.cfg.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
+	if err := w.eventTx(ctx, tx, claimed, "assistant_round", payload); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -1232,6 +1745,11 @@ VALUES ($1, 'failed', '{"error_code":"worker_interrupted"}'::jsonb)`, item.id); 
 		// applied remotely while its result was never saved. Fail it as
 		// unknown (paired with an unknown tool result) and never retry it.
 		if err := w.failRecoveredApprovals(ctx, tx, item.id); err != nil {
+			return err
+		}
+		// Park and checkpoint commit atomically, so recovery only drops
+		// strays and cancels pending questions, never replays mutations.
+		if err := CancelPendingUserQuestionsForTurn(ctx, sqlc.New(tx), item.id, pgtype.UUID{}); err != nil {
 			return err
 		}
 	}
@@ -1421,8 +1939,4 @@ func messageStatusForOutput(output bool) string {
 		return "partial"
 	}
 	return "failed"
-}
-
-func needParagraphBreak(priorText bool, roundText, delta string) bool {
-	return priorText && strings.TrimSpace(roundText) == "" && strings.TrimSpace(delta) != ""
 }

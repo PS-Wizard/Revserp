@@ -153,6 +153,8 @@ func (a *App) Router() http.Handler {
 				gated.Post("/ai/conversations/{conversationID}/turns", a.handleSubmitAITurn)
 				gated.Get("/ai/conversations/{conversationID}/approvals", a.handleListMCPApprovals)
 				gated.Post("/ai/conversations/{conversationID}/approvals/{approvalID}/decision", a.handleDecideMCPApproval)
+				gated.Get("/ai/conversations/{conversationID}/questions", a.handleListUserQuestionRequests)
+				gated.Post("/ai/conversations/{conversationID}/questions/{questionRequestID}/answer", a.handleAnswerUserQuestionRequest)
 			})
 			app.Get("/ai/turns/{turnID}", a.handleGetAITurn)
 			app.Post("/ai/turns/{turnID}/cancel", a.handleCancelAITurn)

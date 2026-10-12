@@ -177,11 +177,16 @@ func TestPostOutputFailureKeepsPartial(t *testing.T) {
 	}
 	a.run(context.Background(), claimed)
 	var status, content string
-	if err := a.pool.QueryRow(context.Background(), `SELECT t.status,m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id=t.id AND m.role='assistant' WHERE t.id=$1`, id).Scan(&status, &content); err != nil {
+	var blocks []byte
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status,m.content,COALESCE(m.content_blocks,'[]'::jsonb) FROM ai_turns t JOIN ai_messages m ON m.turn_id=t.id AND m.role='assistant' WHERE t.id=$1`, id).Scan(&status, &content, &blocks); err != nil {
 		t.Fatal(err)
 	}
-	if status != "failed" || content != "partial" {
-		t.Fatalf("status=%q content=%q", status, content)
+	if status != "failed" || content != "" {
+		t.Fatalf("status=%q content=%q, want failed with blank content", status, content)
+	}
+	activity := parseAssistantActivityBlocks(blocks)
+	if len(activity) != 1 || activity[0].Status != "running" || activity[0].Text != "partial" {
+		t.Fatalf("interrupted text must stay running activity: %v", activity)
 	}
 }
 
@@ -213,11 +218,16 @@ func TestCancellationFinalizesPartialWithStoppedEvent(t *testing.T) {
 	}
 	a.run(context.Background(), claimed)
 	var status, code, messageStatus, content string
-	if err := a.pool.QueryRow(context.Background(), `SELECT t.status,COALESCE(t.error_code,''),m.status,m.content FROM ai_turns t JOIN ai_messages m ON m.turn_id=t.id AND m.role='assistant' WHERE t.id=$1`, id).Scan(&status, &code, &messageStatus, &content); err != nil {
+	var blocks []byte
+	if err := a.pool.QueryRow(context.Background(), `SELECT t.status,COALESCE(t.error_code,''),m.status,m.content,COALESCE(m.content_blocks,'[]'::jsonb) FROM ai_turns t JOIN ai_messages m ON m.turn_id=t.id AND m.role='assistant' WHERE t.id=$1`, id).Scan(&status, &code, &messageStatus, &content, &blocks); err != nil {
 		t.Fatal(err)
 	}
-	if status != "stopped" || code != "cancelled" || messageStatus != "partial" || content != "partial" {
-		t.Fatalf("turn=%q/%q message=%q/%q", status, code, messageStatus, content)
+	if status != "stopped" || code != "cancelled" || messageStatus != "partial" || content != "" {
+		t.Fatalf("turn=%q/%q message=%q content=%q, want stopped with blank content", status, code, messageStatus, content)
+	}
+	activity := parseAssistantActivityBlocks(blocks)
+	if len(activity) != 1 || activity[0].Status != "running" || activity[0].Text != "partial" {
+		t.Fatalf("cancelled text must stay running activity: %v", activity)
 	}
 	var events int
 	if err := a.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_turn_events WHERE turn_id=$1 AND event_type='stopped' AND payload->>'error_code'='cancelled'`, id).Scan(&events); err != nil || events != 1 {
@@ -270,7 +280,7 @@ func TestStaleWorkerCannotFlushOrFinalize(t *testing.T) {
 	if _, err := a.pool.Exec(context.Background(), `UPDATE ai_turns SET claimed_by='live',lease_expires_at=now()+interval '1 minute' WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.flush(context.Background(), claimed, "nope"); !errors.Is(err, pgx.ErrNoRows) {
+	if err := a.flushRoundActivity(context.Background(), claimed, 0, "nope"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("flush error=%v", err)
 	}
 	if err := a.finalize(context.Background(), claimed, "failed", "worker_interrupted", "failed", ai.Usage{}); !errors.Is(err, pgx.ErrNoRows) {
@@ -932,26 +942,26 @@ func TestLoadContextUsesSavedConversationLocation(t *testing.T) {
 	}
 
 	locTurn := newTurn(locConversation)
-	messages, scope, err := a.loadContext(ctx, turn{ID: locTurn, ConversationID: locConversation, Effort: "none", Model: "m"})
+	loaded, scope, _, err := a.loadContext(ctx, turn{ID: locTurn, ConversationID: locConversation, Effort: "none", Model: "m"})
 	if err != nil {
 		t.Fatalf("loadContext location: %v", err)
 	}
 	if scope.LocationID != location {
 		t.Fatalf("scope location = %v, want %v", scope.LocationID, location)
 	}
-	if !strings.Contains(messages[0].Content, "--- Location context ---") || !strings.Contains(messages[0].Content, "Acme Kathmandu") {
-		t.Fatalf("location system context missing scope:\n%s", messages[0].Content)
+	if !strings.Contains(loaded.system.Content, "--- Location context ---") || !strings.Contains(loaded.system.Content, "Acme Kathmandu") {
+		t.Fatalf("location system context missing scope:\n%s", loaded.system.Content)
 	}
 
 	parentTurn := newTurn(parentConversation)
-	messages, scope, err = a.loadContext(ctx, turn{ID: parentTurn, ConversationID: parentConversation, Effort: "none", Model: "m"})
+	loaded, scope, _, err = a.loadContext(ctx, turn{ID: parentTurn, ConversationID: parentConversation, Effort: "none", Model: "m"})
 	if err != nil {
 		t.Fatalf("loadContext parent: %v", err)
 	}
 	if scope.LocationID.Valid {
 		t.Fatalf("parent scope location = %v, want invalid", scope.LocationID)
 	}
-	if strings.Contains(messages[0].Content, "--- Location context ---") {
-		t.Fatalf("parent system context must omit location scope:\n%s", messages[0].Content)
+	if strings.Contains(loaded.system.Content, "--- Location context ---") {
+		t.Fatalf("parent system context must omit location scope:\n%s", loaded.system.Content)
 	}
 }

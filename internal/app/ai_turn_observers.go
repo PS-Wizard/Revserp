@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/aichatworker"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
@@ -53,6 +54,10 @@ type aiTurnResponse struct {
 	// history) in the same snapshot as Messages, so the frontend can seed
 	// text, cursor, and cards together with no replay.
 	Approvals []mcpApprovalJSON `json:"approvals"`
+	// QuestionRequests carries the turn's user question cards (pending plus
+	// resolved) in the same snapshot, so a reload restores the pending card
+	// and answered summaries with no replay.
+	QuestionRequests []map[string]any `json:"question_requests"`
 	// EventCursor is MAX(ai_turn_events.id) for this turn in the same
 	// snapshot. Subscribing the live stream after it replays exactly the
 	// events the snapshot does not contain: no gaps, no duplicates.
@@ -65,6 +70,7 @@ type aiMessageResponse struct {
 	Status            string               `json:"status"`
 	Content           string               `json:"content"`
 	Images            []aiTurnImage        `json:"images,omitempty"`
+	Activity          []aiMessageActivity  `json:"activity,omitempty"`
 	CreatedAt         time.Time            `json:"created_at"`
 	UpdatedAt         time.Time            `json:"updated_at"`
 	ToolCalls         []aiToolCallResponse `json:"tool_calls,omitempty"`
@@ -140,11 +146,13 @@ func newAITurnResponse(turn aiTurnSnapshot, messages []sqlc.ListAIMessagesForUse
 		Messages:         make([]aiMessageResponse, 0, len(messages)),
 		ToolCalls:        make([]aiToolCallResponse, 0),
 		Approvals:        make([]mcpApprovalJSON, 0),
+		QuestionRequests: make([]map[string]any, 0),
 	}
 	for _, message := range messages {
 		response.Messages = append(response.Messages, aiMessageResponse{
 			ID: message.ID.String(), Role: message.Role, Status: message.Status, Content: message.Content,
 			Images:    imagesFromContentBlocks(message.Role, message.ContentBlocks),
+			Activity:  activityFromContentBlocks(message.Role, message.ContentBlocks),
 			CreatedAt: message.CreatedAt.Time, UpdatedAt: message.UpdatedAt.Time,
 		})
 	}
@@ -247,6 +255,11 @@ func (a *App) handleGetAITurn(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, fmt.Errorf("get ai turn approvals: %w", err))
 		return
 	}
+	questionRows, err := queries.ListUserQuestionRequestsForTurn(r.Context(), turnID)
+	if err != nil {
+		serverError(w, r, fmt.Errorf("get ai turn questions: %w", err))
+		return
+	}
 	var eventCursor int64
 	if err := tx.QueryRow(r.Context(), `SELECT COALESCE(MAX(id), 0) FROM ai_turn_events WHERE turn_id = $1`, turnID).Scan(&eventCursor); err != nil {
 		serverError(w, r, fmt.Errorf("get ai turn event cursor: %w", err))
@@ -261,6 +274,14 @@ func (a *App) handleGetAITurn(w http.ResponseWriter, r *http.Request) {
 	response.EventCursor = eventCursor
 	for _, row := range approvalRows {
 		response.Approvals = append(response.Approvals, newMCPApprovalJSON(mcpApprovalDataFromTurnRow(row)))
+	}
+	for _, row := range questionRows {
+		entity, err := userQuestionRequestJSONRaw(row.ID.String(), row.TurnID.String(), row.ToolCallID, row.Status, row.Questions, row.Answers, row.Reply, row.CreatedAt.Time, nullableTime(row.AnsweredAt))
+		if err != nil {
+			serverError(w, r, fmt.Errorf("encode ai turn questions: %w", err))
+			return
+		}
+		response.QuestionRequests = append(response.QuestionRequests, entity)
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -298,6 +319,12 @@ func (a *App) handleCancelAITurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	turn := snapshotFromLockedAITurn(locked)
+	if turn.Status == "waiting_for_user" || turn.Status == "queued" || turn.Status == "running" {
+		if err := aichatworker.CancelPendingUserQuestionsForTurn(r.Context(), queries, turnID, user.ID); err != nil {
+			serverError(w, r, fmt.Errorf("cancel user questions: %w", err))
+			return
+		}
+	}
 	switch turn.Status {
 	case "waiting_for_user":
 		// Cancelling a paused turn invalidates its pending approvals

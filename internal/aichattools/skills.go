@@ -72,6 +72,22 @@ func (b *SkillBudget) Remaining() int {
 	return b.remaining
 }
 
+// State reports the skill bytes the turn may still spend. A nil budget
+// reports zero so a restored turn is never handed fresh skill allowance.
+func (b *SkillBudget) State() int {
+	return b.Remaining()
+}
+
+// RestoreSkillBudget rebuilds a skill budget from a snapshot. Negative
+// remainders become zero, so a restored turn cannot spend what the snapshot
+// never held.
+func RestoreSkillBudget(remaining int) *SkillBudget {
+	if remaining < 0 {
+		remaining = 0
+	}
+	return NewSkillBudget(remaining)
+}
+
 // Spend consumes up to n bytes and returns the remaining count, never below zero.
 func (b *SkillBudget) Spend(n int) int {
 	if b == nil {

@@ -195,7 +195,6 @@ func (client *DeepSeekClient) Stream(ctx context.Context, request Request, emit 
 		case RoleAssistant:
 			assistant := openai.ChatCompletionAssistantMessageParam{}
 			if ChatReplaysReasoning(request) {
-				// Historical messages have no saved reasoning; include an empty field rather than omit it.
 				assistant.SetExtraFields(map[string]any{"reasoning_content": message.ReasoningContent})
 			}
 			if message.Content != "" {

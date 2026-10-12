@@ -71,6 +71,25 @@ func (b *WebBudget) SpendFetch() error {
 	return nil
 }
 
+// WebBudgetState is the durable form of one WebBudget.
+type WebBudgetState struct {
+	Searches int
+	Fetches  int
+}
+
+// State reports the budget as a resumable snapshot. A nil budget reports a
+// spent state so a restored turn is never handed fresh web allowance.
+func (b *WebBudget) State() WebBudgetState {
+	searches, fetches := b.Remaining()
+	return WebBudgetState{Searches: searches, Fetches: fetches}
+}
+
+// RestoreWebBudget rebuilds a budget from a snapshot. Negative remainders
+// become zero, so a restored turn cannot spend what the snapshot never held.
+func RestoreWebBudget(state WebBudgetState) *WebBudget {
+	return NewWebBudget(state.Searches, state.Fetches)
+}
+
 // Remaining reports how many searches and fetches the turn may still spend.
 // A nil budget reports zero so a durable snapshot of a turn without a cap
 // resumes spent instead of fresh.

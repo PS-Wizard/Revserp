@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/aichatworker"
 	"github.com/ps-wizard/revserp/internal/aiprompt"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
@@ -471,6 +472,9 @@ func recoverExpiredAITurnsForConversation(ctx context.Context, queries *sqlc.Que
 		// with an unknown tool result) and is never retried, mirroring the
 		// worker recovery path.
 		if err := failExecutingMCPApprovalsForTurn(ctx, queries, turn.ID); err != nil {
+			return err
+		}
+		if err := aichatworker.CancelPendingUserQuestionsForTurn(ctx, queries, turn.ID, pgtype.UUID{}); err != nil {
 			return err
 		}
 	}

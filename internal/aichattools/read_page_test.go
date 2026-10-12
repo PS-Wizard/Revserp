@@ -284,3 +284,56 @@ func testPageScope(rows *Budget, pages *PageContentBudget) Scope {
 func utf8Valid(value string) bool {
 	return utf8.ValidString(value)
 }
+
+func TestReadPageContentBudgetStateHasNoNUL(t *testing.T) {
+	raw, err := json.Marshal([]map[string]string{{"tag": "p", "text": "PageEvidencePhrase", "html": "PageEvidencePhrase"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &fakePageContentReader{row: testPageRow(true, raw)}
+	exec := readPageExecutor{pages: reader}
+	budget := NewPageContentBudget(96<<10, 1)
+	scope := testPageScope(NewBudget(10), budget)
+	args := json.RawMessage(`{"url":"https://example.com/a","mode":"content"}`)
+	first, err := exec.run(context.Background(), args, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(first.Content, "limit_reached") {
+		t.Fatalf("first content read denied: %s", first.Content)
+	}
+	state := budget.State()
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "\x00") || strings.Contains(string(encoded), `\u0000`) {
+		t.Fatalf("budget state must serialize without NUL for Postgres jsonb: %s", encoded)
+	}
+	for _, key := range state.SeenKeys {
+		if strings.Contains(key, "\x00") {
+			t.Fatalf("page key must not contain NUL: %q", key)
+		}
+	}
+	restored := RestorePageContentBudget(state)
+	if len(restored.State().SeenKeys) != 1 {
+		t.Fatalf("restored SeenKeys = %v, want the one read page", restored.State().SeenKeys)
+	}
+	scope.PageContentBudget = restored
+	second, err := exec.run(context.Background(), args, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(second.Content, "limit_reached") || reader.calls != 2 {
+		t.Fatalf("same-page re-read must stay free: calls=%d %s", reader.calls, second.Content)
+	}
+	otherScope := scope
+	otherScope.CrawlID = pgtype.UUID{Bytes: [16]byte{9}, Valid: true}
+	denied, err := exec.run(context.Background(), args, otherScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reader.calls != 2 || !strings.Contains(denied.Content, "limit_reached") {
+		t.Fatalf("different crawl same URL must take a distinct slot: calls=%d %s", reader.calls, denied.Content)
+	}
+}

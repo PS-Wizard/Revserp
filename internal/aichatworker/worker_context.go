@@ -103,47 +103,126 @@ func terminalNoToolsMessages(live []ai.Message, rundown map[string]string, model
 	return clone, tokens, false
 }
 
-type historyPair struct {
-	user      string
-	assistant string
-	images    []ai.Image
+// historyExchange is one prior turn kept whole, with compact write records.
+type historyExchange struct {
+	messages []ai.Message
+	writes   []ledgerWrite
 }
 
-func selectHistoryPairs(system, current ai.Message, newestFirst []historyPair, model, effort string, tools []ai.ToolDef) []ai.Message {
+// historyStatuses indexes historical tool outcomes for honest terminal stubs.
+func historyStatuses(history []historyExchange) map[string]string {
+	statuses := map[string]string{}
+	for _, exchange := range history {
+		for _, write := range exchange.writes {
+			if _, ok := statuses[write.CallID]; !ok {
+				statuses[write.CallID] = ledgerOutcome(write.Status, write.Summary)
+			}
+		}
+	}
+	return statuses
+}
+
+// fitHistoryExchanges keeps the newest whole exchanges that fit the input
+// guard. An over-guard newest exchange is still kept whole for an explicit
+// terminal failure instead of silent truncation.
+func fitHistoryExchanges(system, current ai.Message, newestFirst []historyExchange, model, effort string, tools []ai.ToolDef) ([]ai.Message, int, bool) {
 	remaining := chatInputBudgetTokens(model) - ai.EstimateChatInputTokens(ai.Request{
 		Model: model, Effort: effort, Messages: []ai.Message{system, current}, Tools: tools,
 	})
-	kept := make([]historyPair, 0, len(newestFirst))
-	for _, pair := range newestFirst {
-		pairTokens := ai.EstimateChatInputTokens(ai.Request{Messages: []ai.Message{
-			{Role: ai.RoleUser, Content: pair.user, Images: pair.images},
-			{Role: ai.RoleAssistant, Content: pair.assistant},
-		}})
-		if pairTokens > remaining {
+	// The tool schema is charged once in the base request above; each exchange
+	// pays only its own delta so large schemas never crowd out history.
+	toolSchemaTokens := ai.EstimateChatInputTokens(ai.Request{Tools: tools})
+	exchangeTokens := func(exchange historyExchange) int {
+		return ai.EstimateChatInputTokens(ai.Request{
+			Model: model, Effort: effort, Messages: exchange.messages, Tools: tools,
+		}) - toolSchemaTokens
+	}
+	newestOver := len(newestFirst) > 0 && exchangeTokens(newestFirst[0]) > remaining
+	kept := make([]historyExchange, 0, len(newestFirst))
+	for _, exchange := range newestFirst {
+		tokens := exchangeTokens(exchange)
+		if tokens > remaining {
 			break
 		}
-		remaining -= pairTokens
-		kept = append(kept, pair)
+		remaining -= tokens
+		kept = append(kept, exchange)
 	}
-	messages := make([]ai.Message, 0, 2+2*len(kept))
+	if len(kept) == 0 && len(newestFirst) > 0 {
+		kept = append(kept, newestFirst[0])
+	}
+	messages := make([]ai.Message, 0, 2+len(kept)*4)
 	messages = append(messages, system)
 	for i := len(kept) - 1; i >= 0; i-- {
-		messages = append(messages,
-			ai.Message{Role: ai.RoleUser, Content: kept[i].user, Images: kept[i].images},
-			ai.Message{Role: ai.RoleAssistant, Content: kept[i].assistant})
+		messages = append(messages, kept[i].messages...)
 	}
-	return append(messages, current)
+	return append(messages, current), len(newestFirst) - len(kept), newestOver
 }
 
-func fitHistoryToTools(messages []ai.Message, model, effort string, tools []ai.ToolDef) []ai.Message {
-	if len(messages) < 2 {
-		return messages
+// countAssistantToolRounds counts provider tool rounds for the work cap,
+// ignoring public round identities.
+func countAssistantToolRounds(transcript []ai.Message) int {
+	n := 0
+	for _, message := range transcript {
+		if message.Role == ai.RoleAssistant && len(message.ToolCalls) > 0 {
+			n++
+		}
 	}
-	pairs := make([]historyPair, 0, (len(messages)-2)/2)
-	for i := len(messages) - 3; i >= 1; i -= 2 {
-		pairs = append(pairs, historyPair{
-			user: messages[i].Content, images: messages[i].Images, assistant: messages[i+1].Content,
-		})
+	return n
+}
+
+// fitHistoryWithLedger fits exchanges whole, ledgers dropped writes into the
+// system prompt under the same guard, and flags an over-guard newest exchange
+// for explicit failure.
+func fitHistoryWithLedger(system, current ai.Message, oldestFirst []historyExchange, model, effort string, tools []ai.ToolDef) ([]ai.Message, string, bool) {
+	budget := chatInputBudgetTokens(model)
+	requestTokens := func(sys ai.Message, kept []ai.Message) int {
+		messages := make([]ai.Message, 0, len(kept)+2)
+		messages = append(messages, sys)
+		messages = append(messages, kept...)
+		messages = append(messages, current)
+		return ai.EstimateChatInputTokens(ai.Request{Model: model, Effort: effort, Messages: messages, Tools: tools})
 	}
-	return selectHistoryPairs(messages[0], messages[len(messages)-1], pairs, model, effort, tools)
+	newestFirst := make([]historyExchange, 0, len(oldestFirst))
+	for i := len(oldestFirst) - 1; i >= 0; i-- {
+		newestFirst = append(newestFirst, oldestFirst[i])
+	}
+	fitted, dropped, newestOver := fitHistoryExchanges(system, current, newestFirst, model, effort, tools)
+	if newestOver {
+		return fitted, "Context notice: the newest history exchange alone exceeds the model's context window, so this turn fails instead of answering from a stubbed pseudo-fit. Start a new conversation or shorten the newest exchange.", true
+	}
+	if dropped == 0 {
+		return fitted, "", false
+	}
+	keptCount := len(newestFirst) - dropped
+	keptNewest := append([]historyExchange(nil), newestFirst[:keptCount]...)
+	droppedChron := append([]historyExchange(nil), newestFirst[keptCount:]...)
+	for i, j := 0, len(droppedChron)-1; i < j; i, j = i+1, j-1 {
+		droppedChron[i], droppedChron[j] = droppedChron[j], droppedChron[i]
+	}
+	for {
+		ledger := renderWriteLedger(droppedChron)
+		sys := system
+		sys.Content += ledger
+		kept := make([]ai.Message, 0, keptCount*4)
+		for i := len(keptNewest) - 1; i >= 0; i-- {
+			kept = append(kept, keptNewest[i].messages...)
+		}
+		if requestTokens(sys, kept) <= budget {
+			notice := contextTrimNotice(dropped, len(keptNewest))
+			if ledger != "" {
+				notice += " Executed-write records from the omitted turns are listed in the system prompt."
+			}
+			messages := make([]ai.Message, 0, len(kept)+2)
+			messages = append(messages, sys)
+			messages = append(messages, kept...)
+			return append(messages, current), notice, false
+		}
+		if len(keptNewest) == 1 {
+			return fitted, "Context notice: the newest history exchange plus its omitted-write ledger exceeds the model's context window, so this turn fails instead of silently dropping executed-write evidence.", true
+		}
+		evicted := keptNewest[len(keptNewest)-1]
+		keptNewest = keptNewest[:len(keptNewest)-1]
+		droppedChron = append(droppedChron, evicted)
+		dropped = len(newestFirst) - len(keptNewest)
+	}
 }

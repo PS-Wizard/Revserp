@@ -80,3 +80,125 @@ func TestDefaultSystemPromptStatesNoToolCount(t *testing.T) {
 		t.Errorf("base prompt states a tool count (%q); the enabled set is per workspace and changes at runtime", match)
 	}
 }
+
+func TestUserControlPolicyVersion(t *testing.T) {
+	if Version != "chat-v6" {
+		t.Fatalf("Version = %q, want chat-v6", Version)
+	}
+	if !strings.Contains(DefaultSystemPrompt, "## User control") {
+		t.Fatal("base prompt missing the user control section")
+	}
+	for _, def := range aichattools.CatalogDefs() {
+		if strings.Contains(DefaultSystemPrompt, def.Label) {
+			t.Errorf("base prompt inventories tool label %q; per-tool text belongs in Def.Description", def.Label)
+		}
+	}
+}
+
+func TestBasePromptEvidenceContract(t *testing.T) {
+	wants := []string{
+		"Answer the latest user message first.",
+		"already returned in this conversation when they cover it",
+		"only when the evidence is missing or a refresh is needed",
+		"Never guess.",
+		"reuse actual results",
+		"history text alone is background, not a fresh fact",
+		"explicitly asks",
+		"scope changed",
+		"state changed",
+		"a write needs a precondition",
+		"not yet fetched",
+		"For a recap, do not re-verify everything",
+	}
+	for _, want := range wants {
+		if !strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt missing evidence phrase %q", want)
+		}
+	}
+	if strings.Contains(DefaultSystemPrompt, "call the correct data tool instead of guessing") {
+		t.Error("base prompt must not order a fresh call where conversation evidence answers")
+	}
+}
+
+func TestBasePromptVerificationStates(t *testing.T) {
+	wants := []string{
+		"what was changed or applied",
+		"what is verified in live output",
+		"what a newer crawl cleared",
+		"a successful write never means the underlying problem is cleared",
+		"Name a blocker once, with its next action",
+		"without forced headings or expanding it sitewide",
+		"only when a tool result shows it",
+		"otherwise say not verified yet",
+	}
+	for _, want := range wants {
+		if !strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt missing verification phrase %q", want)
+		}
+	}
+	if strings.Contains(DefaultSystemPrompt, "changed since the earlier result") {
+		t.Error("verification must state what changed, not freshness against an earlier result")
+	}
+}
+
+func TestBasePromptDraftReviewNeverAuthorizesPublishedChange(t *testing.T) {
+	wants := []string{
+		"never authorizes changing published content",
+		"ask before writing anything",
+		"Never unpublish a live original",
+		"not permission to ignore a draft-only intent",
+	}
+	for _, want := range wants {
+		if !strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt missing draft-only phrase %q", want)
+		}
+	}
+	for _, want := range []string{"guarantee", "enforce"} {
+		if strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt must not promise hard draft %s; enforcement is deferred", want)
+		}
+	}
+}
+
+func TestBasePromptPrefersFindingSpecificGuidanceOverGenericAdvice(t *testing.T) {
+	wants := []string{
+		"Revserp-specific steps",
+		"exact evidence its detector returned",
+		"not generic advice",
+		"never demand repeat checks for a recap",
+	}
+	for _, want := range wants {
+		if !strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt missing repair-guidance phrase %q", want)
+		}
+	}
+}
+
+func TestComposeSystemPromptKeepsContractForBothAudiences(t *testing.T) {
+	tests := []struct {
+		name           string
+		useInternal    bool
+		internalPrompt string
+		externalPrompt string
+		wantDelta      string
+	}{
+		{"external keeps contract", false, "internal delta", "external delta", "external delta"},
+		{"internal keeps contract", true, "internal delta", "external delta", "internal delta"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ComposeSystemPrompt(tt.useInternal, tt.internalPrompt, tt.externalPrompt)
+			if !strings.HasPrefix(got, DefaultSystemPrompt) {
+				t.Fatal("composed prompt does not start with the base prompt")
+			}
+			for _, want := range []string{"## Evidence and verification", "## Drafts and published content", "## User control"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("composed prompt lost base section %q", want)
+				}
+			}
+			if !strings.HasSuffix(got, tt.wantDelta) {
+				t.Errorf("composed prompt delta suffix = %q, want %q", got, tt.wantDelta)
+			}
+		})
+	}
+}

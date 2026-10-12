@@ -94,6 +94,26 @@ func (b *Budget) Remaining() int {
 	return b.remaining
 }
 
+// State reports the rows the turn may still spend. A nil budget reports
+// zero so a restored turn is never handed fresh row allowance.
+func (b *Budget) State() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.remaining
+}
+
+// RestoreBudget rebuilds a row budget from a snapshot. Negative remainders
+// become zero, so a restored turn cannot spend what the snapshot never held.
+func RestoreBudget(remaining int) *Budget {
+	if remaining < 0 {
+		remaining = 0
+	}
+	return NewBudget(remaining)
+}
+
 // Spend consumes up to n rows and returns the remaining count, never below zero.
 func (b *Budget) Spend(n int) int {
 	b.mu.Lock()
@@ -235,7 +255,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool(), getLocationLandmarksTool(), listSkillsTool(), readSkillTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool(), getLocationLandmarksTool(), listSkillsTool(), readSkillTool(), askUserQuestionTool()}}
 }
 
 // CatalogDefs lists every native tool definition in catalog order, including
@@ -245,7 +265,7 @@ func NewRegistry() *Registry {
 // connection tools are not here: they exist per connection and are gated by
 // the canonical aliases MCPModelToolName builds.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def, getLocationLandmarksTool().Def, listSkillsTool().Def, readSkillTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def, getLocationLandmarksTool().Def, listSkillsTool().Def, readSkillTool().Def, askUserQuestionTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag
