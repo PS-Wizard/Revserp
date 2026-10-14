@@ -44,6 +44,8 @@ func (r stubLocationRow) Scan(dest ...any) error {
 			*t = r.values[i].(int32)
 		case *[]byte:
 			*t = r.values[i].([]byte)
+		case *bool:
+			*t = r.values[i].(bool)
 		case *pgtype.Timestamptz:
 			*t = r.values[i].(pgtype.Timestamptz)
 		default:
@@ -60,6 +62,9 @@ type stubLocationDBTX struct {
 	profile  []any
 	role     string
 	member   bool
+	admin    bool
+	status   string
+	userErr  error
 	upserted *sqlc.UpsertLocationBusinessProfileParams
 }
 
@@ -88,6 +93,15 @@ func (s *stubLocationDBTX) QueryRow(_ context.Context, sql string, _ ...any) pgx
 			return stubLocationRow{err: pgx.ErrNoRows}
 		}
 		return stubLocationRow{values: []any{testProjectID, testUserID, s.role, pgtype.Timestamptz{}}}
+	case strings.Contains(sql, "FROM users"):
+		if s.userErr != nil {
+			return stubLocationRow{err: s.userErr}
+		}
+		status := s.status
+		if status == "" {
+			status = "active"
+		}
+		return stubLocationRow{values: []any{testUserID, "test", "test-subject", "test@example.com", pgtype.Text{}, s.admin, status, pgtype.Timestamptz{}, pgtype.Text{}, pgtype.Timestamptz{}}}
 	default:
 		return stubLocationRow{err: fmt.Errorf("stub db: unexpected query")}
 	}
@@ -203,5 +217,36 @@ func TestExecuteUpdateBusinessProfileLocalDeniedNeverFallsToParent(t *testing.T)
 	}
 	if !strings.Contains(result.Content, "location not found or access denied") {
 		t.Fatalf("foreign location must stay local, got: %s", result.Content)
+	}
+}
+
+// TestExecuteUpdateBusinessProfileLocalManagerDispatch proves the manager rule
+// end to end through the generated queries: real managers manage without any
+// platform admin flag, platform admin members manage, and platform admin
+// outsiders stay denied.
+func TestExecuteUpdateBusinessProfileLocalManagerDispatch(t *testing.T) {
+	manager := &stubLocationDBTX{location: stubLocationRowValues(), profile: stubProfileRowValues(), member: true, role: "manager"}
+	result, err := executeUpdateBusinessProfile(context.Background(), json.RawMessage(`{"primary_category":"Bakery"}`), locationScope(manager))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if parsed := parseUpdateResult(t, result); parsed["location_id"] != testLocationID.String() {
+		t.Fatalf("manager must manage locally, got: %v", parsed)
+	}
+	admin := &stubLocationDBTX{location: stubLocationRowValues(), profile: stubProfileRowValues(), member: true, role: "member", admin: true}
+	result, err = executeUpdateBusinessProfile(context.Background(), json.RawMessage(`{"primary_category":"Bakery"}`), locationScope(admin))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if parsed := parseUpdateResult(t, result); parsed["location_id"] != testLocationID.String() {
+		t.Fatalf("admin member must manage locally, got: %v", parsed)
+	}
+	outsider := &stubLocationDBTX{location: stubLocationRowValues(), profile: stubProfileRowValues(), admin: true}
+	result, err = executeUpdateBusinessProfile(context.Background(), json.RawMessage(`{"brand_name":"X"}`), locationScope(outsider))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(result.Content, "only organization owners and managers") {
+		t.Fatalf("admin outsider must be denied locally, got: %s", result.Content)
 	}
 }

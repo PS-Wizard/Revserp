@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
@@ -19,6 +20,9 @@ type fakeUpdateLocationStore struct {
 	locErr       error
 	role         string
 	memberErr    error
+	admin        bool
+	userStatus   string
+	userErr      error
 	profile      sqlc.LocationBusinessProfile
 	profErr      error
 	upserted     sqlc.UpsertLocationBusinessProfileParams
@@ -35,6 +39,17 @@ func (f *fakeUpdateLocationStore) GetOrganizationMember(_ context.Context, _ sql
 		return sqlc.OrganizationMember{}, f.memberErr
 	}
 	return sqlc.OrganizationMember{Role: f.role}, nil
+}
+
+func (f *fakeUpdateLocationStore) GetUserByID(_ context.Context, id pgtype.UUID) (sqlc.GetUserByIDRow, error) {
+	if f.userErr != nil {
+		return sqlc.GetUserByIDRow{}, f.userErr
+	}
+	status := f.userStatus
+	if status == "" {
+		status = "active"
+	}
+	return sqlc.GetUserByIDRow{ID: id, IsPlatformAdmin: f.admin, Status: status}, nil
 }
 
 func (f *fakeUpdateLocationStore) GetLocationBusinessProfile(_ context.Context, _ sqlc.GetLocationBusinessProfileParams) (sqlc.LocationBusinessProfile, error) {
@@ -228,5 +243,72 @@ func TestUpdateLocalBusinessProfileCreatePreservesProductDescriptionVerbatim(t *
 	}
 	if !store.upserted.ProductDescription.Valid || store.upserted.ProductDescription.String != exact {
 		t.Fatalf("created bytes must stay exact, got: %q", store.upserted.ProductDescription.String)
+	}
+}
+
+// TestUpdateLocalBusinessProfileManagerAccess covers the organization manager
+// rule for location profiles: real managers manage without any platform
+// admin flag, platform admin members manage, outsiders stay denied, and
+// suspended admins never authorize.
+func TestUpdateLocalBusinessProfileManagerAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		role  string
+		admin bool
+	}{
+		{"owner manages", "owner", false},
+		{"real manager manages without platform admin", "manager", false},
+		{"platform admin member manages", "member", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := ownerLocationStore()
+			store.role = tc.role
+			store.admin = tc.admin
+			result, _, _ := runLocalPatch(t, store, `{"brand_name":"New"}`)
+			if parsed := parseUpdateResult(t, result); parsed["brand_name"] != "New" {
+				t.Fatalf("%s: brand = %v, want New", tc.name, parsed)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name      string
+		role      string
+		admin     bool
+		status    string
+		memberErr error
+	}{
+		{"plain member denied", "member", false, "", nil},
+		{"platform admin outsider denied", "member", true, "", pgx.ErrNoRows},
+		{"suspended platform admin member denied", "member", true, "suspended", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := ownerLocationStore()
+			store.role = tc.role
+			store.admin = tc.admin
+			store.userStatus = tc.status
+			store.memberErr = tc.memberErr
+			result, _, _ := runLocalPatch(t, store, `{"brand_name":"New"}`)
+			if !strings.Contains(result.Content, "only organization owners and managers") {
+				t.Fatalf("%s: got %s, want the manager denial", tc.name, result.Content)
+			}
+		})
+	}
+}
+
+// TestUpdateLocalBusinessProfileManagerQueryErrors keeps database failures
+// as infrastructure errors: a user lookup failure must surface to the
+// caller, never read as a model-visible denial.
+func TestUpdateLocalBusinessProfileManagerQueryErrors(t *testing.T) {
+	store := ownerLocationStore()
+	store.role = "member"
+	store.admin = true
+	store.userErr = context.DeadlineExceeded
+	exec := updateBusinessProfileLocalExecutor{locations: store}
+	args, err := parseUpdateBusinessProfileLocalArgs(json.RawMessage(`{"brand_name":"New"}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, _, _, err := exec.patchLocal(context.Background(), args, testProjectID, testLocationID, testUserID, store); err == nil || isModelError(err) {
+		t.Fatalf("user lookup failure should be infrastructure, got %v", err)
 	}
 }

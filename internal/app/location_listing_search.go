@@ -187,7 +187,7 @@ func (a *App) handleSearchLocationListing(w http.ResponseWriter, r *http.Request
 		}
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, project.OrganizationID, principal.User.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, project.OrganizationID, principal.User.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

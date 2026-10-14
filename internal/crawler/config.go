@@ -34,18 +34,23 @@ type CrawlConfigSnapshot struct {
 	// RenderJavaScript opts this crawl into the headless JS render fallback
 	// for pages that look like JavaScript shells. Opt-in per crawl, off by default.
 	RenderJavaScript bool `json:"render_javascript,omitempty"`
+	// ExcludedURLPatterns lists crawl URLs to skip. Each entry is a full
+	// http(s) URL or a root-relative path starting with /. Only * is a
+	// wildcard. Empty means crawl everything in scope.
+	ExcludedURLPatterns []string `json:"excluded_url_patterns,omitempty"`
 }
 
 type crawlConfigSnapshotInput struct {
-	MaxDepth            *int  `json:"max_depth"`
-	MaxPages            *int  `json:"max_pages"`
-	FetchTimeoutSeconds *int  `json:"fetch_timeout_seconds"`
-	RequestDelayMs      *int  `json:"request_delay_ms"`
-	RequestJitterMs     *int  `json:"request_jitter_ms"`
-	ForceFullCrawl      *bool `json:"force_full_crawl"`
-	HonourRobotsTxt     *bool `json:"honour_robots_txt"`
-	SkipSitemapSeed     *bool `json:"skip_sitemap_seed"`
-	RenderJavaScript    *bool `json:"render_javascript"`
+	MaxDepth            *int      `json:"max_depth"`
+	MaxPages            *int      `json:"max_pages"`
+	FetchTimeoutSeconds *int      `json:"fetch_timeout_seconds"`
+	RequestDelayMs      *int      `json:"request_delay_ms"`
+	RequestJitterMs     *int      `json:"request_jitter_ms"`
+	ForceFullCrawl      *bool     `json:"force_full_crawl"`
+	HonourRobotsTxt     *bool     `json:"honour_robots_txt"`
+	SkipSitemapSeed     *bool     `json:"skip_sitemap_seed"`
+	RenderJavaScript    *bool     `json:"render_javascript"`
+	ExcludedURLPatterns *[]string `json:"excluded_url_patterns"`
 }
 
 // NormalizeConfigSnapshot resolves defaults and validates one crawl config snapshot.
@@ -111,6 +116,14 @@ func NormalizeConfigSnapshot(rawConfigSnapshot []byte) (CrawlConfigSnapshot, []b
 		if input.RenderJavaScript != nil {
 			resolvedSnapshot.RenderJavaScript = *input.RenderJavaScript
 		}
+
+		if input.ExcludedURLPatterns != nil {
+			normalizedPatterns, patternsErr := NormalizeExcludedURLPatterns(*input.ExcludedURLPatterns)
+			if patternsErr != nil {
+				return CrawlConfigSnapshot{}, nil, patternsErr
+			}
+			resolvedSnapshot.ExcludedURLPatterns = normalizedPatterns
+		}
 	}
 
 	normalizedSnapshot, err := json.Marshal(resolvedSnapshot)
@@ -153,6 +166,11 @@ func ConfigFromBaseURLAndSnapshot(baseURL string, rawConfigSnapshot []byte) (Cra
 		requestJitter = time.Duration(*configSnapshot.RequestJitterMs) * time.Millisecond
 	}
 
+	excludedURLs, err := CompileExcludedURLPatterns(configSnapshot.ExcludedURLPatterns)
+	if err != nil {
+		return CrawlerConfig{}, err
+	}
+
 	return CrawlerConfig{
 		AllowedHost:      normalizeHostForScope(parsedBaseURL.Hostname()),
 		MaxDepth:         configSnapshot.MaxDepth,
@@ -165,5 +183,6 @@ func ConfigFromBaseURLAndSnapshot(baseURL string, rawConfigSnapshot []byte) (Cra
 		HonourRobotsTxt:  configSnapshot.HonourRobotsTxt,
 		SkipSitemapSeed:  configSnapshot.SkipSitemapSeed,
 		RenderJavaScript: configSnapshot.RenderJavaScript,
+		ExcludedURLs:     excludedURLs,
 	}, nil
 }

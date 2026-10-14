@@ -21,7 +21,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/gsc"
 )
 
-// handleStartProjectGSCConnect creates one Google OAuth consent URL for an owner-managed project.
+// handleStartProjectGSCConnect creates one Google OAuth consent URL for an owner- or manager-managed project.
 // Mode "" (legacy connect) matches the verified account or creates a new one;
 // "add_account" always stores a distinct account; "reconnect_account" targets one
 // google_connection_id and rejects a different verified account.
@@ -72,7 +72,7 @@ func (a *App) handleStartProjectGSCConnect(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

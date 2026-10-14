@@ -107,7 +107,7 @@ func (a *App) handleGetProjectSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newProjectSetupResponse(setup))
 }
 
-// handleStartProjectSetup is the owner-only, idempotent setup start. It locks
+// handleStartProjectSetup is the owner/manager-only, idempotent setup start. It locks
 // the project's setup row and:
 //   - ready: links the first crawl and moves to crawling, returning 201;
 //   - failed: resumes atomically at failed_step, returning 200;
@@ -154,7 +154,7 @@ func (a *App) handleStartProjectSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

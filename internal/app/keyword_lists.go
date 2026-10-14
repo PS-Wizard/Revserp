@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
 
@@ -89,7 +90,7 @@ func (a *App) handleGetProjectKeywordLists(w http.ResponseWriter, r *http.Reques
 	}
 
 	setNoStore(w)
-	writeJSON(w, http.StatusOK, newProjectKeywordListsResponse(lists, membership.Role == "owner"))
+	writeJSON(w, http.StatusOK, newProjectKeywordListsResponse(lists, organizationaccess.CanManageOrganization(membership.Role, principal.User.IsPlatformAdmin)))
 }
 
 // handleAddProjectKeyword stores one user phrase, returning the full list
@@ -133,7 +134,7 @@ func (a *App) handleAddProjectKeyword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, principal.User.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, project.OrganizationID, principal.User.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -205,7 +206,7 @@ func (a *App) handleDeleteProjectKeyword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, principal.User.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, project.OrganizationID, principal.User.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

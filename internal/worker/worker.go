@@ -554,6 +554,7 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	}()
 
 	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, w.cfg.CrawlMaxRetries, w.cfg.CrawlRetryBase, w.cfg.CrawlRetryMax).
+		WithExcludedURLs(crawlConfig.ExcludedURLs).
 		WithMaxBodyBytes(w.cfg.MaxAPIResponseBytes)
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(w.pool)

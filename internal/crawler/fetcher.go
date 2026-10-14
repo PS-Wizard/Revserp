@@ -24,6 +24,7 @@ type Fetcher struct {
 	retryBase         time.Duration
 	retryMax          time.Duration
 	maxBodyBytes      int64
+	excludedURLs      *ExcludedURLMatcher
 	cooldownMu        sync.Mutex
 	hostCooldownUntil map[string]time.Time
 }
@@ -58,12 +59,7 @@ func NewFetcher(fetchTimeout time.Duration, userAgent string, maxRetries int, re
 	// re-validate it at connect time regardless of what hostname the request used.
 	dialer := &net.Dialer{Control: ssrfSafeDialControl}
 	transport.DialContext = dialer.DialContext
-	return &Fetcher{
-		httpClient: &http.Client{
-			Timeout:       fetchTimeout,
-			Transport:     transport,
-			CheckRedirect: checkRedirectSSRFSafe,
-		},
+	fetcher := &Fetcher{
 		userAgent:         userAgent,
 		maxRetries:        maxRetries,
 		retryBase:         retryBase,
@@ -71,6 +67,12 @@ func NewFetcher(fetchTimeout time.Duration, userAgent string, maxRetries int, re
 		maxBodyBytes:      defaultMaxBodyBytes,
 		hostCooldownUntil: make(map[string]time.Time),
 	}
+	fetcher.httpClient = &http.Client{
+		Timeout:       fetchTimeout,
+		Transport:     transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return fetcher.checkRedirect(req, via) },
+	}
+	return fetcher
 }
 
 // WithMaxBodyBytes overrides the per-response body cap. A non-positive value
@@ -80,6 +82,14 @@ func (fetcher *Fetcher) WithMaxBodyBytes(maxBodyBytes int64) *Fetcher {
 		maxBodyBytes = defaultMaxBodyBytes
 	}
 	fetcher.maxBodyBytes = maxBodyBytes
+	return fetcher
+}
+
+// WithExcludedURLs attaches the crawl exclusion matcher. A nil matcher
+// disables exclusion. The runner filters the frontier too; this guard
+// covers direct fetches and redirect chains.
+func (fetcher *Fetcher) WithExcludedURLs(matcher *ExcludedURLMatcher) *Fetcher {
+	fetcher.excludedURLs = matcher
 	return fetcher
 }
 
@@ -102,15 +112,19 @@ func ssrfSafeDialControl(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// checkRedirectSSRFSafe re-validates the redirect target's host on every hop
-// so a same-origin-looking redirect can't be used to smuggle a request to a
+// checkRedirect re-validates the redirect target's host on every hop so a
+// same-origin-looking redirect can't be used to smuggle a request to a
 // private or metadata address after the initial URL passed validation.
-func checkRedirectSSRFSafe(req *http.Request, via []*http.Request) error {
+// It also stops a redirect chain before it fetches an excluded URL.
+func (fetcher *Fetcher) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
 	}
 	if err := ValidatePublicHost(req.Context(), req.URL.Hostname()); err != nil {
 		return fmt.Errorf("redirect blocked: %w", err)
+	}
+	if fetcher.excludedURLs.Excludes(req.URL.String()) {
+		return fmt.Errorf("redirect blocked: url %q is excluded by excluded_url_patterns", req.URL.String())
 	}
 	return nil
 }
@@ -131,6 +145,9 @@ func (fetcher *Fetcher) Fetch(ctx context.Context, targetURL string) FetchResult
 // only Last-Modified — which is most of them. ETag wins when both are known
 // because entity-tag comparison is exact, where date comparison is not.
 func (fetcher *Fetcher) FetchConditional(ctx context.Context, targetURL string, etag string, lastModified string) FetchResult {
+	if fetcher.excludedURLs.Excludes(targetURL) {
+		return FetchResult{FetchError: fmt.Errorf("fetch blocked: url %q is excluded by excluded_url_patterns", targetURL)}
+	}
 	parsed, err := url.Parse(targetURL)
 	if err != nil || parsed.Host == "" {
 		// Unparseable URL: attempt once and return whatever we get.
@@ -147,6 +164,16 @@ func (fetcher *Fetcher) FetchConditional(ctx context.Context, targetURL string, 
 		}
 
 		result := fetcher.doFetch(ctx, targetURL, etag, lastModified)
+
+		// A redirect the CheckRedirect hook missed must not leak excluded
+		// content into the crawl: drop the body and report it as an error.
+		if result.FetchError == nil && fetcher.excludedURLs.Excludes(result.FinalURL) {
+			return FetchResult{
+				FinalURL:   result.FinalURL,
+				StatusCode: result.StatusCode,
+				FetchError: fmt.Errorf("fetch blocked: redirect target %q is excluded by excluded_url_patterns", result.FinalURL),
+			}
+		}
 
 		// Network errors are not retried — they indicate a connectivity problem,
 		// not a server-side rate limit.

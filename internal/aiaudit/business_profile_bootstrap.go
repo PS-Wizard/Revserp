@@ -22,14 +22,14 @@ const (
 	businessProfileBootstrapEffort = "high"
 
 	businessProfileBootstrapUpdateTool = "update_business_profile"
+	businessProfileBootstrapAddTool    = "add_competitor"
 	businessProfileBootstrapReadTool   = "read_page"
 	businessProfileBootstrapSearchTool = "web_search"
 	businessProfileBootstrapFetchTool  = "fetch_url"
 
-	// businessProfileBootstrapMaxRounds matches the chat worker's agent
-	// round cap (aichatworker maxAgentRounds). It is a whole-job budget that
-	// both the initial and the corrective attempt draw from.
-	businessProfileBootstrapMaxRounds = 8
+	businessProfileBootstrapTotalMaxRounds = 16
+
+	businessProfileBootstrapFinalRounds = 2
 
 	// businessProfileBootstrapMaxPageContentReads matches the chat worker's
 	// per-turn content-page allowance (aichatworker pageContentBudgetPages).
@@ -71,10 +71,12 @@ var businessProfileBootstrapReadTools = []string{
 	businessProfileBootstrapFetchTool,
 }
 
-// businessProfileBootstrapWriteTools is the single write tool the bootstrap may
-// call. No other mutating tool is ever exposed.
+// businessProfileBootstrapWriteTools are the only write tools the bootstrap
+// may call. add_competitor only saves roster rows and never starts a crawl.
+// No other mutating tool is ever exposed.
 var businessProfileBootstrapWriteTools = []string{
 	businessProfileBootstrapUpdateTool,
+	businessProfileBootstrapAddTool,
 }
 
 // businessProfileBootstrapTools is the strict allowlist exposed to the model.
@@ -109,7 +111,9 @@ Fixed rules:
 - Then inspect only representative high-value crawl pages with read_page: home, about, services, products, pricing, contact. Use web_search or fetch_url only when the crawl is still thin for a field.
 - Do not enumerate or read every crawled page. Never read the same page twice, and stop researching as soon as you have enough evidence for every field.
 - You may make at most 5 read_page content calls. Exceeding that cap fails the job.
-- Before you finish you MUST make exactly one update_business_profile call, and that single call must succeed. The job fails if you never call it, call it more than once, or its result is an error. Plain text, a question, or a summary is never a valid result.
+- You have at most 16 provider rounds in total for research, competitor saves, and the final call. Batch all known add_competitor calls in one response when possible, and save the profile before the budget is spent.
+- Before the final profile call, save each real competitor with add_competitor (one call per competitor, batched in one response when possible, with its real name and real website URL). Research real competitor URLs with read_page, web_search, or fetch_url first; never invent, guess, or manufacture a URL, and never crawl competitors. Each add_competitor result reports the remaining plan capacity: when it reports 0 remaining or competitor_limit_reached, stop adding and continue to the final profile call. Zero or full capacity must never fail the profile setup.
+- Before you finish you MUST make exactly one update_business_profile call, and that single call must succeed. Make it last: the job succeeds immediately when it succeeds, so any competitor not saved before it is never saved. The job fails if you never call it, call it more than once, or its result is an error. Plain text, a question, or a summary is never a valid result.
 - The call is validated before it runs. It must include every field below, all strings non-blank, all arrays non-empty with non-blank values, and seed_prompts at most 5. Any missing or placeholder value makes the call fail.
 
 Populate every field in that one call. Never leave a string or array empty:
@@ -120,16 +124,18 @@ Populate every field in that one call. Never leave a string or array empty:
 - business_description: a factual 1-2 sentence description of what the business does.
 - product_description: what the business sells or offers.
 - target_audience: the main customer segment.
-- business_competitors: 3-8 real, named competitors.
+- business_competitors: 3-8 real, named competitors. These legacy names stay compatible metadata; the Competitors tab roster itself comes from your add_competitor saves (name plus seed URL), which you must make before this final call.
 - branded_keywords: up to 10 brand terms: the brand name plus obvious brand variants. Both keyword lists are required and non-empty: this one call persists them as the REVSerp-suggested source, and user-defined keywords are never touched.
 - non_branded_keywords: 5-10 category and need keywords with no brand terms. Both keyword lists are required and non-empty.
 - seed_prompts: up to 5 short, natural seed questions a potential customer might ask.
 
 Inference is expected. When crawl or web evidence is thin, infer sensible values from the project name, domain, category, products, and likely market. A plausible, specific value is required and is better than an empty one. Never use generic placeholder tokens such as "Unknown", "N/A", "TBD", or "Not specified". Every list must be non-empty.
 
-Call update_business_profile exactly one time now, with every field populated.`
+Finish the research and competitor saves, then call update_business_profile exactly once with every field populated.`
 
-const businessProfileBootstrapCorrectionPrompt = `Your previous attempt did not produce a successful update_business_profile call. Do not ask anything. Do not read more pages unless a field is still unknown, and do not exceed the remaining read_page content budget. Call update_business_profile exactly one time now and populate every field: non-empty strings, non-empty arrays, and up to 5 seed_prompts.`
+const businessProfileBootstrapCorrectionPrompt = `Your previous attempt did not produce a successful update_business_profile call. Only update_business_profile is available now. Do not ask anything, and make no other tool call. Call update_business_profile exactly one time now and populate every field: non-empty strings, non-empty arrays, and up to 5 seed_prompts.`
+
+const businessProfileBootstrapFinalizationPrompt = `Finalization: stop researching and stop adding competitors. Only update_business_profile is available now. Call it exactly one time now with every field populated: non-empty strings, non-empty arrays, and up to 5 seed_prompts.`
 
 // bootstrapToolExecutor runs one tool call. Production uses
 // executeBusinessProfileBootstrapTool; tests substitute a fake.
@@ -147,7 +153,7 @@ type bootstrapRunBudget struct {
 
 func newBootstrapRunBudget() *bootstrapRunBudget {
 	return &bootstrapRunBudget{
-		roundsLeft:           businessProfileBootstrapMaxRounds,
+		roundsLeft:           businessProfileBootstrapTotalMaxRounds,
 		pageContentReadsLeft: businessProfileBootstrapMaxPageContentReads,
 		contentPageURLs:      make(map[string]bool),
 	}
@@ -219,14 +225,14 @@ func (w *Worker) handleBusinessProfileBootstrap(ctx context.Context, job sqlc.Cl
 		{Role: ai.RoleUser, Content: businessProfileBootstrapUserMessage(project.Name, project.BaseUrl, w.bootstrapPageRefs(ctx, scope))},
 	}
 
-	messages, err = w.runBusinessProfileBootstrapPass(ctx, streamer, model, tools, registry, scope, budget, executeBusinessProfileBootstrapTool, messages)
+	messages, err = w.runBusinessProfileBootstrapPass(ctx, streamer, model, tools, registry, scope, budget, executeBusinessProfileBootstrapTool, messages, false)
 	if err == nil {
 		return nil
 	}
 	log.Printf("business profile bootstrap: project=%s first pass failed: %v", job.ProjectID.String(), err)
 
 	messages = append(messages, ai.Message{Role: ai.RoleUser, Content: businessProfileBootstrapCorrectionPrompt})
-	if _, err = w.runBusinessProfileBootstrapPass(ctx, streamer, model, tools, registry, scope, budget, executeBusinessProfileBootstrapTool, messages); err != nil {
+	if _, err = w.runBusinessProfileBootstrapPass(ctx, streamer, model, tools, registry, scope, budget, executeBusinessProfileBootstrapTool, messages, true); err != nil {
 		return err
 	}
 	return nil
@@ -284,57 +290,77 @@ func businessProfileBootstrapUserMessage(projectName, baseURL string, pages []bo
 	return builder.String()
 }
 
-// runBusinessProfileBootstrapPass runs provider rounds until the model makes
-// its one update call. It succeeds only when that call is the single
-// update_business_profile call seen and it completed without an application
-// error. A missing update or a page-content cap breach fails the pass so the
-// caller can make its one corrective retry. All provider rounds and content
-// reads come out of the shared budget, so the retry cannot double them. It
-// returns the grown message history for that retry.
-func (w *Worker) runBusinessProfileBootstrapPass(ctx context.Context, streamer ai.Streamer, model string, tools []ai.ToolDef, registry *aichattools.Registry, scope aichattools.Scope, budget *bootstrapRunBudget, exec bootstrapToolExecutor, messages []ai.Message) ([]ai.Message, error) {
+func (w *Worker) runBusinessProfileBootstrapPass(ctx context.Context, streamer ai.Streamer, model string, tools []ai.ToolDef, registry *aichattools.Registry, scope aichattools.Scope, budget *bootstrapRunBudget, exec bootstrapToolExecutor, messages []ai.Message, profileOnly bool) ([]ai.Message, error) {
 	results := make([]bootstrapToolResult, 0, len(tools))
+	finalTools := businessProfileBootstrapFinalToolDefs(registry)
+	announced := false
 	for budget.roundsLeft > 0 {
 		budget.roundsLeft--
 		if err := ctx.Err(); err != nil {
 			return messages, fmt.Errorf("business profile bootstrap interrupted: %w", err)
 		}
-		text, calls, err := streamBusinessProfileBootstrapRound(ctx, streamer, model, messages, tools)
+		finalizing := profileOnly || budget.roundsLeft < businessProfileBootstrapFinalRounds
+		roundTools := tools
+		if finalizing {
+			roundTools = finalTools
+			if !announced {
+				announced = true
+				messages = append(messages, ai.Message{Role: ai.RoleUser, Content: businessProfileBootstrapFinalizationPrompt})
+			}
+		}
+		streamed, err := streamBusinessProfileBootstrapRound(ctx, streamer, model, messages, roundTools)
 		if err != nil {
 			return messages, fmt.Errorf("business profile bootstrap provider: %w", err)
 		}
-		messages = append(messages, ai.Message{Role: ai.RoleAssistant, Content: text, ToolCalls: calls})
-		if len(calls) == 0 {
+		messages = append(messages, ai.Message{Role: ai.RoleAssistant, Content: streamed.text, ToolCalls: streamed.calls, ReasoningContent: streamed.reasoning})
+		if len(streamed.calls) == 0 {
 			return messages, errors.New("business profile bootstrap produced assistant text without an update_business_profile call")
+		}
+		updates := 0
+		for _, call := range streamed.calls {
+			if call.Name == businessProfileBootstrapUpdateTool {
+				updates++
+			}
 		}
 		updateAttempted := false
 		capBreached := false
-		for _, call := range calls {
+		loggedCalls := make([]string, 0, len(streamed.calls))
+		for _, call := range streamed.calls {
 			var status string
 			var result aichattools.Result
-			if pageURL, isContent := businessProfileBootstrapPageContentReadURL(call); isContent {
-				switch {
-				case pageURL != "" && budget.contentPageURLs[pageURL]:
-					status, result = "failed", aichattools.Result{Content: businessProfileBootstrapDuplicatePageMessage, Summary: "duplicate page content read"}
-				case budget.pageContentReadsLeft <= 0:
-					capBreached = true
-					status, result = "failed", aichattools.Result{Content: "read_page content cap exceeded", Summary: "page content cap exceeded"}
-				default:
-					budget.pageContentReadsLeft--
-					if pageURL != "" {
-						budget.contentPageURLs[pageURL] = true
+			switch {
+			case finalizing && call.Name != businessProfileBootstrapUpdateTool:
+				status, result = "failed", aichattools.Result{Content: call.Name + " error: only update_business_profile is available during finalization; research and competitor saves are closed", Summary: "only update_business_profile is available during finalization"}
+			case updates > 1 && call.Name == businessProfileBootstrapUpdateTool:
+				status, result = "failed", aichattools.Result{Content: call.Name + " error: call update_business_profile exactly once per response; no profile write was executed", Summary: "duplicate update rejected before any profile write"}
+			default:
+				if pageURL, isContent := businessProfileBootstrapPageContentReadURL(call); isContent {
+					switch {
+					case pageURL != "" && budget.contentPageURLs[pageURL]:
+						status, result = "failed", aichattools.Result{Content: businessProfileBootstrapDuplicatePageMessage, Summary: "duplicate page content read"}
+					case budget.pageContentReadsLeft <= 0:
+						capBreached = true
+						status, result = "failed", aichattools.Result{Content: "read_page content cap exceeded", Summary: "page content cap exceeded"}
+					default:
+						budget.pageContentReadsLeft--
+						if pageURL != "" {
+							budget.contentPageURLs[pageURL] = true
+						}
+						status, result = exec(ctx, registry, call, scope)
 					}
+				} else {
 					status, result = exec(ctx, registry, call, scope)
 				}
-			} else {
-				status, result = exec(ctx, registry, call, scope)
 			}
 			result.Content = capBusinessProfileBootstrapToolResult(result.Content)
 			if call.Name == businessProfileBootstrapUpdateTool {
 				updateAttempted = true
 			}
+			loggedCalls = append(loggedCalls, bootstrapLogCallName(call.Name)+":"+status)
 			results = append(results, bootstrapToolResult{Name: call.Name, Status: status})
 			messages = append(messages, ai.Message{Role: ai.RoleTool, Content: result.Content, ToolCallID: call.ID, Name: call.Name})
 		}
+		log.Printf("business profile bootstrap: project=%s round=%d rounds_left=%d calls=%s", scope.ProjectID.String(), businessProfileBootstrapTotalMaxRounds-budget.roundsLeft, budget.roundsLeft, strings.Join(loggedCalls, ","))
 		if capBreached {
 			return messages, fmt.Errorf("business profile bootstrap exceeded %d read_page content calls", businessProfileBootstrapMaxPageContentReads)
 		}
@@ -345,17 +371,34 @@ func (w *Worker) runBusinessProfileBootstrapPass(ctx context.Context, streamer a
 			return messages, errors.New("business profile bootstrap update_business_profile call did not succeed")
 		}
 	}
-	return messages, fmt.Errorf("business profile bootstrap did not call update_business_profile within %d provider rounds", businessProfileBootstrapMaxRounds)
+	return messages, fmt.Errorf("business profile bootstrap did not call update_business_profile within %d provider rounds", businessProfileBootstrapTotalMaxRounds)
 }
 
-func streamBusinessProfileBootstrapRound(ctx context.Context, streamer ai.Streamer, model string, messages []ai.Message, tools []ai.ToolDef) (string, []ai.ToolCall, error) {
-	var text strings.Builder
+func bootstrapLogCallName(name string) string {
+	if isBusinessProfileBootstrapTool(name) {
+		return name
+	}
+	return "unknown"
+}
+
+type bootstrapStreamedRound struct {
+	text      string
+	reasoning string
+	calls     []ai.ToolCall
+}
+
+func streamBusinessProfileBootstrapRound(ctx context.Context, streamer ai.Streamer, model string, messages []ai.Message, tools []ai.ToolDef) (bootstrapStreamedRound, error) {
+	var text, reasoning strings.Builder
 	var calls []ai.ToolCall
 	err := streamer.Stream(ctx, ai.Request{
 		Model:    model,
 		Effort:   businessProfileBootstrapEffort,
 		Messages: messages,
 		Tools:    tools,
+		// DeepSeek requires reasoning replay for tool rounds.
+		OnReasoningDelta: func(delta string) {
+			reasoning.WriteString(delta)
+		},
 	}, func(event ai.Event) error {
 		if event.ToolCall != nil {
 			calls = append(calls, *event.ToolCall)
@@ -366,7 +409,10 @@ func streamBusinessProfileBootstrapRound(ctx context.Context, streamer ai.Stream
 		}
 		return nil
 	})
-	return text.String(), calls, err
+	if err != nil {
+		return bootstrapStreamedRound{}, err
+	}
+	return bootstrapStreamedRound{text: text.String(), reasoning: reasoning.String(), calls: calls}, nil
 }
 
 // businessProfileBootstrapToolDefs maps the strict allowlist to provider-facing
@@ -381,6 +427,14 @@ func businessProfileBootstrapToolDefs(registry *aichattools.Registry) []ai.ToolD
 		defs = append(defs, ai.ToolDef{Name: tool.Def.Name, Description: tool.Def.Description, Schema: tool.Def.Schema})
 	}
 	return defs
+}
+
+func businessProfileBootstrapFinalToolDefs(registry *aichattools.Registry) []ai.ToolDef {
+	tool, ok := registry.Get(businessProfileBootstrapUpdateTool)
+	if !ok {
+		return nil
+	}
+	return []ai.ToolDef{{Name: tool.Def.Name, Description: tool.Def.Description, Schema: tool.Def.Schema}}
 }
 
 func isBusinessProfileBootstrapTool(name string) bool {

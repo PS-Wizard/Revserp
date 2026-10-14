@@ -167,8 +167,22 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	urlsReused := 0
 	urlsSkippedNon2xx := 0
 	urlsSoftNotFound := 0
+	urlsExcluded := 0
 	maxDepthReached := 0
 	pendingQueue := []CrawlJob{{URL: normalizedRootURL.String(), Depth: 0}}
+
+	// An excluded root is a request error, not an empty crawl: fail before
+	// any fetch (robots, sitemap, probes) so no request hits an excluded URL.
+	if runner.config.RootExcluded(normalizedRootURL.String()) {
+		excludedRootErr := fmt.Errorf("crawl root %q is excluded by excluded_url_patterns", normalizedRootURL.String())
+		if shouldPersist {
+			finalCtx := context.WithoutCancel(ctx)
+			if failErr := runner.store.MarkCrawlFailed(finalCtx, crawlID, scheduledPages, urlsCrawled, maxDepthReached, excludedRootErr.Error()); failErr != nil {
+				return nil, CrawlRunSummary{}, fmt.Errorf("%v (also failed to mark crawl failed: %v)", excludedRootErr, failErr)
+			}
+		}
+		return nil, CrawlRunSummary{}, excludedRootErr
+	}
 
 	// robots.txt is fetched once per crawl and only when the toggle is on.
 	// Nil rules mean allow-all (toggle off, fetch failure, or empty file),
@@ -191,7 +205,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 		return robotsRules.Allow(parsed.RequestURI())
 	}
 
-	// Count of URLs dropped before dispatch because robots.txt disallows them.
+	// Count of URLs dropped before dispatch because robots.txt disallows them,
+	// or because excluded_url_patterns excludes them.
 	// They are not crawled and produce no crawl_pages rows.
 	robotsSkipped := 0
 
@@ -208,6 +223,10 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			if _, alreadySeen := seenURLs[sitemapURL]; alreadySeen {
 				continue
 			}
+			if runner.config.ExcludedURLs.Excludes(sitemapURL) {
+				urlsExcluded++
+				continue
+			}
 			seenURLs[sitemapURL] = struct{}{}
 			scheduledPages++
 			sitemapSeeded++
@@ -219,7 +238,9 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	}
 
 	var hasLlmsTxt *bool
-	if runner.fetcher != nil {
+	// A skipped probe leaves hasLlmsTxt unknown (nil), not false: the file
+	// was never requested.
+	if runner.fetcher != nil && !runner.config.ExcludedURLs.Excludes(llmsURL) {
 		llmsResult := runner.fetcher.Fetch(runContext, llmsURL)
 		has := llmsResult.FetchError == nil && llmsResult.StatusCode == 200 && len(bytes.TrimSpace(llmsResult.Body)) > 0
 		hasLlmsTxt = &has
@@ -258,8 +279,9 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	}
 
 	// enqueueInternalTarget adds one internal link target to the frontier,
-	// honoring the page cap, host scope, and dedupe. Shared by the parsed-link
-	// path and the reused-page path, which supply targets in different shapes.
+	// honoring the page cap, host scope, exclusions, and dedupe. Shared by the
+	// parsed-link path and the reused-page path, which supply targets in
+	// different shapes.
 	enqueueInternalTarget := func(targetURL string, childDepth int) {
 		if runner.config.MaxPages > 0 && scheduledPages >= runner.config.MaxPages {
 			return
@@ -270,6 +292,10 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			return
 		}
 		if runner.config.AllowedHost != "" && !IsAllowedHost(runner.config.AllowedHost, normalizedLinkURL.Hostname()) {
+			return
+		}
+		if runner.config.ExcludedURLs.Excludes(normalizedLinkURL.String()) {
+			urlsExcluded++
 			return
 		}
 		if _, alreadySeen := seenURLs[normalizedLinkURL.String()]; alreadySeen {
@@ -314,6 +340,11 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 			if !robotsAllowed(nextJob.URL) {
 				pendingQueue = pendingQueue[1:]
 				robotsSkipped++
+				continue
+			}
+			if runner.config.ExcludedURLs.Excludes(nextJob.URL) {
+				pendingQueue = pendingQueue[1:]
+				urlsExcluded++
 				continue
 			}
 			// Single point where validators are attached, so every frontier source
@@ -550,8 +581,8 @@ func (runner *Runner) run(ctx context.Context, crawlID pgtype.UUID, rootURL stri
 	if elapsed.Seconds() > 0 {
 		pagesPerSec = float64(urlsCrawled) / elapsed.Seconds()
 	}
-	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d non2xx=%d soft404=%d robots_skipped=%d would_have_rendered=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
-		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, robotsSkipped, urlsWouldHaveRendered, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
+	log.Printf("crawl throughput: crawled=%d rendered=%d reused_304=%d baseline_pages=%d non2xx=%d soft404=%d robots_skipped=%d excluded=%d would_have_rendered=%d workers=%d elapsed=%s persist_serial=%s pages_per_sec=%.2f (root=%s)",
+		urlsCrawled, urlsRendered, urlsReused, runner.baseline.Len(), urlsSkippedNon2xx, urlsSoftNotFound, robotsSkipped, urlsExcluded, urlsWouldHaveRendered, runner.workerCount, elapsed.Round(time.Millisecond), persistElapsed.Round(time.Millisecond), pagesPerSec, rootURL)
 
 	if shouldPersist && !runner.deferFinalStatus {
 		if err := runner.store.MarkCrawlCompleted(ctx, crawlID, summary.URLsDiscovered, summary.URLsCrawled, summary.MaxDepthReached, hasLlmsTxtToPGBool(summary.HasLlmsTxt)); err != nil {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ps-wizard/revserp/internal/businessprofile"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 	"github.com/ps-wizard/revserp/internal/pgnull"
 	"github.com/ps-wizard/revserp/internal/projectkeywords"
 	"github.com/ps-wizard/revserp/internal/textnormalization"
@@ -59,7 +60,7 @@ func updateBusinessProfileTool() Tool {
 		Def: Def{
 			Name:        updateBusinessProfileName,
 			Label:       "Update business profile",
-			Description: "Update the business profile for the current project (PATCH). May be called only after the user clearly asks to save or change the profile. Provide only fields to change; omitted fields are preserved atomically. Arrays replace the complete list and [] clears. Requires organization owner; non-owners are denied. For creation when no profile exists, brand_name and website_url are required plus complete branded_keywords and non_branded_keywords lists. Keyword management is separate from the profile and never blocks manual profile editing: read lists with get_project_keywords and refresh REVSerp suggestions with update_project_keywords. Server authorization is the real boundary, not model instructions.",
+			Description: "Update the business profile for the current project (PATCH). May be called only after the user clearly asks to save or change the profile. Provide only fields to change; omitted fields are preserved atomically. Arrays replace the complete list and [] clears. Requires organization owner or manager (platform admins who are organization members are also allowed); others are denied. For creation when no profile exists, brand_name and website_url are required plus complete branded_keywords and non_branded_keywords lists. Keyword management is separate from the profile and never blocks manual profile editing: read lists with get_project_keywords and refresh REVSerp suggestions with update_project_keywords. Server authorization is the real boundary, not model instructions.",
 			Schema:      json.RawMessage(updateBusinessProfileSchema),
 		},
 		Execute: executeUpdateBusinessProfile,
@@ -142,6 +143,7 @@ func isProjectKeywordValidationError(err error) bool {
 type updateBusinessProfileQuerier interface {
 	GetProjectByIDForUserForBusinessProfileUpdate(ctx context.Context, arg sqlc.GetProjectByIDForUserForBusinessProfileUpdateParams) (sqlc.Project, error)
 	GetOrganizationMember(ctx context.Context, arg sqlc.GetOrganizationMemberParams) (sqlc.OrganizationMember, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (sqlc.GetUserByIDRow, error)
 	GetProjectBusinessProfileByProjectID(ctx context.Context, projectID pgtype.UUID) (sqlc.GetProjectBusinessProfileByProjectIDRow, error)
 	UpsertProjectBusinessProfile(ctx context.Context, arg sqlc.UpsertProjectBusinessProfileParams) (sqlc.UpsertProjectBusinessProfileRow, error)
 	EnqueueAIWorkerJob(ctx context.Context, arg sqlc.EnqueueAIWorkerJobParams) (sqlc.EnqueueAIWorkerJobRow, error)
@@ -200,15 +202,11 @@ func (e *updateBusinessProfileExecutor) patch(ctx context.Context, args updateBu
 		}
 		return Result{}, nil, false, fmt.Errorf("%s: lock project: %w", updateBusinessProfileName, err)
 	}
-	member, err := q.GetOrganizationMember(ctx, sqlc.GetOrganizationMemberParams{OrgID: project.OrganizationID, UserID: userID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
+	if err := organizationaccess.RequireOrganizationManager(ctx, q, project.OrganizationID, userID); err != nil {
+		if errors.Is(err, organizationaccess.ErrForbidden) {
+			return Result{}, nil, false, &modelError{msg: "only organization owners and managers can update the business profile"}
 		}
-		return Result{}, nil, false, fmt.Errorf("%s: get membership: %w", updateBusinessProfileName, err)
-	}
-	if member.Role != "owner" {
-		return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
+		return Result{}, nil, false, fmt.Errorf("%s: check organization manager: %w", updateBusinessProfileName, err)
 	}
 
 	existing, err := q.GetProjectBusinessProfileByProjectID(ctx, projectID)
@@ -689,6 +687,7 @@ func parseUpdateBusinessProfileArgs(raw json.RawMessage) (updateBusinessProfileA
 type updateBusinessProfileLocationQuerier interface {
 	GetProjectLocationForUser(ctx context.Context, arg sqlc.GetProjectLocationForUserParams) (sqlc.GetProjectLocationForUserRow, error)
 	GetOrganizationMember(ctx context.Context, arg sqlc.GetOrganizationMemberParams) (sqlc.OrganizationMember, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (sqlc.GetUserByIDRow, error)
 	GetLocationBusinessProfile(ctx context.Context, arg sqlc.GetLocationBusinessProfileParams) (sqlc.LocationBusinessProfile, error)
 	UpsertLocationBusinessProfile(ctx context.Context, arg sqlc.UpsertLocationBusinessProfileParams) (sqlc.LocationBusinessProfile, error)
 }
@@ -737,15 +736,11 @@ func (e *updateBusinessProfileLocalExecutor) patchLocal(ctx context.Context, arg
 		}
 		return Result{}, nil, false, fmt.Errorf("%s: read location: %w", updateBusinessProfileName, err)
 	}
-	member, err := q.GetOrganizationMember(ctx, sqlc.GetOrganizationMemberParams{OrgID: location.OrganizationID, UserID: userID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
+	if err := organizationaccess.RequireOrganizationManager(ctx, q, location.OrganizationID, userID); err != nil {
+		if errors.Is(err, organizationaccess.ErrForbidden) {
+			return Result{}, nil, false, &modelError{msg: "only organization owners and managers can update the business profile"}
 		}
-		return Result{}, nil, false, fmt.Errorf("%s: get membership: %w", updateBusinessProfileName, err)
-	}
-	if member.Role != "owner" {
-		return Result{}, nil, false, &modelError{msg: "only organization owners can update the business profile"}
+		return Result{}, nil, false, fmt.Errorf("%s: check organization manager: %w", updateBusinessProfileName, err)
 	}
 
 	existing, err := q.GetLocationBusinessProfile(ctx, sqlc.GetLocationBusinessProfileParams{ProjectID: projectID, LocationID: locationID})

@@ -167,17 +167,21 @@ func (a *App) handleGetLocationBusinessProfile(w http.ResponseWriter, r *http.Re
 		serverError(w, r, err)
 		return
 	}
+	isAdmin := false
+	if principal, ok := principalFromContext(r.Context()); ok {
+		isAdmin = principal.User.IsPlatformAdmin
+	}
 	response := locationBusinessProfileStatusResponse{
 		HasProfile:       hasProfile,
-		CanManageProfile: locationWorkspaceCanManage(membership.Role),
+		CanManageProfile: locationWorkspaceCanManage(membership.Role, isAdmin),
 		BusinessProfile:  profile,
 	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-// handleUpsertLocationBusinessProfile stores the owner-managed local
-// profile. It accepts and returns the same JSON as the project endpoint
-// plus the optional local services snapshot.
+// handleUpsertLocationBusinessProfile stores the owner- or manager-managed
+// local profile. It accepts and returns the same JSON as the project
+// endpoint plus the optional local services snapshot.
 func (a *App) handleUpsertLocationBusinessProfile(w http.ResponseWriter, r *http.Request) {
 	location, userID, ok := a.loadLocationWorkspaceLocation(w, r)
 	if !ok {
@@ -223,7 +227,7 @@ func (a *App) handleUpsertLocationBusinessProfile(w http.ResponseWriter, r *http
 		serverError(w, r, err)
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

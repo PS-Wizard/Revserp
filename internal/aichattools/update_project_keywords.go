@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
 
@@ -40,7 +41,7 @@ func updateProjectKeywordsTool() Tool {
 		Def: Def{
 			Name:        updateProjectKeywordsName,
 			Label:       "Update project keywords",
-			Description: "Refresh the Revserp-suggested keyword lists for the current project (Find Keywords flow). Call only after the user clearly asks to find, refresh, or save keywords. Both brand_keywords and non_brand_keywords are required as complete, non-empty lists; each call replaces the suggested source atomically and preserves user-defined keywords. Requires organization owner; non-owners are denied. Never invent search volume or rank numbers: use live Search Console data when connected, otherwise crawled content. Keyword edits never trigger question generation.",
+			Description: "Refresh the Revserp-suggested keyword lists for the current project (Find Keywords flow). Call only after the user clearly asks to find, refresh, or save keywords. Both brand_keywords and non_brand_keywords are required as complete, non-empty lists; each call replaces the suggested source atomically and preserves user-defined keywords. Requires organization owner or manager (platform admins who are organization members are also allowed); others are denied. Never invent search volume or rank numbers: use live Search Console data when connected, otherwise crawled content. Keyword edits never trigger question generation.",
 			Schema:      json.RawMessage(updateProjectKeywordsSchema),
 		},
 		Execute: executeUpdateProjectKeywords,
@@ -66,6 +67,7 @@ func executeUpdateProjectKeywords(ctx context.Context, args json.RawMessage, s S
 type updateProjectKeywordsQuerier interface {
 	GetProjectByIDForUserForBusinessProfileUpdate(ctx context.Context, arg sqlc.GetProjectByIDForUserForBusinessProfileUpdateParams) (sqlc.Project, error)
 	GetOrganizationMember(ctx context.Context, arg sqlc.GetOrganizationMemberParams) (sqlc.OrganizationMember, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (sqlc.GetUserByIDRow, error)
 }
 
 type updateProjectKeywordsExecutor struct {
@@ -107,15 +109,11 @@ func (e *updateProjectKeywordsExecutor) apply(ctx context.Context, args updatePr
 		}
 		return Result{}, fmt.Errorf("%s: lock project: %w", updateProjectKeywordsName, err)
 	}
-	member, err := q.GetOrganizationMember(ctx, sqlc.GetOrganizationMemberParams{OrgID: project.OrganizationID, UserID: userID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Result{}, &modelError{msg: "only organization owners can update project keywords"}
+	if err := organizationaccess.RequireOrganizationManager(ctx, q, project.OrganizationID, userID); err != nil {
+		if errors.Is(err, organizationaccess.ErrForbidden) {
+			return Result{}, &modelError{msg: "only organization owners and managers can update project keywords"}
 		}
-		return Result{}, fmt.Errorf("%s: get membership: %w", updateProjectKeywordsName, err)
-	}
-	if member.Role != "owner" {
-		return Result{}, &modelError{msg: "only organization owners can update project keywords"}
+		return Result{}, fmt.Errorf("%s: check organization manager: %w", updateProjectKeywordsName, err)
 	}
 	brand, nonBrand, err := projectkeywords.NormalizeSuggestedProjectKeywords(args.BrandKeywords, args.NonBrandKeywords)
 	if err != nil {

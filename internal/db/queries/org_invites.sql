@@ -4,15 +4,17 @@ INSERT INTO organization_invites (
     created_by_user_id,
     token_hash,
     max_uses,
-    expires_at
+    expires_at,
+    role
 ) VALUES (
     $1,
     $2,
     $3,
     $4,
-    $5
+    $5,
+    $6
 )
-RETURNING id, organization_id, created_by_user_id, token_hash, max_uses, used_count, expires_at, revoked_at, created_at;
+RETURNING id, organization_id, created_by_user_id, token_hash, max_uses, used_count, expires_at, revoked_at, created_at, role;
 
 -- name: ListOrganizationInvites :many
 SELECT
@@ -24,7 +26,8 @@ SELECT
     used_count,
     expires_at,
     revoked_at,
-    created_at
+    created_at,
+    role
 FROM organization_invites
 WHERE organization_id = $1
 ORDER BY created_at DESC;
@@ -39,7 +42,8 @@ SELECT
     used_count,
     expires_at,
     revoked_at,
-    created_at
+    created_at,
+    role
 FROM organization_invites
 WHERE id = $1
 LIMIT 1;
@@ -62,6 +66,7 @@ SELECT
     oi.expires_at,
     oi.revoked_at,
     oi.created_at,
+    oi.role,
     o.name AS organization_name
 FROM organization_invites AS oi
 INNER JOIN organizations AS o ON o.id = oi.organization_id
@@ -78,7 +83,8 @@ SELECT
     used_count,
     expires_at,
     revoked_at,
-    created_at
+    created_at,
+    role
 FROM organization_invites
 WHERE token_hash = $1
 LIMIT 1

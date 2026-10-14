@@ -326,7 +326,7 @@ func (a *App) handleListProjectLocations(w http.ResponseWriter, r *http.Request)
 
 // handleDeleteLocationSetup permanently deletes one location and its
 // location-only terminal Maps, AI audit, Revbot chat and settings history.
-// The endpoint keeps its contract: success is 204, deletion is owner-only,
+// The endpoint keeps its contract: success is 204, deletion is owner/manager-only,
 // the parent project, sibling locations and shared Google auth are untouched,
 // and active Maps runs, unconfirmed Maps spend and live AI/chat worker state
 // block with 409. Settled spend stays settled: budget ledgers are never
@@ -367,9 +367,9 @@ func (a *App) handleDeleteLocationSetup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Owner-only permanent deletion: members may read and edit, but only an
-	// owner may destroy location history.
-	if err := requireOrganizationOwner(r.Context(), queries, organizationID, userID); err != nil {
+	// Owner/manager permanent deletion: members may read and edit, but only an
+	// owner or manager may destroy location history.
+	if err := requireOrganizationManager(r.Context(), queries, organizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

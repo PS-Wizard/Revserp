@@ -348,7 +348,7 @@ func (a *App) handleDecideMCPApproval(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	// Only the turn initiator may decide; fail closed (no org-owner override).
+	// Only the turn initiator may decide; fail closed (no owner/manager override).
 	// This runs before the idempotent replay below, so a non-initiator can
 	// never observe or re-trigger someone else's decision.
 	if pre.CreatedByUserID != principal.User.ID {
@@ -458,7 +458,7 @@ func (a *App) handleDecideMCPApproval(w http.ResponseWriter, r *http.Request) {
 	}
 	if alwaysAllow {
 		// Saving a project-wide rule is a permission write, so it keeps
-		// the connection-owner boundary every other permission write
+		// the connection-manager boundary every other permission write
 		// requires: the initiator alone cannot grant it. The freshness
 		// check above already ran, so a stale card can neither execute nor
 		// regrant a revoked rule. Plain approve/reject stay initiator-only.
@@ -466,7 +466,7 @@ func (a *App) handleDecideMCPApproval(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusConflict, "approval has no connection to allow")
 			return
 		}
-		if err := requireOrganizationOwner(r.Context(), queries, connOrg, principal.User.ID); err != nil {
+		if err := requireOrganizationManager(r.Context(), queries, connOrg, principal.User.ID); err != nil {
 			writeInvitePermissionError(w, err)
 			return
 		}

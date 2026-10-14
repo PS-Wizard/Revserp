@@ -59,7 +59,7 @@ func (a *App) handlePutLocationAIQuestions(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -86,13 +86,13 @@ func (a *App) handlePutLocationAIQuestions(w http.ResponseWriter, r *http.Reques
 }
 
 // handleRegenerateLocationAIQuestions enqueues one explicit location question
-// generation job. Owner only; nothing runs automatically on profile save.
+// generation job. Owners and managers only; nothing runs automatically on profile save.
 func (a *App) handleRegenerateLocationAIQuestions(w http.ResponseWriter, r *http.Request) {
 	location, userID, ok := a.loadLocationWorkspaceLocation(w, r)
 	if !ok {
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

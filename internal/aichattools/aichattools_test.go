@@ -11,12 +11,12 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage", "get_location_landmarks", "list_skills", "read_skill", "ask_user_question"}) {
-		t.Fatalf("Names() = %v, want the eighteen served tools", names)
+	if names := registry.Names(); !slices.Equal(names, []string{"read_issues", "get_score_summary", "get_search_console_data", "get_business_profile", "read_issue_work", "read_page", "render_chart", "update_business_profile", "get_project_keywords", "update_project_keywords", "web_search", "get_search_suggestions", "fetch_url", "get_keyword_coverage", "get_location_landmarks", "list_skills", "read_skill", "ask_user_question", "add_competitor"}) {
+		t.Fatalf("Names() = %v, want the nineteen served tools", names)
 	}
 	defs := registry.Defs()
-	if len(defs) != 18 {
-		t.Fatalf("Defs() = %d defs, want 18", len(defs))
+	if len(defs) != 19 {
+		t.Fatalf("Defs() = %d defs, want 19", len(defs))
 	}
 	for _, def := range defs {
 		if def.Name == "" || def.Label == "" || def.Description == "" || len(def.Schema) == 0 {

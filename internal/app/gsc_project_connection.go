@@ -13,6 +13,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/ga"
 	"github.com/ps-wizard/revserp/internal/gsc"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 )
 
 // handleProjectGSCStatus returns one project's current Google connection and property selection state.
@@ -71,7 +72,7 @@ func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 
 	response := projectGSCStatusResponse{
 		HasGoogleConnection: len(accounts) > 0,
-		CanManageConnection: membership.Role == "owner",
+		CanManageConnection: organizationaccess.CanManageOrganization(membership.Role, user.IsPlatformAdmin),
 		AvailableSites:      []projectGSCSiteResponse{},
 		GoogleConnections:   newProjectGoogleAccountResponses(accounts),
 	}
@@ -141,7 +142,7 @@ func (a *App) handleProjectGSCStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// handleSelectProjectGSCSite stores one owner-selected Search Console property for a project.
+// handleSelectProjectGSCSite stores one owner- or manager-selected Search Console property for a project.
 // The property is validated against the explicitly chosen or already-bound
 // account, never an arbitrary organization-first account.
 func (a *App) handleSelectProjectGSCSite(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +187,7 @@ func (a *App) handleSelectProjectGSCSite(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -304,7 +305,7 @@ func (a *App) handleDisconnectProjectGSC(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -373,7 +374,7 @@ func (a *App) handleListProjectGoogleAccounts(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"google_connections":    newProjectGoogleAccountResponses(accounts),
-		"can_manage_connection": membership.Role == "owner",
+		"can_manage_connection": organizationaccess.CanManageOrganization(membership.Role, principal.User.IsPlatformAdmin),
 	})
 }
 
@@ -403,7 +404,7 @@ func (a *App) handleRevokeProjectGoogleAccount(w http.ResponseWriter, r *http.Re
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, project.OrganizationID, principal.User.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, project.OrganizationID, principal.User.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -416,7 +417,7 @@ func (a *App) handleRevokeProjectGoogleAccount(w http.ResponseWriter, r *http.Re
 		writeJSONError(w, http.StatusNotFound, "google account not found")
 		return
 	}
-	if err := revokeGoogleAccountConnection(r.Context(), a.DB, connectionID, "revoked by organization owner"); err != nil {
+	if err := revokeGoogleAccountConnection(r.Context(), a.DB, connectionID, "revoked by organization manager"); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -447,7 +448,7 @@ func getProjectGSCConnectionByProjectID(ctx context.Context, queries *sqlc.Queri
 }
 
 // googleAccountForProject loads one org-owned Google account in project scope.
-// Any project member may read; writes enforce ownership at the handler.
+// Any project member may read; writes enforce owner/manager management at the handler.
 func (a *App) googleAccountForProject(w http.ResponseWriter, r *http.Request) (sqlc.GoogleConnection, sqlc.Project, bool) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {

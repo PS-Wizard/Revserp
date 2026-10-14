@@ -321,7 +321,7 @@ func (a *App) mcpConnectionJSONWithPermissions(ctx context.Context, conn sqlc.Pr
 }
 
 // mcpProjectForWrite resolves the project and requires organization
-// ownership. Ownership is validated before any outbound MCP request.
+// management. Management is validated before any outbound MCP request.
 func (a *App) mcpProjectForWrite(w http.ResponseWriter, r *http.Request, projectID pgtype.UUID) (sqlc.Project, bool) {
 	principal, ok := a.getPrincipal(w, r)
 	if !ok {
@@ -339,7 +339,7 @@ func (a *App) mcpProjectForWrite(w http.ResponseWriter, r *http.Request, project
 		serverError(w, r, err)
 		return sqlc.Project{}, false
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, project.OrganizationID, principal.User.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, project.OrganizationID, principal.User.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return sqlc.Project{}, false
 	}

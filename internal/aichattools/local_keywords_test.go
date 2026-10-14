@@ -119,6 +119,9 @@ type fakeLocationKeywordQueries struct {
 	lockErr     error
 	member      sqlc.OrganizationMember
 	memberErr   error
+	admin       bool
+	userStatus  string
+	userErr     error
 	landmarks   []sqlc.LocationLandmark
 	profile     sqlc.GetProjectBusinessProfileByProjectIDRow
 	profileErr  error
@@ -141,6 +144,17 @@ func (f *fakeLocationKeywordQueries) LockProjectLocationForQueryDraftForUser(con
 
 func (f *fakeLocationKeywordQueries) GetOrganizationMember(context.Context, sqlc.GetOrganizationMemberParams) (sqlc.OrganizationMember, error) {
 	return f.member, f.memberErr
+}
+
+func (f *fakeLocationKeywordQueries) GetUserByID(_ context.Context, id pgtype.UUID) (sqlc.GetUserByIDRow, error) {
+	if f.userErr != nil {
+		return sqlc.GetUserByIDRow{}, f.userErr
+	}
+	status := f.userStatus
+	if status == "" {
+		status = "active"
+	}
+	return sqlc.GetUserByIDRow{ID: id, IsPlatformAdmin: f.admin, Status: status}, nil
 }
 
 func (f *fakeLocationKeywordQueries) ListLocationLandmarksForUser(context.Context, sqlc.ListLocationLandmarksForUserParams) ([]sqlc.LocationLandmark, error) {
@@ -417,5 +431,74 @@ func TestLocationKeywordCoverageLocalNoCrawl(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "no completed crawl") {
 		t.Fatalf("content = %q", res.Content)
+	}
+}
+
+// TestLocationKeywordUpdateLocalManagerAccess covers the organization manager
+// rule for location keyword writes: real managers manage without any platform
+// admin flag, platform admin members manage, outsiders stay denied even when
+// they are platform admins, and suspended admins never authorize.
+func TestLocationKeywordUpdateLocalManagerAccess(t *testing.T) {
+	const raw = `{"brand_keywords":["a"],"non_brand_keywords":["b"],"source":"selected"}`
+	for _, tc := range []struct {
+		name  string
+		role  string
+		admin bool
+	}{
+		{"owner manages", "owner", false},
+		{"real manager manages without platform admin", "manager", false},
+		{"platform admin member manages", "member", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := testLocationAccess()
+			queries.member = sqlc.OrganizationMember{Role: tc.role}
+			queries.admin = tc.admin
+			exec := locationKeywordUpdateLocalExecutor{db: &fakeLocationKeywordDB{}, locations: queries}
+			if _, err := exec.runLocal(context.Background(), json.RawMessage(raw), testProjectID, testLocationID, testUserID); err != nil {
+				t.Fatalf("%s: runLocal: %v", tc.name, err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name      string
+		role      string
+		admin     bool
+		status    string
+		memberErr error
+	}{
+		{"plain member denied", "member", false, "", nil},
+		{"platform admin outsider denied", "member", true, "", pgx.ErrNoRows},
+		{"suspended platform admin member denied", "member", true, "suspended", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := testLocationAccess()
+			queries.member = sqlc.OrganizationMember{Role: tc.role}
+			queries.memberErr = tc.memberErr
+			queries.admin = tc.admin
+			queries.userStatus = tc.status
+			exec := locationKeywordUpdateLocalExecutor{db: &fakeLocationKeywordDB{}, locations: queries}
+			res, err := exec.runLocal(context.Background(), json.RawMessage(raw), testProjectID, testLocationID, testUserID)
+			if err != nil {
+				t.Fatalf("%s: denial must stay model-visible: %v", tc.name, err)
+			}
+			if !strings.Contains(res.Content, "only organization owners and managers") {
+				t.Fatalf("%s: content = %q, want the manager denial", tc.name, res.Content)
+			}
+		})
+	}
+}
+
+// TestLocationKeywordUpdateLocalManagerQueryErrors keeps a user lookup
+// database failure as an infrastructure error, never a model-visible denial.
+func TestLocationKeywordUpdateLocalManagerQueryErrors(t *testing.T) {
+	queries := testLocationAccess()
+	queries.member = sqlc.OrganizationMember{Role: "member"}
+	queries.admin = true
+	queries.userErr = fmt.Errorf("connection refused")
+	exec := locationKeywordUpdateLocalExecutor{db: &fakeLocationKeywordDB{}, locations: queries}
+	if _, err := exec.runLocal(context.Background(),
+		json.RawMessage(`{"brand_keywords":["a"],"non_brand_keywords":["b"],"source":"selected"}`),
+		testProjectID, testLocationID, testUserID); err == nil || isModelError(err) {
+		t.Fatalf("user lookup failure should be infrastructure, got %v", err)
 	}
 }

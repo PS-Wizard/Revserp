@@ -20,6 +20,9 @@ type CrawlerConfig struct {
 	// When false the detector still runs and records WouldHaveRendered, but no
 	// render subprocess is started.
 	RenderJavaScript bool
+	// ExcludedURLs holds the compiled excluded_url_patterns matcher.
+	// Nil means no exclusions. Compiled once per crawl.
+	ExcludedURLs *ExcludedURLMatcher
 }
 
 // CrawlJob represents one URL scheduled for crawling.

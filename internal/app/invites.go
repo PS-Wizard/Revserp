@@ -13,16 +13,21 @@ import (
 
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 )
 
 type createOrganizationInviteRequest struct {
 	ExpiresAt string `json:"expires_at"`
 	MaxUses   int32  `json:"max_uses"`
+	// Role is the membership role the invite grants: member (default) or
+	// manager. Invites never grant owner.
+	Role string `json:"role"`
 }
 
 type organizationInviteResponse struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organization_id"`
+	Role           string `json:"role"`
 	MaxUses        int32  `json:"max_uses"`
 	UsedCount      int32  `json:"used_count"`
 	RemainingUses  int32  `json:"remaining_uses"`
@@ -41,6 +46,7 @@ type inviteLookupResponse struct {
 	ID               string `json:"id"`
 	OrganizationID   string `json:"organization_id"`
 	OrganizationName string `json:"organization_name"`
+	Role             string `json:"role"`
 	MaxUses          int32  `json:"max_uses"`
 	UsedCount        int32  `json:"used_count"`
 	RemainingUses    int32  `json:"remaining_uses"`
@@ -49,7 +55,7 @@ type inviteLookupResponse struct {
 	Status           string `json:"status"`
 }
 
-// handleCreateOrganizationInvite creates one reusable invite link for an owner-managed organization.
+// handleCreateOrganizationInvite creates one reusable invite link for an owner- or manager-managed organization.
 func (a *App) handleCreateOrganizationInvite(w http.ResponseWriter, r *http.Request) {
 	organizationID, err := parseUUIDParam(chi.URLParam(r, "organizationID"))
 	if err != nil {
@@ -75,6 +81,11 @@ func (a *App) handleCreateOrganizationInvite(w http.ResponseWriter, r *http.Requ
 		writeJSONError(w, http.StatusBadRequest, "max_uses must be greater than 0")
 		return
 	}
+	inviteRole := organizationaccess.NormalizeInviteRole(requestBody.Role)
+	if !organizationaccess.ValidInviteRole(inviteRole) {
+		writeJSONError(w, http.StatusBadRequest, "role must be member or manager")
+		return
+	}
 
 	tx, err := a.DB.Begin(r.Context())
 	if err != nil {
@@ -92,7 +103,7 @@ func (a *App) handleCreateOrganizationInvite(w http.ResponseWriter, r *http.Requ
 
 	}
 	user := principal.User
-	if err := requireOrganizationOwner(r.Context(), queries, organizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, organizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -109,6 +120,7 @@ func (a *App) handleCreateOrganizationInvite(w http.ResponseWriter, r *http.Requ
 		TokenHash:       hashOrganizationInviteToken(rawToken),
 		MaxUses:         requestBody.MaxUses,
 		ExpiresAt:       pgtype.Timestamptz{Time: expiresAt.UTC(), Valid: true},
+		Role:            inviteRole,
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -126,7 +138,7 @@ func (a *App) handleCreateOrganizationInvite(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// handleListOrganizationInvites lists all invite links for one owner-managed organization.
+// handleListOrganizationInvites lists all invite links for one owner- or manager-managed organization.
 func (a *App) handleListOrganizationInvites(w http.ResponseWriter, r *http.Request) {
 	organizationID, err := parseUUIDParam(chi.URLParam(r, "organizationID"))
 	if err != nil {
@@ -150,7 +162,7 @@ func (a *App) handleListOrganizationInvites(w http.ResponseWriter, r *http.Reque
 
 	}
 	user := principal.User
-	if err := requireOrganizationOwner(r.Context(), queries, organizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, organizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -173,7 +185,7 @@ func (a *App) handleListOrganizationInvites(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"invites": responses})
 }
 
-// handleRevokeOrganizationInvite revokes one invite link owned by one organization owner.
+// handleRevokeOrganizationInvite revokes one invite link managed by an organization owner or manager.
 func (a *App) handleRevokeOrganizationInvite(w http.ResponseWriter, r *http.Request) {
 	organizationID, err := parseUUIDParam(chi.URLParam(r, "organizationID"))
 	if err != nil {
@@ -202,7 +214,7 @@ func (a *App) handleRevokeOrganizationInvite(w http.ResponseWriter, r *http.Requ
 
 	}
 	user := principal.User
-	if err := requireOrganizationOwner(r.Context(), queries, organizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, organizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -262,6 +274,7 @@ func (a *App) handleGetInvite(w http.ResponseWriter, r *http.Request) {
 		ID:               invite.ID.String(),
 		OrganizationID:   invite.OrganizationID.String(),
 		OrganizationName: invite.OrganizationName,
+		Role:             invite.Role,
 		MaxUses:          invite.MaxUses,
 		UsedCount:        invite.UsedCount,
 		RemainingUses:    remainingInviteUses(invite.MaxUses, invite.UsedCount),
@@ -331,10 +344,17 @@ func (a *App) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The invite installs its saved role. Existing owners and managers keep
+	// their role: a repeat redeem conflicts before any write, so an invite
+	// can never downgrade them.
+	inviteRole := organizationaccess.NormalizeInviteRole(invite.Role)
+	if !organizationaccess.ValidInviteRole(inviteRole) {
+		inviteRole = organizationaccess.InviteRoleMember
+	}
 	if _, err := queries.AddOrganizationMember(r.Context(), sqlc.AddOrganizationMemberParams{
 		OrgID:  invite.OrganizationID,
 		UserID: user.ID,
-		Role:   "member",
+		Role:   inviteRole,
 	}); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -361,21 +381,17 @@ func (a *App) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// requireOrganizationManager allows organization owners, managers, and
+// platform admin members. Membership is required: platform admins outside
+// the organization stay forbidden.
+func requireOrganizationManager(ctx context.Context, queries *sqlc.Queries, organizationID, userID pgtype.UUID) error {
+	return organizationaccess.RequireOrganizationManager(ctx, queries, organizationID, userID)
+}
+
+// requireOrganizationOwner is kept for callers that have not migrated to
+// the manager-aware guard. It enforces the same management rule.
 func requireOrganizationOwner(ctx context.Context, queries *sqlc.Queries, organizationID, userID pgtype.UUID) error {
-	membership, err := queries.GetOrganizationMember(ctx, sqlc.GetOrganizationMemberParams{
-		OrgID:  organizationID,
-		UserID: userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return errInviteForbidden
-		}
-		return err
-	}
-	if membership.Role != "owner" {
-		return errInviteForbidden
-	}
-	return nil
+	return requireOrganizationManager(ctx, queries, organizationID, userID)
 }
 
 func writeInvitePermissionError(w http.ResponseWriter, err error) {
@@ -390,6 +406,7 @@ func newOrganizationInviteResponse(invite sqlc.OrganizationInvite) organizationI
 	response := organizationInviteResponse{
 		ID:             invite.ID.String(),
 		OrganizationID: invite.OrganizationID.String(),
+		Role:           invite.Role,
 		MaxUses:        invite.MaxUses,
 		UsedCount:      invite.UsedCount,
 		RemainingUses:  remainingInviteUses(invite.MaxUses, invite.UsedCount),
@@ -424,4 +441,4 @@ func remainingInviteUses(maxUses, usedCount int32) int32 {
 	return remainingUses
 }
 
-var errInviteForbidden = errors.New("invite forbidden")
+var errInviteForbidden = organizationaccess.ErrForbidden

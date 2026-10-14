@@ -100,3 +100,20 @@ func TestAdvanceKeepsWallClockAcrossDST(t *testing.T) {
 		t.Errorf("wall-clock hour after DST: got %d, want 3", h)
 	}
 }
+
+func TestAdvanceSixtyDaysKeepsWallClockAcrossDST(t *testing.T) {
+	loc := mustLoc(t, "America/New_York")
+	// 2026 DST starts March 8 in the US; a 60-day recurrence from February
+	// crosses the transition without changing the configured wall-clock time.
+	from := time.Date(2026, 2, 1, 3, 0, 0, 0, loc)
+	now := from.Add(time.Minute)
+
+	got := Advance(from, now, 60, 3, 0, loc)
+	want := time.Date(2026, 4, 2, 3, 0, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	if h := got.In(loc).Hour(); h != 3 {
+		t.Errorf("wall-clock hour after DST: got %d, want 3", h)
+	}
+}

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 
-
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -15,6 +14,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/keywords"
 	"github.com/ps-wizard/revserp/internal/locationkeywords"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
 
@@ -62,7 +62,7 @@ func (a *App) handleGetLocationKeywordLists(w http.ResponseWriter, r *http.Reque
 		OrgID:  location.OrganizationID,
 		UserID: userID,
 	}); err == nil {
-		canManage = membership.Role == "owner"
+		canManage = organizationaccess.CanManageOrganization(membership.Role, locationKeywordsAdmin(r))
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		serverError(w, r, err)
 		return
@@ -75,6 +75,17 @@ func (a *App) handleGetLocationKeywordLists(w http.ResponseWriter, r *http.Reque
 		SuggestedOrigins:  locationkeywords.SuggestedOriginsForGroup(suggested, suggestionKeys),
 		CanManageKeywords: canManage,
 	})
+}
+
+// locationKeywordsAdmin reports the caller's platform admin flag from the
+// request principal, so keyword status flags stay consistent with the
+// manager guard without an extra user lookup.
+func locationKeywordsAdmin(r *http.Request) bool {
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		return false
+	}
+	return principal.User.IsPlatformAdmin
 }
 
 func (a *App) handlePutLocationKeywordLists(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +146,7 @@ func (a *App) handlePutLocationKeywordLists(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), queries, locked.OrganizationID, principal.User.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, locked.OrganizationID, principal.User.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

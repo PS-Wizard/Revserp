@@ -87,7 +87,7 @@ func (a *App) handlePutLocationGSCBinding(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -168,7 +168,7 @@ func (a *App) handlePutLocationGoogleAnalyticsBinding(w http.ResponseWriter, r *
 	if !ok {
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
@@ -227,7 +227,7 @@ func (a *App) removeLocationOwnGoogleBinding(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

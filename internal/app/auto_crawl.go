@@ -18,10 +18,10 @@ import (
 )
 
 const (
-	defaultAutoCrawlFrequencyDays = 1
+	defaultAutoCrawlFrequencyDays = 7
 	defaultAutoCrawlRunAt         = "03:00"
 	defaultAutoCrawlTimezone      = "UTC"
-	maxAutoCrawlFrequencyDays     = 30
+	maxAutoCrawlFrequencyDays     = 60
 )
 
 type autoCrawlSettingsResponse struct {
@@ -214,13 +214,21 @@ type autoCrawlSettingsInput struct {
 	ConfigSnapshot json.RawMessage
 }
 
+func checkAutoCrawlFrequencyDays(days int32) error {
+	if days < 1 || days > maxAutoCrawlFrequencyDays {
+		return autoCrawlBadRequest(fmt.Sprintf("frequency_days must be between 1 and %d", maxAutoCrawlFrequencyDays))
+	}
+	return nil
+}
+
 // applyAutoCrawlSettings is the shared core for auto-crawl configuration:
 // validation, project ownership, next_run_at computation, and the upsert. Both
 // the HTTP handler and the AI agent closure call it so behavior stays identical.
 func (a *App) applyAutoCrawlSettings(ctx context.Context, queries *sqlc.Queries, projectID, userID pgtype.UUID, in autoCrawlSettingsInput) (sqlc.ProjectAutoCrawlSetting, error) {
-	if in.FrequencyDays != nil &&
-		(*in.FrequencyDays < 1 || *in.FrequencyDays > maxAutoCrawlFrequencyDays) {
-		return sqlc.ProjectAutoCrawlSetting{}, autoCrawlBadRequest(fmt.Sprintf("frequency_days must be between 1 and %d", maxAutoCrawlFrequencyDays))
+	if in.FrequencyDays != nil {
+		if err := checkAutoCrawlFrequencyDays(*in.FrequencyDays); err != nil {
+			return sqlc.ProjectAutoCrawlSetting{}, err
+		}
 	}
 	if in.RunAt != nil {
 		if _, _, err := parseRunAt(*in.RunAt); err != nil {

@@ -409,3 +409,79 @@ func TestUpdateProjectKeywordsSchemaReflectsRuntimeLimits(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateProjectKeywordsManagerAccess covers the organization manager rule
+// for the Find Keywords flow: real managers manage without any platform
+// admin flag, platform admin members manage, outsiders stay denied, and
+// suspended admins never authorize.
+func TestUpdateProjectKeywordsManagerAccess(t *testing.T) {
+	const raw = `{"brand_keywords":["a"],"non_brand_keywords":["b"]}`
+	for _, tc := range []struct {
+		name  string
+		role  string
+		admin bool
+	}{
+		{"owner manages", "owner", false},
+		{"real manager manages without platform admin", "manager", false},
+		{"platform admin member manages", "member", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeUpdateStore(tc.role, nil)
+			store.admin = tc.admin
+			svc := newFakeProjectKeywordService()
+			if _, err := runApplyProjectKeywords(t, store, svc, &fakeSQLExec{}, raw); err != nil {
+				t.Fatalf("%s: apply: %v", tc.name, err)
+			}
+			if svc.replaceCalls != 1 {
+				t.Fatalf("%s: replace calls = %d, want 1", tc.name, svc.replaceCalls)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name      string
+		role      string
+		admin     bool
+		status    string
+		memberErr error
+	}{
+		{"plain member denied", "member", false, "", nil},
+		{"platform admin outsider denied", "member", true, "", pgx.ErrNoRows},
+		{"suspended platform admin member denied", "member", true, "suspended", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeUpdateStore(tc.role, nil)
+			store.admin = tc.admin
+			store.status = tc.status
+			store.memberErr = tc.memberErr
+			svc := newFakeProjectKeywordService()
+			_, err := runApplyProjectKeywords(t, store, svc, &fakeSQLExec{}, raw)
+			if err == nil || !strings.Contains(err.Error(), "only organization owners and managers") {
+				t.Fatalf("%s: got %v, want the manager denial", tc.name, err)
+			}
+			if !isModelError(err) {
+				t.Fatalf("%s: denial must stay model-visible", tc.name)
+			}
+			if svc.replaceCalls != 0 {
+				t.Fatalf("%s: denied call must not write suggested keywords", tc.name)
+			}
+		})
+	}
+}
+
+// TestUpdateProjectKeywordsManagerQueryErrors keeps database failures as
+// infrastructure errors: membership or user lookup errors must propagate,
+// never read as model-visible denials.
+func TestUpdateProjectKeywordsManagerQueryErrors(t *testing.T) {
+	const raw = `{"brand_keywords":["a"],"non_brand_keywords":["b"]}`
+	store := newFakeUpdateStore("member", nil)
+	store.memberErr = errors.New("connection refused")
+	if _, err := runApplyProjectKeywords(t, store, newFakeProjectKeywordService(), &fakeSQLExec{}, raw); err == nil || isModelError(err) {
+		t.Fatalf("membership failure should be infrastructure, got %v", err)
+	}
+	store = newFakeUpdateStore("member", nil)
+	store.admin = true
+	store.userErr = errors.New("connection refused")
+	if _, err := runApplyProjectKeywords(t, store, newFakeProjectKeywordService(), &fakeSQLExec{}, raw); err == nil || isModelError(err) {
+		t.Fatalf("user lookup failure should be infrastructure, got %v", err)
+	}
+}

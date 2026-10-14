@@ -14,6 +14,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 	"github.com/ps-wizard/revserp/internal/keywords"
 	"github.com/ps-wizard/revserp/internal/locationkeywords"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
 
@@ -24,6 +25,7 @@ type locationKeywordReader interface {
 type locationKeywordOwner interface {
 	LockProjectLocationForQueryDraftForUser(ctx context.Context, arg sqlc.LockProjectLocationForQueryDraftForUserParams) (sqlc.LockProjectLocationForQueryDraftForUserRow, error)
 	GetOrganizationMember(ctx context.Context, arg sqlc.GetOrganizationMemberParams) (sqlc.OrganizationMember, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (sqlc.GetUserByIDRow, error)
 }
 
 func emitLocationKeywordsUpdated(ctx context.Context, db locationkeywords.DB, orgID, projectID, locationID pgtype.UUID, source string, brandCount, nonBrandCount int) error {
@@ -58,7 +60,8 @@ func checkLocationReadAccess(ctx context.Context, access locationKeywordReader, 
 }
 
 // requireLocationOwner locks the location for writing and requires an
-// organization owner. Members may read; only owners mutate keyword state.
+// organization owner or manager. Members may read; only owners, managers,
+// and platform admins who belong to the organization mutate keyword state.
 func requireLocationOwner(ctx context.Context, access locationKeywordOwner, projectID, locationID, userID pgtype.UUID) (sqlc.LockProjectLocationForQueryDraftForUserRow, error) {
 	locked, err := access.LockProjectLocationForQueryDraftForUser(ctx, sqlc.LockProjectLocationForQueryDraftForUserParams{
 		LocationID: locationID,
@@ -71,18 +74,11 @@ func requireLocationOwner(ctx context.Context, access locationKeywordOwner, proj
 		}
 		return sqlc.LockProjectLocationForQueryDraftForUserRow{}, err
 	}
-	member, err := access.GetOrganizationMember(ctx, sqlc.GetOrganizationMemberParams{
-		OrgID:  locked.OrganizationID,
-		UserID: userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return sqlc.LockProjectLocationForQueryDraftForUserRow{}, &modelError{msg: "only organization owners can update location keywords"}
+	if err := organizationaccess.RequireOrganizationManager(ctx, access, locked.OrganizationID, userID); err != nil {
+		if errors.Is(err, organizationaccess.ErrForbidden) {
+			return sqlc.LockProjectLocationForQueryDraftForUserRow{}, &modelError{msg: "only organization owners and managers can update location keywords"}
 		}
 		return sqlc.LockProjectLocationForQueryDraftForUserRow{}, err
-	}
-	if member.Role != "owner" {
-		return sqlc.LockProjectLocationForQueryDraftForUserRow{}, &modelError{msg: "only organization owners can update location keywords"}
 	}
 	return locked, nil
 }

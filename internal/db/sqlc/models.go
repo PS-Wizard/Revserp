@@ -658,6 +658,7 @@ type OrganizationInvite struct {
 	ExpiresAt       pgtype.Timestamptz
 	RevokedAt       pgtype.Timestamptz
 	CreatedAt       pgtype.Timestamptz
+	Role            string
 }
 
 type OrganizationMapsCreditBudget struct {

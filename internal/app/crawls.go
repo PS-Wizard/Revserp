@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/projectsetup"
 )
@@ -91,13 +92,26 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 
 	}
 	user := principal.User
-	if _, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID}); err != nil {
+	project, err := queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{ID: projectID, UserID: user.ID})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	// An excluded root is rejected here, before the queue insert, so the
+	// request fails fast instead of failing asynchronously in the worker.
+	crawlConfig, err := crawler.ConfigFromBaseURLAndSnapshot(project.BaseUrl, normalizedConfigSnapshot)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if crawlConfig.RootExcluded(project.BaseUrl) {
+		writeJSONError(w, http.StatusBadRequest, "crawl root URL is excluded by excluded_url_patterns")
 		return
 	}
 

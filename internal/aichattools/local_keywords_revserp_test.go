@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/locationkeywords"
 )
 
@@ -228,5 +231,44 @@ func TestLocationKeywordListsLocalMergesSavedSuggestions(t *testing.T) {
 	}
 	if _, ok := payload.SuggestedOrigins["emergency plumber"]; ok {
 		t.Fatalf("saved-only phrases must carry no guessed origin: %s", res.Content)
+	}
+}
+
+// TestLocationKeywordUpdateLocalRevserpManagerAccess covers the organization
+// manager rule for the Find-keywords suggestion write: real managers manage
+// without any platform admin flag, platform admin members manage, and
+// outsiders stay denied even when they are platform admins.
+func TestLocationKeywordUpdateLocalRevserpManagerAccess(t *testing.T) {
+	const raw = `{"brand_keywords":["Acme"],"non_brand_keywords":["Emergency Plumber"],"source":"revserp"}`
+	for _, tc := range []struct {
+		name  string
+		role  string
+		admin bool
+	}{
+		{"real manager manages without platform admin", "manager", false},
+		{"platform admin member manages", "member", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &fakeLocationKeywordDB{brand: "Acme", services: `["Plumber"]`}
+			queries := testLocationAccess()
+			queries.member = sqlc.OrganizationMember{Role: tc.role}
+			queries.admin = tc.admin
+			exec := locationKeywordUpdateLocalExecutor{db: db, locations: queries}
+			if _, err := exec.runLocal(context.Background(), json.RawMessage(raw), testProjectID, testLocationID, testUserID); err != nil {
+				t.Fatalf("%s: runLocal: %v", tc.name, err)
+			}
+		})
+	}
+	queries := testLocationAccess()
+	queries.member = sqlc.OrganizationMember{Role: "member"}
+	queries.memberErr = pgx.ErrNoRows
+	queries.admin = true
+	exec := locationKeywordUpdateLocalExecutor{db: &fakeLocationKeywordDB{}, locations: queries}
+	res, err := exec.runLocal(context.Background(), json.RawMessage(raw), testProjectID, testLocationID, testUserID)
+	if err != nil {
+		t.Fatalf("denial must stay model-visible: %v", err)
+	}
+	if !strings.Contains(res.Content, "only organization owners and managers") {
+		t.Fatalf("admin outsider content = %q, want the manager denial", res.Content)
 	}
 }

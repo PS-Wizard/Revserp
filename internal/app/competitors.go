@@ -3,17 +3,16 @@ package app
 import (
 	"errors"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/competitorcrawls"
 	"github.com/ps-wizard/revserp/internal/crawler"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/projectcompetitors"
 )
 
 type createCompetitorRequest struct {
@@ -115,89 +114,48 @@ func (a *App) handleCreateProjectCompetitor(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	seedURL := strings.TrimSpace(requestBody.SeedURL)
-	if seedURL == "" {
-		writeJSONError(w, http.StatusBadRequest, "seed_url is required")
-		return
-	}
-
-	normalizedSeedURL, err := crawler.NormalizeURL(seedURL, nil)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid seed_url")
-		return
-	}
-	if err := crawler.ValidatePublicHost(r.Context(), normalizedSeedURL.Hostname()); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "seed_url must not point to a private or internal host")
-		return
-	}
-
 	principal, ok := a.getPrincipal(w, r)
 	if !ok {
 		return
 	}
 	user := principal.User
 
-	project, err := a.Queries.GetProjectByIDForUser(r.Context(), sqlc.GetProjectByIDForUserParams{
-		ID:     projectID,
-		UserID: user.ID,
-	})
+	// ponytail: one transaction holding the project row lock, so the plan
+	// limit check and the insert stay atomic under concurrent additions.
+	tx, err := a.DB.Begin(r.Context())
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
+		serverError(w, r, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	outcome, err := projectcompetitors.SaveProjectCompetitor(r.Context(), a.Queries.WithTx(tx), projectID, user.ID, requestBody.Name, requestBody.SeedURL)
+	if err != nil {
+		if projectcompetitors.IsInputError(err) {
+			switch err.Error() {
+			case "project not found or access denied", "forbidden":
+				writeJSONError(w, http.StatusForbidden, "forbidden")
+			case "competitor_limit_reached":
+				writeJSONError(w, http.StatusConflict, "competitor_limit_reached")
+			case "competitor seed_url already exists for this project":
+				writeJSONError(w, http.StatusConflict, "competitor seed_url already exists for this project")
+			default:
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+			}
 			return
 		}
 		serverError(w, r, err)
 		return
 	}
-
-	projectBaseURL, err := url.Parse(project.BaseUrl)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "project base_url is invalid")
+	if outcome.Existed {
+		writeJSONError(w, http.StatusConflict, "competitor seed_url already exists for this project")
 		return
 	}
-	if crawler.IsInternalURL(projectBaseURL, normalizedSeedURL) {
-		writeJSONError(w, http.StatusBadRequest, "competitor must not share the project host")
-		return
-	}
-
-	featuresRow, err := a.Queries.GetOrganizationFeaturesByProjectID(r.Context(), sqlc.GetOrganizationFeaturesByProjectIDParams{
-		ProjectID: projectID,
-		UserID:    user.ID,
-	})
-	if err != nil {
+	if err := tx.Commit(r.Context()); err != nil {
 		serverError(w, r, err)
 		return
 	}
 
-	count, err := a.Queries.CountProjectCompetitors(r.Context(), projectID)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	if count >= int64(featuresRow.MaxCompetitors) {
-		writeJSONError(w, http.StatusConflict, "competitor_limit_reached")
-		return
-	}
-
-	name := strings.TrimSpace(requestBody.Name)
-	if name == "" {
-		name = normalizedSeedURL.Hostname()
-	}
-
-	competitor, err := a.Queries.InsertProjectCompetitor(r.Context(), sqlc.InsertProjectCompetitorParams{
-		ProjectID: projectID,
-		SeedUrl:   normalizedSeedURL.String(),
-		Name:      name,
-	})
-	if err != nil {
-		if isProjectCompetitorSeedUniqueViolation(err) {
-			writeJSONError(w, http.StatusConflict, "competitor seed_url already exists for this project")
-			return
-		}
-		serverError(w, r, err)
-		return
-	}
-
+	competitor := outcome.Competitor
 	writeJSON(w, http.StatusCreated, competitorResponse{
 		ID:        competitor.ID.String(),
 		SeedURL:   competitor.SeedUrl,
@@ -390,12 +348,4 @@ func newCompetitorCrawlResponse(row sqlc.ListProjectCompetitorsWithCrawlForUserR
 	}
 	response.Source = "competitor"
 	return response
-}
-
-func isProjectCompetitorSeedUniqueViolation(err error) bool {
-	var postgresError *pgconn.PgError
-	if !errors.As(err, &postgresError) {
-		return false
-	}
-	return postgresError.Code == "23505" && postgresError.ConstraintName == "project_competitors_project_id_seed_url_key"
 }

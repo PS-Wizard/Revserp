@@ -18,6 +18,10 @@ type fakeUpdateStore struct {
 	userID    pgtype.UUID
 	orgID     pgtype.UUID
 	role      string
+	memberErr error
+	admin     bool
+	status    string
+	userErr   error
 	profile   *sqlc.GetProjectBusinessProfileByProjectIDRow
 	enqueued  int
 }
@@ -43,10 +47,27 @@ func (f *fakeUpdateStore) GetProjectByIDForUserForBusinessProfileUpdate(_ contex
 }
 
 func (f *fakeUpdateStore) GetOrganizationMember(_ context.Context, arg sqlc.GetOrganizationMemberParams) (sqlc.OrganizationMember, error) {
+	if f.memberErr != nil {
+		return sqlc.OrganizationMember{}, f.memberErr
+	}
 	if arg.OrgID != f.orgID || arg.UserID != f.userID {
 		return sqlc.OrganizationMember{}, pgx.ErrNoRows
 	}
 	return sqlc.OrganizationMember{OrgID: f.orgID, UserID: f.userID, Role: f.role}, nil
+}
+
+func (f *fakeUpdateStore) GetUserByID(_ context.Context, id pgtype.UUID) (sqlc.GetUserByIDRow, error) {
+	if f.userErr != nil {
+		return sqlc.GetUserByIDRow{}, f.userErr
+	}
+	if id != f.userID {
+		return sqlc.GetUserByIDRow{}, pgx.ErrNoRows
+	}
+	status := f.status
+	if status == "" {
+		status = "active"
+	}
+	return sqlc.GetUserByIDRow{ID: f.userID, IsPlatformAdmin: f.admin, Status: status}, nil
 }
 
 func (f *fakeUpdateStore) GetProjectBusinessProfileByProjectID(_ context.Context, projectID pgtype.UUID) (sqlc.GetProjectBusinessProfileByProjectIDRow, error) {
@@ -586,5 +607,91 @@ func TestUpdateBusinessProfileRepeatedKeywordsDoNotEnqueue(t *testing.T) {
 	}
 	if svc.replaceCalls != 0 {
 		t.Fatalf("replace calls = %d, want no suggested rewrite for identical keywords", svc.replaceCalls)
+	}
+}
+
+// TestUpdateBusinessProfileManagerAccess covers the organization manager rule:
+// real managers manage without any platform admin flag, platform admins who
+// belong to the organization manage as members, outsiders stay denied even
+// when they are platform admins, and suspended admins never authorize.
+func TestUpdateBusinessProfileManagerAccess(t *testing.T) {
+	newProfile := func() *sqlc.GetProjectBusinessProfileByProjectIDRow {
+		return &sqlc.GetProjectBusinessProfileByProjectIDRow{
+			ProjectID:   testProjectID,
+			BrandName:   "Old",
+			WebsiteUrl:  "https://old.example",
+			SeedPrompts: []byte(`[]`),
+		}
+	}
+	allowed := []struct {
+		name  string
+		role  string
+		admin bool
+	}{
+		{"owner manages", "owner", false},
+		{"real manager manages without platform admin", "manager", false},
+		{"platform admin member manages", "member", true},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeUpdateStore(tc.role, newProfile())
+			store.admin = tc.admin
+			res, err := runPatch(t, store, `{"brand_name":"New"}`)
+			if err != nil {
+				t.Fatalf("%s: patch: %v", tc.name, err)
+			}
+			if m := parseUpdateResult(t, res); m["brand_name"] != "New" {
+				t.Fatalf("%s: brand = %v, want New", tc.name, m)
+			}
+		})
+	}
+	denied := []struct {
+		name      string
+		role      string
+		admin     bool
+		status    string
+		memberErr error
+	}{
+		{"plain member denied", "member", false, "", nil},
+		{"platform admin outsider denied", "member", true, "", pgx.ErrNoRows},
+		{"suspended platform admin member denied", "member", true, "suspended", nil},
+	}
+	for _, tc := range denied {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeUpdateStore(tc.role, newProfile())
+			store.admin = tc.admin
+			store.status = tc.status
+			store.memberErr = tc.memberErr
+			_, err := runPatch(t, store, `{"brand_name":"New"}`)
+			if err == nil || !strings.Contains(err.Error(), "only organization owners and managers") {
+				t.Fatalf("%s: got %v, want the manager denial", tc.name, err)
+			}
+			if !isModelError(err) {
+				t.Fatalf("%s: denial must stay model-visible", tc.name)
+			}
+		})
+	}
+}
+
+// TestUpdateBusinessProfileManagerQueryErrors stay infrastructure failures:
+// membership or user lookup database errors must propagate, never read as
+// model-visible denials.
+func TestUpdateBusinessProfileManagerQueryErrors(t *testing.T) {
+	profile := &sqlc.GetProjectBusinessProfileByProjectIDRow{
+		ProjectID:   testProjectID,
+		BrandName:   "Old",
+		WebsiteUrl:  "https://old.example",
+		SeedPrompts: []byte(`[]`),
+	}
+	store := newFakeUpdateStore("member", profile)
+	store.memberErr = errors.New("connection refused")
+	if _, err := runPatch(t, store, `{"brand_name":"New"}`); err == nil || isModelError(err) {
+		t.Fatalf("membership failure should be infrastructure, got %v", err)
+	}
+	store = newFakeUpdateStore("member", profile)
+	store.admin = true
+	store.userErr = errors.New("connection refused")
+	if _, err := runPatch(t, store, `{"brand_name":"New"}`); err == nil || isModelError(err) {
+		t.Fatalf("user lookup failure should be infrastructure, got %v", err)
 	}
 }

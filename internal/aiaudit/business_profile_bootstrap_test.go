@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,13 +82,14 @@ func TestBusinessProfileBootstrapToolDefs(t *testing.T) {
 		"web_search",
 		"fetch_url",
 		"update_business_profile",
+		"add_competitor",
 	} {
 		if !got[name] {
 			t.Errorf("missing available tool %q", name)
 		}
 	}
-	if len(defs) != 8 {
-		t.Fatalf("exposed %d tools, want 8: %+v", len(defs), defs)
+	if len(defs) != 9 {
+		t.Fatalf("exposed %d tools, want 9: %+v", len(defs), defs)
 	}
 	// get_search_console_data refreshes Google connection tokens and needs an
 	// integration this worker does not wire; render_chart is presentation only.
@@ -95,9 +98,12 @@ func TestBusinessProfileBootstrapToolDefs(t *testing.T) {
 			t.Errorf("tool %q must not be exposed", name)
 		}
 	}
-	// update_business_profile is the only write tool; everything else is read.
-	if !isBusinessProfileBootstrapTool("update_business_profile") {
-		t.Error("update_business_profile must be allowed")
+	// update_business_profile and add_competitor are the only write tools;
+	// everything else is read. add_competitor only saves roster rows.
+	for _, name := range []string{"update_business_profile", "add_competitor"} {
+		if !isBusinessProfileBootstrapTool(name) {
+			t.Errorf("%s must be allowed", name)
+		}
 	}
 	for _, name := range []string{"read_issues", "get_score_summary", "read_page"} {
 		if !isBusinessProfileBootstrapTool(name) {
@@ -316,7 +322,7 @@ func TestBusinessProfileBootstrapPageContentCap(t *testing.T) {
 	budget := newBootstrapRunBudget()
 	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
 
-	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages)
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false)
 	if err == nil || !strings.Contains(err.Error(), "exceeded 5 read_page content calls") {
 		t.Fatalf("err = %v, want page-content cap breach", err)
 	}
@@ -343,12 +349,15 @@ func TestBusinessProfileBootstrapRoundCap(t *testing.T) {
 	budget := newBootstrapRunBudget()
 	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
 
-	_, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages)
-	if err == nil || !strings.Contains(err.Error(), "within 8 provider rounds") {
+	_, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false)
+	if err == nil || !strings.Contains(err.Error(), "within 16 provider rounds") {
 		t.Fatalf("err = %v, want tool-round cap breach", err)
 	}
-	if exec.calls != businessProfileBootstrapMaxRounds {
-		t.Fatalf("executed %d rounds, want %d", exec.calls, businessProfileBootstrapMaxRounds)
+	// The final reserved rounds offer only the profile write, so spammed
+	// research calls there are rejected without executing.
+	wantExec := businessProfileBootstrapTotalMaxRounds - businessProfileBootstrapFinalRounds
+	if exec.calls != wantExec {
+		t.Fatalf("executed %d rounds, want %d", exec.calls, wantExec)
 	}
 	if budget.roundsLeft != 0 {
 		t.Fatalf("roundsLeft = %d, want 0", budget.roundsLeft)
@@ -362,7 +371,7 @@ func TestBusinessProfileBootstrapDuplicateContentRead(t *testing.T) {
 	budget := newBootstrapRunBudget()
 	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
 
-	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages)
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false)
 	if err == nil || !strings.Contains(err.Error(), "without an update_business_profile call") {
 		t.Fatalf("err = %v, want text-only failure after rounds", err)
 	}
@@ -385,7 +394,7 @@ func TestBusinessProfileBootstrapBudgetSharedAcrossAttempts(t *testing.T) {
 		first := &uniqueContentReadStreamer{}
 		messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
 
-		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), first, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages); err == nil || !strings.Contains(err.Error(), "exceeded 5 read_page content calls") {
+		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), first, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false); err == nil || !strings.Contains(err.Error(), "exceeded 5 read_page content calls") {
 			t.Fatalf("first attempt err = %v, want cap breach", err)
 		}
 		if exec.calls != businessProfileBootstrapMaxPageContentReads {
@@ -393,7 +402,7 @@ func TestBusinessProfileBootstrapBudgetSharedAcrossAttempts(t *testing.T) {
 		}
 
 		second := &uniqueContentReadStreamer{round: 100}
-		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), second, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages); err == nil || !strings.Contains(err.Error(), "exceeded 5 read_page content calls") {
+		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), second, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false); err == nil || !strings.Contains(err.Error(), "exceeded 5 read_page content calls") {
 			t.Fatalf("corrective attempt err = %v, want cap breach", err)
 		}
 		if exec.calls != businessProfileBootstrapMaxPageContentReads {
@@ -409,18 +418,18 @@ func TestBusinessProfileBootstrapBudgetSharedAcrossAttempts(t *testing.T) {
 			return &repeatBootstrapStreamer{call: ai.ToolCall{Name: "read_page", Args: `{"url":"https://a.example","mode":"metadata"}`}}
 		}
 
-		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), newStreamer(), "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages); err == nil || !strings.Contains(err.Error(), "within 8 provider rounds") {
+		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), newStreamer(), "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false); err == nil || !strings.Contains(err.Error(), "within 16 provider rounds") {
 			t.Fatalf("first attempt err = %v, want round cap", err)
 		}
-		if exec.calls != businessProfileBootstrapMaxRounds {
-			t.Fatalf("first attempt executed %d rounds, want %d", exec.calls, businessProfileBootstrapMaxRounds)
+		if exec.calls != businessProfileBootstrapTotalMaxRounds-businessProfileBootstrapFinalRounds {
+			t.Fatalf("first attempt executed %d rounds, want %d", exec.calls, businessProfileBootstrapTotalMaxRounds-businessProfileBootstrapFinalRounds)
 		}
 
-		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), newStreamer(), "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages); err == nil || !strings.Contains(err.Error(), "within 8 provider rounds") {
+		if _, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), newStreamer(), "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false); err == nil || !strings.Contains(err.Error(), "within 16 provider rounds") {
 			t.Fatalf("corrective attempt err = %v, want round cap", err)
 		}
-		if exec.calls != businessProfileBootstrapMaxRounds {
-			t.Fatalf("total rounds = %d, want %d shared across attempts", exec.calls, businessProfileBootstrapMaxRounds)
+		if exec.calls != businessProfileBootstrapTotalMaxRounds-businessProfileBootstrapFinalRounds {
+			t.Fatalf("total rounds = %d, want %d shared across attempts", exec.calls, businessProfileBootstrapTotalMaxRounds-businessProfileBootstrapFinalRounds)
 		}
 	})
 }
@@ -435,7 +444,7 @@ func TestBusinessProfileBootstrapAssistantTextFails(t *testing.T) {
 	exec := &countingBootstrapExecutor{}
 	budget := newBootstrapRunBudget()
 
-	_, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), textOnlyBootstrapStreamer{}, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, []ai.Message{{Role: ai.RoleSystem, Content: "system"}})
+	_, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), textOnlyBootstrapStreamer{}, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, []ai.Message{{Role: ai.RoleSystem, Content: "system"}}, false)
 	if err == nil || !strings.Contains(err.Error(), "without an update_business_profile call") {
 		t.Fatalf("err = %v, want text-only failure", err)
 	}
@@ -493,5 +502,321 @@ func TestBusinessProfileBootstrapArgsCarryBothKeywordLists(t *testing.T) {
 	}
 	if _, ok := fields["target_keywords"]; ok {
 		t.Fatal("bootstrap fields must not carry target_keywords")
+	}
+}
+
+type toolsRecordingBootstrapStreamer struct {
+	rounds  [][]ai.ToolCall
+	round   int
+	offered [][]string
+}
+
+func (s *toolsRecordingBootstrapStreamer) Stream(_ context.Context, req ai.Request, emit func(ai.Event) error) error {
+	names := make([]string, 0, len(req.Tools))
+	for _, def := range req.Tools {
+		names = append(names, def.Name)
+	}
+	s.offered = append(s.offered, names)
+	if s.round >= len(s.rounds) {
+		return nil
+	}
+	calls := s.rounds[s.round]
+	s.round++
+	for i := range calls {
+		call := calls[i]
+		if call.ID == "" {
+			call.ID = fmt.Sprintf("call-%d-%d", s.round, i)
+		}
+		if err := emit(ai.Event{ToolCall: &call}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type reasoningBootstrapStreamer struct {
+	reasoning string
+	rounds    [][]ai.ToolCall
+	round     int
+	requests  []ai.Request
+}
+
+func (s *reasoningBootstrapStreamer) Stream(_ context.Context, req ai.Request, emit func(ai.Event) error) error {
+	s.requests = append(s.requests, req)
+	if req.OnReasoningDelta != nil && s.reasoning != "" {
+		req.OnReasoningDelta(s.reasoning)
+	}
+	if s.round >= len(s.rounds) {
+		return nil
+	}
+	calls := s.rounds[s.round]
+	s.round++
+	for i := range calls {
+		call := calls[i]
+		if call.ID == "" {
+			call.ID = fmt.Sprintf("rcall-%d-%d", s.round, i)
+		}
+		if err := emit(ai.Event{ToolCall: &call}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type flakyUpdateBootstrapExecutor struct {
+	updateCalls int
+}
+
+func (e *flakyUpdateBootstrapExecutor) run(_ context.Context, _ *aichattools.Registry, call ai.ToolCall, _ aichattools.Scope) (string, aichattools.Result) {
+	if call.Name != "update_business_profile" {
+		return "completed", aichattools.Result{Content: "ok", Summary: "ok"}
+	}
+	e.updateCalls++
+	if e.updateCalls == 1 {
+		return "failed", aichattools.Result{Content: "update_business_profile error: validation boom", Summary: "boom"}
+	}
+	return "completed", aichattools.Result{Content: "ok", Summary: "ok"}
+}
+
+func TestBusinessProfileBootstrapSerialResearchAddsAndProfile(t *testing.T) {
+	streamer := &scriptedBootstrapStreamer{rounds: [][]ai.ToolCall{
+		{{Name: "get_score_summary", Args: `{}`}},
+		{{Name: "read_issues", Args: `{}`}},
+		{{Name: "read_page", Args: `{"url":"https://a.example/about","mode":"content"}`}},
+		{{Name: "read_page", Args: `{"url":"https://a.example/services","mode":"content"}`}},
+		{{Name: "read_page", Args: `{"url":"https://a.example/pricing","mode":"content"}`}},
+		{{Name: "add_competitor", Args: `{"name":"Rival1","url":"https://rival1.example/"}`}},
+		{{Name: "add_competitor", Args: `{"name":"Rival2","url":"https://rival2.example/"}`}},
+		{{Name: "add_competitor", Args: `{"name":"Rival3","url":"https://rival3.example/"}`}},
+		{{Name: "update_business_profile", Args: `{}`}},
+	}}
+	exec := &countingBootstrapExecutor{}
+	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, newBootstrapRunBudget(), exec.run, messages, false)
+	if err != nil {
+		t.Fatalf("9-round serial research, 3 saves, and profile: %v", err)
+	}
+	if exec.calls != 9 {
+		t.Fatalf("executed %d calls, want 9", exec.calls)
+	}
+	assertBalancedBootstrapHistory(t, returned)
+}
+
+func TestBusinessProfileBootstrapFinalizationReservesUpdate(t *testing.T) {
+	rounds := make([][]ai.ToolCall, 0, 16)
+	for range 14 {
+		rounds = append(rounds, []ai.ToolCall{{Name: "read_page", Args: `{"url":"https://a.example","mode":"metadata"}`}})
+	}
+	rounds = append(rounds,
+		[]ai.ToolCall{{Name: "add_competitor", Args: `{"url":"https://rival.example/"}`}},
+		[]ai.ToolCall{{Name: "update_business_profile", Args: `{}`}})
+	streamer := &toolsRecordingBootstrapStreamer{rounds: rounds}
+	exec := &countingBootstrapExecutor{}
+	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
+	tools := businessProfileBootstrapToolDefs(aichattools.NewRegistry())
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", tools, aichattools.NewRegistry(), aichattools.Scope{}, newBootstrapRunBudget(), exec.run, messages, false)
+	if err != nil {
+		t.Fatalf("spam then final-only update: %v", err)
+	}
+	if len(streamer.offered) != 16 {
+		t.Fatalf("offered %d rounds, want 16", len(streamer.offered))
+	}
+	early := streamer.offered[0]
+	if !slices.Contains(early, "update_business_profile") || !slices.Contains(early, "add_competitor") || !slices.Contains(early, "read_page") {
+		t.Fatalf("early rounds offered %v, want the full allowlist", early)
+	}
+	for i := 14; i < 16; i++ {
+		if names := streamer.offered[i]; len(names) != 1 || names[0] != "update_business_profile" {
+			t.Fatalf("round %d offered %v, want only update_business_profile", i+1, names)
+		}
+	}
+	if exec.calls != 15 {
+		t.Fatalf("executed %d, want 14 reads plus 1 update (final add rejected unexecuted)", exec.calls)
+	}
+	if !historyContainsToolContent(returned, "only update_business_profile is available during finalization") {
+		t.Fatal("finalization rejection missing from history")
+	}
+	assertBalancedBootstrapHistory(t, returned)
+}
+
+func TestBusinessProfileBootstrapRetryIsProfileOnly(t *testing.T) {
+	budget := newBootstrapRunBudget()
+	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
+	flaky := &flakyUpdateBootstrapExecutor{}
+	first := &scriptedBootstrapStreamer{rounds: [][]ai.ToolCall{{{Name: "update_business_profile", Args: `{}`}}}}
+	grown, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), first, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, flaky.run, messages, false)
+	if err == nil {
+		t.Fatal("first pass with a failed update must fail")
+	}
+	retryMessages := append(grown, ai.Message{Role: ai.RoleUser, Content: businessProfileBootstrapCorrectionPrompt})
+	retryStreamer := &toolsRecordingBootstrapStreamer{rounds: [][]ai.ToolCall{
+		{{Name: "read_page", Args: `{"url":"https://a.example","mode":"metadata"}`}},
+		{{Name: "update_business_profile", Args: `{}`}},
+	}}
+	retryExec := &countingBootstrapExecutor{}
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), retryStreamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, retryExec.run, retryMessages, true)
+	if err != nil {
+		t.Fatalf("profile-only retry: %v", err)
+	}
+	for _, names := range retryStreamer.offered {
+		if len(names) != 1 || names[0] != "update_business_profile" {
+			t.Fatalf("retry offered %v, want update only from the first round", names)
+		}
+	}
+	if retryExec.calls != 1 {
+		t.Fatalf("retry executed %d, want only the update (research rejected unexecuted)", retryExec.calls)
+	}
+	assertBalancedBootstrapHistory(t, returned)
+}
+
+func TestBusinessProfileBootstrapReservedSlotRecovery(t *testing.T) {
+	budget := newBootstrapRunBudget()
+	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
+	exec := &flakyUpdateBootstrapExecutor{}
+	rounds := make([][]ai.ToolCall, 0, 15)
+	for range 14 {
+		rounds = append(rounds, []ai.ToolCall{{Name: "read_page", Args: `{"url":"https://a.example","mode":"metadata"}`}})
+	}
+	rounds = append(rounds, []ai.ToolCall{{Name: "update_business_profile", Args: `{}`}})
+	first := &scriptedBootstrapStreamer{rounds: rounds}
+	grown, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), first, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, messages, false)
+	if err == nil || !strings.Contains(err.Error(), "did not succeed") {
+		t.Fatalf("first reserved slot err = %v, want failed update", err)
+	}
+	if budget.roundsLeft != 1 {
+		t.Fatalf("roundsLeft = %d, want the second reserved slot left for retry", budget.roundsLeft)
+	}
+	retry := &scriptedBootstrapStreamer{rounds: [][]ai.ToolCall{{{Name: "update_business_profile", Args: `{}`}}}}
+	grown = append(grown, ai.Message{Role: ai.RoleUser, Content: businessProfileBootstrapCorrectionPrompt})
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), retry, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, grown, true)
+	if err != nil {
+		t.Fatalf("second reserved slot: %v", err)
+	}
+	if exec.updateCalls != 2 {
+		t.Fatalf("update executed %d times, want failed first slot plus successful second", exec.updateCalls)
+	}
+	assertBalancedBootstrapHistory(t, returned)
+}
+
+func TestBusinessProfileBootstrapBudgetBounded(t *testing.T) {
+	streamer := &repeatBootstrapStreamer{call: ai.ToolCall{
+		Name: "read_page",
+		Args: `{"url":"https://a.example","mode":"metadata"}`,
+	}}
+	exec := &countingBootstrapExecutor{}
+	budget := newBootstrapRunBudget()
+	_, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, budget, exec.run, []ai.Message{{Role: ai.RoleSystem, Content: "system"}}, false)
+	if err == nil || !strings.Contains(err.Error(), "within 16 provider rounds") {
+		t.Fatalf("err = %v, want bounded total", err)
+	}
+	wantExec := businessProfileBootstrapTotalMaxRounds - businessProfileBootstrapFinalRounds
+	if exec.calls != wantExec {
+		t.Fatalf("executed %d, want %d (final slots never execute unadvertised calls)", exec.calls, wantExec)
+	}
+	if budget.roundsLeft != 0 {
+		t.Fatalf("roundsLeft = %d, want 0", budget.roundsLeft)
+	}
+}
+
+func TestBusinessProfileBootstrapReasoningReplay(t *testing.T) {
+	streamer := &reasoningBootstrapStreamer{reasoning: "quiet-plan", rounds: [][]ai.ToolCall{
+		{{Name: "get_score_summary", Args: `{}`}},
+		{{Name: "update_business_profile", Args: `{}`}},
+	}}
+	exec := &countingBootstrapExecutor{}
+	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
+	tools := businessProfileBootstrapToolDefs(aichattools.NewRegistry())
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", tools, aichattools.NewRegistry(), aichattools.Scope{}, newBootstrapRunBudget(), exec.run, messages, false)
+	if err != nil {
+		t.Fatalf("reasoning replay pass: %v", err)
+	}
+	found := false
+	for _, message := range returned {
+		if message.Role == ai.RoleAssistant && len(message.ToolCalls) > 0 {
+			found = true
+			if message.ReasoningContent != "quiet-plan" {
+				t.Fatalf("assistant ReasoningContent = %q, want replayed private reasoning", message.ReasoningContent)
+			}
+		}
+		if message.Role == ai.RoleTool && strings.Contains(message.Content, "quiet-plan") {
+			t.Fatal("private reasoning leaked into a tool result")
+		}
+	}
+	if !found {
+		t.Fatal("no assistant tool-call message in history")
+	}
+	if len(streamer.requests) != 2 {
+		t.Fatalf("requests = %d, want research round plus update round", len(streamer.requests))
+	}
+	next := streamer.requests[1]
+	if next.Effort != "high" {
+		t.Fatalf("second request effort = %q, want high", next.Effort)
+	}
+	if len(next.Tools) == 0 {
+		t.Fatal("second request lost the available tools")
+	}
+	replayed := false
+	for _, message := range next.Messages {
+		if message.Role == ai.RoleAssistant && len(message.ToolCalls) > 0 {
+			replayed = true
+			if message.ReasoningContent != "quiet-plan" {
+				t.Fatalf("second request assistant ReasoningContent = %q, want prior private reasoning", message.ReasoningContent)
+			}
+		}
+	}
+	if !replayed {
+		t.Fatal("second request is missing the prior assistant tool-call message")
+	}
+	assertBalancedBootstrapHistory(t, returned)
+}
+
+func TestBusinessProfileBootstrapDuplicateUpdatesRejectedPreWrite(t *testing.T) {
+	streamer := &scriptedBootstrapStreamer{rounds: [][]ai.ToolCall{
+		{{Name: "update_business_profile", Args: `{"brand_name":"A"}`}, {Name: "update_business_profile", Args: `{"brand_name":"B"}`}},
+	}}
+	exec := &flakyUpdateBootstrapExecutor{}
+	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, newBootstrapRunBudget(), exec.run, messages, false)
+	if err == nil || !strings.Contains(err.Error(), "did not succeed") {
+		t.Fatalf("err = %v, want failed pass so correction can recover", err)
+	}
+	if exec.updateCalls != 0 {
+		t.Fatalf("update executed %d times, want 0: no profile write before rejection", exec.updateCalls)
+	}
+	failures := 0
+	for _, message := range returned {
+		if message.Role == ai.RoleTool && strings.Contains(message.Content, "no profile write was executed") {
+			failures++
+		}
+	}
+	if failures != 2 {
+		t.Fatalf("balanced failed results = %d, want 2", failures)
+	}
+	assertBalancedBootstrapHistory(t, returned)
+}
+
+func TestBootstrapRoundLogStaysSanitized(t *testing.T) {
+	previous := log.Writer()
+	var captured strings.Builder
+	log.SetOutput(&captured)
+	defer log.SetOutput(previous)
+	streamer := &scriptedBootstrapStreamer{rounds: [][]ai.ToolCall{
+		{{ID: "c1", Name: "evil-tool with spaces", Args: `{"url":"https://secret.example/"}`}},
+		{{ID: "c2", Name: "update_business_profile", Args: `{}`}},
+	}}
+	messages := []ai.Message{{Role: ai.RoleSystem, Content: "system"}}
+	returned, err := (&Worker{}).runBusinessProfileBootstrapPass(context.Background(), streamer, "deepseek-flash", nil, aichattools.NewRegistry(), aichattools.Scope{}, newBootstrapRunBudget(), executeBusinessProfileBootstrapTool, messages, false)
+	if err == nil {
+		t.Fatal("incomplete update must fail the pass")
+	}
+	assertBalancedBootstrapHistory(t, returned)
+	out := captured.String()
+	if !strings.Contains(out, "unknown:failed") {
+		t.Fatalf("log = %q, want unadvertised tool name logged as unknown", out)
+	}
+	for _, leaked := range []string{"evil-tool", "secret.example"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("log leaks %q", leaked)
+		}
 	}
 }

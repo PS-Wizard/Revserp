@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 	"github.com/ps-wizard/revserp/internal/websitescope"
 )
 
@@ -95,8 +96,11 @@ func (a *App) loadLocationWorkspaceLocation(w http.ResponseWriter, r *http.Reque
 	return location, principal.User.ID, true
 }
 
-func locationWorkspaceCanManage(role string) bool {
-	return role == "owner"
+// locationWorkspaceCanManage reports whether a location workspace member may
+// manage the workspace. Owners and managers always can; other members only
+// when they are platform admins.
+func locationWorkspaceCanManage(role string, isPlatformAdmin bool) bool {
+	return organizationaccess.CanManageOrganization(role, isPlatformAdmin)
 }
 
 func (a *App) locationWorkspaceRole(ctx context.Context, location sqlc.GetProjectLocationForUserRow, userID pgtype.UUID) (string, error) {
@@ -193,9 +197,13 @@ func (a *App) handleGetLocationWorkspace(w http.ResponseWriter, r *http.Request)
 		serverError(w, r, err)
 		return
 	}
+	isAdmin := false
+	if principal, ok := principalFromContext(r.Context()); ok {
+		isAdmin = principal.User.IsPlatformAdmin
+	}
 	workspace := locationWorkspaceResponse{
 		Location:              response,
-		CanManage:             locationWorkspaceCanManage(role),
+		CanManage:             locationWorkspaceCanManage(role, isAdmin),
 		WebsiteScopeRevisions: revisions,
 	}
 	if len(revisions) > 0 {
@@ -265,7 +273,7 @@ func (a *App) handlePutLocationWebsiteScope(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, location.OrganizationID, userID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}

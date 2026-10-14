@@ -14,6 +14,7 @@ import (
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/ga"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 )
 
 const googleAnalyticsReadOnlyScope = "https://www.googleapis.com/auth/analytics.readonly"
@@ -69,7 +70,7 @@ func (a *App) handleProjectGoogleAnalyticsStatus(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	response := projectGoogleAnalyticsStatusResponse{HasGoogleConnection: len(accounts) > 0, CanManageConnection: membership.Role == "owner", AvailableProperties: []analyticsPropertyResponse{}, GoogleConnections: newProjectGoogleAccountResponses(accounts)}
+	response := projectGoogleAnalyticsStatusResponse{HasGoogleConnection: len(accounts) > 0, CanManageConnection: organizationaccess.CanManageOrganization(membership.Role, user.IsPlatformAdmin), AvailableProperties: []analyticsPropertyResponse{}, GoogleConnections: newProjectGoogleAccountResponses(accounts)}
 	if len(accounts) == 0 {
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -125,7 +126,7 @@ func (a *App) handleProjectGoogleAnalyticsStatus(w http.ResponseWriter, r *http.
 }
 
 func (a *App) handleSelectProjectGoogleAnalyticsProperty(w http.ResponseWriter, r *http.Request) {
-	project, _, ok := a.googleAnalyticsOwnerProject(w, r)
+	project, _, ok := a.googleAnalyticsManagerProject(w, r)
 	if !ok {
 		return
 	}
@@ -214,7 +215,7 @@ func (a *App) handleSelectProjectGoogleAnalyticsProperty(w http.ResponseWriter, 
 }
 
 func (a *App) handleDisconnectProjectGoogleAnalytics(w http.ResponseWriter, r *http.Request) {
-	project, _, ok := a.googleAnalyticsOwnerProject(w, r)
+	project, _, ok := a.googleAnalyticsManagerProject(w, r)
 	if !ok {
 		return
 	}
@@ -304,16 +305,24 @@ func (a *App) googleAnalyticsProject(w http.ResponseWriter, r *http.Request) (sq
 	return project, principal.User, true
 }
 
-func (a *App) googleAnalyticsOwnerProject(w http.ResponseWriter, r *http.Request) (sqlc.Project, sqlc.User, bool) {
+// googleAnalyticsManagerProject resolves the project for Analytics writes,
+// which owners, managers, and platform admin members may perform.
+func (a *App) googleAnalyticsManagerProject(w http.ResponseWriter, r *http.Request) (sqlc.Project, sqlc.User, bool) {
 	project, user, ok := a.googleAnalyticsProject(w, r)
 	if !ok {
 		return sqlc.Project{}, sqlc.User{}, false
 	}
-	if err := requireOrganizationOwner(r.Context(), a.Queries, project.OrganizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), a.Queries, project.OrganizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return sqlc.Project{}, sqlc.User{}, false
 	}
 	return project, user, true
+}
+
+// googleAnalyticsOwnerProject is kept for callers that have not migrated to
+// the manager-aware name. It enforces the same management rule.
+func (a *App) googleAnalyticsOwnerProject(w http.ResponseWriter, r *http.Request) (sqlc.Project, sqlc.User, bool) {
+	return a.googleAnalyticsManagerProject(w, r)
 }
 
 func getProjectGoogleAnalyticsConnectionByProjectID(ctx context.Context, queries *sqlc.Queries, projectID pgtype.UUID) (sqlc.ProjectGoogleAnalyticsConnection, bool, error) {

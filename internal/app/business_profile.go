@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/ps-wizard/revserp/internal/businessprofile"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/organizationaccess"
 )
 
 type upsertProjectBusinessProfileRequest struct {
@@ -116,7 +117,7 @@ func (a *App) handleProjectBusinessProfile(w http.ResponseWriter, r *http.Reques
 
 	response := projectBusinessProfileStatusResponse{
 		HasProfile:       hasProfile,
-		CanManageProfile: membership.Role == "owner",
+		CanManageProfile: organizationaccess.CanManageOrganization(membership.Role, user.IsPlatformAdmin),
 	}
 	if hasProfile {
 		profileResponse, err := newProjectBusinessProfileResponseFromGetRow(profile)
@@ -135,7 +136,7 @@ func (a *App) handleProjectBusinessProfile(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, response)
 }
 
-// handleUpsertProjectBusinessProfile stores one owner-managed business profile for a project.
+// handleUpsertProjectBusinessProfile stores one owner- or manager-managed business profile for a project.
 func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
 	if err != nil {
@@ -206,7 +207,7 @@ func (a *App) handleUpsertProjectBusinessProfile(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if err := requireOrganizationOwner(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
+	if err := requireOrganizationManager(r.Context(), queries, project.OrganizationID, user.ID); err != nil {
 		writeInvitePermissionError(w, err)
 		return
 	}
