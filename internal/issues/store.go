@@ -71,21 +71,34 @@ func (store *Store) deriveIssuesWithPagesTx(ctx context.Context, tx pgx.Tx, txQu
 	if err != nil {
 		return 0, nil, err
 	}
-	seo.EnrichPageFactsWithContentFingerprints(pageFacts)
+	if err := seo.EnrichPageFactsWithContentFingerprintsWithContext(ctx, pageFacts); err != nil {
+		return 0, nil, err
+	}
 	if err := persistPageContentFingerprints(ctx, txQueries, pageFacts); err != nil {
 		return 0, nil, err
 	}
 	loadElapsed := time.Since(loadStartedAt)
 
 	computeStartedAt := time.Now()
-	derivedIssues, duplicateEvidence := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts, siteFacts)
+	derivedIssues, duplicateEvidence, err := DeriveIssuesWithDuplicateEvidenceWithContext(ctx, pageFacts, linkFacts, siteFacts)
+	if err != nil {
+		return 0, nil, err
+	}
 	computeElapsed := time.Since(computeStartedAt)
 	log.Printf("derive timing: crawl_id=%s pages=%d load+fingerprint=%s compute=%s issues=%d", crawlID.String(), len(pageFacts), loadElapsed.Round(time.Millisecond), computeElapsed.Round(time.Millisecond), len(derivedIssues))
 	if err := txQueries.DeleteCrawlIssuesForCrawl(ctx, crawlID); err != nil {
 		return 0, nil, fmt.Errorf("delete crawl issues: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
 	issueRows := make([]sqlc.CreateCrawlIssuesParams, 0, len(derivedIssues))
-	for _, derivedIssue := range derivedIssues {
+	for issueNumber, derivedIssue := range derivedIssues {
+		if issueNumber%deriveCtxCheckLinks == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, nil, err
+			}
+		}
 		issueRows = append(issueRows, sqlc.CreateCrawlIssuesParams{
 			CrawlID:     crawlID,
 			CrawlPageID: derivedIssue.CrawlPageID,
@@ -128,7 +141,12 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 	}
 
 	crawlPageSignals := make([]shared.CrawlPageSignal, 0, len(crawlPages))
-	for _, crawlPage := range crawlPages {
+	for pageNumber, crawlPage := range crawlPages {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return shared.CrawlScores{}, err
+			}
+		}
 		crawlPageSignals = append(crawlPageSignals, shared.CrawlPageSignal{
 			URL:            crawlPage.Url,
 			StatusCode:     int32Value(crawlPage.StatusCode),
@@ -144,7 +162,12 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 	}
 
 	crawlIssueSignals := make([]shared.CrawlIssueSignal, 0, len(crawlIssues))
-	for _, crawlIssue := range crawlIssues {
+	for issueNumber, crawlIssue := range crawlIssues {
+		if issueNumber%deriveCtxCheckLinks == 0 {
+			if err := ctx.Err(); err != nil {
+				return shared.CrawlScores{}, err
+			}
+		}
 		crawlIssueSignals = append(crawlIssueSignals, shared.CrawlIssueSignal{
 			URL:       crawlIssue.Url,
 			Pillar:    crawlIssue.Pillar,
@@ -186,7 +209,12 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 	}
 
 	pageHealthPageSignals := make([]PageHealthPageSignal, 0, len(crawlPages))
-	for _, crawlPage := range crawlPages {
+	for pageNumber, crawlPage := range crawlPages {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return shared.CrawlScores{}, err
+			}
+		}
 		pageHealthPageSignals = append(pageHealthPageSignals, PageHealthPageSignal{
 			CrawlPageID: crawlPage.ID,
 			StatusCode:  int32Value(crawlPage.StatusCode),
@@ -197,7 +225,12 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 	}
 
 	pageHealthIssueSignals := make([]PageHealthIssueSignal, 0, len(crawlIssues))
-	for _, crawlIssue := range crawlIssues {
+	for issueNumber, crawlIssue := range crawlIssues {
+		if issueNumber%deriveCtxCheckLinks == 0 {
+			if err := ctx.Err(); err != nil {
+				return shared.CrawlScores{}, err
+			}
+		}
 		pageHealthIssueSignals = append(pageHealthIssueSignals, PageHealthIssueSignal{
 			CrawlPageID: crawlIssue.CrawlPageID,
 			Pillar:      crawlIssue.Pillar,
@@ -212,7 +245,12 @@ func (store *Store) ScoreCrawlWithPages(ctx context.Context, crawlID pgtype.UUID
 		pageIDs := make([]pgtype.UUID, 0, len(pageHealthScores))
 		healthScores := make([]int16, 0, len(pageHealthScores))
 		healthBreakdowns := make([][]byte, 0, len(pageHealthScores))
-		for _, pageHealthScore := range pageHealthScores {
+		for scoreNumber, pageHealthScore := range pageHealthScores {
+			if scoreNumber%deriveCtxCheckPages == 0 {
+				if err := ctx.Err(); err != nil {
+					return shared.CrawlScores{}, err
+				}
+			}
 			breakdownJSON, err := json.Marshal(struct {
 				Pillars []PageHealthPillarScore `json:"pillars"`
 			}{Pillars: pageHealthScore.Pillars})

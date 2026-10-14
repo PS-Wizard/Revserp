@@ -7,7 +7,8 @@ INSERT INTO ai_audits (
     error_message,
     started_at,
     completed_at,
-    location_id
+    location_id,
+    project_setup_id
 ) VALUES (
     $1,
     $2,
@@ -16,9 +17,10 @@ INSERT INTO ai_audits (
     $5,
     $6,
     $7,
-    $8
+    $8,
+    $9
 )
-RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id;
+RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id;
 
 -- name: GetAIAuditByIDForUser :one
 SELECT
@@ -32,7 +34,8 @@ SELECT
     aa.completed_at,
     aa.created_at,
     aa.updated_at,
-    aa.location_id
+    aa.location_id,
+    aa.project_setup_id
 FROM ai_audits AS aa
 INNER JOIN projects AS p ON p.id = aa.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -41,7 +44,7 @@ WHERE aa.id = $1
 LIMIT 1;
 
 -- name: GetAIAuditForWorker :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE id = sqlc.arg(id)::uuid
   AND project_id = sqlc.arg(project_id)::uuid
@@ -66,7 +69,8 @@ SELECT
     completed_at,
     created_at,
     updated_at,
-    location_id
+    location_id,
+    project_setup_id
 FROM ai_audits
 WHERE project_id = $1
   AND location_id IS NULL
@@ -94,7 +98,8 @@ SELECT
     completed_at,
     created_at,
     updated_at,
-    location_id
+    location_id,
+    project_setup_id
 FROM ai_audits
 WHERE project_id = sqlc.arg(project_id)::uuid
   AND location_id = sqlc.arg(location_id)::uuid
@@ -104,14 +109,14 @@ LIMIT sqlc.arg(page_limit)
 OFFSET sqlc.arg(page_offset);
 
 -- name: GetAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL
 ORDER BY created_at DESC
 LIMIT 1;
 
 -- name: GetAIAuditByLocationCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = sqlc.arg(project_id)::uuid
   AND location_id = sqlc.arg(location_id)::uuid
@@ -120,13 +125,13 @@ ORDER BY created_at DESC
 LIMIT 1;
 
 -- name: GetActiveAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL AND status IN ('queued', 'running')
 LIMIT 1;
 
 -- name: GetActiveAIAuditByLocationAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = sqlc.arg(project_id)::uuid
   AND location_id = sqlc.arg(location_id)::uuid

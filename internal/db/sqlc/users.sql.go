@@ -150,6 +150,19 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDR
 	return i, err
 }
 
+const getUserOnboardingState = `-- name: GetUserOnboardingState :one
+SELECT onboarding_state FROM users
+WHERE id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetUserOnboardingState(ctx context.Context, id pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getUserOnboardingState, id)
+	var onboarding_state []byte
+	err := row.Scan(&onboarding_state)
+	return onboarding_state, err
+}
+
 const listAllUsers = `-- name: ListAllUsers :many
 SELECT id, email, name, is_platform_admin, status, created_at
 FROM users
@@ -202,6 +215,23 @@ func (q *Queries) LockUserByID(ctx context.Context, id pgtype.UUID) (pgtype.UUID
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const updateUserOnboardingState = `-- name: UpdateUserOnboardingState :one
+UPDATE users SET onboarding_state = $2 WHERE id = $1
+RETURNING onboarding_state
+`
+
+type UpdateUserOnboardingStateParams struct {
+	ID              pgtype.UUID
+	OnboardingState []byte
+}
+
+func (q *Queries) UpdateUserOnboardingState(ctx context.Context, arg UpdateUserOnboardingStateParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, updateUserOnboardingState, arg.ID, arg.OnboardingState)
+	var onboarding_state []byte
+	err := row.Scan(&onboarding_state)
+	return onboarding_state, err
 }
 
 const updateUserPlatformAdmin = `-- name: UpdateUserPlatformAdmin :exec

@@ -1,8 +1,10 @@
 package seo
 
 import (
-	"github.com/jackc/pgx/v5/pgtype"
+	"context"
 	"sort"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
@@ -49,7 +51,7 @@ func duplicatePages(pageFacts []shared.PageFact, indexes []int) []DuplicatePage 
 	return pages
 }
 
-func buildNearDuplicateGroups(pageFacts []shared.PageFact, neighbors map[int]map[int]struct{}) []DuplicateGroup {
+func buildNearDuplicateGroups(ctx context.Context, pageFacts []shared.PageFact, neighbors map[int]map[int]struct{}) ([]DuplicateGroup, error) {
 	visited := make(map[int]bool, len(neighbors))
 	groups := make([]DuplicateGroup, 0)
 	starts := make([]int, 0, len(neighbors))
@@ -57,7 +59,12 @@ func buildNearDuplicateGroups(pageFacts []shared.PageFact, neighbors map[int]map
 		starts = append(starts, index)
 	}
 	sort.Ints(starts)
-	for _, start := range starts {
+	for startNumber, start := range starts {
+		if startNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		if visited[start] {
 			continue
 		}
@@ -80,5 +87,5 @@ func buildNearDuplicateGroups(pageFacts []shared.PageFact, neighbors map[int]map
 			groups = append(groups, DuplicateGroup{IssueType: DuplicateIssueTypeNearDuplicateContent, Members: duplicatePages(pageFacts, indexes)})
 		}
 	}
-	return groups
+	return groups, nil
 }

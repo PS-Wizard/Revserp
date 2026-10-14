@@ -28,8 +28,16 @@ func loadFactsWithPages(ctx context.Context, queries *sqlc.Queries, crawlID pgty
 		return nil, nil, nil, fmt.Errorf("list internal crawl links: %w", err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	pageFacts := make([]shared.PageFact, 0, len(crawlPages))
-	for _, crawlPage := range crawlPages {
+	for pageNumber, crawlPage := range crawlPages {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, nil, err
+			}
+		}
 		pageFacts = append(pageFacts, shared.PageFact{
 			ID:                      crawlPage.ID,
 			URL:                     crawlPage.Url,
@@ -63,7 +71,12 @@ func loadFactsWithPages(ctx context.Context, queries *sqlc.Queries, crawlID pgty
 		})
 	}
 	linkFacts := make([]shared.LinkFact, 0, len(internalCrawlLinks))
-	for _, internalCrawlLink := range internalCrawlLinks {
+	for linkNumber, internalCrawlLink := range internalCrawlLinks {
+		if linkNumber%deriveCtxCheckLinks == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, nil, err
+			}
+		}
 		linkFacts = append(linkFacts, shared.LinkFact{
 			SourceURL:    internalCrawlLink.SourceUrl,
 			TargetURL:    internalCrawlLink.TargetUrl,

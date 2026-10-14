@@ -40,6 +40,12 @@ type Config struct {
 	MaxAPIResponseBytes  int64
 }
 
+// psiOutcome carries one concurrent Google PSI enrichment result.
+type psiOutcome struct {
+	result *googlePSIStoredResult
+	err    error
+}
+
 // claimedCrawlRow is the minimal data the worker needs from any claim query.
 type claimedCrawlRow struct {
 	ID                pgtype.UUID
@@ -590,10 +596,6 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	// the analysis phase. It gets its own budget rather than borrowing the
 	// crawl's: the crawl may consume all of CrawlTimeout, and a slow PSI call
 	// must not be cut short by that.
-	type psiOutcome struct {
-		result *googlePSIStoredResult
-		err    error
-	}
 	psiChan := make(chan psiOutcome, 1)
 	psiCtx, psiCancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.AnalysisTimeout)
 	defer psiCancel()
@@ -644,7 +646,14 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	derivedIssueCount, crawlPages, err := issueStore.DeriveIssuesWithPagesAndSiteFacts(analysisCtx, claimed.ID, shared.SiteFacts{HasLlmsTxt: hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)})
 	log.Printf("phase timing: crawl_id=%s derive_issues=%s", claimed.ID.String(), time.Since(deriveStartedAt).Round(time.Millisecond))
 
-	psi := <-psiChan
+	psi, psiWaitErr := waitAnalysisPSI(psiChan, analysisCtx)
+	if psiWaitErr != nil {
+		finalCtx := context.WithoutCancel(ctx)
+		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, psiWaitErr.Error()); failErr != nil {
+			return fmt.Errorf("await google psi: %w (also failed to mark crawl failed: %v)", psiWaitErr, failErr)
+		}
+		return fmt.Errorf("await google psi: %w", psiWaitErr)
+	}
 	googlePSIResult := psi.result
 	if psi.err != nil {
 		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimed.ID.String(), psi.err)
@@ -687,6 +696,19 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	}
 
 	return nil
+}
+
+// waitAnalysisPSI collects the concurrent PSI result without letting a slow PSI
+// call hold the analysis timeout path hostage: the PSI channel is detached
+// from the analysis budget, so an expired budget returns the context error
+// while the buffered channel keeps the PSI goroutine from leaking.
+func waitAnalysisPSI(psiChan <-chan psiOutcome, analysisCtx context.Context) (psiOutcome, error) {
+	select {
+	case psi := <-psiChan:
+		return psi, nil
+	case <-analysisCtx.Done():
+		return psiOutcome{}, analysisCtx.Err()
+	}
 }
 
 // sleepOrCancel sleeps for a poll interval or returns when context is canceled.

@@ -118,13 +118,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    # The heavy one (crawling + headless rendering). If it ever gets OOM-killed,
-    # LOWER RENDERER_CONCURRENCY before raising this memory cap.
     deploy:
       resources:
         limits:
           cpus: "2.0"
-          memory: 2560M
+          memory: 4G
 
   ai-audit-worker:
     image: revserp-backend:latest

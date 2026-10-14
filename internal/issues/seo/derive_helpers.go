@@ -1,6 +1,7 @@
 package seo
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -23,11 +24,16 @@ func newIssue(pageFact shared.PageFact, bucket string, issueType string, severit
 	}
 }
 
-func countInternalLinksByPage(linkFacts []shared.LinkFact) (map[string]int, map[string]int) {
+func countInternalLinksByPage(ctx context.Context, linkFacts []shared.LinkFact) (map[string]int, map[string]int, error) {
 	outboundInternalLinkSourcesByTargetURL := make(map[string]map[string]struct{})
 	inboundInternalLinkTargetsBySourceURL := make(map[string]map[string]struct{})
 
-	for _, linkFact := range linkFacts {
+	for linkNumber, linkFact := range linkFacts {
+		if linkNumber%deriveCtxCheckLinks == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 		sourceURL := strings.TrimSpace(linkFact.SourceURL)
 		targetURL := strings.TrimSpace(linkFact.TargetURL)
 		if sourceURL == "" || targetURL == "" || sourceURL == targetURL {
@@ -51,7 +57,7 @@ func countInternalLinksByPage(linkFacts []shared.LinkFact) (map[string]int, map[
 	for sourceURL, targetURLs := range inboundInternalLinkTargetsBySourceURL {
 		outboundInternalLinkCounts[sourceURL] = len(targetURLs)
 	}
-	return inboundInternalLinkCounts, outboundInternalLinkCounts
+	return inboundInternalLinkCounts, outboundInternalLinkCounts, nil
 }
 
 func canonicalMatchesPageURL(pageURL string, canonicalURL string) bool {
@@ -112,12 +118,17 @@ func titleAndH1Mismatch(title string, h1 string) bool {
 	return calculateFieldSimilarity(normalizedTitle, normalizedH1) < titleH1MismatchSimilarityThreshold
 }
 
-func buildPageFactsByURL(pageFacts []shared.PageFact) map[string]shared.PageFact {
+func buildPageFactsByURL(ctx context.Context, pageFacts []shared.PageFact) (map[string]shared.PageFact, error) {
 	pageFactsByURL := make(map[string]shared.PageFact, len(pageFacts))
-	for _, pageFact := range pageFacts {
+	for pageNumber, pageFact := range pageFacts {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		pageFactsByURL[strings.TrimSpace(pageFact.URL)] = pageFact
 	}
-	return pageFactsByURL
+	return pageFactsByURL, nil
 }
 
 func pageIsNonIndexable(pageFact shared.PageFact) bool {
@@ -139,10 +150,15 @@ func canonicalURLIsMalformed(canonicalURL string) bool {
 	return parsedCanonicalURL.Scheme != "http" && parsedCanonicalURL.Scheme != "https"
 }
 
-func collectInternalLinkTargetIssues(linkFacts []shared.LinkFact) (map[string][]string, map[string][]string) {
+func collectInternalLinkTargetIssues(ctx context.Context, linkFacts []shared.LinkFact) (map[string][]string, map[string][]string, error) {
 	brokenTargetsBySourceURL := make(map[string]map[string]struct{})
 	redirectingTargetsBySourceURL := make(map[string]map[string]struct{})
-	for _, linkFact := range linkFacts {
+	for linkNumber, linkFact := range linkFacts {
+		if linkNumber%deriveCtxCheckLinks == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 		sourceURL := strings.TrimSpace(linkFact.SourceURL)
 		targetURL := strings.TrimSpace(linkFact.TargetURL)
 		if sourceURL == "" || targetURL == "" || sourceURL == targetURL {
@@ -161,7 +177,7 @@ func collectInternalLinkTargetIssues(linkFacts []shared.LinkFact) (map[string][]
 			redirectingTargetsBySourceURL[sourceURL][targetURL] = struct{}{}
 		}
 	}
-	return flattenURLSetMap(brokenTargetsBySourceURL), flattenURLSetMap(redirectingTargetsBySourceURL)
+	return flattenURLSetMap(brokenTargetsBySourceURL), flattenURLSetMap(redirectingTargetsBySourceURL), nil
 }
 
 func flattenURLSetMap(urlsByKey map[string]map[string]struct{}) map[string][]string {
@@ -184,24 +200,29 @@ func limitURLsForIssueDetails(urls []string) []string {
 	return append(urls[:3], fmt.Sprintf("and %d more", len(urls)-3))
 }
 
-func deriveDuplicateTitleIssuesWithEvidence(pageFacts []shared.PageFact) ([]shared.DerivedIssue, []DuplicateGroup) {
-	return deriveDuplicateFieldIssuesWithEvidence(pageFacts, func(pageFact shared.PageFact) string {
+func deriveDuplicateTitleIssuesWithEvidence(ctx context.Context, pageFacts []shared.PageFact) ([]shared.DerivedIssue, []DuplicateGroup, error) {
+	return deriveDuplicateFieldIssuesWithEvidence(ctx, pageFacts, func(pageFact shared.PageFact) string {
 		return pageFact.Title
 	}, DuplicateIssueTypeDuplicateTitle, "high", "Page shares a duplicate title", "Title matches %d other page(s): %s.")
 }
 
-func deriveDuplicateMetaDescriptionIssuesWithEvidence(pageFacts []shared.PageFact) ([]shared.DerivedIssue, []DuplicateGroup) {
-	return deriveDuplicateFieldIssuesWithEvidence(pageFacts, func(pageFact shared.PageFact) string {
+func deriveDuplicateMetaDescriptionIssuesWithEvidence(ctx context.Context, pageFacts []shared.PageFact) ([]shared.DerivedIssue, []DuplicateGroup, error) {
+	return deriveDuplicateFieldIssuesWithEvidence(ctx, pageFacts, func(pageFact shared.PageFact) string {
 		return pageFact.MetaDescription
 	}, DuplicateIssueTypeDuplicateMetaDescription, "medium", "Page shares a duplicate meta description", "Meta description matches %d other page(s): %s.")
 }
 
-func deriveDuplicateFieldIssuesWithEvidence(pageFacts []shared.PageFact, fieldValue func(shared.PageFact) string, issueType string, severity string, message string, detailsTemplate string) ([]shared.DerivedIssue, []DuplicateGroup) {
+func deriveDuplicateFieldIssuesWithEvidence(ctx context.Context, pageFacts []shared.PageFact, fieldValue func(shared.PageFact) string, issueType string, severity string, message string, detailsTemplate string) ([]shared.DerivedIssue, []DuplicateGroup, error) {
 	pageIndexesByNormalizedField := make(map[string][]int)
-	for pageIndex, pageFact := range pageFacts {
+	for pageNumber, pageFact := range pageFacts {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 		normalizedFieldValue := normalizeDuplicateContentField(fieldValue(pageFact))
 		if normalizedFieldValue != "" {
-			pageIndexesByNormalizedField[normalizedFieldValue] = append(pageIndexesByNormalizedField[normalizedFieldValue], pageIndex)
+			pageIndexesByNormalizedField[normalizedFieldValue] = append(pageIndexesByNormalizedField[normalizedFieldValue], pageNumber)
 		}
 	}
 	keys := make([]string, 0, len(pageIndexesByNormalizedField))
@@ -212,7 +233,12 @@ func deriveDuplicateFieldIssuesWithEvidence(pageFacts []shared.PageFact, fieldVa
 
 	var derivedIssues []shared.DerivedIssue
 	var groups []DuplicateGroup
-	for _, key := range keys {
+	for keyNumber, key := range keys {
+		if keyNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 		pageIndexes := pageIndexesByNormalizedField[key]
 		if len(pageIndexes) < 2 || duplicateGroupLooksLikePurePagination(pageFacts, pageIndexes) {
 			continue
@@ -226,7 +252,7 @@ func deriveDuplicateFieldIssuesWithEvidence(pageFacts []shared.PageFact, fieldVa
 			))
 		}
 	}
-	return derivedIssues, groups
+	return derivedIssues, groups, nil
 }
 
 func duplicateGroupLooksLikePurePagination(pageFacts []shared.PageFact, pageIndexes []int) bool {

@@ -40,5 +40,14 @@ UPDATE users SET
     suspension_reason = CASE WHEN $2 = 'suspended' THEN $3 ELSE NULL END
 WHERE id = $1;
 
+-- name: GetUserOnboardingState :one
+SELECT onboarding_state FROM users
+WHERE id = $1
+LIMIT 1;
+
+-- name: UpdateUserOnboardingState :one
+UPDATE users SET onboarding_state = $2 WHERE id = $1
+RETURNING onboarding_state;
+
 -- name: LockUserByID :one
 SELECT id FROM users WHERE id = $1 FOR UPDATE;

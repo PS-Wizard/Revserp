@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"slices"
@@ -13,19 +14,34 @@ import (
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
+const (
+	deriveCtxCheckPages = 256
+	deriveCtxCheckLinks = 4096
+)
+
 // DeriveIssues builds backend issue rows from persisted crawl facts.
 func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact, siteFacts shared.SiteFacts) []shared.DerivedIssue {
-	derivedIssues, _ := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts, siteFacts)
+	derivedIssues, _, _ := DeriveIssuesWithDuplicateEvidenceWithContext(context.Background(), pageFacts, linkFacts, siteFacts)
 	return derivedIssues
 }
 
 // DeriveIssuesWithDuplicateEvidence derives all issues and returns duplicate
 // evidence from the same SEO pass.
 func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []shared.LinkFact, siteFacts shared.SiteFacts) ([]shared.DerivedIssue, seo.DuplicateEvidence) {
+	derivedIssues, evidence, _ := DeriveIssuesWithDuplicateEvidenceWithContext(context.Background(), pageFacts, linkFacts, siteFacts)
+	return derivedIssues, evidence
+}
+
+func DeriveIssuesWithDuplicateEvidenceWithContext(ctx context.Context, pageFacts []shared.PageFact, linkFacts []shared.LinkFact, siteFacts shared.SiteFacts) ([]shared.DerivedIssue, seo.DuplicateEvidence, error) {
 	var derivedIssues []shared.DerivedIssue
 	scoreablePageFacts := make([]shared.PageFact, 0, len(pageFacts))
 	brokenPageFacts := make([]shared.PageFact, 0)
-	for _, pageFact := range pageFacts {
+	for pageNumber, pageFact := range pageFacts {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, seo.DuplicateEvidence{}, err
+			}
+		}
 		if !shared.IsScoreableContentType(pageFact.ContentType) {
 			continue
 		}
@@ -40,17 +56,28 @@ func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []
 	}
 	derivedIssues = append(derivedIssues, seo.DeriveBrokenPageIssues(brokenPageFacts)...)
 	seoStartedAt := time.Now()
-	seoIssues, duplicateEvidence := seo.DeriveIssuesWithDuplicateEvidence(slices.Clone(scoreablePageFacts), linkFacts)
+	seoIssues, duplicateEvidence, err := seo.DeriveIssuesWithDuplicateEvidenceWithContext(ctx, slices.Clone(scoreablePageFacts), linkFacts)
+	if err != nil {
+		return nil, seo.DuplicateEvidence{}, err
+	}
 	derivedIssues = append(derivedIssues, seoIssues...)
 	seoElapsed := time.Since(seoStartedAt)
 	aeoStartedAt := time.Now()
-	derivedIssues = append(derivedIssues, aeo.DeriveIssues(scoreablePageFacts, linkFacts, siteFacts)...)
+	aeoIssues, err := aeo.DeriveIssuesWithContext(ctx, scoreablePageFacts, linkFacts, siteFacts)
+	if err != nil {
+		return nil, seo.DuplicateEvidence{}, err
+	}
+	derivedIssues = append(derivedIssues, aeoIssues...)
 	aeoElapsed := time.Since(aeoStartedAt)
 	pagespeedStartedAt := time.Now()
-	derivedIssues = append(derivedIssues, pagespeed.DeriveIssues(scoreablePageFacts, linkFacts)...)
+	pagespeedIssues, err := pagespeed.DeriveIssuesWithContext(ctx, scoreablePageFacts, linkFacts)
+	if err != nil {
+		return nil, seo.DuplicateEvidence{}, err
+	}
+	derivedIssues = append(derivedIssues, pagespeedIssues...)
 	pagespeedElapsed := time.Since(pagespeedStartedAt)
 	log.Printf("derive breakdown: scoreable_pages=%d broken_pages=%d seo=%s aeo=%s pagespeed=%s", len(scoreablePageFacts), len(brokenPageFacts), seoElapsed.Round(time.Millisecond), aeoElapsed.Round(time.Millisecond), pagespeedElapsed.Round(time.Millisecond))
-	return derivedIssues, duplicateEvidence
+	return derivedIssues, duplicateEvidence, nil
 }
 
 var recommendedFixes = map[string]string{

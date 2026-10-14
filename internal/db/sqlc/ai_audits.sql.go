@@ -61,7 +61,8 @@ INSERT INTO ai_audits (
     error_message,
     started_at,
     completed_at,
-    location_id
+    location_id,
+    project_setup_id
 ) VALUES (
     $1,
     $2,
@@ -70,20 +71,22 @@ INSERT INTO ai_audits (
     $5,
     $6,
     $7,
-    $8
+    $8,
+    $9
 )
-RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+RETURNING id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 `
 
 type CreateAIAuditParams struct {
-	ProjectID    pgtype.UUID
-	CrawlID      pgtype.UUID
-	Status       string
-	Score        pgtype.Int4
-	ErrorMessage pgtype.Text
-	StartedAt    pgtype.Timestamptz
-	CompletedAt  pgtype.Timestamptz
-	LocationID   pgtype.UUID
+	ProjectID      pgtype.UUID
+	CrawlID        pgtype.UUID
+	Status         string
+	Score          pgtype.Int4
+	ErrorMessage   pgtype.Text
+	StartedAt      pgtype.Timestamptz
+	CompletedAt    pgtype.Timestamptz
+	LocationID     pgtype.UUID
+	ProjectSetupID pgtype.UUID
 }
 
 func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (AiAudit, error) {
@@ -96,6 +99,7 @@ func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (A
 		arg.StartedAt,
 		arg.CompletedAt,
 		arg.LocationID,
+		arg.ProjectSetupID,
 	)
 	var i AiAudit
 	err := row.Scan(
@@ -110,6 +114,7 @@ func (q *Queries) CreateAIAudit(ctx context.Context, arg CreateAIAuditParams) (A
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ProjectSetupID,
 	)
 	return i, err
 }
@@ -144,7 +149,7 @@ func (q *Queries) FailActiveAIAuditsForCrawl(ctx context.Context, arg FailActive
 }
 
 const getAIAuditByCrawlAndProject = `-- name: GetAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL
 ORDER BY created_at DESC
@@ -171,6 +176,7 @@ func (q *Queries) GetAIAuditByCrawlAndProject(ctx context.Context, arg GetAIAudi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ProjectSetupID,
 	)
 	return i, err
 }
@@ -187,7 +193,8 @@ SELECT
     aa.completed_at,
     aa.created_at,
     aa.updated_at,
-    aa.location_id
+    aa.location_id,
+    aa.project_setup_id
 FROM ai_audits AS aa
 INNER JOIN projects AS p ON p.id = aa.project_id
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
@@ -216,12 +223,13 @@ func (q *Queries) GetAIAuditByIDForUser(ctx context.Context, arg GetAIAuditByIDF
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ProjectSetupID,
 	)
 	return i, err
 }
 
 const getAIAuditByLocationCrawlAndProject = `-- name: GetAIAuditByLocationCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = $1::uuid
   AND location_id = $2::uuid
@@ -251,12 +259,13 @@ func (q *Queries) GetAIAuditByLocationCrawlAndProject(ctx context.Context, arg G
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ProjectSetupID,
 	)
 	return i, err
 }
 
 const getAIAuditForWorker = `-- name: GetAIAuditForWorker :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE id = $1::uuid
   AND project_id = $2::uuid
@@ -283,12 +292,13 @@ func (q *Queries) GetAIAuditForWorker(ctx context.Context, arg GetAIAuditForWork
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ProjectSetupID,
 	)
 	return i, err
 }
 
 const getActiveAIAuditByCrawlAndProject = `-- name: GetActiveAIAuditByCrawlAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = $1 AND crawl_id = $2 AND location_id IS NULL AND status IN ('queued', 'running')
 LIMIT 1
@@ -314,12 +324,13 @@ func (q *Queries) GetActiveAIAuditByCrawlAndProject(ctx context.Context, arg Get
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ProjectSetupID,
 	)
 	return i, err
 }
 
 const getActiveAIAuditByLocationAndProject = `-- name: GetActiveAIAuditByLocationAndProject :one
-SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id
+SELECT id, project_id, crawl_id, status, score, error_message, started_at, completed_at, created_at, updated_at, location_id, project_setup_id
 FROM ai_audits
 WHERE project_id = $1::uuid
   AND location_id = $2::uuid
@@ -347,6 +358,7 @@ func (q *Queries) GetActiveAIAuditByLocationAndProject(ctx context.Context, arg 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ProjectSetupID,
 	)
 	return i, err
 }
@@ -363,7 +375,8 @@ SELECT
     completed_at,
     created_at,
     updated_at,
-    location_id
+    location_id,
+    project_setup_id
 FROM ai_audits
 WHERE project_id = $1::uuid
   AND location_id = $2::uuid
@@ -408,6 +421,7 @@ func (q *Queries) ListAIAuditsForLocation(ctx context.Context, arg ListAIAuditsF
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LocationID,
+			&i.ProjectSetupID,
 		); err != nil {
 			return nil, err
 		}
@@ -431,7 +445,8 @@ SELECT
     completed_at,
     created_at,
     updated_at,
-    location_id
+    location_id,
+    project_setup_id
 FROM ai_audits
 WHERE project_id = $1
   AND location_id IS NULL
@@ -474,6 +489,7 @@ func (q *Queries) ListAIAuditsForProject(ctx context.Context, arg ListAIAuditsFo
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LocationID,
+			&i.ProjectSetupID,
 		); err != nil {
 			return nil, err
 		}

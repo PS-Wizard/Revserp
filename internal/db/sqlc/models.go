@@ -9,17 +9,18 @@ import (
 )
 
 type AiAudit struct {
-	ID           pgtype.UUID
-	ProjectID    pgtype.UUID
-	CrawlID      pgtype.UUID
-	Status       string
-	Score        pgtype.Int4
-	ErrorMessage pgtype.Text
-	StartedAt    pgtype.Timestamptz
-	CompletedAt  pgtype.Timestamptz
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
-	LocationID   pgtype.UUID
+	ID             pgtype.UUID
+	ProjectID      pgtype.UUID
+	CrawlID        pgtype.UUID
+	Status         string
+	Score          pgtype.Int4
+	ErrorMessage   pgtype.Text
+	StartedAt      pgtype.Timestamptz
+	CompletedAt    pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	LocationID     pgtype.UUID
+	ProjectSetupID pgtype.UUID
 }
 
 type AiAuditRun struct {
@@ -889,4 +890,5 @@ type User struct {
 	Status           string
 	SuspendedAt      pgtype.Timestamptz
 	SuspensionReason pgtype.Text
+	OnboardingState  []byte
 }

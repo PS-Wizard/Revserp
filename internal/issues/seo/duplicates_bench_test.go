@@ -1,6 +1,7 @@
 package seo
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -47,7 +48,10 @@ func buildSyntheticNearDuplicateCorpus(pageCount int) []shared.PageFact {
 func TestNearDuplicateOldVsNew(t *testing.T) {
 	pageFacts := buildSyntheticNearDuplicateCorpus(300)
 	EnrichPageFactsWithContentFingerprints(pageFacts)
-	candidatePairs := buildNearDuplicateCandidatePairs(pageFacts)
+	candidatePairs, err := buildNearDuplicateCandidatePairs(context.Background(), pageFacts)
+	if err != nil {
+		t.Fatalf("buildNearDuplicateCandidatePairs: %v", err)
+	}
 
 	pairList := make([][2]int, 0, len(candidatePairs))
 	for pair := range candidatePairs {
@@ -71,8 +75,14 @@ func TestNearDuplicateOldVsNew(t *testing.T) {
 
 	// New path: precompute profiles once + parallel verify.
 	newStart := time.Now()
-	profiles := buildNearDuplicateProfiles(pageFacts)
-	newMatchList := verifyNearDuplicatePairs(pageFacts, profiles, pairList)
+	profiles, err := buildNearDuplicateProfiles(context.Background(), pageFacts)
+	if err != nil {
+		t.Fatalf("buildNearDuplicateProfiles: %v", err)
+	}
+	newMatchList, err := verifyNearDuplicatePairs(context.Background(), pageFacts, profiles, pairList)
+	if err != nil {
+		t.Fatalf("verifyNearDuplicatePairs: %v", err)
+	}
 	newElapsed := time.Since(newStart)
 
 	newMatches := map[[2]int]struct{}{}

@@ -154,9 +154,10 @@ func finalizePromptGenerationSuccess(ctx context.Context, q setupFinalizationQue
 	}
 
 	audit, err := q.CreateAIAudit(ctx, sqlc.CreateAIAuditParams{
-		ProjectID: setup.ProjectID,
-		CrawlID:   setup.CrawlID,
-		Status:    "queued",
+		ProjectID:      setup.ProjectID,
+		CrawlID:        setup.CrawlID,
+		Status:         "queued",
+		ProjectSetupID: setup.ID,
 	})
 	if err != nil {
 		return fmt.Errorf("create visibility audit: %w", err)

@@ -54,6 +54,8 @@ func (a *App) Router() http.Handler {
 		protected.Group(func(app chi.Router) {
 			app.Use(a.requirePrincipal)
 			app.Get("/me", a.handleMe)
+			app.Get("/me/onboarding", a.handleGetOnboarding)
+			app.Put("/me/onboarding", a.handlePutOnboarding)
 			app.Get("/app-bootstrap", a.handleAppBootstrap)
 			app.Post("/me/active-organization", a.handleSetActiveOrganization)
 			app.Group(func(gated chi.Router) {

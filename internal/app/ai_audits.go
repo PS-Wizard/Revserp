@@ -40,18 +40,19 @@ type aiAuditRunResponse struct {
 }
 
 type aiAuditResponse struct {
-	ID           string               `json:"id"`
-	ProjectID    string               `json:"project_id"`
-	CrawlID      string               `json:"crawl_id,omitempty"`
-	LocationID   string               `json:"location_id,omitempty"`
-	Status       string               `json:"status"`
-	Score        *int32               `json:"score,omitempty"`
-	ErrorMessage string               `json:"error_message,omitempty"`
-	StartedAt    string               `json:"started_at,omitempty"`
-	CompletedAt  string               `json:"completed_at,omitempty"`
-	CreatedAt    string               `json:"created_at"`
-	UpdatedAt    string               `json:"updated_at"`
-	Runs         []aiAuditRunResponse `json:"runs,omitempty"`
+	ID             string               `json:"id"`
+	ProjectID      string               `json:"project_id"`
+	CrawlID        string               `json:"crawl_id,omitempty"`
+	LocationID     string               `json:"location_id,omitempty"`
+	ProjectSetupID string               `json:"project_setup_id,omitempty"`
+	Status         string               `json:"status"`
+	Score          *int32               `json:"score,omitempty"`
+	ErrorMessage   string               `json:"error_message,omitempty"`
+	StartedAt      string               `json:"started_at,omitempty"`
+	CompletedAt    string               `json:"completed_at,omitempty"`
+	CreatedAt      string               `json:"created_at"`
+	UpdatedAt      string               `json:"updated_at"`
+	Runs           []aiAuditRunResponse `json:"runs,omitempty"`
 }
 
 // handleCreateAIAudit creates one AI visibility audit for a project a member can access.
@@ -486,18 +487,18 @@ func (a *App) handleGetAIAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func newAIAuditResponseFromCreateRow(audit sqlc.AiAudit) aiAuditResponse {
-	return buildAIAuditResponse(audit.ID, audit.ProjectID, audit.CrawlID, audit.LocationID, audit.Status, audit.Score, audit.ErrorMessage, audit.StartedAt, audit.CompletedAt, audit.CreatedAt, audit.UpdatedAt)
+	return buildAIAuditResponse(audit.ID, audit.ProjectID, audit.CrawlID, audit.LocationID, audit.ProjectSetupID, audit.Status, audit.Score, audit.ErrorMessage, audit.StartedAt, audit.CompletedAt, audit.CreatedAt, audit.UpdatedAt)
 }
 
 func newAIAuditResponseFromListRow(audit sqlc.AiAudit) aiAuditResponse {
-	return buildAIAuditResponse(audit.ID, audit.ProjectID, audit.CrawlID, audit.LocationID, audit.Status, audit.Score, audit.ErrorMessage, audit.StartedAt, audit.CompletedAt, audit.CreatedAt, audit.UpdatedAt)
+	return buildAIAuditResponse(audit.ID, audit.ProjectID, audit.CrawlID, audit.LocationID, audit.ProjectSetupID, audit.Status, audit.Score, audit.ErrorMessage, audit.StartedAt, audit.CompletedAt, audit.CreatedAt, audit.UpdatedAt)
 }
 
 func newAIAuditResponseFromGetRow(audit sqlc.AiAudit) aiAuditResponse {
-	return buildAIAuditResponse(audit.ID, audit.ProjectID, audit.CrawlID, audit.LocationID, audit.Status, audit.Score, audit.ErrorMessage, audit.StartedAt, audit.CompletedAt, audit.CreatedAt, audit.UpdatedAt)
+	return buildAIAuditResponse(audit.ID, audit.ProjectID, audit.CrawlID, audit.LocationID, audit.ProjectSetupID, audit.Status, audit.Score, audit.ErrorMessage, audit.StartedAt, audit.CompletedAt, audit.CreatedAt, audit.UpdatedAt)
 }
 
-func buildAIAuditResponse(id, projectID, crawlID, locationID pgtype.UUID, status string, score pgtype.Int4, errorMessage pgtype.Text, startedAt, completedAt, createdAt, updatedAt pgtype.Timestamptz) aiAuditResponse {
+func buildAIAuditResponse(id, projectID, crawlID, locationID, projectSetupID pgtype.UUID, status string, score pgtype.Int4, errorMessage pgtype.Text, startedAt, completedAt, createdAt, updatedAt pgtype.Timestamptz) aiAuditResponse {
 	response := aiAuditResponse{
 		ID:        id.String(),
 		ProjectID: projectID.String(),
@@ -510,6 +511,9 @@ func buildAIAuditResponse(id, projectID, crawlID, locationID pgtype.UUID, status
 	}
 	if locationID.Valid {
 		response.LocationID = locationID.String()
+	}
+	if projectSetupID.Valid {
+		response.ProjectSetupID = projectSetupID.String()
 	}
 	if score.Valid {
 		response.Score = &score.Int32

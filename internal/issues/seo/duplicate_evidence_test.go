@@ -1,6 +1,7 @@
 package seo
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -15,7 +16,10 @@ func TestExactDuplicateEvidenceCarriesMembers(t *testing.T) {
 		{ID: testDuplicateUUID(2), URL: "https://example.com/b", ContentSHA256: "same"},
 		{ID: testDuplicateUUID(3), URL: "https://example.com/c", ContentSHA256: "other"},
 	}
-	issues, evidence := deriveDuplicateContentIssuesWithEvidence(pages)
+	issues, evidence, err := deriveDuplicateContentIssuesWithEvidence(context.Background(), pages)
+	if err != nil {
+		t.Fatalf("deriveDuplicateContentIssuesWithEvidence: %v", err)
+	}
 	if len(issues) != 2 {
 		t.Fatalf("got %d issues, want 2", len(issues))
 	}
@@ -34,9 +38,12 @@ func TestNearDuplicateConnectedComponentBecomesOneGroup(t *testing.T) {
 		{ID: testDuplicateUUID(2), URL: "https://example.com/b"},
 		{ID: testDuplicateUUID(3), URL: "https://example.com/c"},
 	}
-	groups := buildNearDuplicateGroups(pages, map[int]map[int]struct{}{
+	groups, err := buildNearDuplicateGroups(context.Background(), pages, map[int]map[int]struct{}{
 		0: {1: {}}, 1: {0: {}, 2: {}}, 2: {1: {}},
 	})
+	if err != nil {
+		t.Fatalf("buildNearDuplicateGroups: %v", err)
+	}
 	if len(groups) != 1 || len(groups[0].Members) != 3 {
 		t.Fatalf("got %#v, want one three-page group", groups)
 	}

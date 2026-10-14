@@ -282,7 +282,7 @@ func TestBuildAIAuditResponseLocationID(t *testing.T) {
 	project := pgtype.UUID{Bytes: [16]byte{4}, Valid: true}
 	location := pgtype.UUID{Bytes: [16]byte{5}, Valid: true}
 
-	response := buildAIAuditResponse(id, project, pgtype.UUID{}, location, "queued", pgtype.Int4{}, pgtype.Text{}, zero, zero, zero, zero)
+	response := buildAIAuditResponse(id, project, pgtype.UUID{}, location, pgtype.UUID{}, "queued", pgtype.Int4{}, pgtype.Text{}, zero, zero, zero, zero)
 	if response.LocationID != location.String() {
 		t.Fatalf("location_id = %q, want %q", response.LocationID, location.String())
 	}
@@ -297,7 +297,7 @@ func TestBuildAIAuditResponseLocationID(t *testing.T) {
 		t.Fatalf("json = %s, want location_id present", encoded)
 	}
 
-	response = buildAIAuditResponse(id, project, pgtype.UUID{}, pgtype.UUID{}, "queued", pgtype.Int4{}, pgtype.Text{}, zero, zero, zero, zero)
+	response = buildAIAuditResponse(id, project, pgtype.UUID{}, pgtype.UUID{}, pgtype.UUID{}, "queued", pgtype.Int4{}, pgtype.Text{}, zero, zero, zero, zero)
 	encoded, err = json.Marshal(response)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

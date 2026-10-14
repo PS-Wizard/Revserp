@@ -1,6 +1,7 @@
 package seo
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,19 +10,38 @@ import (
 
 // DeriveIssues builds SEO issues from persisted crawl facts.
 func DeriveIssues(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) []shared.DerivedIssue {
-	derivedIssues, _ := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
+	derivedIssues, _, _ := DeriveIssuesWithDuplicateEvidenceWithContext(context.Background(), pageFacts, linkFacts)
 	return derivedIssues
 }
 
 // DeriveIssuesWithDuplicateEvidence also returns structured duplicate groups
 // and relations produced during the same derivation pass.
 func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []shared.LinkFact) ([]shared.DerivedIssue, DuplicateEvidence) {
-	var derivedIssues []shared.DerivedIssue
-	inboundInternalLinkCounts, outboundInternalLinkCounts := countInternalLinksByPage(linkFacts)
-	brokenInternalLinkTargetsBySourceURL, redirectingInternalLinkTargetsBySourceURL := collectInternalLinkTargetIssues(linkFacts)
-	pageFactsByURL := buildPageFactsByURL(pageFacts)
+	derivedIssues, evidence, _ := DeriveIssuesWithDuplicateEvidenceWithContext(context.Background(), pageFacts, linkFacts)
+	return derivedIssues, evidence
+}
 
-	for _, pageFact := range pageFacts {
+func DeriveIssuesWithDuplicateEvidenceWithContext(ctx context.Context, pageFacts []shared.PageFact, linkFacts []shared.LinkFact) ([]shared.DerivedIssue, DuplicateEvidence, error) {
+	var derivedIssues []shared.DerivedIssue
+	inboundInternalLinkCounts, outboundInternalLinkCounts, err := countInternalLinksByPage(ctx, linkFacts)
+	if err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
+	brokenInternalLinkTargetsBySourceURL, redirectingInternalLinkTargetsBySourceURL, err := collectInternalLinkTargetIssues(ctx, linkFacts)
+	if err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
+	pageFactsByURL, err := buildPageFactsByURL(ctx, pageFacts)
+	if err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
+
+	for pageNumber, pageFact := range pageFacts {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, DuplicateEvidence{}, err
+			}
+		}
 		titleLength := len(strings.TrimSpace(pageFact.Title))
 		metaDescriptionLength := len(strings.TrimSpace(pageFact.MetaDescription))
 		robotsValue := strings.ToLower(pageFact.Robots)
@@ -143,10 +163,21 @@ func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []
 		}
 	}
 
-	EnrichPageFactsWithContentFingerprints(pageFacts)
-	titleIssues, titleGroups := deriveDuplicateTitleIssuesWithEvidence(pageFacts)
-	metaIssues, metaGroups := deriveDuplicateMetaDescriptionIssuesWithEvidence(pageFacts)
-	contentIssues, evidence := deriveDuplicateContentIssuesWithEvidence(pageFacts)
+	if err := EnrichPageFactsWithContentFingerprintsWithContext(ctx, pageFacts); err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
+	titleIssues, titleGroups, err := deriveDuplicateTitleIssuesWithEvidence(ctx, pageFacts)
+	if err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
+	metaIssues, metaGroups, err := deriveDuplicateMetaDescriptionIssuesWithEvidence(ctx, pageFacts)
+	if err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
+	contentIssues, evidence, err := deriveDuplicateContentIssuesWithEvidence(ctx, pageFacts)
+	if err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
 	derivedIssues = append(derivedIssues, titleIssues...)
 	derivedIssues = append(derivedIssues, metaIssues...)
 	derivedIssues = append(derivedIssues, contentIssues...)
@@ -155,5 +186,5 @@ func DeriveIssuesWithDuplicateEvidence(pageFacts []shared.PageFact, linkFacts []
 	groups = append(groups, metaGroups...)
 	groups = append(groups, evidence.Groups...)
 	evidence.Groups = groups
-	return derivedIssues, evidence
+	return derivedIssues, evidence, nil
 }

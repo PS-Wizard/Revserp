@@ -1,14 +1,22 @@
 package aeo
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
+const deriveCtxCheckPages = 256
+
 // DeriveIssues builds AEO issues from persisted crawl facts.
 func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact, siteFacts shared.SiteFacts) []shared.DerivedIssue {
+	derivedIssues, _ := DeriveIssuesWithContext(context.Background(), pageFacts, nil, siteFacts)
+	return derivedIssues
+}
+
+func DeriveIssuesWithContext(ctx context.Context, pageFacts []shared.PageFact, _ []shared.LinkFact, siteFacts shared.SiteFacts) ([]shared.DerivedIssue, error) {
 	var derivedIssues []shared.DerivedIssue
 	siteIssuePageFact, hasSiteIssuePageFact := selectSiteIssuePageFact(pageFacts)
 	homepagePageFact, hasHomepagePageFact := selectHomepagePageFact(pageFacts)
@@ -21,7 +29,12 @@ func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact, siteFacts sh
 	hasOrganizationSchema := false
 	homepageHasPublisherIdentity := false
 
-	for _, pageFact := range pageFacts {
+	for pageNumber, pageFact := range pageFacts {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		isArticleLike := isArticleLikePage(pageFact)
 		hasJSONLD := hasMeaningfulJSONLD(pageFact.JSONLD)
 
@@ -126,7 +139,7 @@ func DeriveIssues(pageFacts []shared.PageFact, _ []shared.LinkFact, siteFacts sh
 		derivedIssues = append(derivedIssues, newIssue(homepagePageFact, "trust", "homepage_missing_org_contact_trust_signals", "high", "Homepage is missing core trust identity signals", "Homepage is missing organization schema, visible about/contact coverage, and publisher identity signals."))
 	}
 
-	return derivedIssues
+	return derivedIssues, nil
 }
 
 func newIssue(pageFact shared.PageFact, bucket string, issueType string, severity string, message string, details string) shared.DerivedIssue {
