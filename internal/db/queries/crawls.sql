@@ -47,6 +47,7 @@ SELECT
     c.project_id,
     c.status,
     c.phase,
+    c.analysis_progress,
     c.config_snapshot,
     c.urls_discovered,
     c.urls_crawled,
@@ -82,6 +83,7 @@ RETURNING c.id;
 UPDATE crawls AS c
 SET status = 'cancelled',
     phase = NULL,
+    analysis_progress = NULL,
     completed_at = now()
 FROM projects AS p, organization_members AS om
 WHERE c.id = $1
@@ -104,6 +106,7 @@ SELECT
     project_id,
     status,
     phase,
+    analysis_progress,
     config_snapshot,
     urls_discovered,
     urls_crawled,
@@ -137,6 +140,7 @@ WHERE id = $1;
 UPDATE crawls
 SET status = 'completed',
     phase = NULL,
+    analysis_progress = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -149,6 +153,7 @@ WHERE id = $1
 UPDATE crawls
 SET status = 'failed',
     phase = NULL,
+    analysis_progress = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -166,6 +171,14 @@ WHERE id = $1
 -- name: UpdateCrawlPhase :exec
 UPDATE crawls
 SET phase = $2
+WHERE id = $1
+  AND status = 'running';
+
+-- name: UpdateCrawlAnalysisProgress :execrows
+-- Gated on running so a cancelled crawl stops the worker: zero rows means stop.
+UPDATE crawls
+SET phase = 'analyzing',
+    analysis_progress = $2
 WHERE id = $1
   AND status = 'running';
 
@@ -238,14 +251,18 @@ SET seo_score = $2,
 WHERE id = $1;
 
 -- name: UpdateCrawlGooglePSIResults :exec
+-- The single writer is the worker's active-run PSI fetch. Gated on running so
+-- a fetch that outlives a cancel cannot land on a terminal row; a skipped
+-- write is not an error and the in-memory result still flows within the run.
 UPDATE crawls
 SET google_psi_results = $2
-WHERE id = $1;
+WHERE id = $1
+  AND status = 'running';
 
 -- name: ReclaimStaleRunningCrawls :exec
 WITH stale AS (
 	UPDATE crawls
-	SET status = 'failed', phase = NULL, completed_at = now()
+	SET status = 'failed', phase = NULL, analysis_progress = NULL, completed_at = now()
 	WHERE status = 'running' AND started_at < $1
 	RETURNING id
 ),
@@ -274,6 +291,7 @@ SELECT
     c.project_id,
     c.status,
     c.phase,
+    c.analysis_progress,
     c.urls_discovered,
     c.urls_crawled,
     c.created_at,

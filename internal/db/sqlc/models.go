@@ -243,6 +243,7 @@ type Crawl struct {
 	Phase             pgtype.Text
 	CompetitorID      pgtype.UUID
 	ParentCrawlID     pgtype.UUID
+	AnalysisProgress  []byte
 }
 
 type CrawlIssue struct {

@@ -197,6 +197,7 @@ SELECT
     c.id AS crawl_id,
     c.status AS crawl_status,
     c.phase AS crawl_phase,
+    c.analysis_progress AS crawl_analysis_progress,
     c.config_snapshot AS crawl_config_snapshot,
     c.urls_discovered AS crawl_urls_discovered,
     c.urls_crawled AS crawl_urls_crawled,
@@ -237,6 +238,7 @@ type ListProjectCompetitorsWithCrawlForUserRow struct {
 	CrawlID               pgtype.UUID
 	CrawlStatus           pgtype.Text
 	CrawlPhase            pgtype.Text
+	CrawlAnalysisProgress []byte
 	CrawlConfigSnapshot   []byte
 	CrawlUrlsDiscovered   pgtype.Int4
 	CrawlUrlsCrawled      pgtype.Int4
@@ -272,6 +274,7 @@ func (q *Queries) ListProjectCompetitorsWithCrawlForUser(ctx context.Context, ar
 			&i.CrawlID,
 			&i.CrawlStatus,
 			&i.CrawlPhase,
+			&i.CrawlAnalysisProgress,
 			&i.CrawlConfigSnapshot,
 			&i.CrawlUrlsDiscovered,
 			&i.CrawlUrlsCrawled,

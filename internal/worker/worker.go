@@ -180,8 +180,8 @@ func (w *Worker) resolveCrawlPageWorkerCount(ctx context.Context) (int, error) {
 // process. The API and worker binaries run as separate processes
 // (cmd/api vs cmd/worker), so a cancel request handled by the API cannot
 // reach this map; the DB status UPDATE (status='cancelled') remains the
-// cross-process signal, observed via the periodic progress-write status
-// check in the crawler runner.
+// cross-process signal, observed by the per-crawl status watcher about
+// every 2s across fetching and analysis.
 func (w *Worker) CancelCrawl(crawlID pgtype.UUID) bool {
 	w.cancelsMu.Lock()
 	cancel, ok := w.cancels[crawlID]
@@ -232,8 +232,9 @@ const defaultCrawlTimeout = 60 * time.Minute
 // defaultAnalysisTimeout bounds the post-crawl analysis phase (link resolution,
 // PSI, issue derivation, scoring). It is separate from the crawl timeout so a
 // site that spends its entire crawl budget fetching pages is not marked failed
-// mid-analysis despite being fully persisted.
-const defaultAnalysisTimeout = 15 * time.Minute
+// mid-analysis despite being fully persisted. Thirty minutes fits million-link
+// resolutions (twelve-minute link resolution seen live) with headroom left.
+const defaultAnalysisTimeout = 30 * time.Minute
 
 // reclaimCutoff returns the age past which a 'running' crawl is treated as
 // orphaned, never earlier than the crawl's own timeout plus grace. floor keeps
@@ -313,7 +314,7 @@ func (w *Worker) runManualLoop(ctx context.Context, workerID int) {
 		claimed := claimedFromManual(row)
 		log.Printf("manual worker %d claimed crawl: crawl_id=%s project_id=%s source=manual", workerID, claimed.ID.String(), claimed.ProjectID.String())
 		if err := w.runCrawlGuarded(ctx, claimed); err != nil {
-			log.Printf("manual worker %d crawl failed: crawl_id=%s error=%v", workerID, claimed.ID.String(), err)
+			logCrawlLoopResult("manual", workerID, claimed.ID.String(), err)
 			continue
 		}
 		log.Printf("manual worker %d crawl completed: crawl_id=%s", workerID, claimed.ID.String())
@@ -355,7 +356,7 @@ func (w *Worker) runAutoLoop(ctx context.Context, workerID int) {
 		claimed := claimedFromAuto(row)
 		log.Printf("auto worker %d claimed crawl: crawl_id=%s project_id=%s source=auto", workerID, claimed.ID.String(), claimed.ProjectID.String())
 		if err := w.runCrawlGuarded(ctx, claimed); err != nil {
-			log.Printf("auto worker %d crawl failed: crawl_id=%s error=%v", workerID, claimed.ID.String(), err)
+			logCrawlLoopResult("auto", workerID, claimed.ID.String(), err)
 			continue
 		}
 		log.Printf("auto worker %d crawl completed: crawl_id=%s", workerID, claimed.ID.String())
@@ -539,19 +540,25 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("build crawler config: %w", err)
 	}
 
-	// Per-crawl cancellation: registered so CancelCrawl can trip it for
-	// same-process cancel requests (see CancelCrawl's cross-process caveat).
-	// CrawlTimeout bounds only the crawl loop; the analysis phase below gets
-	// its own budget (analysisCtx) so a crawl that used its whole crawl budget
-	// is not marked failed mid-analysis despite being fully persisted.
-	crawlCtx, cancelTimeout := context.WithTimeout(ctx, w.cfg.CrawlTimeout)
-	defer cancelTimeout()
-	crawlCtx, cancelCrawl := context.WithCancel(crawlCtx)
-	w.registerCrawlCancel(claimed.ID, cancelCrawl)
-	defer func() {
-		w.unregisterCrawlCancel(claimed.ID)
-		cancelCrawl()
+	crawlRoot, stopRoot := context.WithCancel(ctx)
+	w.registerCrawlCancel(claimed.ID, stopRoot)
+	defer w.unregisterCrawlCancel(claimed.ID)
+
+	stopWatch := make(chan struct{})
+	var watchWG sync.WaitGroup
+	watchWG.Add(1)
+	go func() {
+		defer watchWG.Done()
+		watchCrawlStatus(crawlRoot, stopWatch, claimed.ID, w.readCrawlStatus, stopRoot, crawlStatusPollInterval)
 	}()
+	defer func() {
+		stopRoot()
+		close(stopWatch)
+		watchWG.Wait()
+	}()
+
+	crawlCtx, cancelFetch := context.WithTimeout(crawlRoot, w.cfg.CrawlTimeout)
+	defer cancelFetch()
 
 	fetcher := crawler.NewFetcher(crawlConfig.FetchTimeout, crawlConfig.UserAgent, w.cfg.CrawlMaxRetries, w.cfg.CrawlRetryBase, w.cfg.CrawlRetryMax).
 		WithExcludedURLs(crawlConfig.ExcludedURLs).
@@ -559,7 +566,7 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	parser := crawler.NewParser()
 	crawlStore := crawler.NewStore(w.pool)
 	issueStore := issues.NewStore(w.pool)
-	pageWorkerCount, err := w.resolveCrawlPageWorkerCount(ctx)
+	pageWorkerCount, err := w.resolveCrawlPageWorkerCount(crawlCtx)
 	if err != nil {
 		store := crawler.NewStore(w.pool)
 		if failErr := store.MarkCrawlFailed(ctx, claimed.ID, 0, 0, 0, fmt.Sprintf("resolve crawl page worker count: %v", err)); failErr != nil {
@@ -598,8 +605,8 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	// crawl's: the crawl may consume all of CrawlTimeout, and a slow PSI call
 	// must not be cut short by that.
 	psiChan := make(chan psiOutcome, 1)
-	psiCtx, psiCancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.AnalysisTimeout)
-	defer psiCancel()
+	psiCtx, cancelPSI := context.WithTimeout(crawlRoot, w.cfg.AnalysisTimeout)
+	defer cancelPSI()
 	if w.cfg.PageSpeedAPIKey != "" {
 		log.Printf("starting google psi: crawl_id=%s url=%s strategy=mobile", claimed.ID.String(), claimed.BaseURL)
 	}
@@ -612,23 +619,79 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 
 	_, crawlRunSummary, err := runner.RunAndPersistWithSummary(crawlCtx, claimed.ID, claimed.BaseURL)
 	if err != nil {
+		if haltErr := w.ensureCrawlRunning(crawlRoot, claimed.ID); haltErr != nil {
+			log.Printf("crawl stopped during fetching: crawl_id=%s error=%v", claimed.ID.String(), err)
+			return haltErr
+		}
 		return fmt.Errorf("run crawl: %w", err)
 	}
 
-	// Analysis runs on its own budget, detached from the crawl timeout: the
-	// crawl loop may have consumed all of CrawlTimeout, but everything below
-	// operates on already persisted crawl data and must not be cut short by it.
-	analysisCtx, analysisCancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.AnalysisTimeout)
-	defer analysisCancel()
+	if err := w.ensureCrawlRunning(crawlRoot, claimed.ID); err != nil {
+		log.Printf("crawl stopped after fetching, skipping analysis: crawl_id=%s", claimed.ID.String())
+		return err
+	}
+
+	// Analysis runs on its own budget as a child of the root: the crawl loop
+	// may have consumed all of CrawlTimeout, but everything below operates on
+	// already persisted crawl data and must not be cut short by it. A user
+	// cancel trips the root and every child with it.
+	analysisCtx, cancelAnalysis := context.WithTimeout(crawlRoot, w.cfg.AnalysisTimeout)
+	defer cancelAnalysis()
+	halted := func() error { return w.ensureCrawlRunning(crawlRoot, claimed.ID) }
+	failStage := func(stageErr error) error {
+		if errors.Is(stageErr, errCrawlStopped) {
+			return stageErr
+		}
+		if haltErr := halted(); haltErr != nil {
+			log.Printf("crawl stopped, skipping failure write: crawl_id=%s error=%v", claimed.ID.String(), stageErr)
+			return haltErr
+		}
+		finalCtx := context.WithoutCancel(ctx)
+		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, stageErr.Error()); failErr != nil {
+			return fmt.Errorf("%w (also failed to mark crawl failed: %v)", stageErr, failErr)
+		}
+		return stageErr
+	}
+
+	stillRunning, err := crawlStore.UpdateCrawlProgress(analysisCtx, claimed.ID, crawlRunSummary.URLsCrawled, crawlRunSummary.URLsDiscovered)
+	if err != nil {
+		if haltErr := halted(); haltErr != nil {
+			log.Printf("crawl stopped after fetching, skipping analysis: crawl_id=%s", claimed.ID.String())
+			return haltErr
+		}
+		log.Printf("final crawl progress write failed, continuing: crawl_id=%s error=%v", claimed.ID.String(), err)
+	} else if !stillRunning {
+		log.Printf("crawl stopped after fetching, skipping analysis: crawl_id=%s", claimed.ID.String())
+		return fmt.Errorf("crawl no longer running after fetching: %w", errCrawlStopped)
+	}
 
 	// Attribute broken targets back to the pages linking to them. This has to
 	// happen after the crawl loop and before derivation, since it is what gives
-	// the broken/redirecting internal-link issues their input. A failure here
-	// costs those two issue types, not the crawl.
+	// the broken/redirecting internal-link issues their input.
+	if err := reportAnalysisStage(analysisCtx, crawlStore, claimed.ID, crawler.CrawlAnalysisProgress{Stage: crawler.AnalysisStageCheckingLinks}, halted); err != nil {
+		return failStage(fmt.Errorf("link resolution: %w", err))
+	}
 	resolveStartedAt := time.Now()
-	resolvedLinks, err := crawlStore.ResolveInternalLinkTargetStatuses(analysisCtx, claimed.ID)
+	resolvedLinks, err := crawlStore.ResolveInternalLinkTargetStatusesWithProgress(analysisCtx, claimed.ID, func(total int64) error {
+		alive, reportErr := crawlStore.UpdateCrawlAnalysisProgress(analysisCtx, claimed.ID, crawler.CrawlAnalysisProgress{Stage: crawler.AnalysisStageCheckingLinks, LinksResolved: total})
+		if reportErr != nil {
+			log.Printf("link resolution progress report failed, continuing: crawl_id=%s resolved=%d error=%v", claimed.ID.String(), total, reportErr)
+			return nil
+		}
+		if !alive {
+			return fmt.Errorf("crawl no longer running during link resolution: %w", errCrawlStopped)
+		}
+		return nil
+	})
 	if err != nil {
-		log.Printf("resolve internal link target statuses failed: crawl_id=%s error=%v", claimed.ID.String(), err)
+		if haltErr := resolveFailureAction(halted(), analysisCtx.Err()); haltErr != nil {
+			if errors.Is(haltErr, errAnalysisDeadline) {
+				return failStage(fmt.Errorf("link resolution: %w", err))
+			}
+			log.Printf("crawl stopped during link resolution: crawl_id=%s resolved=%d error=%v", claimed.ID.String(), resolvedLinks, err)
+			return haltErr
+		}
+		log.Printf("resolve internal link target statuses failed, continuing without them: crawl_id=%s resolved=%d error=%v", claimed.ID.String(), resolvedLinks, err)
 	} else {
 		log.Printf("phase timing: crawl_id=%s resolve_link_targets=%s resolved=%d",
 			claimed.ID.String(), time.Since(resolveStartedAt).Round(time.Millisecond), resolvedLinks)
@@ -639,57 +702,65 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 	// derivation replaces this crawl's issue rows, and the PSI issues are
 	// persisted after that.
 
-	if phaseErr := crawlStore.UpdateCrawlPhase(analysisCtx, claimed.ID, "analyzing"); phaseErr != nil {
-		log.Printf("update crawl phase to analyzing failed: crawl_id=%s error=%v", claimed.ID.String(), phaseErr)
+	if err := reportAnalysisStage(analysisCtx, crawlStore, claimed.ID, crawler.CrawlAnalysisProgress{Stage: crawler.AnalysisStageDerivingIssues}, halted); err != nil {
+		return failStage(fmt.Errorf("derive issues: %w", err))
 	}
-
 	deriveStartedAt := time.Now()
 	derivedIssueCount, crawlPages, err := issueStore.DeriveIssuesWithPagesAndSiteFacts(analysisCtx, claimed.ID, shared.SiteFacts{HasLlmsTxt: hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)})
 	log.Printf("phase timing: crawl_id=%s derive_issues=%s", claimed.ID.String(), time.Since(deriveStartedAt).Round(time.Millisecond))
+	if err != nil {
+		return failStage(fmt.Errorf("derive issues: %w", err))
+	}
 
 	psi, psiWaitErr := waitAnalysisPSI(psiChan, analysisCtx)
 	if psiWaitErr != nil {
-		finalCtx := context.WithoutCancel(ctx)
-		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, psiWaitErr.Error()); failErr != nil {
-			return fmt.Errorf("await google psi: %w (also failed to mark crawl failed: %v)", psiWaitErr, failErr)
-		}
-		return fmt.Errorf("await google psi: %w", psiWaitErr)
+		return failStage(fmt.Errorf("await google psi: %w", psiWaitErr))
 	}
 	googlePSIResult := psi.result
 	if psi.err != nil {
 		log.Printf("google psi enrichment failed: crawl_id=%s error=%v", claimed.ID.String(), psi.err)
 	}
-	if err != nil {
-		finalCtx := context.WithoutCancel(ctx)
-		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, err.Error()); failErr != nil {
-			return fmt.Errorf("derive issues: %w (also failed to mark crawl failed: %v)", err, failErr)
-		}
-		return fmt.Errorf("derive issues: %w", err)
-	}
 
+	// No PSI side effects or scoring after a stop: the row belongs to the user now.
+	if haltErr := halted(); haltErr != nil {
+		log.Printf("crawl stopped before scoring: crawl_id=%s", claimed.ID.String())
+		return haltErr
+	}
 	googlePSIIssueCount, err := w.persistGooglePSIIssues(analysisCtx, claimed.ID, googlePSIResult)
 	if err != nil {
 		log.Printf("google psi issue persistence failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 	}
 	psiInput := toSharedPSIScoreInput(googlePSIResult)
+	if err := reportAnalysisStage(analysisCtx, crawlStore, claimed.ID, crawler.CrawlAnalysisProgress{Stage: crawler.AnalysisStageScoring}, halted); err != nil {
+		return failStage(fmt.Errorf("score crawl: %w", err))
+	}
 	scoreStartedAt := time.Now()
 	crawlScores, err := issueStore.ScoreCrawlWithPages(analysisCtx, claimed.ID, crawlPages, psiInput)
 	log.Printf("phase timing: crawl_id=%s score_crawl=%s", claimed.ID.String(), time.Since(scoreStartedAt).Round(time.Millisecond))
 	if err != nil {
-		finalCtx := context.WithoutCancel(ctx)
-		if failErr := crawlStore.MarkCrawlFailed(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, err.Error()); failErr != nil {
-			return fmt.Errorf("score crawl: %w (also failed to mark crawl failed: %v)", err, failErr)
-		}
-		return fmt.Errorf("score crawl: %w", err)
+		return failStage(fmt.Errorf("score crawl: %w", err))
 	}
 
 	log.Printf("derived crawl issues: crawl_id=%s count=%d google_psi_count=%d", claimed.ID.String(), derivedIssueCount, googlePSIIssueCount)
 	log.Printf("calculated crawl scores: crawl_id=%s seo=%d aeo=%d pagespeed=%d overall=%d", claimed.ID.String(), crawlScores.SEOScore, crawlScores.AEOScore, crawlScores.PageSpeedScore, crawlScores.OverallScore)
 
+	if err := halted(); err != nil {
+		log.Printf("crawl stopped before completion write: crawl_id=%s", claimed.ID.String())
+		return err
+	}
 	finalCtx := context.WithoutCancel(ctx)
 	if err := crawlStore.MarkCrawlCompleted(finalCtx, claimed.ID, crawlRunSummary.URLsDiscovered, crawlRunSummary.URLsCrawled, crawlRunSummary.MaxDepthReached, hasLlmsTxtToPGBool(crawlRunSummary.HasLlmsTxt)); err != nil {
 		log.Printf("crawl succeeded but mark-completed status write failed: crawl_id=%s error=%v", claimed.ID.String(), err)
 		return fmt.Errorf("mark crawl completed: %w", err)
+	}
+	completionCtx, cancelCompletion := context.WithTimeout(finalCtx, crawlStatusReadTimeout)
+	completionStatus, completionErr := w.readCrawlStatus(completionCtx, claimed.ID)
+	cancelCompletion()
+	if errors.Is(completionErr, pgx.ErrNoRows) || (completionErr == nil && completionStatus != "completed") {
+		return fmt.Errorf("crawl completion skipped: %w", errCrawlStopped)
+	}
+	if completionErr != nil {
+		log.Printf("crawl completion verification failed: crawl_id=%s error=%v", claimed.ID.String(), completionErr)
 	}
 
 	if claimed.Source == "competitor" {

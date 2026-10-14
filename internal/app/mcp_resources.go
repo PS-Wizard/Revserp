@@ -49,20 +49,21 @@ type mcpListCrawlsInput struct {
 }
 
 type mcpCrawlRow struct {
-	ID              string `json:"id"`
-	ProjectID       string `json:"project_id"`
-	Status          string `json:"status"`
-	Phase           string `json:"phase,omitempty"`
-	URLsDiscovered  int32  `json:"urls_discovered"`
-	URLsCrawled     int32  `json:"urls_crawled"`
-	MaxDepthReached int32  `json:"max_depth_reached"`
-	SEOScore        *int32 `json:"seo_score,omitempty"`
-	AEOScore        *int32 `json:"aeo_score,omitempty"`
-	PageSpeedScore  *int32 `json:"pagespeed_score,omitempty"`
-	OverallScore    *int32 `json:"overall_score,omitempty"`
-	StartedAt       string `json:"started_at,omitempty"`
-	CompletedAt     string `json:"completed_at,omitempty"`
-	CreatedAt       string `json:"created_at"`
+	ID               string          `json:"id"`
+	ProjectID        string          `json:"project_id"`
+	Status           string          `json:"status"`
+	Phase            string          `json:"phase,omitempty"`
+	AnalysisProgress json.RawMessage `json:"analysis_progress,omitempty"`
+	URLsDiscovered   int32           `json:"urls_discovered"`
+	URLsCrawled      int32           `json:"urls_crawled"`
+	MaxDepthReached  int32           `json:"max_depth_reached"`
+	SEOScore         *int32          `json:"seo_score,omitempty"`
+	AEOScore         *int32          `json:"aeo_score,omitempty"`
+	PageSpeedScore   *int32          `json:"pagespeed_score,omitempty"`
+	OverallScore     *int32          `json:"overall_score,omitempty"`
+	StartedAt        string          `json:"started_at,omitempty"`
+	CompletedAt      string          `json:"completed_at,omitempty"`
+	CreatedAt        string          `json:"created_at"`
 }
 
 type mcpListCrawlsOutput struct {
@@ -476,21 +477,29 @@ func mcpCrawlPollMessage(status string) string {
 }
 
 func mcpCrawlRowFromGet(crawl sqlc.GetCrawlByIDForUserRow) mcpCrawlRow {
-	return mcpCrawlRowFromParts(
+	row := mcpCrawlRowFromParts(
 		crawl.ID, crawl.ProjectID, crawl.Status, crawl.Phase,
 		crawl.UrlsDiscovered, crawl.UrlsCrawled, crawl.MaxDepthReached,
 		crawl.SeoScore, crawl.AeoScore, crawl.PagespeedScore, crawl.OverallScore,
 		crawl.StartedAt, crawl.CompletedAt, crawl.CreatedAt,
 	)
+	if len(crawl.AnalysisProgress) > 0 {
+		row.AnalysisProgress = json.RawMessage(crawl.AnalysisProgress)
+	}
+	return row
 }
 
 func mcpCrawlRowFromList(crawl sqlc.ListCrawlsForProjectRow) mcpCrawlRow {
-	return mcpCrawlRowFromParts(
+	row := mcpCrawlRowFromParts(
 		crawl.ID, crawl.ProjectID, crawl.Status, crawl.Phase,
 		crawl.UrlsDiscovered, crawl.UrlsCrawled, crawl.MaxDepthReached,
 		crawl.SeoScore, crawl.AeoScore, crawl.PagespeedScore, crawl.OverallScore,
 		crawl.StartedAt, crawl.CompletedAt, crawl.CreatedAt,
 	)
+	if len(crawl.AnalysisProgress) > 0 {
+		row.AnalysisProgress = json.RawMessage(crawl.AnalysisProgress)
+	}
+	return row
 }
 
 func mcpCrawlRowFromCreate(crawl sqlc.CreateCrawlRow) mcpCrawlRow {

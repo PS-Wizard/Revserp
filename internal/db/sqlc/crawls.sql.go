@@ -15,6 +15,7 @@ const cancelCrawlByIDForUser = `-- name: CancelCrawlByIDForUser :one
 UPDATE crawls AS c
 SET status = 'cancelled',
     phase = NULL,
+    analysis_progress = NULL,
     completed_at = now()
 FROM projects AS p, organization_members AS om
 WHERE c.id = $1
@@ -316,6 +317,7 @@ SELECT
     c.project_id,
     c.status,
     c.phase,
+    c.analysis_progress,
     c.config_snapshot,
     c.urls_discovered,
     c.urls_crawled,
@@ -348,6 +350,7 @@ type GetCrawlByIDForUserRow struct {
 	ProjectID        pgtype.UUID
 	Status           string
 	Phase            pgtype.Text
+	AnalysisProgress []byte
 	ConfigSnapshot   []byte
 	UrlsDiscovered   int32
 	UrlsCrawled      int32
@@ -372,6 +375,7 @@ func (q *Queries) GetCrawlByIDForUser(ctx context.Context, arg GetCrawlByIDForUs
 		&i.ProjectID,
 		&i.Status,
 		&i.Phase,
+		&i.AnalysisProgress,
 		&i.ConfigSnapshot,
 		&i.UrlsDiscovered,
 		&i.UrlsCrawled,
@@ -489,6 +493,7 @@ SELECT
     c.project_id,
     c.status,
     c.phase,
+    c.analysis_progress,
     c.urls_discovered,
     c.urls_crawled,
     c.created_at,
@@ -503,15 +508,16 @@ ORDER BY c.created_at DESC
 `
 
 type ListActiveCrawlsForOrganizationRow struct {
-	ID              pgtype.UUID
-	ProjectID       pgtype.UUID
-	Status          string
-	Phase           pgtype.Text
-	UrlsDiscovered  int32
-	UrlsCrawled     int32
-	CreatedAt       pgtype.Timestamptz
-	Source          string
-	CompetitorLabel string
+	ID               pgtype.UUID
+	ProjectID        pgtype.UUID
+	Status           string
+	Phase            pgtype.Text
+	AnalysisProgress []byte
+	UrlsDiscovered   int32
+	UrlsCrawled      int32
+	CreatedAt        pgtype.Timestamptz
+	Source           string
+	CompetitorLabel  string
 }
 
 func (q *Queries) ListActiveCrawlsForOrganization(ctx context.Context, organizationID pgtype.UUID) ([]ListActiveCrawlsForOrganizationRow, error) {
@@ -528,6 +534,7 @@ func (q *Queries) ListActiveCrawlsForOrganization(ctx context.Context, organizat
 			&i.ProjectID,
 			&i.Status,
 			&i.Phase,
+			&i.AnalysisProgress,
 			&i.UrlsDiscovered,
 			&i.UrlsCrawled,
 			&i.CreatedAt,
@@ -550,6 +557,7 @@ SELECT
     project_id,
     status,
     phase,
+    analysis_progress,
     config_snapshot,
     urls_discovered,
     urls_crawled,
@@ -584,6 +592,7 @@ type ListCrawlsForProjectRow struct {
 	ProjectID        pgtype.UUID
 	Status           string
 	Phase            pgtype.Text
+	AnalysisProgress []byte
 	ConfigSnapshot   []byte
 	UrlsDiscovered   int32
 	UrlsCrawled      int32
@@ -618,6 +627,7 @@ func (q *Queries) ListCrawlsForProject(ctx context.Context, arg ListCrawlsForPro
 			&i.ProjectID,
 			&i.Status,
 			&i.Phase,
+			&i.AnalysisProgress,
 			&i.ConfigSnapshot,
 			&i.UrlsDiscovered,
 			&i.UrlsCrawled,
@@ -646,6 +656,7 @@ const markCrawlCompleted = `-- name: MarkCrawlCompleted :execrows
 UPDATE crawls
 SET status = 'completed',
     phase = NULL,
+    analysis_progress = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -681,6 +692,7 @@ const markCrawlFailed = `-- name: MarkCrawlFailed :execrows
 UPDATE crawls
 SET status = 'failed',
     phase = NULL,
+    analysis_progress = NULL,
     urls_discovered = $2,
     urls_crawled = $3,
     max_depth_reached = $4,
@@ -726,7 +738,7 @@ func (q *Queries) MarkCrawlRunning(ctx context.Context, id pgtype.UUID) error {
 const reclaimStaleRunningCrawls = `-- name: ReclaimStaleRunningCrawls :exec
 WITH stale AS (
 	UPDATE crawls
-	SET status = 'failed', phase = NULL, completed_at = now()
+	SET status = 'failed', phase = NULL, analysis_progress = NULL, completed_at = now()
 	WHERE status = 'running' AND started_at < $1
 	RETURNING id
 ),
@@ -755,10 +767,33 @@ func (q *Queries) ReclaimStaleRunningCrawls(ctx context.Context, startedAt pgtyp
 	return err
 }
 
+const updateCrawlAnalysisProgress = `-- name: UpdateCrawlAnalysisProgress :execrows
+UPDATE crawls
+SET phase = 'analyzing',
+    analysis_progress = $2
+WHERE id = $1
+  AND status = 'running'
+`
+
+type UpdateCrawlAnalysisProgressParams struct {
+	ID               pgtype.UUID
+	AnalysisProgress []byte
+}
+
+// Gated on running so a cancelled crawl stops the worker: zero rows means stop.
+func (q *Queries) UpdateCrawlAnalysisProgress(ctx context.Context, arg UpdateCrawlAnalysisProgressParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCrawlAnalysisProgress, arg.ID, arg.AnalysisProgress)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateCrawlGooglePSIResults = `-- name: UpdateCrawlGooglePSIResults :exec
 UPDATE crawls
 SET google_psi_results = $2
 WHERE id = $1
+  AND status = 'running'
 `
 
 type UpdateCrawlGooglePSIResultsParams struct {
@@ -766,6 +801,9 @@ type UpdateCrawlGooglePSIResultsParams struct {
 	GooglePsiResults []byte
 }
 
+// The single writer is the worker's active-run PSI fetch. Gated on running so
+// a fetch that outlives a cancel cannot land on a terminal row; a skipped
+// write is not an error and the in-memory result still flows within the run.
 func (q *Queries) UpdateCrawlGooglePSIResults(ctx context.Context, arg UpdateCrawlGooglePSIResultsParams) error {
 	_, err := q.db.Exec(ctx, updateCrawlGooglePSIResults, arg.ID, arg.GooglePsiResults)
 	return err

@@ -65,7 +65,7 @@ func TestResolveInternalLinkTargetStatusesLoopsInBatches(t *testing.T) {
 		insertResolveTestLink(t, ctx, pool, crawlID, "https://example.com/", pageURL+"/", true)
 	}
 
-	resolved, err := store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, 2)
+	resolved, err := store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, 2, nil)
 	if err != nil {
 		t.Fatalf("resolveInternalLinkTargetStatusesInBatches: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestResolveInternalLinkTargetStatusesResolvesEveryLinkWithDuplicatePageKeys
 
 	// A batch smaller than the link count forces several passes over rows that
 	// each fan out to two pages.
-	resolved, err := store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, 2)
+	resolved, err := store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, 2, nil)
 	if err != nil {
 		t.Fatalf("resolveInternalLinkTargetStatusesInBatches: %v", err)
 	}

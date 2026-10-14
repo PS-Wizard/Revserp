@@ -2,8 +2,11 @@ package crawler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -155,6 +158,25 @@ func (store *Store) UpdateCrawlProgress(ctx context.Context, crawlID pgtype.UUID
 	return rows > 0, nil
 }
 
+// UpdateCrawlAnalysisProgress persists post-fetch analysis progress and pins
+// phase to analyzing. Like UpdateCrawlProgress it is gated on running, so
+// false means the crawl was cancelled out-of-band and the caller must stop.
+func (store *Store) UpdateCrawlAnalysisProgress(ctx context.Context, crawlID pgtype.UUID, progress CrawlAnalysisProgress) (bool, error) {
+	encoded, err := json.Marshal(progress)
+	if err != nil {
+		return false, fmt.Errorf("marshal crawl analysis progress: %w", err)
+	}
+	rows, err := store.queries.UpdateCrawlAnalysisProgress(ctx, sqlc.UpdateCrawlAnalysisProgressParams{
+		ID:               crawlID,
+		AnalysisProgress: encoded,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update crawl analysis progress: %w", err)
+	}
+
+	return rows > 0, nil
+}
+
 // PersistResult stores one processed crawl result. It is a one element wrapper
 // around PersistResults so single result callers and existing tests keep working.
 func (store *Store) PersistResult(ctx context.Context, crawlID pgtype.UUID, rootURL string, result CrawlResult) error {
@@ -216,28 +238,61 @@ const resolveLinkStatusBatchSize = 20000
 // fetched, so resolving inline would leave almost every value NULL. Until this
 // runs, broken-internal-link derivation has nothing to work from.
 func (store *Store) ResolveInternalLinkTargetStatuses(ctx context.Context, crawlID pgtype.UUID) (int64, error) {
-	return store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, resolveLinkStatusBatchSize)
+	return store.ResolveInternalLinkTargetStatusesWithProgress(ctx, crawlID, nil)
 }
 
-func (store *Store) resolveInternalLinkTargetStatusesInBatches(ctx context.Context, crawlID pgtype.UUID, batchSize int32) (int64, error) {
-	var resolved int64
+// ResolveInternalLinkTargetStatusesWithProgress is ResolveInternalLinkTargetStatuses
+// with a synchronous callback after each completed nonzero SQL batch, reporting
+// cumulative affected rows. A callback error stops the loop before the next
+// batch; a cancelled context is checked between batches.
+func (store *Store) ResolveInternalLinkTargetStatusesWithProgress(ctx context.Context, crawlID pgtype.UUID, onProgress func(int64) error) (int64, error) {
+	return store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, resolveLinkStatusBatchSize, onProgress)
+}
+
+func (store *Store) resolveInternalLinkTargetStatusesInBatches(ctx context.Context, crawlID pgtype.UUID, batchSize int32, onProgress func(int64) error) (int64, error) {
+	startedAt := time.Now()
+	total, err := resolveBatchesWithProgress(ctx,
+		func(ctx context.Context) (int64, error) {
+			return store.queries.ResolveInternalLinkTargetStatusesBatch(ctx, sqlc.ResolveInternalLinkTargetStatusesBatchParams{
+				CrawlID:   crawlID,
+				BatchSize: batchSize,
+			})
+		},
+		func(cumulative int64) error {
+			log.Printf("resolve link targets progress: crawl_id=%s resolved=%d elapsed=%s",
+				crawlID.String(), cumulative, time.Since(startedAt).Round(time.Millisecond))
+			if onProgress == nil {
+				return nil
+			}
+			return onProgress(cumulative)
+		})
+	if err != nil {
+		return total, fmt.Errorf("resolve internal link target statuses: %w", err)
+	}
+	return total, nil
+}
+
+func resolveBatchesWithProgress(ctx context.Context, runBatch func(context.Context) (int64, error), onBatch func(cumulative int64) error) (int64, error) {
+	var total int64
 	for {
 		if err := ctx.Err(); err != nil {
-			return resolved, fmt.Errorf("resolve internal link target statuses: %w", err)
+			return total, err
 		}
-		rows, err := store.queries.ResolveInternalLinkTargetStatusesBatch(ctx, sqlc.ResolveInternalLinkTargetStatusesBatchParams{
-			CrawlID:   crawlID,
-			BatchSize: batchSize,
-		})
+		rows, err := runBatch(ctx)
 		if err != nil {
-			return resolved, fmt.Errorf("resolve internal link target statuses: %w", err)
+			return total, err
 		}
-		resolved += rows
+		total += rows
 		// The count is rows affected, not rows the CTE returned: several crawled
 		// pages can share one normalized key, so one pass can affect fewer links
 		// than the batch size while eligible links remain. Only zero means done.
 		if rows == 0 {
-			return resolved, nil
+			return total, nil
+		}
+		if onBatch != nil {
+			if err := onBatch(total); err != nil {
+				return total, err
+			}
 		}
 	}
 }

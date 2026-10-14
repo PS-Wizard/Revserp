@@ -347,5 +347,6 @@ func newCompetitorCrawlResponse(row sqlc.ListProjectCompetitorsWithCrawlForUserR
 		response.CompetitorID = row.CrawlCompetitorID.String()
 	}
 	response.Source = "competitor"
+	setCrawlAnalysisProgress(&response, row.CrawlAnalysisProgress)
 	return response
 }

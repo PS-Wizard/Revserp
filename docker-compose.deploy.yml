@@ -37,7 +37,7 @@ x-backend-env: &backend-env
   CRAWL_RETRY_BASE_MS: ${CRAWL_RETRY_BASE_MS}
   CRAWL_RETRY_MAX_MS: ${CRAWL_RETRY_MAX_MS}
   # Hard ceiling on one crawl end-to-end, and on the post-crawl analysis phase.
-  # Leave both unset to use the code defaults (60m and 15m).
+  # Leave both unset to use the code defaults (60m and 30m).
   CRAWL_TIMEOUT: ${CRAWL_TIMEOUT}
   CRAWL_ANALYSIS_TIMEOUT: ${CRAWL_ANALYSIS_TIMEOUT}
   AUTO_CRAWL_CONCURRENCY: ${AUTO_CRAWL_CONCURRENCY}

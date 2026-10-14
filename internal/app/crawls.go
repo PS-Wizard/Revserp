@@ -38,6 +38,7 @@ type crawlResponse struct {
 	ProjectID        string          `json:"project_id"`
 	Status           string          `json:"status"`
 	Phase            string          `json:"phase,omitempty"`
+	AnalysisProgress json.RawMessage `json:"analysis_progress,omitempty"`
 	ConfigSnapshot   json.RawMessage `json:"config_snapshot,omitempty"`
 	URLsDiscovered   int32           `json:"urls_discovered"`
 	URLsCrawled      int32           `json:"urls_crawled"`
@@ -428,13 +429,14 @@ func newCrawlResponseFromGetRow(crawl sqlc.GetCrawlByIDForUserRow) crawlResponse
 		crawl.CompletedAt,
 		crawl.CreatedAt,
 	)
+	setCrawlAnalysisProgress(&response, crawl.AnalysisProgress)
 	response.Source = crawl.Source
 	return response
 }
 
 // newCrawlResponseFromListRow converts a listed crawl row into an API response.
 func newCrawlResponseFromListRow(crawl sqlc.ListCrawlsForProjectRow) crawlResponse {
-	return buildCrawlResponse(
+	response := buildCrawlResponse(
 		crawl.ID,
 		crawl.ProjectID,
 		crawl.Status,
@@ -453,6 +455,8 @@ func newCrawlResponseFromListRow(crawl sqlc.ListCrawlsForProjectRow) crawlRespon
 		crawl.CompletedAt,
 		crawl.CreatedAt,
 	)
+	setCrawlAnalysisProgress(&response, crawl.AnalysisProgress)
+	return response
 }
 
 // buildCrawlResponse converts crawl fields into an API response.
@@ -521,16 +525,23 @@ func buildCrawlResponse(
 	return response
 }
 
+func setCrawlAnalysisProgress(response *crawlResponse, analysisProgress []byte) {
+	if len(analysisProgress) > 0 {
+		response.AnalysisProgress = json.RawMessage(analysisProgress)
+	}
+}
+
 type activeCrawlResponse struct {
-	ID              string `json:"id"`
-	ProjectID       string `json:"project_id"`
-	Status          string `json:"status"`
-	Phase           string `json:"phase,omitempty"`
-	URLsDiscovered  int32  `json:"urls_discovered"`
-	URLsCrawled     int32  `json:"urls_crawled"`
-	CreatedAt       string `json:"created_at"`
-	Source          string `json:"source,omitempty"`
-	CompetitorLabel string `json:"competitor_label,omitempty"`
+	ID               string          `json:"id"`
+	ProjectID        string          `json:"project_id"`
+	Status           string          `json:"status"`
+	Phase            string          `json:"phase,omitempty"`
+	AnalysisProgress json.RawMessage `json:"analysis_progress,omitempty"`
+	URLsDiscovered   int32           `json:"urls_discovered"`
+	URLsCrawled      int32           `json:"urls_crawled"`
+	CreatedAt        string          `json:"created_at"`
+	Source           string          `json:"source,omitempty"`
+	CompetitorLabel  string          `json:"competitor_label,omitempty"`
 }
 
 // handleListActiveOrganizationCrawls returns all queued/running crawls across all projects in an organization.
@@ -578,6 +589,9 @@ func (a *App) handleListActiveOrganizationCrawls(w http.ResponseWriter, r *http.
 		}
 		if c.Status == string(CrawlStatusRunning) && c.Phase.Valid {
 			response.Phase = c.Phase.String
+		}
+		if len(c.AnalysisProgress) > 0 {
+			response.AnalysisProgress = json.RawMessage(c.AnalysisProgress)
 		}
 		if label := strings.TrimSpace(c.CompetitorLabel); label != "" {
 			response.CompetitorLabel = label
