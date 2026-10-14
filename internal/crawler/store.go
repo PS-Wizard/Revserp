@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -226,75 +224,6 @@ func (store *Store) PersistResults(ctx context.Context, crawlID pgtype.UUID, roo
 	}
 
 	return nil
-}
-
-// resolveLinkStatusBatchSize bounds one UPDATE so a single slow statement
-// cannot exceed DB_STATEMENT_TIMEOUT and lose the whole resolution.
-const resolveLinkStatusBatchSize = 20000
-
-// ResolveInternalLinkTargetStatuses fills target_status on this crawl's internal
-// links from the pages the crawl actually fetched. It must run after the crawl
-// loop finishes: a link row is normally written before its target has been
-// fetched, so resolving inline would leave almost every value NULL. Until this
-// runs, broken-internal-link derivation has nothing to work from.
-func (store *Store) ResolveInternalLinkTargetStatuses(ctx context.Context, crawlID pgtype.UUID) (int64, error) {
-	return store.ResolveInternalLinkTargetStatusesWithProgress(ctx, crawlID, nil)
-}
-
-// ResolveInternalLinkTargetStatusesWithProgress is ResolveInternalLinkTargetStatuses
-// with a synchronous callback after each completed nonzero SQL batch, reporting
-// cumulative affected rows. A callback error stops the loop before the next
-// batch; a cancelled context is checked between batches.
-func (store *Store) ResolveInternalLinkTargetStatusesWithProgress(ctx context.Context, crawlID pgtype.UUID, onProgress func(int64) error) (int64, error) {
-	return store.resolveInternalLinkTargetStatusesInBatches(ctx, crawlID, resolveLinkStatusBatchSize, onProgress)
-}
-
-func (store *Store) resolveInternalLinkTargetStatusesInBatches(ctx context.Context, crawlID pgtype.UUID, batchSize int32, onProgress func(int64) error) (int64, error) {
-	startedAt := time.Now()
-	total, err := resolveBatchesWithProgress(ctx,
-		func(ctx context.Context) (int64, error) {
-			return store.queries.ResolveInternalLinkTargetStatusesBatch(ctx, sqlc.ResolveInternalLinkTargetStatusesBatchParams{
-				CrawlID:   crawlID,
-				BatchSize: batchSize,
-			})
-		},
-		func(cumulative int64) error {
-			log.Printf("resolve link targets progress: crawl_id=%s resolved=%d elapsed=%s",
-				crawlID.String(), cumulative, time.Since(startedAt).Round(time.Millisecond))
-			if onProgress == nil {
-				return nil
-			}
-			return onProgress(cumulative)
-		})
-	if err != nil {
-		return total, fmt.Errorf("resolve internal link target statuses: %w", err)
-	}
-	return total, nil
-}
-
-func resolveBatchesWithProgress(ctx context.Context, runBatch func(context.Context) (int64, error), onBatch func(cumulative int64) error) (int64, error) {
-	var total int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return total, err
-		}
-		rows, err := runBatch(ctx)
-		if err != nil {
-			return total, err
-		}
-		total += rows
-		// The count is rows affected, not rows the CTE returned: several crawled
-		// pages can share one normalized key, so one pass can affect fewer links
-		// than the batch size while eligible links remain. Only zero means done.
-		if rows == 0 {
-			return total, nil
-		}
-		if onBatch != nil {
-			if err := onBatch(total); err != nil {
-				return total, err
-			}
-		}
-	}
 }
 
 // buildCreateCrawlPageParams maps one crawl result into crawl_pages insert params.

@@ -1197,6 +1197,7 @@ SELECT
     id,
     crawl_id,
     url,
+    url_key,
     status_code,
     content_type,
     size_bytes,
@@ -1242,6 +1243,7 @@ type ListCrawlPagesForCrawlRow struct {
 	ID                      pgtype.UUID
 	CrawlID                 pgtype.UUID
 	Url                     string
+	UrlKey                  pgtype.Text
 	StatusCode              pgtype.Int4
 	ContentType             pgtype.Text
 	SizeBytes               pgtype.Int4
@@ -1293,6 +1295,7 @@ func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUI
 			&i.ID,
 			&i.CrawlID,
 			&i.Url,
+			&i.UrlKey,
 			&i.StatusCode,
 			&i.ContentType,
 			&i.SizeBytes,

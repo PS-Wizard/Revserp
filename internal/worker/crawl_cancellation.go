@@ -126,13 +126,3 @@ func reportAnalysisStage(ctx context.Context, reporter analysisProgressReporter,
 	}
 	return fmt.Errorf("crawl no longer running at stage %s: %w", progress.Stage, errCrawlStopped)
 }
-
-func resolveFailureAction(haltErr error, ctxErr error) error {
-	if haltErr != nil {
-		return haltErr
-	}
-	if ctxErr != nil {
-		return errAnalysisDeadline
-	}
-	return nil
-}

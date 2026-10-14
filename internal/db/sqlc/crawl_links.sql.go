@@ -27,12 +27,6 @@ SELECT
     target_url,
     anchor_text,
     is_internal,
-    -- target_status is a fact about THIS crawl's pages, not about the link.
-    -- A reused link is reused because its source page answered 304, but its
-    -- target may have changed status since, and the resolver only fills NULLs.
-    -- Copying the baseline value would freeze a stale status that nothing ever
-    -- corrects, so broken-target issues would silently vanish. Leave it NULL
-    -- for this crawl to resolve.
     NULL,
     nofollow
 FROM crawl_links
@@ -153,7 +147,17 @@ SELECT
     cl.target_url,
     cl.anchor_text,
     cl.is_internal,
-    cl.target_status,
+    COALESCE(
+        cl.target_status,
+        CASE WHEN cl.is_internal IS TRUE THEN (
+            SELECT MIN(cp.status_code)
+            FROM crawl_pages AS cp
+            WHERE cp.crawl_id = cl.crawl_id
+              AND digest(cp.url_key, 'sha256') = digest(cl.target_url_key, 'sha256')
+              AND cp.url_key = cl.target_url_key
+              AND cp.status_code IS NOT NULL
+        ) END
+    ) AS target_status,
     cl.nofollow,
     cl.created_at
 FROM crawl_links AS cl
@@ -200,25 +204,50 @@ func (q *Queries) GetCrawlLinkByIDForUser(ctx context.Context, arg GetCrawlLinkB
 }
 
 const listCrawlLinksForCrawlByUser = `-- name: ListCrawlLinksForCrawlByUser :many
+WITH page AS MATERIALIZED (
+    SELECT
+        cl.id,
+        cl.crawl_id,
+        cl.source_url,
+        cl.target_url,
+        cl.anchor_text,
+        cl.is_internal,
+        cl.target_status,
+        cl.target_url_key,
+        cl.nofollow,
+        cl.created_at
+    FROM crawl_links AS cl
+    INNER JOIN crawls AS c ON c.id = cl.crawl_id
+    INNER JOIN projects AS p ON p.id = c.project_id
+    INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    WHERE cl.crawl_id = $1
+      AND om.user_id = $2
+    ORDER BY cl.created_at ASC
+    LIMIT $3
+    OFFSET $4
+)
 SELECT
-    cl.id,
-    cl.crawl_id,
-    cl.source_url,
-    cl.target_url,
-    cl.anchor_text,
-    cl.is_internal,
-    cl.target_status,
-    cl.nofollow,
-    cl.created_at
-FROM crawl_links AS cl
-INNER JOIN crawls AS c ON c.id = cl.crawl_id
-INNER JOIN projects AS p ON p.id = c.project_id
-INNER JOIN organization_members AS om ON om.org_id = p.organization_id
-WHERE cl.crawl_id = $1
-  AND om.user_id = $2
-ORDER BY cl.created_at ASC
-LIMIT $3
-OFFSET $4
+    page.id,
+    page.crawl_id,
+    page.source_url,
+    page.target_url,
+    page.anchor_text,
+    page.is_internal,
+    COALESCE(
+        page.target_status,
+        CASE WHEN page.is_internal IS TRUE THEN (
+            SELECT MIN(cp.status_code)
+            FROM crawl_pages AS cp
+            WHERE cp.crawl_id = page.crawl_id
+              AND digest(cp.url_key, 'sha256') = digest(page.target_url_key, 'sha256')
+              AND cp.url_key = page.target_url_key
+              AND cp.status_code IS NOT NULL
+        ) END
+    ) AS target_status,
+    page.nofollow,
+    page.created_at
+FROM page
+ORDER BY page.created_at ASC
 `
 
 type ListCrawlLinksForCrawlByUserParams struct {
@@ -334,6 +363,46 @@ func (q *Queries) ListInternalCrawlLinksForCrawl(ctx context.Context, crawlID pg
 	return items, nil
 }
 
+const listInternalLinkFactsForCrawl = `-- name: ListInternalLinkFactsForCrawl :many
+SELECT source_url, target_url, target_url_key, target_status
+FROM crawl_links
+WHERE crawl_id = $1
+  AND is_internal = TRUE
+ORDER BY created_at ASC
+`
+
+type ListInternalLinkFactsForCrawlRow struct {
+	SourceUrl    string
+	TargetUrl    string
+	TargetUrlKey pgtype.Text
+	TargetStatus pgtype.Int4
+}
+
+func (q *Queries) ListInternalLinkFactsForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListInternalLinkFactsForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listInternalLinkFactsForCrawl, crawlID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListInternalLinkFactsForCrawlRow
+	for rows.Next() {
+		var i ListInternalLinkFactsForCrawlRow
+		if err := rows.Scan(
+			&i.SourceUrl,
+			&i.TargetUrl,
+			&i.TargetUrlKey,
+			&i.TargetStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInternalLinkPairsForCrawl = `-- name: ListInternalLinkPairsForCrawl :many
 SELECT source_url, target_url
 FROM crawl_links
@@ -364,56 +433,4 @@ func (q *Queries) ListInternalLinkPairsForCrawl(ctx context.Context, crawlID pgt
 		return nil, err
 	}
 	return items, nil
-}
-
-const resolveInternalLinkTargetStatusesBatch = `-- name: ResolveInternalLinkTargetStatusesBatch :execrows
-WITH batch AS (
-    SELECT DISTINCT ON (cl.id) cl.id, cp.status_code
-    FROM crawl_links AS cl
-    INNER JOIN crawl_pages AS cp
-        ON cp.crawl_id = cl.crawl_id
-       AND digest(cp.url_key, 'sha256') = digest(cl.target_url_key, 'sha256')
-       AND cp.url_key = cl.target_url_key
-    WHERE cl.crawl_id = $1
-      AND cl.is_internal = TRUE
-      AND cl.target_status IS NULL
-      AND cp.status_code IS NOT NULL
-    ORDER BY cl.id, cp.status_code
-    LIMIT $2
-)
-UPDATE crawl_links AS cl
-SET target_status = batch.status_code
-FROM batch
-WHERE cl.id = batch.id
-`
-
-type ResolveInternalLinkTargetStatusesBatchParams struct {
-	CrawlID   pgtype.UUID
-	BatchSize int32
-}
-
-// Fills target_status for one bounded slice of this crawl's internal links
-// from the pages actually crawled. The caller loops until a pass affects no
-// rows, so a single slow moment cannot exceed DB_STATEMENT_TIMEOUT and lose
-// the whole resolution. Rows whose target was never crawled are excluded by
-// the join, so they cannot stall the loop.
-//
-// DISTINCT ON is load bearing. crawl_pages only enforces UNIQUE (crawl_id,
-// url), so several crawled pages can share one normalized key, and a plain
-// join returns the same link once per matching page. The caller decides to
-// stop from the affected row count, so that fan-out would read as "no work
-// left" while eligible links remain. Ordering by status_code also picks the
-// same page on every run instead of leaving the choice to the planner.
-//
-// The normalization is the one the previous inline join used: fragment
-// stripped, the whole URL lowercased, trailing slashes trimmed. That trims
-// the bare root slash too, so https://example.com/ and https://example.com
-// share a key, and it lowercases the path, which normalizeGraphURL in
-// internal/competitorgaps does not. Both predate this query.
-func (q *Queries) ResolveInternalLinkTargetStatusesBatch(ctx context.Context, arg ResolveInternalLinkTargetStatusesBatchParams) (int64, error) {
-	result, err := q.db.Exec(ctx, resolveInternalLinkTargetStatusesBatch, arg.CrawlID, arg.BatchSize)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }

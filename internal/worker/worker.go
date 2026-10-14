@@ -665,43 +665,6 @@ func (w *Worker) runCrawl(ctx context.Context, claimed claimedCrawlRow) error {
 		return fmt.Errorf("crawl no longer running after fetching: %w", errCrawlStopped)
 	}
 
-	// Attribute broken targets back to the pages linking to them. This has to
-	// happen after the crawl loop and before derivation, since it is what gives
-	// the broken/redirecting internal-link issues their input.
-	if err := reportAnalysisStage(analysisCtx, crawlStore, claimed.ID, crawler.CrawlAnalysisProgress{Stage: crawler.AnalysisStageCheckingLinks}, halted); err != nil {
-		return failStage(fmt.Errorf("link resolution: %w", err))
-	}
-	resolveStartedAt := time.Now()
-	resolvedLinks, err := crawlStore.ResolveInternalLinkTargetStatusesWithProgress(analysisCtx, claimed.ID, func(total int64) error {
-		alive, reportErr := crawlStore.UpdateCrawlAnalysisProgress(analysisCtx, claimed.ID, crawler.CrawlAnalysisProgress{Stage: crawler.AnalysisStageCheckingLinks, LinksResolved: total})
-		if reportErr != nil {
-			log.Printf("link resolution progress report failed, continuing: crawl_id=%s resolved=%d error=%v", claimed.ID.String(), total, reportErr)
-			return nil
-		}
-		if !alive {
-			return fmt.Errorf("crawl no longer running during link resolution: %w", errCrawlStopped)
-		}
-		return nil
-	})
-	if err != nil {
-		if haltErr := resolveFailureAction(halted(), analysisCtx.Err()); haltErr != nil {
-			if errors.Is(haltErr, errAnalysisDeadline) {
-				return failStage(fmt.Errorf("link resolution: %w", err))
-			}
-			log.Printf("crawl stopped during link resolution: crawl_id=%s resolved=%d error=%v", claimed.ID.String(), resolvedLinks, err)
-			return haltErr
-		}
-		log.Printf("resolve internal link target statuses failed, continuing without them: crawl_id=%s resolved=%d error=%v", claimed.ID.String(), resolvedLinks, err)
-	} else {
-		log.Printf("phase timing: crawl_id=%s resolve_link_targets=%s resolved=%d",
-			claimed.ID.String(), time.Since(resolveStartedAt).Round(time.Millisecond), resolvedLinks)
-	}
-
-	// Google PSI has been running since before the crawl loop, so by now it has
-	// almost always finished. Its result is consumed after derivation because
-	// derivation replaces this crawl's issue rows, and the PSI issues are
-	// persisted after that.
-
 	if err := reportAnalysisStage(analysisCtx, crawlStore, claimed.ID, crawler.CrawlAnalysisProgress{Stage: crawler.AnalysisStageDerivingIssues}, halted); err != nil {
 		return failStage(fmt.Errorf("derive issues: %w", err))
 	}

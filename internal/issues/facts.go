@@ -23,9 +23,9 @@ func loadFactsWithPages(ctx context.Context, queries *sqlc.Queries, crawlID pgty
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("list crawl pages: %w", err)
 	}
-	internalCrawlLinks, err := queries.ListInternalCrawlLinksForCrawl(ctx, crawlID)
+	internalLinkFacts, err := queries.ListInternalLinkFactsForCrawl(ctx, crawlID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("list internal crawl links: %w", err)
+		return nil, nil, nil, fmt.Errorf("list internal link facts: %w", err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -70,20 +70,61 @@ func loadFactsWithPages(ctx context.Context, queries *sqlc.Queries, crawlID pgty
 			FetchError:              textValue(crawlPage.FetchError),
 		})
 	}
-	linkFacts := make([]shared.LinkFact, 0, len(internalCrawlLinks))
-	for linkNumber, internalCrawlLink := range internalCrawlLinks {
+	destinationStatuses, err := linkDestinationStatuses(ctx, crawlPages)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	linkFacts, err := buildLinkFacts(ctx, internalLinkFacts, destinationStatuses)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return crawlPages, pageFacts, linkFacts, nil
+}
+
+func buildLinkFacts(ctx context.Context, internalLinkFacts []sqlc.ListInternalLinkFactsForCrawlRow, destinationStatuses map[string]int32) ([]shared.LinkFact, error) {
+	linkFacts := make([]shared.LinkFact, 0, len(internalLinkFacts))
+	for linkNumber, internalLinkFact := range internalLinkFacts {
 		if linkNumber%deriveCtxCheckLinks == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
 		}
 		linkFacts = append(linkFacts, shared.LinkFact{
-			SourceURL:    internalCrawlLink.SourceUrl,
-			TargetURL:    internalCrawlLink.TargetUrl,
-			TargetStatus: int32Value(internalCrawlLink.TargetStatus),
+			SourceURL:    internalLinkFact.SourceUrl,
+			TargetURL:    internalLinkFact.TargetUrl,
+			TargetStatus: resolveLinkTargetStatus(internalLinkFact.TargetStatus, internalLinkFact.TargetUrlKey, destinationStatuses),
 		})
 	}
-	return crawlPages, pageFacts, linkFacts, nil
+	return linkFacts, nil
+}
+
+func resolveLinkTargetStatus(stored pgtype.Int4, targetKey pgtype.Text, destinationStatuses map[string]int32) int32 {
+	if stored.Valid {
+		return stored.Int32
+	}
+	if !targetKey.Valid {
+		return 0
+	}
+	return destinationStatuses[targetKey.String]
+}
+
+func linkDestinationStatuses(ctx context.Context, crawlPages []sqlc.ListCrawlPagesForCrawlRow) (map[string]int32, error) {
+	statuses := make(map[string]int32, len(crawlPages))
+	for pageNumber, crawlPage := range crawlPages {
+		if pageNumber%deriveCtxCheckPages == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if !crawlPage.StatusCode.Valid || !crawlPage.UrlKey.Valid {
+			continue
+		}
+		key := crawlPage.UrlKey.String
+		if current, ok := statuses[key]; !ok || crawlPage.StatusCode.Int32 < current {
+			statuses[key] = crawlPage.StatusCode.Int32
+		}
+	}
+	return statuses, nil
 }
 
 func persistPageContentFingerprints(ctx context.Context, queries *sqlc.Queries, pageFacts []shared.PageFact) error {

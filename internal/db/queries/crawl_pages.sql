@@ -242,6 +242,7 @@ SELECT
     id,
     crawl_id,
     url,
+    url_key,
     status_code,
     content_type,
     size_bytes,

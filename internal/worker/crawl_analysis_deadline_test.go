@@ -44,24 +44,3 @@ func TestRootCancellationTakesPriorityOverAnalysisDeadline(t *testing.T) {
 		t.Fatal("reported a new stage after root cancellation")
 	}
 }
-
-func TestLinkResolutionFailureAction(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		halted  error
-		context error
-		want    error
-	}{
-		{"recoverable SQL error", nil, nil, nil},
-		{"analysis expired", nil, context.DeadlineExceeded, errAnalysisDeadline},
-		{"user cancelled", errCrawlStopped, context.Canceled, errCrawlStopped},
-		{"cancel and deadline", errCrawlStopped, context.DeadlineExceeded, errCrawlStopped},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			err := resolveFailureAction(test.halted, test.context)
-			if !errors.Is(err, test.want) {
-				t.Fatalf("error = %v, want %v", err, test.want)
-			}
-		})
-	}
-}
