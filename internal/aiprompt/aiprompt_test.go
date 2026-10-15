@@ -82,8 +82,8 @@ func TestDefaultSystemPromptStatesNoToolCount(t *testing.T) {
 }
 
 func TestUserControlPolicyVersion(t *testing.T) {
-	if Version != "chat-v6" {
-		t.Fatalf("Version = %q, want chat-v6", Version)
+	if Version != "chat-v7" {
+		t.Fatalf("Version = %q, want chat-v7", Version)
 	}
 	if !strings.Contains(DefaultSystemPrompt, "## User control") {
 		t.Fatal("base prompt missing the user control section")
@@ -200,5 +200,47 @@ func TestComposeSystemPromptKeepsContractForBothAudiences(t *testing.T) {
 				t.Errorf("composed prompt delta suffix = %q, want %q", got, tt.wantDelta)
 			}
 		})
+	}
+}
+
+func TestUserControlAsksOnlyForMaterialDecisions(t *testing.T) {
+	wants := []string{
+		"sensible reversible or read-only choices",
+		"Infer the selected scope from the provided context",
+		"only when a missing material preference or decision",
+		"cannot be resolved safely",
+		"changes the outcome",
+		"a meaningful decision still requires asking",
+		"never re-ask",
+		"never consent",
+		"never authorize writing, changing, or publishing anything",
+		"independent safe analysis",
+	}
+	for _, want := range wants {
+		if !strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt missing user-control phrase %q", want)
+		}
+	}
+}
+
+func TestUserControlScopedIssueHelpContract(t *testing.T) {
+	wants := []string{
+		"review all recorded issue types in the chosen scope",
+		"prioritized rundown",
+		"Group repeated problems",
+		"prioritize real evidence-based fixes",
+		"Report partial coverage explicitly",
+		"never require a five-URL sample",
+		"never pretend every page's content was inspected",
+	}
+	for _, want := range wants {
+		if !strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt missing scoped-help phrase %q", want)
+		}
+	}
+	for _, want := range []string{"up to 50", "capped at 30", "50 selected"} {
+		if strings.Contains(DefaultSystemPrompt, want) {
+			t.Errorf("base prompt carries per-tool limit %q; limits belong in Def.Description", want)
+		}
 	}
 }

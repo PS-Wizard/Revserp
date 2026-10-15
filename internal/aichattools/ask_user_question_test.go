@@ -324,3 +324,29 @@ func TestMarshalUserQuestionRequestShape(t *testing.T) {
 		t.Errorf("answered entity missing answered_at: %s", encoded)
 	}
 }
+
+func TestAskUserQuestionDescriptionContract(t *testing.T) {
+	wants := []string{
+		"only when a missing material preference",
+		"cannot be resolved safely without them",
+		"sensible reversible or read-only choices",
+		"infer the selected scope from the provided context",
+		"a meaningful preference, scope, or trade-off",
+		"never authorization to write, change, or publish anything",
+		"never consent and never permission to choose defaults",
+		"independent safe analysis",
+	}
+	for _, want := range wants {
+		if !strings.Contains(askUserQuestionDescription, want) {
+			t.Errorf("ask_user_question description missing %q", want)
+		}
+	}
+	for _, def := range CatalogDefs() {
+		if def.Name != AskUserQuestionName {
+			continue
+		}
+		if def.Description != askUserQuestionDescription {
+			t.Error("ask_user_question Def.Description drifted from askUserQuestionDescription")
+		}
+	}
+}
