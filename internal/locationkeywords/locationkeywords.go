@@ -1,12 +1,11 @@
-// Package locationkeywords owns location keyword persistence, deterministic
-// suggestions, and selected-to-Maps-draft sync in exactly one implementation.
+// Package locationkeywords owns location keyword persistence in exactly one implementation.
+// Deterministic suggestions and selected-to-Maps-draft sync below are legacy, kept for other surfaces.
 // The HTTP handlers and the RevBot chat tools both call into this package:
 // no caller keeps a second copy of the SQL or the normalization rules.
 package locationkeywords
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -307,6 +306,29 @@ func SelectedKeywordTexts(rows []StoredKeyword) []string {
 	return out
 }
 
+// CombinedKeywordTexts unions every stored phrase across user, revserp and
+// legacy selected sources, deduped by normalized key. All saved
+// user+suggested terms feed website coverage, never Maps.
+func CombinedKeywordTexts(rows []StoredKeyword) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		key := projectkeywords.NormalizeProjectKeywordKey(row.Normalized)
+		if key == "" {
+			key = projectkeywords.NormalizeProjectKeywordKey(row.Keyword)
+		}
+		if key == "" {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, row.Keyword)
+	}
+	return out
+}
+
 func insertStoredKeywords(ctx context.Context, db DB, locationID pgtype.UUID, source, kind string, phrases []string) error {
 	for _, phrase := range phrases {
 		if _, err := db.Exec(ctx, `INSERT INTO location_keywords (location_id, keyword, normalized_keyword, kind, source) VALUES ($1,$2,$3,$4,$5)`,
@@ -360,60 +382,19 @@ func ReplaceRevserpKeywords(ctx context.Context, db DB, locationID pgtype.UUID, 
 	return insertStoredKeywords(ctx, db, locationID, SourceRevserp, projectkeywords.ProjectKeywordKindNonBrand, nonBrand)
 }
 
-// LoadSuggestedKeywords reads the saved suggestion inputs and unions them
-// with the deterministic derived set. Services come from the independent
-// location profile snapshot, localities from the location row, and every
-// current landmark row suggests phrases regardless of selection: explicit
-// selection lives in the selected keyword list. Saved revserp rows persist
-// Revbot Find-keywords output; on an exact normalized collision the saved
-// text and kind win over the mechanical derived entry.
+// LoadSuggestedKeywords reads the saved revserp suggestion rows only. AI map
+// query generation replaced deterministic derived suggestions.
 func LoadSuggestedKeywords(ctx context.Context, db DB, queries Queries, projectID, locationID, userID pgtype.UUID, localitiesJSON []byte) (KeywordGroup, SuggestionKeys, error) {
 	keys := SuggestionKeys{
 		Services:   map[string]struct{}{},
 		Localities: map[string]struct{}{},
 		Landmarks:  map[string]pgtype.UUID{},
 	}
-	brandName, services, err := LocationProfileSnapshot(ctx, db, queries, projectID, locationID)
-	if err != nil {
-		return KeywordGroup{}, keys, err
-	}
-	for _, service := range services {
-		keys.Services[projectkeywords.NormalizeProjectKeywordKey(service)] = struct{}{}
-	}
-	var localities []string
-	if len(localitiesJSON) > 0 {
-		if err := json.Unmarshal(localitiesJSON, &localities); err != nil {
-			return KeywordGroup{}, keys, err
-		}
-	}
-	for _, locality := range localities {
-		keys.Localities[projectkeywords.NormalizeProjectKeywordKey(locality)] = struct{}{}
-	}
-	landmarkRows, err := queries.ListLocationLandmarksForUser(ctx, sqlc.ListLocationLandmarksForUserParams{
-		LocationID: locationID,
-		ProjectID:  projectID,
-		UserID:     userID,
-	})
-	if err != nil {
-		return KeywordGroup{}, keys, err
-	}
-	var landmarkNames []string
-	for _, landmark := range landmarkRows {
-		key := projectkeywords.NormalizeProjectKeywordKey(landmark.Name)
-		if key == "" {
-			continue
-		}
-		landmarkNames = append(landmarkNames, landmark.Name)
-		if _, dup := keys.Landmarks[key]; !dup {
-			keys.Landmarks[key] = landmark.ID
-		}
-	}
 	stored, err := LoadStoredKeywords(ctx, db, locationID)
 	if err != nil {
 		return KeywordGroup{}, keys, err
 	}
-	derived := BuildSuggestedKeywords(services, localities, landmarkNames, brandName)
-	return CombineSavedSuggestedKeywords(derived, GroupStoredKeywords(stored, SourceRevserp)), keys, nil
+	return GroupStoredKeywords(stored, SourceRevserp), keys, nil
 }
 
 // CombineSavedSuggestedKeywords unions the deterministic derived set with

@@ -190,9 +190,9 @@ func TestLocationKeywordToolSchemaAdvertisesSource(t *testing.T) {
 	}
 }
 
-// Saved revserp rows surface in the suggested card together with the derived
-// set; phrases the derived set cannot attribute carry no guessed origin.
-func TestLocationKeywordListsLocalMergesSavedSuggestions(t *testing.T) {
+// Saved revserp rows surface in the suggested card on their own; the
+// deterministic derived set is gone, so no phrase carries a guessed origin.
+func TestLocationKeywordListsLocalShowsSavedSuggestionsOnly(t *testing.T) {
 	db := &fakeLocationKeywordDB{
 		stored: []locationkeywords.StoredKeyword{
 			{Keyword: "Emergency Plumber", Normalized: "emergency plumber", Kind: "non_brand", Source: "revserp"},
@@ -211,17 +211,17 @@ func TestLocationKeywordListsLocalMergesSavedSuggestions(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.Content), &lists); err != nil {
 		t.Fatalf("content is not keyword JSON: %v\n%s", err, res.Content)
 	}
-	foundSaved, foundDerived := false, false
+	foundSaved := false
 	for _, phrase := range lists["revserp_suggested"].NonBranded {
 		if phrase == "Emergency Plumber" {
 			foundSaved = true
 		}
 		if phrase == "Plumber in Springfield" {
-			foundDerived = true
+			t.Fatalf("derived suggestions must not resurface: %s", res.Content)
 		}
 	}
-	if !foundSaved || !foundDerived {
-		t.Fatalf("suggested card must combine saved and derived: %s", res.Content)
+	if !foundSaved {
+		t.Fatalf("suggested card must list saved revserp rows: %s", res.Content)
 	}
 	var payload struct {
 		SuggestedOrigins locationkeywords.SuggestedOrigins `json:"suggested_origins"`

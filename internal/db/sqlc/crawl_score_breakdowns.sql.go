@@ -88,6 +88,7 @@ diff_urls AS (
                       OR baseline_urls.details <> current_urls.details THEN 'changed'
                     ELSE 'unchanged'
                 END
+            WHEN baseline_urls.url = ANY($8::text[]) THEN 'excluded'
             WHEN current_crawl_evidence.psi_observed IS FALSE AND $5 = 'psi_cwv' THEN 'not_verified'
             WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
 			 SELECT 1 FROM crawl_pages AS baseline_coverage
@@ -126,16 +127,18 @@ SELECT COUNT(*)
 FROM ranked_urls
 WHERE $7 = '' OR change_type = $7 OR contribution_type = $7
    OR ($7 = 'resolved' AND change_type = 'no_longer_detected')
+   OR ($7 = 'resolved' AND change_type = 'excluded')
 `
 
 type CountCompareCrawlIssueURLsByTypeForCrawlByUserParams struct {
-	CrawlID   pgtype.UUID
-	CrawlID_2 pgtype.UUID
-	UserID    pgtype.UUID
-	Pillar    string
-	Bucket    string
-	IssueType string
-	Column7   interface{}
+	CrawlID      pgtype.UUID
+	CrawlID_2    pgtype.UUID
+	UserID       pgtype.UUID
+	Pillar       string
+	Bucket       string
+	IssueType    string
+	Column7      interface{}
+	ExcludedUrls []string
 }
 
 func (q *Queries) CountCompareCrawlIssueURLsByTypeForCrawlByUser(ctx context.Context, arg CountCompareCrawlIssueURLsByTypeForCrawlByUserParams) (int64, error) {
@@ -147,6 +150,7 @@ func (q *Queries) CountCompareCrawlIssueURLsByTypeForCrawlByUser(ctx context.Con
 		arg.Bucket,
 		arg.IssueType,
 		arg.Column7,
+		arg.ExcludedUrls,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -408,6 +412,7 @@ diff_urls AS (
                       OR baseline_urls.details <> current_urls.details THEN 'changed'
                     ELSE 'unchanged'
                 END
+            WHEN baseline_urls.url = ANY($10::text[]) THEN 'excluded'
             WHEN current_crawl_evidence.psi_observed IS FALSE AND $5 = 'psi_cwv' THEN 'not_verified'
             WHEN $6 IN ('weak_open_graph_coverage', 'missing_website_schema', 'missing_org_identity_schema', 'missing_about_page', 'missing_contact_page', 'missing_policy_page', 'missing_llms_txt', 'homepage_missing_org_contact_trust_signals') AND EXISTS (
 			 SELECT 1 FROM crawl_pages AS baseline_coverage
@@ -456,21 +461,23 @@ SELECT
 FROM ranked_urls
 WHERE $7 = '' OR change_type = $7 OR contribution_type = $7
    OR ($7 = 'resolved' AND change_type = 'no_longer_detected')
+   OR ($7 = 'resolved' AND change_type = 'excluded')
 ORDER BY url ASC
 LIMIT $8
 OFFSET $9
 `
 
 type ListCompareCrawlIssueURLsByTypeForCrawlByUserParams struct {
-	CrawlID   pgtype.UUID
-	CrawlID_2 pgtype.UUID
-	UserID    pgtype.UUID
-	Pillar    string
-	Bucket    string
-	IssueType string
-	Column7   interface{}
-	Limit     int32
-	Offset    int32
+	CrawlID      pgtype.UUID
+	CrawlID_2    pgtype.UUID
+	UserID       pgtype.UUID
+	Pillar       string
+	Bucket       string
+	IssueType    string
+	Column7      interface{}
+	Limit        int32
+	Offset       int32
+	ExcludedUrls []string
 }
 
 type ListCompareCrawlIssueURLsByTypeForCrawlByUserRow struct {
@@ -497,6 +504,7 @@ func (q *Queries) ListCompareCrawlIssueURLsByTypeForCrawlByUser(ctx context.Cont
 		arg.Column7,
 		arg.Limit,
 		arg.Offset,
+		arg.ExcludedUrls,
 	)
 	if err != nil {
 		return nil, err

@@ -16,6 +16,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/localvisibility"
+	"github.com/ps-wizard/revserp/internal/locationsetup"
 	"github.com/ps-wizard/revserp/internal/mapsvisibility"
 	"github.com/ps-wizard/revserp/internal/projectsetup"
 )
@@ -130,6 +131,12 @@ func (w *Worker) reclaimStale(ctx context.Context) {
 			log.Printf("failed to settle interrupted local visibility run %s: %v", runID.String(), err)
 		}
 	}
+	if err := locationsetup.ReclaimSweep(ctx, w.pool); err != nil {
+		log.Printf("failed to reclaim stale location setups: %v", err)
+	}
+	if err := locationsetup.ReconcileRunningSetups(ctx, w.pool, w.cfg.SerperMapsEndpoint); err != nil {
+		log.Printf("failed to reconcile running location setups: %v", err)
+	}
 }
 
 func (w *Worker) runLoop(ctx context.Context, workerID int) {
@@ -168,6 +175,10 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			jobErr = mapsvisibility.HandleMapsVisibilityCheck(ctx, w.queries, w.cfg, job.ProjectID)
 		case localvisibility.LocalVisibilityJobType:
 			jobErr = localvisibility.ExecuteLocalVisibilityRun(ctx, w.pool, w.cfg, job.LocalRunID, job.ProjectID)
+		case LocationProfileGenerationJobType:
+			jobErr = w.handleLocationProfileGeneration(ctx, job)
+		case LocationMapQueryGenerationJobType:
+			jobErr = w.handleLocationMapQueryGeneration(ctx, job)
 		case projectsetup.BusinessProfileBootstrapJobType:
 			jobErr = w.handleBusinessProfileBootstrap(ctx, job)
 		default:
@@ -201,6 +212,9 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendi
 		})
 	case promptGenerationJobType:
 		if w.isLocationPromptJob(job) {
+			if locationID, ok := locationSetupScope(job); ok {
+				return locationsetup.FinalizeQuestionsSuccess(ctx, w.pool, job.ProjectID, locationID, job.ID)
+			}
 			return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
 		}
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
@@ -212,11 +226,29 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendi
 			return scopeErr
 		}
 		if isLocation {
+			if auditID, ok := locationSetupAuditID(job); ok {
+				return locationsetup.FinalizeVisibilityRun(ctx, w.pool, job.ID, auditID, visibilityStatus, nil)
+			}
 			return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
 		}
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizeVisibilitySuccess(ctx, q, job, visibilityStatus)
 		})
+	case localvisibility.LocalVisibilityJobType:
+		if runID, ok := locationSetupRunID(job); ok {
+			return locationsetup.FinalizeLocalRun(ctx, w.pool, job.ID, runID, nil)
+		}
+		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
+	case LocationProfileGenerationJobType:
+		if locationID, ok := locationSetupScope(job); ok {
+			return locationsetup.FinalizeProfileSuccess(ctx, w.pool, job.ProjectID, locationID, job.ID)
+		}
+		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
+	case LocationMapQueryGenerationJobType:
+		if locationID, ok := locationSetupScope(job); ok {
+			return locationsetup.FinalizeMapQueriesSuccess(ctx, w.pool, job.ProjectID, locationID, job.ID, w.cfg.SerperMapsEndpoint)
+		}
+		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
 	default:
 		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
 	}
@@ -234,6 +266,9 @@ func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendi
 		})
 	case promptGenerationJobType:
 		if w.isLocationPromptJob(job) {
+			if locationID, ok := locationSetupScope(job); ok {
+				return locationsetup.FinalizeQuestionsFailure(ctx, w.pool, job.ProjectID, locationID, job.ID, message)
+			}
 			return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
 				ID:           job.ID,
 				ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
@@ -248,10 +283,37 @@ func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendi
 			return scopeErr
 		}
 		if isLocation {
+			if auditID, ok := locationSetupAuditID(job); ok {
+				return locationsetup.FinalizeVisibilityRun(ctx, w.pool, job.ID, auditID, "", errors.New(message))
+			}
 			return w.failLocationVisibilityJob(ctx, job, message)
 		}
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizeVisibilityFailure(ctx, q, job, message)
+		})
+	case localvisibility.LocalVisibilityJobType:
+		if runID, ok := locationSetupRunID(job); ok {
+			return locationsetup.FinalizeLocalRun(ctx, w.pool, job.ID, runID, errors.New(message))
+		}
+		return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+			ID:           job.ID,
+			ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
+		})
+	case LocationProfileGenerationJobType:
+		if locationID, ok := locationSetupScope(job); ok {
+			return locationsetup.FinalizeProfileFailure(ctx, w.pool, job.ProjectID, locationID, job.ID, message)
+		}
+		return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+			ID:           job.ID,
+			ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
+		})
+	case LocationMapQueryGenerationJobType:
+		if locationID, ok := locationSetupScope(job); ok {
+			return locationsetup.FinalizeMapQueriesFailure(ctx, w.pool, job.ProjectID, locationID, job.ID, message)
+		}
+		return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+			ID:           job.ID,
+			ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
 		})
 	default:
 		return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{

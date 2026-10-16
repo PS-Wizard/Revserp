@@ -175,51 +175,11 @@ func (a *App) handleRefreshProjectLocationLandmarks(w http.ResponseWriter, r *ht
 			serverError(w, r, err)
 			return err
 		}
-		return a.persistLandmarkGeneratedQueries(w, r, queries, projectID, locationID, userID)
+		return nil
 	}) {
 		return
 	}
 	a.writeLayer4Landmarks(w, r, projectID, locationID, userID)
-}
-
-func (a *App) persistLandmarkGeneratedQueries(w http.ResponseWriter, r *http.Request, queries *sqlc.Queries, projectID, locationID, userID pgtype.UUID) error {
-	landmarks, err := queries.ListLocationLandmarksForUser(r.Context(), sqlc.ListLocationLandmarksForUserParams{LocationID: locationID, ProjectID: projectID, UserID: userID})
-	if err != nil {
-		serverError(w, r, err)
-		return err
-	}
-	if len(landmarks) == 0 {
-		return nil
-	}
-	services, err := queries.ListEffectiveProjectLocationServiceLabelsForUser(r.Context(), sqlc.ListEffectiveProjectLocationServiceLabelsForUserParams{LocationID: locationID, ProjectID: projectID, UserID: userID})
-	if err != nil {
-		serverError(w, r, err)
-		return err
-	}
-	if len(services) == 0 {
-		return nil
-	}
-	existing, err := queries.ListProjectLocationQueriesForUser(r.Context(), sqlc.ListProjectLocationQueriesForUserParams{LocationID: locationID, ProjectID: projectID, UserID: userID})
-	if err != nil {
-		serverError(w, r, err)
-		return err
-	}
-	labels := make([]string, 0, len(services))
-	for _, service := range services {
-		labels = append(labels, service.Label)
-	}
-	candidates, err := GenerateLandmarkQueryCandidates(labels, landmarks)
-	if err != nil {
-		serverError(w, r, err)
-		return err
-	}
-	for _, insert := range planLandmarkQueryInserts(candidates, existing, projectID, locationID, userID) {
-		if _, err := queries.InsertProjectLocationQueryForUser(r.Context(), insert); err != nil {
-			serverError(w, r, err)
-			return err
-		}
-	}
-	return nil
 }
 
 func (a *App) handlePutProjectLocationLandmarkSelection(w http.ResponseWriter, r *http.Request) {

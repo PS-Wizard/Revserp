@@ -204,6 +204,7 @@ func TestLocationKeywordListsLocalReads(t *testing.T) {
 		stored: []locationkeywords.StoredKeyword{
 			{Keyword: "Acme", Normalized: "acme", Kind: "brand", Source: "user"},
 			{Keyword: "Plumber", Normalized: "plumber", Kind: "non_brand", Source: "selected"},
+			{Keyword: "Emergency Plumber", Normalized: "emergency plumber", Kind: "non_brand", Source: "revserp"},
 		},
 		brand:    "Acme",
 		services: `["Plumber"]`,
@@ -222,18 +223,9 @@ func TestLocationKeywordListsLocalReads(t *testing.T) {
 	if len(lists["user_defined"].Branded) != 1 || len(lists["selected"].NonBranded) != 1 {
 		t.Fatalf("stored lists wrong: %s", res.Content)
 	}
-	joined := strings.Join(lists["revserp_suggested"].NonBranded, "\n")
-	for _, want := range []string{"Plumber", "Springfield", "Mall", "Far", "Plumber in Springfield", "Plumber in Mall", "Plumber in Far"} {
-		found := false
-		for _, got := range lists["revserp_suggested"].NonBranded {
-			if got == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("suggestions lack %q: %q", want, joined)
-		}
+	suggested := lists["revserp_suggested"]
+	if len(suggested.NonBranded) != 1 || suggested.NonBranded[0] != "Emergency Plumber" {
+		t.Fatalf("suggested card must list saved revserp rows only: %s", res.Content)
 	}
 
 	var payload struct {
@@ -242,8 +234,8 @@ func TestLocationKeywordListsLocalReads(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.Content), &payload); err != nil {
 		t.Fatalf("content origins: %v", err)
 	}
-	if sources := payload.SuggestedOrigins["mall"]; len(sources) == 0 {
-		t.Fatalf("suggested_origins missing landmark provenance: %s", res.Content)
+	if len(payload.SuggestedOrigins) != 0 {
+		t.Fatalf("saved-only suggestions carry no derived origins: %s", res.Content)
 	}
 }
 
@@ -290,17 +282,12 @@ func TestLocationKeywordUpdateLocalReplacesSelectedOnly(t *testing.T) {
 			t.Fatalf("selected-only update must not wipe user rows: %q", stmt)
 		}
 	}
-	if len(queries.inserted) != 2 {
-		t.Fatalf("inserted %d map queries, want 2 (Acme, Leak Repair)", len(queries.inserted))
-	}
-	for _, q := range queries.inserted {
-		if q.Kind != "map" || q.Source != "manual" || !q.Enabled {
-			t.Fatalf("draft row wrong: %+v", q)
-		}
+	if len(queries.inserted) != 0 || len(queries.updated) != 0 {
+		t.Fatalf("selected update must not touch Maps drafts: inserted=%v updated=%v", queries.inserted, queries.updated)
 	}
 }
 
-func TestLocationKeywordUpdateLocalSyncsDraftEnabledExactly(t *testing.T) {
+func TestLocationKeywordUpdateLocalLeavesDraftUntouched(t *testing.T) {
 	db := &fakeLocationKeywordDB{brand: "Acme", services: `["Plumber"]`}
 	queries := testLocationAccess()
 	queries.location = sqlc.GetProjectLocationForUserRow{Localities: []byte(`["Springfield"]`)}
@@ -316,31 +303,12 @@ func TestLocationKeywordUpdateLocalSyncsDraftEnabledExactly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runLocal: %v", err)
 	}
-	if len(queries.updated) != 2 {
-		t.Fatalf("updated = %+v, want reselected enable + deselected disable", queries.updated)
-	}
-	byText := map[string]sqlc.UpdateProjectLocationQueryForUserParams{}
-	for _, u := range queries.updated {
-		byText[u.Text] = u
-		if u.Kind != "map" {
-			t.Fatalf("update kind = %q, map draft only", u.Kind)
-		}
-	}
-	if u, ok := byText["Leak Repair"]; !ok || !u.Enabled || u.Ordinal != 0 || u.Source != "generated" || u.Origin != "landmark" {
-		t.Fatalf("reselected disabled row must enable in place: %+v", byText)
-	}
-	if u, ok := byText["Old Pick"]; !ok || u.Enabled || u.Ordinal != 2 || u.Text != "Old Pick" {
-		t.Fatalf("deselected enabled row must disable in place: %+v", byText)
-	}
-	if len(queries.inserted) != 1 || queries.inserted[0].Text != "New Pick" {
-		t.Fatalf("inserted = %+v, want only the genuinely new phrase", queries.inserted)
-	}
-	if queries.inserted[0].Ordinal != 3 || !queries.inserted[0].Enabled {
-		t.Fatalf("new row must append enabled: %+v", queries.inserted[0])
+	if len(queries.updated) != 0 || len(queries.inserted) != 0 {
+		t.Fatalf("selected update must leave every draft row alone: updated=%v inserted=%v", queries.updated, queries.inserted)
 	}
 }
 
-func TestLocationKeywordUpdateLocalEmptySelectionDisablesAll(t *testing.T) {
+func TestLocationKeywordUpdateLocalEmptySelectionClearsListOnly(t *testing.T) {
 	db := &fakeLocationKeywordDB{brand: "Acme", services: `[]`}
 	queries := testLocationAccess()
 	queries.location = sqlc.GetProjectLocationForUserRow{Localities: []byte(`[]`)}
@@ -355,11 +323,8 @@ func TestLocationKeywordUpdateLocalEmptySelectionDisablesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runLocal: %v", err)
 	}
-	if len(queries.updated) != 1 || queries.updated[0].Text != "Acme" || queries.updated[0].Enabled {
-		t.Fatalf("empty selection must disable every enabled draft row: %+v", queries.updated)
-	}
-	if len(queries.inserted) != 0 {
-		t.Fatalf("empty selection must insert nothing: %+v", queries.inserted)
+	if len(queries.updated) != 0 || len(queries.inserted) != 0 {
+		t.Fatalf("empty selection clears the list but must not touch drafts: updated=%v inserted=%v", queries.updated, queries.inserted)
 	}
 }
 
@@ -391,11 +356,12 @@ func TestLocationKeywordUpdateLocalConflictIsModelVisible(t *testing.T) {
 	}
 }
 
-func TestLocationKeywordCoverageLocalUsesSelected(t *testing.T) {
+func TestLocationKeywordCoverageLocalUsesCombined(t *testing.T) {
 	db := &fakeLocationKeywordDB{
 		stored: []locationkeywords.StoredKeyword{
 			{Keyword: "Plumber", Normalized: "plumber", Kind: "non_brand", Source: "selected"},
-			{Keyword: "Ignored Parent Term", Normalized: "ignored parent term", Kind: "non_brand", Source: "user"},
+			{Keyword: "Acme", Normalized: "acme", Kind: "brand", Source: "user"},
+			{Keyword: "Emergency Plumber", Normalized: "emergency plumber", Kind: "non_brand", Source: "revserp"},
 		},
 	}
 	queries := testLocationAccess()
@@ -413,11 +379,23 @@ func TestLocationKeywordCoverageLocalUsesSelected(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.Content), &body); err != nil {
 		t.Fatalf("content is not coverage JSON: %v\n%s", err, res.Content)
 	}
-	if body.TotalSeeds != 1 || body.Seeds[0].Keyword != "Plumber" {
-		t.Fatalf("coverage must key on selected local keywords only: %s", res.Content)
+	if body.TotalSeeds != 3 {
+		t.Fatalf("coverage must key on all saved user+suggested+legacy keywords: %s", res.Content)
 	}
-	if body.Seeds[0].State != string(keywords.StateLikelyTargeted) {
-		t.Fatalf("state = %q", body.Seeds[0].State)
+	byKeyword := map[string]keywordCoverageSeed{}
+	for _, seed := range body.Seeds {
+		byKeyword[seed.Keyword] = seed
+	}
+	for _, want := range []string{"Plumber", "Acme", "Emergency Plumber"} {
+		if _, ok := byKeyword[want]; !ok {
+			t.Fatalf("coverage lacks %q: %s", want, res.Content)
+		}
+	}
+	if byKeyword["Plumber"].State != string(keywords.StateLikelyTargeted) {
+		t.Fatalf("state = %q", byKeyword["Plumber"].State)
+	}
+	if len(queries.inserted) != 0 || len(queries.updated) != 0 {
+		t.Fatalf("coverage must never sync Maps drafts: inserted=%v updated=%v", queries.inserted, queries.updated)
 	}
 }
 

@@ -274,10 +274,6 @@ func buildLocationGenerationPrompt(systemPrompt string, profile LocationBusiness
 		sb.WriteString("\nCompetitors: ")
 		sb.WriteString(strings.Join(profile.BusinessCompetitors, ", "))
 	}
-	if len(profile.Services) > 0 {
-		sb.WriteString("\nServices: ")
-		sb.WriteString(strings.Join(profile.Services, ", "))
-	}
 	if hasBoundLocation(target) {
 		sb.WriteString("\n\nBound location (authoritative local target; never substitute a country or region from the profile):\n")
 		if target.Name != "" {
@@ -302,7 +298,7 @@ func buildLocationGenerationPrompt(systemPrompt string, profile LocationBusiness
 		}
 	}
 	sb.WriteString("\n\nNearby buyer-intent rules (location questions must stay local even with no seeds):\n")
-	sb.WriteString("Ground every question in the bound location and services above. When the profile Location names a country or region, it is background only; the bound locality is the question geography. Prefer a buyer-intent near/in phrasing with the bound locality so empty seeds still yield local questions.\n")
+	sb.WriteString("Ground every question in the bound location and products above. When the profile Location names a country or region, it is background only; the bound locality is the question geography. Prefer a buyer-intent near/in phrasing with the bound locality so empty seeds still yield local questions.\n")
 	if len(landmarks) > 0 {
 		sb.WriteString("\nSaved nearby landmarks (real places near this location; reference at most two of them naturally in near-me buyer questions; never invent other place names):\n")
 		for _, landmark := range landmarks {
@@ -324,7 +320,7 @@ func buildLocationGenerationPrompt(systemPrompt string, profile LocationBusiness
 			fmt.Fprintf(&sb, "%d. %s\n", i+1, p)
 		}
 	} else {
-		sb.WriteString("\nSeed questions: none saved. Use the bound locality and services above as the question geography.\n")
+		sb.WriteString("\nSeed questions: none saved. Use the bound locality and products above as the question geography.\n")
 	}
 	sb.WriteString("\nGenerate 10 questions:")
 	return sb.String()

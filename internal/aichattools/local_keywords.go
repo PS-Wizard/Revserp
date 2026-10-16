@@ -218,9 +218,8 @@ type locationKeywordUpdateReader interface {
 }
 
 // locationKeywordUpdateLocalExecutor runs the location branch of
-// update_project_keywords: it replaces the LOCATION selected list only and
-// syncs future Maps draft queries in the same transaction. Parent
-// project_keywords rows are never touched and no prompt generation follows.
+// update_project_keywords: it replaces the LOCATION selected list only.
+// Parent project_keywords rows and Maps queries are never touched.
 // The db is the caller's write transaction.
 type locationKeywordUpdateLocalExecutor struct {
 	db        locationkeywords.DB
@@ -228,8 +227,8 @@ type locationKeywordUpdateLocalExecutor struct {
 }
 
 // executeUpdateProjectKeywordsLocal dispatches a location-scoped call: the
-// selected list and the future Maps draft update atomically, and every
-// return stays local, never falling through to the parent lists.
+// selected list updates atomically, and every return stays local, never
+// falling through to the parent lists.
 func executeUpdateProjectKeywordsLocal(ctx context.Context, args json.RawMessage, s Scope) (Result, error) {
 	if s.Queries == nil || s.DB == nil {
 		return Result{}, errors.New("update_project_keywords: scope has no queries or transaction support")
@@ -252,11 +251,9 @@ func executeUpdateProjectKeywordsLocal(ctx context.Context, args json.RawMessage
 
 // runLocal replaces one location keyword list from the model's complete
 // brand/non_brand lists. The source is always explicit: source "selected"
-// replaces the selected list and syncs future Maps draft queries, so the
-// model must pass it only after the user explicitly asks to select Maps
-// queries; empty clears every map draft enabled flag. Source "revserp" saves
-// Find-keywords suggestions only: user-defined and selected rows stay
-// untouched and no Maps query syncs.
+// replaces the SEO selected list only and never touches Maps queries.
+// Source "revserp" saves Find-keywords suggestions only: user-defined and
+// selected rows stay untouched.
 func (e *locationKeywordUpdateLocalExecutor) runLocal(ctx context.Context, raw json.RawMessage, projectID, locationID, userID pgtype.UUID) (Result, error) {
 	args, err := parseLocalKeywordArgs(raw)
 	if err != nil {
@@ -305,9 +302,8 @@ func (e *locationKeywordUpdateLocalExecutor) runRevserp(ctx context.Context, arg
 	return Result{Content: string(content), Summary: summary}, nil
 }
 
-// runSelected replaces the location selected list and syncs future Maps
-// draft queries in the same transaction. Parent project_keywords rows are
-// never touched and no prompt generation follows.
+// runSelected replaces the location SEO selected list only. Parent
+// project_keywords rows and Maps queries are never touched.
 func (e *locationKeywordUpdateLocalExecutor) runSelected(ctx context.Context, args updateProjectKeywordsArgs, projectID, locationID, userID pgtype.UUID) (Result, error) {
 	brand, nonBrand, err := locationkeywords.NormalizeKeywordGroup(args.BrandKeywords, args.NonBrandKeywords)
 	if err != nil {
@@ -329,21 +325,6 @@ func (e *locationKeywordUpdateLocalExecutor) runSelected(ctx context.Context, ar
 	if err := emitLocationKeywordsUpdated(ctx, e.db, locked.OrganizationID, projectID, locationID, locationkeywords.SourceSelected, len(brand), len(nonBrand)); err != nil {
 		return Result{}, fmt.Errorf("%s: emit location_keywords.updated: %w", updateProjectKeywordsName, err)
 	}
-	location, err := e.locations.GetProjectLocationForUser(ctx, sqlc.GetProjectLocationForUserParams{
-		ID:     locationID,
-		ID_2:   projectID,
-		UserID: userID,
-	})
-	if err != nil {
-		return Result{}, fmt.Errorf("%s: read location localities: %w", updateProjectKeywordsName, err)
-	}
-	_, keys, err := locationkeywords.LoadSuggestedKeywords(ctx, e.db, e.locations, projectID, locationID, userID, location.Localities)
-	if err != nil {
-		return Result{}, fmt.Errorf("%s: load suggestion keys: %w", updateProjectKeywordsName, err)
-	}
-	if err := locationkeywords.SyncSelectedMapQueries(ctx, e.locations, locationID, projectID, userID, append(append([]string{}, brand...), nonBrand...), keys); err != nil {
-		return Result{}, fmt.Errorf("%s: sync selected map queries: %w", updateProjectKeywordsName, err)
-	}
 	content, err := json.Marshal(map[string]interface{}{
 		"brand_keywords":     brand,
 		"non_brand_keywords": nonBrand,
@@ -351,7 +332,7 @@ func (e *locationKeywordUpdateLocalExecutor) runSelected(ctx context.Context, ar
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: marshal response: %w", updateProjectKeywordsName, err)
 	}
-	summary := fmt.Sprintf("updated location selected keywords: %d brand, %d non-brand (user-defined preserved; future Maps queries synced)", len(brand), len(nonBrand))
+	summary := fmt.Sprintf("updated location selected keywords: %d brand, %d non-brand (user-defined preserved; Maps queries untouched)", len(brand), len(nonBrand))
 	return Result{Content: string(content), Summary: summary}, nil
 }
 
@@ -420,9 +401,9 @@ func (e *locationKeywordCoverageLocalExecutor) runLocal(ctx context.Context, raw
 	}
 	rows, err := locationkeywords.LoadStoredKeywords(ctx, e.db, locationID)
 	if err != nil {
-		return Result{}, fmt.Errorf("get_keyword_coverage: load selected keywords: %w", err)
+		return Result{}, fmt.Errorf("get_keyword_coverage: load location keywords: %w", err)
 	}
-	targetKeywords := locationkeywords.SelectedKeywordTexts(rows)
+	targetKeywords := locationkeywords.CombinedKeywordTexts(rows)
 	// Local coverage targets the bound location's locality, never the parent
 	// profile's primary_location (which may name a whole country).
 	primaryLocation := location.Locality

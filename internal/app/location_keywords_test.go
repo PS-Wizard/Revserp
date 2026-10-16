@@ -51,7 +51,7 @@ func TestLocationKeywordListsResponseShape(t *testing.T) {
 	}
 }
 
-// newLocationKeywordsTestTx applies migrations 102 and 107 in an isolated
+// newLocationKeywordsTestTx applies migrations 102, 107, and 116 in an isolated
 // schema with a stub parent table, so this test never depends on other
 // workers' in-flight schema. It never falls back to a default database URL.
 func newLocationKeywordsTestTx(t *testing.T) (pgx.Tx, pgtype.UUID) {
@@ -81,11 +81,9 @@ func newLocationKeywordsTestTx(t *testing.T) (pgx.Tx, pgtype.UUID) {
 	if _, err := tx.Exec(ctx, `CREATE TABLE project_locations(id UUID PRIMARY KEY, project_id UUID)`); err != nil {
 		t.Fatal(err)
 	}
-	// The 107 creation-copy trigger reads parent user rows and seeds manual
-	// Maps drafts, so the scratch schema stubs both tables it writes through:
-	// the parent keywords it selects (with the created_at/id columns the
-	// deterministic ordinal orders by) and the draft table with the unique
-	// key its ON CONFLICT targets.
+	// The creation-copy trigger reads parent user rows for the keyword copy;
+	// migration 116 stopped its manual Maps draft seeding, so the draft
+	// table stub exists only to prove nothing is written through it.
 	if _, err := tx.Exec(ctx, `CREATE TABLE project_keywords(project_id UUID, keyword TEXT, normalized_keyword TEXT, kind TEXT, source TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), id UUID PRIMARY KEY DEFAULT gen_random_uuid())`); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +91,7 @@ func newLocationKeywordsTestTx(t *testing.T) (pgx.Tx, pgtype.UUID) {
 		t.Fatal(err)
 	}
 	_, file, _, _ := runtime.Caller(0)
-	for _, name := range []string{"000102_location_keywords.sql", "000107_location_keywords_revserp.sql"} {
+	for _, name := range []string{"000102_location_keywords.sql", "000107_location_keywords_revserp.sql", "000116_location_keywords_stop_maps_seeding.sql"} {
 		migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
 		if err != nil {
 			t.Fatal(err)
@@ -113,11 +111,10 @@ func newLocationKeywordsTestTx(t *testing.T) (pgx.Tx, pgtype.UUID) {
 	return tx, locationID
 }
 
-// TestLocationCreationTriggerSeedsKeywordsAndDrafts proves the 107 trigger
-// end to end: one location insert copies parent user rows to the user and
-// selected lists, skips the overlong phrase and the unadopted revserp row,
-// and seeds one enabled manual Maps draft per copied phrase with
-// deterministic ordinals. Runs only against the scratch database.
+// TestLocationCreationTriggerSeedsKeywordsAndDrafts proves the creation-copy
+// trigger end to end: one location insert copies parent user rows to the user and
+// selected lists verbatim, skips the unadopted revserp row, and since
+// migration 116 seeds no Maps drafts. Runs only against the scratch database.
 func TestLocationCreationTriggerSeedsKeywordsAndDrafts(t *testing.T) {
 	tx, _ := newLocationKeywordsTestTx(t)
 	ctx := context.Background()
@@ -148,8 +145,7 @@ func TestLocationCreationTriggerSeedsKeywordsAndDrafts(t *testing.T) {
 	}
 	for _, source := range []string{"user", "selected"} {
 		got := locationkeywords.GroupStoredKeywords(rows, source)
-		// The keyword copy preserves every parent user phrase verbatim;
-		// only the draft seed enforces the Maps byte threshold.
+		// The keyword copy preserves every parent user phrase verbatim.
 		if len(got.NonBranded) != 2 {
 			t.Fatalf("%s = %#v, want both parent user phrases", source, got)
 		}
@@ -173,20 +169,16 @@ func TestLocationCreationTriggerSeedsKeywordsAndDrafts(t *testing.T) {
 	if err := draftRows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(drafts) != 1 {
-		t.Fatalf("drafts = %#v, want one seeded draft", drafts)
-	}
-	d := drafts[0]
-	if d.text != "Acme Plumber" || d.normalized != "acme plumber" || d.kind != "map" || d.source != "manual" || d.origin != "service" || d.ordinal != 0 || !d.enabled {
-		t.Fatalf("draft = %+v, want the enabled manual map row at ordinal 0", d)
+	if len(drafts) != 0 {
+		t.Fatalf("drafts = %#v, want no seeded Maps drafts", drafts)
 	}
 }
 
-// draftSeedRow is one seeded Maps draft record read back in the trigger test.
+// draftSeedRow is one Maps draft record read back in the trigger test.
 type draftSeedRow struct {
 	text, normalized, kind, source, origin string
-	ordinal                               int32
-	enabled                               bool
+	ordinal                                int32
+	enabled                                bool
 }
 
 func TestLocationKeywordsStoreRoundTrip(t *testing.T) {

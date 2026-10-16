@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -198,6 +199,11 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		writeJSONError(w, http.StatusBadRequest, "change_type must be new, resolved, no_longer_detected, not_verified, changed, unchanged, improved, regressed, or all")
 		return
 	}
+	includeExcluded, ok := parseIncludeExcludedParam(r.URL.Query().Get("include_excluded"))
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "include_excluded must be true or false")
+		return
+	}
 	limit, offset, err := parsePaginationParams(r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -240,9 +246,18 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		return
 	}
 
+	var excludedURLs []string
+	if includeExcluded {
+		excludedURLs, err = loadComparisonExcludedURLs(r.Context(), a.Queries, user.ID, baselineCrawlID, currentCrawlID, pillar, bucket, issueType, currentCrawl.ConfigSnapshot)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	}
 	countParams := sqlc.CountCompareCrawlIssueURLsByTypeForCrawlByUserParams{
 		CrawlID: baselineCrawlID, CrawlID_2: currentCrawlID, UserID: user.ID,
 		Pillar: pillar, Bucket: bucket, IssueType: issueType, Column7: changeType,
+		ExcludedUrls: excludedURLs,
 	}
 	total, err := a.Queries.CountCompareCrawlIssueURLsByTypeForCrawlByUser(r.Context(), countParams)
 	if err != nil {
@@ -253,6 +268,7 @@ func (a *App) handleListScoreBreakdownCompareIssueURLs(w http.ResponseWriter, r 
 		CrawlID: baselineCrawlID, CrawlID_2: currentCrawlID, UserID: user.ID,
 		Pillar: pillar, Bucket: bucket, IssueType: issueType, Column7: changeType,
 		Limit: limit, Offset: offset,
+		ExcludedUrls: excludedURLs,
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -515,6 +531,19 @@ func scoreIfBucket(ok bool, bucket issueshared.BucketScoreBreakdown) int32 {
 		return 0
 	}
 	return bucket.Score
+}
+
+// parseIncludeExcludedParam parses the optional include_excluded flag for compare URL lists, defaulting to false.
+func parseIncludeExcludedParam(raw string) (bool, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false, true
+	}
+	parsed, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return false, false
+	}
+	return parsed, true
 }
 
 func normalizeCompareURLChangeType(value string) (string, bool) {

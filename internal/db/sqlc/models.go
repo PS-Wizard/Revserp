@@ -567,6 +567,30 @@ type LocationListingSearch struct {
 	ExpiresAt   pgtype.Timestamptz
 }
 
+type LocationSetup struct {
+	ID                   pgtype.UUID
+	OrganizationID       pgtype.UUID
+	ProjectID            pgtype.UUID
+	LocationID           pgtype.UUID
+	RequestedByUserID    pgtype.UUID
+	Differences          string
+	Status               string
+	Error                pgtype.Text
+	PrepareStatus        string
+	ProfileStatus        string
+	QuestionsStatus      string
+	MapQueriesStatus     string
+	AiVisibilityStatus   string
+	MapsVisibilityStatus string
+	StepReasons          []byte
+	AiAuditID            pgtype.UUID
+	MapsRunID            pgtype.UUID
+	EstimatedMapsCredits pgtype.Int4
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	CompletedAt          pgtype.Timestamptz
+}
+
 type LocationWebsiteScope struct {
 	ID         pgtype.UUID
 	ProjectID  pgtype.UUID

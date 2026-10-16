@@ -154,14 +154,8 @@ func (a *App) handlePutLocationKeywordLists(w http.ResponseWriter, r *http.Reque
 		serverError(w, r, err)
 		return
 	}
-	// Selected phrases mirror into the live Maps draft only: existing draft
-	// rows and frozen run snapshots are never edited or deleted here.
 	suggested, suggestionKeys, err := locationkeywords.LoadSuggestedKeywords(r.Context(), tx, queries, projectID, locationID, principal.User.ID, lockedLocalities(r.Context(), queries, projectID, locationID, principal.User.ID))
 	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	if err := locationkeywords.SyncSelectedMapQueries(r.Context(), queries, locationID, projectID, principal.User.ID, append(append([]string{}, selectedBrand...), selectedNonBrand...), suggestionKeys); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -237,7 +231,8 @@ func writeLocationKeywordError(w http.ResponseWriter, err error) {
 }
 
 // handleGetLocationKeywordCoverage reuses the parent coverage algorithm and
-// response over full-site stored pages, keyed on location selected keywords
+// response over full-site stored pages, keyed on location combined keywords
+// (all saved user+suggested terms plus legacy selected leftovers)
 // rather than the branch website scope.
 func (a *App) handleGetLocationKeywordCoverage(w http.ResponseWriter, r *http.Request) {
 	projectID, locationID, _, location, ok := a.layer4Location(w, r)
@@ -249,7 +244,7 @@ func (a *App) handleGetLocationKeywordCoverage(w http.ResponseWriter, r *http.Re
 		serverError(w, r, err)
 		return
 	}
-	targetKeywords := locationkeywords.SelectedKeywordTexts(rows)
+	targetKeywords := locationkeywords.CombinedKeywordTexts(rows)
 	// The geo seed is the bound location's own place, never the parent
 	// project profile: a copied parent primary_location can be a whole
 	// country and must not seed a local report with a wrong market.

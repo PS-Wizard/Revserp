@@ -77,7 +77,7 @@ func TestBuildLocationGenerationPromptIncludesLocalProfile(t *testing.T) {
 	for _, want := range []string{
 		"SYSTEM", "Brand: Acme Downtown", "Website: https://acme.example",
 		"Category: Dentist", "Location: Kathmandu", "Products: Braces and cleanings.",
-		"Audience: Local families.", "Competitors: CorpA", "Services: Braces, Cleanings",
+		"Audience: Local families.", "Competitors: CorpA",
 		"Seed questions:", "1. where downtown braces?", "Generate 10 questions:",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -180,13 +180,13 @@ func TestHandleLocationPromptGenerationRequiresLocationScope(t *testing.T) {
 }
 
 func TestBuildLocationGenerationPromptUsesSavedLandmarks(t *testing.T) {
-	profile := LocationBusinessProfile{BrandName: "Acme", PrimaryLocation: "United States", Services: []string{"Braces"}}
+	profile := LocationBusinessProfile{BrandName: "Acme", PrimaryLocation: "United States", ProductDescription: "Braces"}
 	target := LocationTarget{Locality: "Kathmandu"}
 	landmarks := []LocationLandmark{{Name: "Durbar Marg", StraightLineM: 400, Categories: []string{"shopping"}}}
 	prompt := buildLocationGenerationPrompt("SYSTEM", profile, target, landmarks)
 	for _, want := range []string{
 		"Durbar Marg", "0.4 km", "shopping", "never invent other place names",
-		"bound locality is the question geography", "Services: Braces", "Locality: Kathmandu",
+		"bound locality is the question geography", "Products: Braces", "Locality: Kathmandu",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -200,7 +200,7 @@ func TestBuildLocationGenerationPromptStaysLocalWithoutSeedsOrLandmarks(t *testi
 	prompt := buildLocationGenerationPrompt("SYSTEM", profile, target, nil)
 	for _, want := range []string{
 		"none recorded. Do not invent place names",
-		"none saved. Use the bound locality and services above",
+		"none saved. Use the bound locality and products above",
 		"Address: Thamel 1",
 	} {
 		if !strings.Contains(prompt, want) {
