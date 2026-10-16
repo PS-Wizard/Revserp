@@ -215,3 +215,32 @@ func (q *Queries) ListProjectsForOrganizationForUser(ctx context.Context, arg Li
 	}
 	return items, nil
 }
+
+const renameProjectForUser = `-- name: RenameProjectForUser :one
+UPDATE projects AS p
+SET name = $3
+FROM organization_members AS om
+WHERE p.id = $1
+  AND om.org_id = p.organization_id
+  AND om.user_id = $2
+RETURNING p.id, p.organization_id, p.name, p.base_url, p.created_at
+`
+
+type RenameProjectForUserParams struct {
+	ID     pgtype.UUID
+	UserID pgtype.UUID
+	Name   string
+}
+
+func (q *Queries) RenameProjectForUser(ctx context.Context, arg RenameProjectForUserParams) (Project, error) {
+	row := q.db.QueryRow(ctx, renameProjectForUser, arg.ID, arg.UserID, arg.Name)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.Name,
+		&i.BaseUrl,
+		&i.CreatedAt,
+	)
+	return i, err
+}

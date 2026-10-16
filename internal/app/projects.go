@@ -246,6 +246,50 @@ func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+type renameProjectRequest struct {
+	Name string `json:"name"`
+}
+
+func (a *App) handleRenameProject(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseUUIDParam(chi.URLParam(r, "projectID"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+
+	principal, ok := a.getPrincipal(w, r)
+	if !ok {
+		return
+	}
+
+	var requestBody renameProjectRequest
+	if !readStrictJSONOrRespond(w, r, &requestBody) {
+		return
+	}
+
+	name := strings.TrimSpace(requestBody.Name)
+	if name == "" {
+		writeJSONError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	project, err := a.Queries.RenameProjectForUser(r.Context(), sqlc.RenameProjectForUserParams{
+		ID:     projectID,
+		UserID: principal.User.ID,
+		Name:   name,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newProjectResponse(project))
+}
+
 // cachedUserContextKey is a private context key for storing just the user row early in the
 // middleware chain (before organizations are loaded).
 type cachedUserContextKey struct{}

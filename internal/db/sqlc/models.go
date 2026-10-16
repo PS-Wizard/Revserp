@@ -918,3 +918,9 @@ type User struct {
 	SuspensionReason pgtype.Text
 	OnboardingState  []byte
 }
+
+type UserAnnouncementSeen struct {
+	UserID         pgtype.UUID
+	AnnouncementID string
+	SeenAt         pgtype.Timestamptz
+}

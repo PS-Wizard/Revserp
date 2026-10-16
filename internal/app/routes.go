@@ -56,6 +56,8 @@ func (a *App) Router() http.Handler {
 			app.Get("/me", a.handleMe)
 			app.Get("/me/onboarding", a.handleGetOnboarding)
 			app.Put("/me/onboarding", a.handlePutOnboarding)
+			app.Get("/me/announcements/seen", a.handleListAnnouncementSeen)
+			app.Put("/me/announcements/{announcementID}/seen", a.handleMarkAnnouncementSeen)
 			app.Get("/app-bootstrap", a.handleAppBootstrap)
 			app.Post("/me/active-organization", a.handleSetActiveOrganization)
 			app.Group(func(gated chi.Router) {
@@ -76,6 +78,7 @@ func (a *App) Router() http.Handler {
 			app.Get("/organizations/{organizationID}/invites", a.handleListOrganizationInvites)
 			app.Post("/organizations/{organizationID}/invites/{inviteID}/revoke", a.handleRevokeOrganizationInvite)
 			app.Get("/projects/{projectID}", a.handleGetProject)
+			app.Patch("/projects/{projectID}", a.handleRenameProject)
 			app.Get("/projects/{projectID}/maps-budget", a.handleGetProjectMapsBudget)
 			app.Post("/projects/{projectID}/locations", a.handleCreateProjectLocation)
 			app.Get("/projects/{projectID}/locations", a.handleListProjectLocations)

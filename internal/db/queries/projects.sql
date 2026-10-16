@@ -69,3 +69,12 @@ ORDER BY p.created_at ASC;
 SELECT COUNT(*)::bigint
 FROM projects
 WHERE organization_id = sqlc.arg(organization_id);
+
+-- name: RenameProjectForUser :one
+UPDATE projects AS p
+SET name = $3
+FROM organization_members AS om
+WHERE p.id = $1
+  AND om.org_id = p.organization_id
+  AND om.user_id = $2
+RETURNING p.id, p.organization_id, p.name, p.base_url, p.created_at;

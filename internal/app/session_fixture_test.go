@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	internalauth "github.com/ps-wizard/revserp/internal/auth"
+	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
 // Shared cookie-session fixture for app tests. The Supabase JWKS is faked
@@ -45,7 +46,14 @@ type sessionFixture struct {
 func newSessionFixture(t *testing.T) sessionFixture {
 	t.Helper()
 	queries, pool, ctx := newFeaturesTestQueries(t)
+	return newSessionFixtureWithQueries(t, queries, pool, ctx)
+}
 
+// newSessionFixtureWithQueries creates a user plus a real backend session on
+// an already-connected pool, so tests with their own dedicated database reuse
+// the same session/JWKS construction without duplicating it.
+func newSessionFixtureWithQueries(t *testing.T, queries *sqlc.Queries, pool *pgxpool.Pool, ctx context.Context) sessionFixture {
+	t.Helper()
 	// Local JWKS server backing the JWT verifier.
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
