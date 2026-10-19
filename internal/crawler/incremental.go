@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
+	"github.com/ps-wizard/revserp/internal/pgnull"
 )
 
 // baselinePage holds one previous-crawl page's cache validators plus the exact
@@ -83,7 +84,16 @@ func (store *Store) LoadBaseline(ctx context.Context, projectID pgtype.UUID, cur
 		return nil, fmt.Errorf("get incremental baseline crawl: %w", err)
 	}
 
-	validatorRows, err := store.queries.ListPageValidatorsForCrawl(ctx, baselineCrawlID)
+	// Only pages the current extraction engine produced successfully carry
+	// reusable content: legacy rows predate the extractor, a mismatched engine
+	// version means the stored visible_text/content_blocks are stale, and
+	// failed/empty extractions yielded nothing worth copying. Excluded pages
+	// simply get no validator, so the fetch goes out unconditionally and a 200
+	// re-extracts them with the current engine.
+	validatorRows, err := store.queries.ListPageValidatorsForCrawl(ctx, sqlc.ListPageValidatorsForCrawlParams{
+		CrawlID:          baselineCrawlID,
+		ContentExtractor: pgnull.Text(MainContentExtractorVersion),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list page validators for crawl: %w", err)
 	}

@@ -95,24 +95,27 @@ func TestParserParseHTML(t *testing.T) {
 		t.Fatalf("got json-ld block %q", parsedPage.JSONLDBlocks[0])
 	}
 
-	if parsedPage.VisibleText != "Main Heading\n\nThis is a useful paragraph with real body text.\n\nOverview\n\nFeatures\n\nFast\n\nReliable" {
+	// Short-fixture native output is a single collapsed paragraph (baseline
+	// whole-body path under the default size threshold); text and blocks share
+	// that one native extraction and SEO facts above stay from the original DOM.
+	if parsedPage.VisibleText != "Main Heading\nThis is a useful paragraph with real body text.\nOverview\nFeatures\nFast\nReliable\nAbout Us\nVercel" {
 		t.Fatalf("got visible text %q", parsedPage.VisibleText)
 	}
 
-	if len(parsedPage.ContentBlocks) != 9 {
+	if len(parsedPage.ContentBlocks) != 1 {
 		t.Fatalf("got %d content blocks", len(parsedPage.ContentBlocks))
 	}
 
-	if parsedPage.ContentBlocks[0].Tag != "h1" || parsedPage.ContentBlocks[0].Text != "Main Heading" {
+	if parsedPage.ContentBlocks[0].Tag != "p" {
 		t.Fatalf("got first block %#v", parsedPage.ContentBlocks[0])
 	}
 
-	if parsedPage.ContentBlocks[1].Tag != "p" || parsedPage.ContentBlocks[1].Text != "This is a useful paragraph with real body text." {
-		t.Fatalf("got second block %#v", parsedPage.ContentBlocks[1])
+	if parsedPage.ContentExtractor != "go-trafilatura/v2@2.2.6" {
+		t.Fatalf("got content extractor %q", parsedPage.ContentExtractor)
 	}
 
-	if parsedPage.ContentBlocks[6].Tag != "img" || parsedPage.ContentBlocks[6].Text != "Hero image" {
-		t.Fatalf("got img block %#v", parsedPage.ContentBlocks[6])
+	if parsedPage.ContentExtractionStatus != "ok" {
+		t.Fatalf("got content extraction status %q", parsedPage.ContentExtractionStatus)
 	}
 
 	if parsedPage.ImageCount != 3 {
@@ -306,7 +309,8 @@ func TestParserExtractsTextFromDivsInMain(t *testing.T) {
 }
 
 func TestParserDropsHeaderAndFooterInsideMain(t *testing.T) {
-	htmlDocument := []byte(`<main><header>Site header</header><div>Real content</div><footer>Site footer</footer></main>`)
+	longFiller := "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt. "
+	htmlDocument := []byte(`<main><header>Site header</header><div><p>Real content ` + longFiller + longFiller + longFiller + longFiller + `</p><p>Second paragraph ` + longFiller + longFiller + longFiller + longFiller + `</p></div><footer>Site footer</footer></main>`)
 
 	parser := NewParser()
 	parsedPage, err := parser.ParseHTML("https://revketer.ai/page", "text/html", htmlDocument)
@@ -328,7 +332,11 @@ func TestParserDropsHeaderAndFooterInsideMain(t *testing.T) {
 }
 
 func TestParserDropsReadMoreFromVisibleTextButKeepsBlocks(t *testing.T) {
-	htmlDocument := []byte(`<main><div>Ad release 2018</div><p>Read More</p><p>Read More</p><p>Read More</p></main>`)
+	// Native extraction carries no handrolled Read More noise list: visible
+	// text is the native plain text of the same ContentNode, so labels the
+	// engine keeps appear in both text and blocks consistently.
+	longFiller := "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt. "
+	htmlDocument := []byte(`<main><article><h1>Ad release 2018 report</h1><p>` + longFiller + longFiller + longFiller + longFiller + `</p><p>` + longFiller + longFiller + longFiller + longFiller + `</p><p>Read More</p></article></main>`)
 
 	parser := NewParser()
 	parsedPage, err := parser.ParseHTML("https://revketer.ai/ads", "text/html", htmlDocument)
@@ -336,12 +344,8 @@ func TestParserDropsReadMoreFromVisibleTextButKeepsBlocks(t *testing.T) {
 		t.Fatalf("parse html: %v", err)
 	}
 
-	if !strings.Contains(parsedPage.VisibleText, "Ad release 2018") {
-		t.Fatalf("expected short real title to survive, got %q", parsedPage.VisibleText)
-	}
-
-	if strings.Contains(parsedPage.VisibleText, "Read More") {
-		t.Fatalf("expected read more labels dropped from visible text, got %q", parsedPage.VisibleText)
+	if !strings.Contains(parsedPage.VisibleText, "Ad release 2018 report") {
+		t.Fatalf("expected real title to survive, got %q", parsedPage.VisibleText)
 	}
 
 	readMoreBlocks := 0
@@ -351,13 +355,14 @@ func TestParserDropsReadMoreFromVisibleTextButKeepsBlocks(t *testing.T) {
 		}
 	}
 
-	if readMoreBlocks != 3 {
-		t.Fatalf("got %d read more content blocks, want 3", readMoreBlocks)
+	if readMoreBlocks != 1 {
+		t.Fatalf("got %d read more content blocks, want 1", readMoreBlocks)
 	}
 }
 
 func TestParserKeepsImageSrcOutOfVisibleText(t *testing.T) {
-	htmlDocument := []byte(`<main><p>Real text</p><img src="/photo.jpg" alt=""></main>`)
+	longFiller := "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt. "
+	htmlDocument := []byte(`<main><article><h1>Gallery</h1><p>Real text ` + longFiller + longFiller + longFiller + longFiller + `</p><p>More text ` + longFiller + longFiller + longFiller + longFiller + `</p><img src="/photo.jpg" alt=""></article></main>`)
 
 	parser := NewParser()
 	parsedPage, err := parser.ParseHTML("https://revketer.ai/gallery", "text/html", htmlDocument)
@@ -371,7 +376,8 @@ func TestParserKeepsImageSrcOutOfVisibleText(t *testing.T) {
 
 	foundImageBlock := false
 	for _, block := range parsedPage.ContentBlocks {
-		if block.Tag == "img" && block.Text == "/photo.jpg" {
+		// Native resolves the src against the page URL when OriginalURL is set.
+		if block.Tag == "img" && block.Text == "https://revketer.ai/photo.jpg" {
 			foundImageBlock = true
 		}
 	}
@@ -516,5 +522,30 @@ func assertParsedPageValidUTF8(t *testing.T, parsed ParsedPage) {
 		if !utf8.ValidString(value) {
 			t.Fatalf("field %s is not valid UTF-8: %q", name, value)
 		}
+	}
+}
+
+func TestParserNoscriptExcludedFromSEOFacts(t *testing.T) {
+	htmlDocument := []byte(`<!DOCTYPE html><html><head><title>Noscript page</title></head><body><noscript><img src="/n.jpg" alt="n"><a href="/n">N link</a><h2>N head</h2></noscript><p>Real content here.</p></body></html>`)
+
+	parsedPage, err := NewParser().ParseHTML("https://example.com/noscript", "text/html", htmlDocument)
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+
+	if parsedPage.ImageCount != 0 {
+		t.Fatalf("got image count %d, want noscript image excluded", parsedPage.ImageCount)
+	}
+	if len(parsedPage.Links) != 0 {
+		t.Fatalf("got %d links, want noscript link excluded", len(parsedPage.Links))
+	}
+	if len(parsedPage.H2Headings) != 0 {
+		t.Fatalf("got h2 headings %#v, want noscript heading excluded", parsedPage.H2Headings)
+	}
+	if len(parsedPage.HeadingOutline) != 0 {
+		t.Fatalf("got heading outline %#v, want noscript heading excluded", parsedPage.HeadingOutline)
+	}
+	if parsedPage.PageTextLength != len("Real content here.") {
+		t.Fatalf("got page text length %d, want noscript text excluded", parsedPage.PageTextLength)
 	}
 }

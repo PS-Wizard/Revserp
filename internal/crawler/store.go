@@ -279,6 +279,11 @@ func buildCreateCrawlPageParams(crawlID pgtype.UUID, rootURL string, result Craw
 		LastModified: nullableText(result.Fetch.LastModified),
 		Soft404:      result.SoftNotFound,
 		FetchError:   nullableText(fetchErrorMessage(result)),
+		// Engine provenance for the stored visible_text/content_blocks/word_count.
+		// Nil pages (non-HTML, fetch failures) carry no native extraction attempt,
+		// so both persist as NULL.
+		ContentExtractor:        nullableContentExtractor(parsedPage),
+		ContentExtractionStatus: nullableContentExtractionStatus(parsedPage),
 	}
 }
 

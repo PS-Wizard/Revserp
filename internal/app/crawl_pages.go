@@ -82,6 +82,8 @@ type crawlPageResponse struct {
 	OGTags                  json.RawMessage `json:"og_tags,omitempty"`
 	JSONLD                  json.RawMessage `json:"json_ld,omitempty"`
 	ContentBlocks           json.RawMessage `json:"content_blocks,omitempty"`
+	ContentExtractor        string          `json:"content_extractor,omitempty"`
+	ContentExtractionStatus string          `json:"content_extraction_status,omitempty"`
 	CreatedAt               string          `json:"created_at"`
 }
 
@@ -121,6 +123,8 @@ type crawlPageRowData struct {
 	OgTags                  []byte
 	JsonLd                  []byte
 	ContentBlocks           []byte
+	ContentExtractor        pgtype.Text
+	ContentExtractionStatus pgtype.Text
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -202,6 +206,11 @@ func (a *App) handleCreateCrawlPage(w http.ResponseWriter, r *http.Request) {
 		HeadingOutline:          nullableJSON(requestBody.HeadingOutline),
 		OgTags:                  nullableJSON(requestBody.OGTags),
 		JsonLd:                  nullableJSON(requestBody.JSONLD),
+		// Manual page imports supply their own blocks without running the
+		// extraction engine, so they must not invent GoTriext provenance.
+		// Both columns stay NULL.
+		ContentExtractor:        pgtype.Text{},
+		ContentExtractionStatus: pgtype.Text{},
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -387,7 +396,7 @@ func (a *App) handleGetCrawlPageByURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, buildCrawlPageResponse(crawlPageRowData{
-		ID: page.ID, CrawlID: page.CrawlID, Url: page.Url, StatusCode: page.StatusCode, ContentType: page.ContentType, SizeBytes: page.SizeBytes, IsInternal: page.IsInternal, Depth: page.Depth, Title: page.Title, MetaDescription: page.MetaDescription, H1: page.H1, H1Count: page.H1Count, H2Count: page.H2Count, H3Count: page.H3Count, WordCount: page.WordCount, VisibleText: page.VisibleText, Author: page.Author, CanonicalUrl: page.CanonicalUrl, Lang: page.Lang, Viewport: page.Viewport, Robots: page.Robots, ImageCount: page.ImageCount, ImagesWithoutAltCount: page.ImagesWithoutAltCount, ImagesWithoutDimensions: page.ImagesWithoutDimensions, ExternalLinks: page.ExternalLinks, InternalLinks: page.InternalLinks, ResponseTimeMs: page.ResponseTimeMs, JavascriptRendered: page.JavascriptRendered, H2Headings: page.H2Headings, H3Headings: page.H3Headings, HeadingOutline: page.HeadingOutline, OgTags: page.OgTags, JsonLd: page.JsonLd, ContentBlocks: page.ContentBlocks, CreatedAt: page.CreatedAt,
+		ID: page.ID, CrawlID: page.CrawlID, Url: page.Url, StatusCode: page.StatusCode, ContentType: page.ContentType, SizeBytes: page.SizeBytes, IsInternal: page.IsInternal, Depth: page.Depth, Title: page.Title, MetaDescription: page.MetaDescription, H1: page.H1, H1Count: page.H1Count, H2Count: page.H2Count, H3Count: page.H3Count, WordCount: page.WordCount, VisibleText: page.VisibleText, Author: page.Author, CanonicalUrl: page.CanonicalUrl, Lang: page.Lang, Viewport: page.Viewport, Robots: page.Robots, ImageCount: page.ImageCount, ImagesWithoutAltCount: page.ImagesWithoutAltCount, ImagesWithoutDimensions: page.ImagesWithoutDimensions, ExternalLinks: page.ExternalLinks, InternalLinks: page.InternalLinks, ResponseTimeMs: page.ResponseTimeMs, JavascriptRendered: page.JavascriptRendered, H2Headings: page.H2Headings, H3Headings: page.H3Headings, HeadingOutline: page.HeadingOutline, OgTags: page.OgTags, JsonLd: page.JsonLd, ContentBlocks: page.ContentBlocks, ContentExtractor: page.ContentExtractor, ContentExtractionStatus: page.ContentExtractionStatus, CreatedAt: page.CreatedAt,
 	}))
 }
 
@@ -427,6 +436,8 @@ func newCrawlPageResponseFromCreateRow(page sqlc.GetCrawlPageByURLForUserRow) cr
 		HeadingOutline:          page.HeadingOutline,
 		OgTags:                  page.OgTags,
 		JsonLd:                  page.JsonLd,
+		ContentExtractor:        page.ContentExtractor,
+		ContentExtractionStatus: page.ContentExtractionStatus,
 		CreatedAt:               page.CreatedAt,
 	})
 }
@@ -505,6 +516,8 @@ func newCrawlPageResponseFromGetRow(page sqlc.GetCrawlPageByIDForUserRow) crawlP
 		OgTags:                  page.OgTags,
 		JsonLd:                  page.JsonLd,
 		ContentBlocks:           page.ContentBlocks,
+		ContentExtractor:        page.ContentExtractor,
+		ContentExtractionStatus: page.ContentExtractionStatus,
 		CreatedAt:               page.CreatedAt,
 	})
 }
@@ -562,6 +575,8 @@ func buildCrawlPageResponse(row crawlPageRowData) crawlPageResponse {
 	response.InternalLinks = setInt4Pointer(row.InternalLinks)
 	response.ResponseTimeMs = setInt4Pointer(row.ResponseTimeMs)
 	response.JavaScriptRendered = setBoolPointer(row.JavascriptRendered)
+	response.ContentExtractor = setText(row.ContentExtractor)
+	response.ContentExtractionStatus = setText(row.ContentExtractionStatus)
 	if len(row.H2Headings) > 0 {
 		response.H2Headings = json.RawMessage(row.H2Headings)
 	}

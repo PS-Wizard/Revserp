@@ -100,15 +100,15 @@ func TestLoadBaselineIndexesPagesByNormalizedURL(t *testing.T) {
 	defer cleanup()
 
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO crawl_pages (crawl_id, url, status_code, etag)
-		VALUES ($1, 'https://example.com/etag-page', 200, '"v1"')
-	`, baselineCrawlID); err != nil {
+		INSERT INTO crawl_pages (crawl_id, url, status_code, etag, content_extractor, content_extraction_status)
+		VALUES ($1, 'https://example.com/etag-page', 200, '"v1"', $2, 'ok')
+	`, baselineCrawlID, MainContentExtractorVersion); err != nil {
 		t.Fatalf("seed etag page: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO crawl_pages (crawl_id, url, status_code, last_modified)
-		VALUES ($1, 'https://example.com/last-modified-page', 200, 'Sat, 25 Jul 2026 21:36:16 GMT')
-	`, baselineCrawlID); err != nil {
+		INSERT INTO crawl_pages (crawl_id, url, status_code, last_modified, content_extractor, content_extraction_status)
+		VALUES ($1, 'https://example.com/last-modified-page', 200, 'Sat, 25 Jul 2026 21:36:16 GMT', $2, 'ok')
+	`, baselineCrawlID, MainContentExtractorVersion); err != nil {
 		t.Fatalf("seed last-modified page: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -511,6 +511,16 @@ func seedBaselineResult(t *testing.T, ctx context.Context, store *Store, baselin
 	if err := store.PersistResult(ctx, baselineCrawlID, "https://example.com/", result); err != nil {
 		t.Fatalf("seed baseline result: %v", err)
 	}
+	// ParsedPage provenance fields are owned by the extraction worker; stamp
+	// the seeded row as a current-engine success so 304 reuse tests exercise
+	// the compatible-validator fast path.
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE crawl_pages
+		SET content_extractor = $1, content_extraction_status = 'ok'
+		WHERE crawl_id = $2
+	`, MainContentExtractorVersion, baselineCrawlID); err != nil {
+		t.Fatalf("stamp baseline extraction provenance: %v", err)
+	}
 }
 
 func TestLoadBaselineForCompetitorUsesSameCompetitorNotHome(t *testing.T) {
@@ -557,9 +567,9 @@ func TestLoadBaselineForCompetitorUsesSameCompetitorNotHome(t *testing.T) {
 	}
 
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO crawl_pages (crawl_id, url, status_code, etag)
-		VALUES ($1, 'https://competitor.example/', 200, '"comp"')
-	`, competitorBaselineID); err != nil {
+		INSERT INTO crawl_pages (crawl_id, url, status_code, etag, content_extractor, content_extraction_status)
+		VALUES ($1, 'https://competitor.example/', 200, '"comp"', $2, 'ok')
+	`, competitorBaselineID, MainContentExtractorVersion); err != nil {
 		t.Fatalf("seed competitor page: %v", err)
 	}
 
@@ -708,4 +718,134 @@ func createTestProjectWithTwoCrawls(t *testing.T, ctx context.Context, pool *pgx
 	}
 
 	return projectID, baselineCrawlID, currentCrawlID, cleanup
+}
+
+// TestLoadBaselineSkipsStaleAndFailedExtractions seeds one validator page per
+// provenance case and requires only the current-engine success to stay
+// reusable: legacy NULL, engine-version mismatch, failed, and empty rows
+// must force a fresh 200 fetch instead of a 304 copy-forward.
+func TestLoadBaselineSkipsStaleAndFailedExtractions(t *testing.T) {
+	loadCrawlerTestEnv(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	projectID, baselineCrawlID, currentCrawlID, cleanup := createTestProjectWithTwoCrawls(t, ctx, pool)
+	defer cleanup()
+
+	seedExtractionPage := func(pageURL, extractor, status string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO crawl_pages (crawl_id, url, status_code, etag, content_extractor, content_extraction_status)
+			VALUES ($1, $2, 200, '"v1"', NULLIF($3, ''), NULLIF($4, ''))
+		`, baselineCrawlID, pageURL, extractor, status); err != nil {
+			t.Fatalf("seed extraction page %q: %v", pageURL, err)
+		}
+	}
+
+	seedExtractionPage("https://example.com/current-ok", MainContentExtractorVersion, ContentExtractionOK)
+	seedExtractionPage("https://example.com/legacy", "", "")
+	seedExtractionPage("https://example.com/version-mismatch", "go-trafilatura/v1@1.0.0", ContentExtractionOK)
+	seedExtractionPage("https://example.com/failed", MainContentExtractorVersion, ContentExtractionFailed)
+	seedExtractionPage("https://example.com/empty", MainContentExtractorVersion, ContentExtractionEmpty)
+
+	store := NewStore(pool)
+	baseline, err := store.LoadBaseline(ctx, projectID, currentCrawlID)
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+	if baseline == nil {
+		t.Fatal("got nil baseline, want the current-ok page")
+	}
+	if baseline.Len() != 1 {
+		t.Fatalf("got baseline.Len() = %d, want 1 (only the current-engine success)", baseline.Len())
+	}
+	if _, ok := baseline.lookup("https://example.com/current-ok"); !ok {
+		t.Fatal("expected current-ok page in baseline")
+	}
+	for _, pageURL := range []string{
+		"https://example.com/legacy",
+		"https://example.com/version-mismatch",
+		"https://example.com/failed",
+		"https://example.com/empty",
+	} {
+		if _, ok := baseline.lookup(pageURL); ok {
+			t.Fatalf("page %q must bypass conditional reuse and fetch fresh", pageURL)
+		}
+	}
+}
+
+// TestPersistReusedResultPreservesExtractionProvenance requires the 304
+// copy-forward path to preserve what the baseline extraction actually
+// produced, not just the body facts.
+func TestPersistReusedResultPreservesExtractionProvenance(t *testing.T) {
+	loadCrawlerTestEnv(t)
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+	pool, err := internaldb.Connect(ctx, databaseURL, config.DefaultDBStatementTimeout, config.DefaultDBLockTimeout)
+	if err != nil {
+		t.Skipf("database is not available: %v", err)
+	}
+	defer pool.Close()
+
+	projectID, baselineCrawlID, currentCrawlID, cleanup := createTestProjectWithTwoCrawls(t, ctx, pool)
+	defer cleanup()
+
+	store := NewStore(pool)
+	seedBaselineResult(t, ctx, store, baselineCrawlID)
+
+	baseline, err := store.LoadBaseline(ctx, projectID, currentCrawlID)
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+	if baseline == nil {
+		t.Fatal("got nil baseline, want non-nil")
+	}
+
+	reusedResult := CrawlResult{
+		Job: CrawlJob{
+			URL:   "https://example.com/",
+			Depth: 0,
+		},
+		Fetch: FetchResult{
+			FinalURL:    "https://example.com/",
+			StatusCode:  304,
+			NotModified: true,
+		},
+	}
+	if err := store.PersistReusedResult(ctx, currentCrawlID, baseline, reusedResult); err != nil {
+		t.Fatalf("persist reused result: %v", err)
+	}
+
+	var storedPage struct {
+		Extractor pgtype.Text
+		Status    pgtype.Text
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT content_extractor, content_extraction_status
+		FROM crawl_pages
+		WHERE crawl_id = $1
+	`, currentCrawlID).Scan(&storedPage.Extractor, &storedPage.Status); err != nil {
+		t.Fatalf("load reused crawl page provenance: %v", err)
+	}
+	if !storedPage.Extractor.Valid || storedPage.Extractor.String != MainContentExtractorVersion {
+		t.Fatalf("got content_extractor %q (valid=%v), want %q", storedPage.Extractor.String, storedPage.Extractor.Valid, MainContentExtractorVersion)
+	}
+	if !storedPage.Status.Valid || storedPage.Status.String != ContentExtractionOK {
+		t.Fatalf("got content_extraction_status %q (valid=%v), want %q", storedPage.Status.String, storedPage.Status.Valid, ContentExtractionOK)
+	}
 }

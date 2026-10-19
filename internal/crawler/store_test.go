@@ -634,3 +634,53 @@ func TestBuildCreateCrawlPageParamsCanonicalURL(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildCreateCrawlPageParamsLeavesExtractionNullWithoutParsedPage(t *testing.T) {
+	// Non-HTML and fetch-failed results have no ParsedPage: persisting them
+	// must not claim a native extraction attempt.
+	result := CrawlResult{
+		Job:   CrawlJob{URL: "https://example.com/style.css"},
+		Fetch: FetchResult{FinalURL: "https://example.com/style.css", StatusCode: 200, ContentType: "text/css"},
+	}
+
+	params := buildCreateCrawlPageParams(pgtype.UUID{}, "https://example.com/", result)
+
+	if params.ContentExtractor.Valid {
+		t.Fatalf("got content extractor %q, want NULL", params.ContentExtractor.String)
+	}
+	if params.ContentExtractionStatus.Valid {
+		t.Fatalf("got content extraction status %q, want NULL", params.ContentExtractionStatus.String)
+	}
+}
+
+func TestBuildCreateCrawlPageParamsPersistsExtractionProvenance(t *testing.T) {
+	statuses := []string{ContentExtractionOK, ContentExtractionEmpty, ContentExtractionFailed}
+	for _, status := range statuses {
+		result := CrawlResult{
+			Job:   CrawlJob{URL: "https://example.com/"},
+			Fetch: FetchResult{FinalURL: "https://example.com/", StatusCode: 200, ContentType: "text/html"},
+			ParsedPage: &ParsedPage{
+				URL:                     "https://example.com/",
+				ContentExtractor:        MainContentExtractorVersion,
+				ContentExtractionStatus: status,
+			},
+		}
+
+		params := buildCreateCrawlPageParams(pgtype.UUID{}, "https://example.com/", result)
+
+		if !params.ContentExtractor.Valid || params.ContentExtractor.String != MainContentExtractorVersion {
+			t.Fatalf("status %q: got content extractor %q (valid=%v), want %q", status, params.ContentExtractor.String, params.ContentExtractor.Valid, MainContentExtractorVersion)
+		}
+		if !params.ContentExtractionStatus.Valid || params.ContentExtractionStatus.String != status {
+			t.Fatalf("got content extraction status %q (valid=%v), want %q", params.ContentExtractionStatus.String, params.ContentExtractionStatus.Valid, status)
+		}
+	}
+}
+
+func TestNormalizeContentExtractionStatusRejectsUnknown(t *testing.T) {
+	for _, value := range []string{"", "OK", "success", "go-trafilatura/v2@2.2.6"} {
+		if got := normalizeContentExtractionStatus(value); got != "" {
+			t.Fatalf("got status %q for input %q, want empty (NULL)", got, value)
+		}
+	}
+}

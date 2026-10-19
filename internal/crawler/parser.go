@@ -8,10 +8,10 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
 )
 
@@ -63,6 +63,18 @@ type ParsedPage struct {
 	H3Headings              []string
 	HeadingOutline          []ParsedHeading
 	Links                   []ParsedLink
+	// ContentExtractor records which main-content engine produced VisibleText
+	// and ContentBlocks. It always carries engine provenance when extraction
+	// is attempted so the persistence layer can gate 304 reuse by version.
+	ContentExtractor string
+	// ContentExtractionStatus is ok only for usable body blocks, empty when
+	// the engine found no main content, and failed when the native call
+	// errored. There is no whole-body fallback: failures keep SEO facts but
+	// store no invented body text.
+	ContentExtractionStatus string
+	// ContentExtractionError carries the native error for logging. It is not
+	// persisted to the database.
+	ContentExtractionError string
 }
 
 // Parser extracts basic SEO facts and links from HTML documents.
@@ -132,13 +144,16 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 
 	body = normalizeHTMLBytes(body, contentType)
 
+	// SEO facts keep the original goquery parse (scripting enabled), so
+	// noscript contents stay invisible to image/link/heading selectors exactly
+	// as before; only extraction output changed engines.
 	document, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
 		return ParsedPage{}, fmt.Errorf("parse html: %w", err)
 	}
 
 	imageCount, imagesWithoutAltCount, imagesWithoutDimensions := extractImageCounts(document)
-	contentBlocks, visibleText := extractContentBlocks(document)
+	jsonLDBlocks := extractJSONLDBlocks(document)
 	parsedPage := ParsedPage{
 		URL:                     parsedPageURL.String(),
 		Title:                   strings.TrimSpace(document.Find("title").First().Text()),
@@ -147,23 +162,20 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 		Lang:                    strings.TrimSpace(document.Find("html").First().AttrOr("lang", "")),
 		Viewport:                strings.TrimSpace(document.Find(`meta[name="viewport"]`).First().AttrOr("content", "")),
 		Robots:                  strings.TrimSpace(document.Find(`meta[name="robots"]`).First().AttrOr("content", "")),
-		VisibleText:             visibleText,
-		ContentBlocks:           contentBlocks,
 		PageTextLength:          extractPageTextLength(document),
 		ImageCount:              imageCount,
 		ImagesWithoutAltCount:   imagesWithoutAltCount,
 		ImagesWithoutDimensions: imagesWithoutDimensions,
 		OGTags:                  extractOGTags(document),
-		JSONLDBlocks:            extractJSONLDBlocks(document),
+		JSONLDBlocks:            jsonLDBlocks,
+		H1Count:                 document.Find("h1").Length(),
+		H1:                      extractFirstHeadingText(document, "h1"),
+		H2Headings:              extractHeadingTexts(document, "h2"),
+		H3Headings:              extractHeadingTexts(document, "h3"),
+		HeadingOutline:          extractHeadingOutline(document),
+		Author:                  extractAuthor(document, jsonLDBlocks),
+		Links:                   extractLinks(document, parsedPageURL),
 	}
-
-	parsedPage.H1Count = document.Find("h1").Length()
-	parsedPage.H1 = extractFirstHeadingText(document, "h1")
-	parsedPage.H2Headings = extractHeadingTexts(document, "h2")
-	parsedPage.H3Headings = extractHeadingTexts(document, "h3")
-	parsedPage.HeadingOutline = extractHeadingOutline(document)
-	parsedPage.Author = extractAuthor(document, parsedPage.JSONLDBlocks)
-	parsedPage.Links = extractLinks(document, parsedPageURL)
 
 	if parsedPage.CanonicalURL != "" {
 		normalizedCanonicalURL, canonicalErr := NormalizeURL(parsedPage.CanonicalURL, parsedPageURL)
@@ -171,6 +183,23 @@ func (parser *Parser) ParseHTML(pageURL string, contentType string, body []byte)
 			parsedPage.CanonicalURL = normalizedCanonicalURL.String()
 		}
 	}
+
+	// Text and blocks come from one native extraction over its own parse.
+	// Scripting stays disabled there to match upstream trafilatura, which
+	// recovers fallback images from noscript markup.
+	var contentBlocks []ParsedBlock
+	var visibleText, status, extractionErr string
+	nativeDoc, nativeErr := html.ParseWithOptions(bytes.NewReader(body), html.ParseOptionEnableScripting(false))
+	if nativeErr != nil {
+		status, extractionErr = ContentExtractionFailed, nativeErr.Error()
+	} else {
+		contentBlocks, visibleText, status, extractionErr = extractMainContent(nativeDoc, parsedPageURL)
+	}
+	parsedPage.VisibleText = visibleText
+	parsedPage.ContentBlocks = contentBlocks
+	parsedPage.ContentExtractor = MainContentExtractorVersion
+	parsedPage.ContentExtractionStatus = status
+	parsedPage.ContentExtractionError = extractionErr
 
 	return parsedPage, nil
 }
@@ -438,137 +467,6 @@ func extractImageCounts(document *goquery.Document) (int, int, int) {
 	return imageCount, imagesWithoutAltCount, imagesWithoutDimensions
 }
 
-// extractContentBlocks returns structured main-content blocks and cleaned visible text.
-// It picks the main container (main/article/[role=main] else body), removes
-// boilerplate (header/nav/footer/aside and scripts), then walks block elements
-// in document order. Visible text is the blocks joined with paragraph breaks.
-func extractContentBlocks(document *goquery.Document) ([]ParsedBlock, string) {
-	container := document.Find("main, article, [role=main]").First()
-	if container.Length() == 0 {
-		container = document.Find("body").First()
-		if container.Length() == 0 {
-			return nil, ""
-		}
-	}
-
-	clone := container.Clone()
-	clone.Find("header, nav, footer, aside, [role=navigation], [role=banner], [role=contentinfo], script, style, noscript, iframe, form").Remove()
-	clone.Find(".cookie, .nav, .navbar, .footer, .sidebar, .cookie-banner, .site-header, .site-footer, .site-nav").Remove()
-
-	var blocks []ParsedBlock
-	var texts []string
-	clone.Find("*").Each(func(_ int, selection *goquery.Selection) {
-		// A list absorbs all of its descendants into one block, so skip anything
-		// inside a list to avoid double-counting items and nested images.
-		if selection.ParentsFiltered("ul, ol").Length() > 0 {
-			return
-		}
-
-		tag := goquery.NodeName(selection)
-		switch {
-		case tag == "img":
-			appendImageBlock(&blocks, selection)
-		case tag == "ul" || tag == "ol":
-			text, ok := appendListBlock(&blocks, selection, tag)
-			if ok && !isNoiseVisibleText(text) {
-				texts = append(texts, text)
-			}
-		case isTextBearingBlockTag(tag) && !hasBlockChild(selection):
-			text := normalizeWhitespace(selection.Text())
-			if text == "" {
-				return
-			}
-			html, _ := selection.Html()
-			blocks = append(blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
-			if !isNoiseVisibleText(text) {
-				texts = append(texts, text)
-			}
-		}
-	})
-
-	if len(blocks) == 0 {
-		return nil, ""
-	}
-
-	return blocks, strings.Join(texts, "\n\n")
-}
-
-// isTextBearingBlockTag reports whether a tag can hold readable page text.
-func isTextBearingBlockTag(tag string) bool {
-	switch tag {
-	case "h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "pre", "div", "section", "td", "th", "dd", "dt", "figcaption", "address":
-		return true
-	default:
-		return false
-	}
-}
-
-// blockChildSelector matches any child that is itself a block container, so a
-// wrapper div around real blocks is skipped and its descendants are walked instead.
-const blockChildSelector = "h1, h2, h3, h4, h5, h6, p, blockquote, pre, div, section, td, th, dd, dt, figcaption, address, ul, ol, table, article, figure, header, footer, nav, aside"
-
-func hasBlockChild(selection *goquery.Selection) bool {
-	return selection.ChildrenFiltered(blockChildSelector).Length() > 0
-}
-
-func appendImageBlock(blocks *[]ParsedBlock, selection *goquery.Selection) {
-	src := strings.TrimSpace(selection.AttrOr("src", ""))
-	alt := normalizeWhitespace(selection.AttrOr("alt", ""))
-	if src == "" && alt == "" {
-		return
-	}
-	text := alt
-	if text == "" {
-		text = src
-	}
-	html, _ := goquery.OuterHtml(selection)
-	if html == "" {
-		html = "<img src=\"" + src + "\" alt=\"" + alt + "\">"
-	}
-	*blocks = append(*blocks, ParsedBlock{Tag: "img", Text: text, Html: strings.TrimSpace(html)})
-}
-
-func appendListBlock(blocks *[]ParsedBlock, selection *goquery.Selection, tag string) (string, bool) {
-	var items []string
-	selection.Find("li").Each(func(_ int, li *goquery.Selection) {
-		item := normalizeWhitespace(li.Text())
-		if item != "" {
-			items = append(items, item)
-		}
-	})
-	if len(items) == 0 {
-		return "", false
-	}
-	text := strings.Join(items, " ")
-	html, _ := selection.Html()
-	*blocks = append(*blocks, ParsedBlock{Tag: tag, Text: text, Html: strings.TrimSpace(html)})
-	return text, true
-}
-
-// noisyVisibleText lists link and UI labels that must not inflate the visible text.
-var noisyVisibleText = map[string]bool{
-	"read more": true, "readmore": true, "read less": true, "previous": true,
-	"next": true, "more": true, "view all": true, "click here": true,
-	"learn more": true, "search": true, "menu": true, "login": true,
-	"register": true, "back": true, "share": true,
-}
-
-// isNoiseVisibleText reports whether a block's text is UI chrome rather than content.
-// Length is deliberately not a criterion: short real titles must survive.
-// The letter test is script-agnostic: a Devanagari notice title is content, and an
-// ASCII-only test would drop every Nepali page on a bilingual site.
-func isNoiseVisibleText(text string) bool {
-	if noisyVisibleText[strings.ToLower(strings.TrimSpace(text))] {
-		return true
-	}
-	for _, character := range text {
-		if unicode.IsLetter(character) || unicode.IsDigit(character) {
-			return false
-		}
-	}
-	return true
-}
-
 // extractPageTextLength returns the byte length of the whole body text with
 // script, style and noscript removed. It is computed once per parse.
 func extractPageTextLength(document *goquery.Document) int {
@@ -581,10 +479,23 @@ func extractPageTextLength(document *goquery.Document) int {
 	return len(normalizeWhitespace(clone.Text()))
 }
 
-// extractVisibleText returns normalized visible text for backward compat.
-// It delegates to extractContentBlocks and returns only the visible text.
+// extractVisibleText returns visible text via the same native extraction.
 func extractVisibleText(document *goquery.Document) string {
-	_, visibleText := extractContentBlocks(document)
+	if document == nil || len(document.Nodes) == 0 {
+		return ""
+	}
+	raw, err := document.Html()
+	if err != nil || raw == "" {
+		return ""
+	}
+	nativeDoc, err := html.ParseWithOptions(bytes.NewReader([]byte(raw)), html.ParseOptionEnableScripting(false))
+	if err != nil {
+		return ""
+	}
+	_, visibleText, status, _ := extractMainContent(nativeDoc, nil)
+	if status != ContentExtractionOK {
+		return ""
+	}
 	return visibleText
 }
 

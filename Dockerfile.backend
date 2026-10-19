@@ -36,6 +36,9 @@ RUN case "$TARGETARCH" in \
  && chmod +x /usr/local/bin/obscura \
  && rm -f /tmp/obscura.tar.gz
 
+COPY scripts/install-gaoya.sh /tmp/install-gaoya.sh
+RUN sh /tmp/install-gaoya.sh "$TARGETARCH"
+
 COPY --from=build /out/api             /app/api
 COPY --from=build /out/worker          /app/worker
 COPY --from=build /out/ai-audit-worker /app/ai-audit-worker

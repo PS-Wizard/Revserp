@@ -36,6 +36,11 @@ type PageFact struct {
 	JSONLD                  []byte
 	HeadingOutline          []byte
 	ContentSHA256           string
+	// ContentExtractionStatus reports the body-text extractor outcome for the
+	// page: "" (legacy, unknown), "ok", "empty", or "failed". Only "failed"
+	// suppresses body-dependent SEO claims; "empty" keeps legitimate
+	// empty-content logic.
+	ContentExtractionStatus string
 	// Soft404 marks a page that answered 2xx while being the site's "not found"
 	// response. FetchError is non-empty when the page could not be fetched at all.
 	// Either one, like a status of 400 or above, makes the page unhealthy: it has
@@ -48,6 +53,17 @@ type PageFact struct {
 // issues from. An unhealthy page still gets its own status issue.
 func (pageFact PageFact) IsHealthy() bool {
 	return pageFact.StatusCode < 400 && !pageFact.Soft404 && pageFact.FetchError == ""
+}
+
+// ContentExtractionStatusFailed marks a page whose body text extraction
+// failed. Body-derived counts (word counts, visible text) are unreliable for
+// such pages, so body-dependent SEO claims stay silent. Value mirrors the
+// crawler extraction status; kept here so seo does not depend on crawler.
+const ContentExtractionStatusFailed = "failed"
+
+// ContentExtractionFailed reports whether the page body failed extraction.
+func (pageFact PageFact) ContentExtractionFailed() bool {
+	return pageFact.ContentExtractionStatus == ContentExtractionStatusFailed
 }
 
 // LinkFact holds the persisted internal link fields used for issue derivation.

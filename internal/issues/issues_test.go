@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -52,10 +53,31 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 }
 
 func TestDeriveIssuesBuildsDuplicateContentIssues(t *testing.T) {
-	pageFacts := []shared.PageFact{{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: "We provide enterprise technical SEO audits, issue monitoring, crawl analysis, and monthly reporting for growing software companies."}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-copy", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: "We provide enterprise technical SEO audits, issue monitoring, crawl analysis, and monthly reporting for growing software companies."}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-variant", Title: "Enterprise technical SEO auditing services", MetaDescription: "Technical SEO audits, crawl monitoring, and reporting for software teams.", H1: "Enterprise technical SEO auditing services", VisibleText: "We help software companies with crawl analysis, technical SEO monitoring, enterprise audits, and monthly reporting to surface search performance issues."}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/different", Title: "Brand strategy workshop", MetaDescription: "Messaging workshops for product teams.", H1: "Brand strategy workshop", VisibleText: "We run positioning workshops, customer interviews, homepage messaging sessions, and brand narrative reviews for internal product marketing teams."}}
+	// Requires the real revserp-gaoya binary (GAOYA_PATH or PATH). Near-duplicates
+	// are visible-text-only MinHash matches at threshold 0.9, so the variant
+	// below is a one-word near-copy of a 500-word main body, not a short
+	// metadata-similar snippet.
+	baseBody := duplicateContentBody("w", 500)
+	nearBody := duplicateContentNearCopy(baseBody)
+	otherBody := duplicateContentBody("u", 500)
+	pageFacts := []shared.PageFact{{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: baseBody}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-copy", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: baseBody}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-variant", Title: "Enterprise technical SEO auditing services", MetaDescription: "Technical SEO audits, crawl monitoring, and reporting for software teams.", H1: "Enterprise technical SEO auditing services", VisibleText: nearBody}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/different", Title: "Brand strategy workshop", MetaDescription: "Messaging workshops for product teams.", H1: "Brand strategy workshop", VisibleText: otherBody}}
 	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
 	assertIssueType(t, derivedIssues, "exact_duplicate_content")
 	assertIssueType(t, derivedIssues, "near_duplicate_content")
+}
+
+func duplicateContentBody(prefix string, words int) string {
+	body := make([]string, 0, words)
+	for i := 0; i < words; i++ {
+		body = append(body, fmt.Sprintf("%s%04d", prefix, i))
+	}
+	return strings.Join(body, " ")
+}
+
+func duplicateContentNearCopy(body string) string {
+	words := strings.Split(body, " ")
+	words[100%len(words)] = "kiwi"
+	return strings.Join(words, " ")
 }
 
 func TestDeriveIssuesBuildsSkippedHeadingLevelsIssue(t *testing.T) {

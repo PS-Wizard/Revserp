@@ -91,7 +91,9 @@ INSERT INTO crawl_pages (
     last_modified,
     soft_404,
     fetch_error,
-    would_have_rendered
+    would_have_rendered,
+    content_extractor,
+    content_extraction_status
 )
 SELECT
     $1,
@@ -137,7 +139,9 @@ SELECT
     -- The page was not re-parsed, so the render verdict carries over from the
     -- baseline crawl. A stale verdict beats a false negative on an incremental
     -- crawl where most pages answer 304 and the detector never runs.
-    crawl_pages.would_have_rendered
+    crawl_pages.would_have_rendered,
+    content_extractor,
+    content_extraction_status
 FROM crawl_pages
 WHERE crawl_pages.crawl_id = $4
   AND crawl_pages.url = $5
@@ -291,7 +295,9 @@ INSERT INTO crawl_pages (
     last_modified,
     soft_404,
     fetch_error,
-    would_have_rendered
+    would_have_rendered,
+    content_extractor,
+    content_extraction_status
 ) VALUES (
     $1,
     $2,
@@ -331,7 +337,9 @@ INSERT INTO crawl_pages (
     $36,
     $37,
     $38,
-    $39
+    $39,
+    $40,
+    $41
 )
 ON CONFLICT (crawl_id, url) DO NOTHING
 `
@@ -376,6 +384,8 @@ type CreateCrawlPageParams struct {
 	Soft404                 bool
 	FetchError              pgtype.Text
 	WouldHaveRendered       bool
+	ContentExtractor        pgtype.Text
+	ContentExtractionStatus pgtype.Text
 }
 
 func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams) (int64, error) {
@@ -419,6 +429,8 @@ func (q *Queries) CreateCrawlPage(ctx context.Context, arg CreateCrawlPageParams
 		arg.Soft404,
 		arg.FetchError,
 		arg.WouldHaveRendered,
+		arg.ContentExtractor,
+		arg.ContentExtractionStatus,
 	)
 	if err != nil {
 		return 0, err
@@ -464,6 +476,8 @@ SELECT
     cp.og_tags,
     cp.json_ld,
     cp.content_blocks,
+    cp.content_extractor,
+    cp.content_extraction_status,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -516,6 +530,8 @@ type GetCrawlPageByIDForUserRow struct {
 	OgTags                  []byte
 	JsonLd                  []byte
 	ContentBlocks           []byte
+	ContentExtractor        pgtype.Text
+	ContentExtractionStatus pgtype.Text
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -559,6 +575,8 @@ func (q *Queries) GetCrawlPageByIDForUser(ctx context.Context, arg GetCrawlPageB
 		&i.OgTags,
 		&i.JsonLd,
 		&i.ContentBlocks,
+		&i.ContentExtractor,
+		&i.ContentExtractionStatus,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -602,6 +620,8 @@ SELECT
     cp.og_tags,
     cp.json_ld,
     cp.content_blocks,
+    cp.content_extractor,
+    cp.content_extraction_status,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -656,6 +676,8 @@ type GetCrawlPageByURLForUserRow struct {
 	OgTags                  []byte
 	JsonLd                  []byte
 	ContentBlocks           []byte
+	ContentExtractor        pgtype.Text
+	ContentExtractionStatus pgtype.Text
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -699,6 +721,8 @@ func (q *Queries) GetCrawlPageByURLForUser(ctx context.Context, arg GetCrawlPage
 		&i.OgTags,
 		&i.JsonLd,
 		&i.ContentBlocks,
+		&i.ContentExtractor,
+		&i.ContentExtractionStatus,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -1233,6 +1257,8 @@ SELECT
     og_tags,
     json_ld,
     content_blocks,
+    content_extractor,
+    content_extraction_status,
     created_at
 FROM crawl_pages
 WHERE crawl_id = $1
@@ -1279,6 +1305,8 @@ type ListCrawlPagesForCrawlRow struct {
 	OgTags                  []byte
 	JsonLd                  []byte
 	ContentBlocks           []byte
+	ContentExtractor        pgtype.Text
+	ContentExtractionStatus pgtype.Text
 	CreatedAt               pgtype.Timestamptz
 }
 
@@ -1331,6 +1359,8 @@ func (q *Queries) ListCrawlPagesForCrawl(ctx context.Context, crawlID pgtype.UUI
 			&i.OgTags,
 			&i.JsonLd,
 			&i.ContentBlocks,
+			&i.ContentExtractor,
+			&i.ContentExtractionStatus,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1566,7 +1596,18 @@ FROM crawl_pages
 WHERE crawl_id = $1
   AND status_code BETWEEN 200 AND 299
   AND (etag IS NOT NULL OR last_modified IS NOT NULL)
+  -- Only rows the current extraction engine produced successfully can be
+  -- reused via 304: legacy rows predate the extractor, a mismatched engine
+  -- version means the stored content is stale, and failed/empty extractions
+  -- never yielded reusable content. Excluded rows force a fresh 200 fetch.
+  AND content_extractor = $2
+  AND content_extraction_status = 'ok'
 `
+
+type ListPageValidatorsForCrawlParams struct {
+	CrawlID          pgtype.UUID
+	ContentExtractor pgtype.Text
+}
 
 type ListPageValidatorsForCrawlRow struct {
 	Url          string
@@ -1574,8 +1615,8 @@ type ListPageValidatorsForCrawlRow struct {
 	LastModified pgtype.Text
 }
 
-func (q *Queries) ListPageValidatorsForCrawl(ctx context.Context, crawlID pgtype.UUID) ([]ListPageValidatorsForCrawlRow, error) {
-	rows, err := q.db.Query(ctx, listPageValidatorsForCrawl, crawlID)
+func (q *Queries) ListPageValidatorsForCrawl(ctx context.Context, arg ListPageValidatorsForCrawlParams) ([]ListPageValidatorsForCrawlRow, error) {
+	rows, err := q.db.Query(ctx, listPageValidatorsForCrawl, arg.CrawlID, arg.ContentExtractor)
 	if err != nil {
 		return nil, err
 	}

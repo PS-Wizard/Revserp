@@ -48,6 +48,10 @@ func DeriveIssuesWithDuplicateEvidenceWithContext(ctx context.Context, pageFacts
 		outboundInternalLinkCount := outboundInternalLinkCounts[pageFact.URL]
 		inboundInternalLinkCount := inboundInternalLinkCounts[pageFact.URL]
 		visibleTextWordCount := len(strings.Fields(pageFact.VisibleText))
+		// An extractor failure leaves body-derived counts unreliable, so
+		// body-dependent claims stay silent while body-independent issues
+		// still report. Legacy "" and legitimate "empty" keep prior behavior.
+		extractionFailed := pageFact.ContentExtractionFailed()
 
 		// Status issues are not derived here: an unhealthy page never reaches this
 		// loop. DeriveBrokenPageIssues owns them, so a broken page yields one issue
@@ -83,16 +87,16 @@ func DeriveIssuesWithDuplicateEvidenceWithContext(ctx context.Context, pageFacts
 		if titleAndH1Mismatch(pageFact.Title, pageFact.H1) {
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "content_structure", "title_h1_mismatch", "medium", "Page title and H1 do not align", fmt.Sprintf("Title %q does not closely match H1 %q.", strings.TrimSpace(pageFact.Title), strings.TrimSpace(pageFact.H1))))
 		}
-		if pageFact.WordCount >= longPageWordCountThreshold && pageFact.H2Count == 0 {
+		if !extractionFailed && pageFact.WordCount >= longPageWordCountThreshold && pageFact.H2Count == 0 {
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "content_structure", "missing_h2_on_long_page", "medium", "Long page is missing H2 headings", fmt.Sprintf("Page has %d words but no H2 subheadings.", pageFact.WordCount)))
 		}
 		if skippedHeadingLevelDetails := buildSkippedHeadingLevelDetails(pageFact.HeadingOutline); skippedHeadingLevelDetails != "" {
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "content_structure", "skipped_heading_levels", "medium", "Page skips heading levels", skippedHeadingLevelDetails))
 		}
-		if pageFact.WordCount > 0 && pageFact.WordCount < thinContentWordCountThreshold {
+		if !extractionFailed && pageFact.WordCount > 0 && pageFact.WordCount < thinContentWordCountThreshold {
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "content_quality", "thin_content", "medium", "Page content is thin", "Add more useful page content for users and search engines."))
 		}
-		if visibleTextWordCount < nearEmptyVisibleContentWordThreshold {
+		if !extractionFailed && visibleTextWordCount < nearEmptyVisibleContentWordThreshold {
 			severity := "medium"
 			message := "Page has near-empty visible content"
 			details := fmt.Sprintf("Page only has %d visible word(s).", visibleTextWordCount)
@@ -138,7 +142,7 @@ func DeriveIssuesWithDuplicateEvidenceWithContext(ctx context.Context, pageFacts
 		if pageFact.ImageCount > 0 && pageFact.ImagesWithoutDimensions > 0 {
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "media_optimization", "images_missing_dimensions", "low", "Page has images missing dimensions", "Set explicit image width and height attributes where possible."))
 		}
-		if isTooManyImagesOnPage(pageFact) {
+		if !extractionFailed && isTooManyImagesOnPage(pageFact) {
 			derivedIssues = append(derivedIssues, newIssue(pageFact, "media_optimization", "too_many_images_on_page", "low", "Page may have too many images for its content length", fmt.Sprintf("Page has %d images and %d words, which is fewer than %d words per image.", pageFact.ImageCount, pageFact.WordCount, tooManyImagesWordsPerImageThreshold)))
 		}
 

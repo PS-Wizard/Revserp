@@ -48,6 +48,7 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 		crawlResult.ProcessErr = fmt.Errorf("parse job %q: %w", job.URL, err)
 		return crawlResult
 	}
+	logContentExtractionFailure(job.URL, parsedPage)
 
 	renderDecision := NeedsJSRender(fetchResult, &parsedPage)
 	crawlResult.WouldHaveRendered = renderDecision.NeedsRender
@@ -69,6 +70,7 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 					log.Printf("js fallback parse failed: url=%q error=%v", job.URL, parseRenderedErr)
 				case shouldPreferRenderedPage(parsedPage, renderedParsedPage):
 					log.Printf("js fallback applied: url=%q duration=%s", job.URL, renderDuration)
+					logContentExtractionFailure(job.URL, renderedParsedPage)
 					crawlResult.Fetch = renderedFetchResult
 					crawlResult.ParsedPage = &renderedParsedPage
 					crawlResult.JavascriptRendered = true
@@ -82,4 +84,13 @@ func ProcessJob(ctx context.Context, fetcher *Fetcher, parser *Parser, renderer 
 
 	crawlResult.ParsedPage = &parsedPage
 	return crawlResult
+}
+
+// logContentExtractionFailure records a native extraction failure for
+// operations visibility. Success and empty need no per-page log.
+func logContentExtractionFailure(pageURL string, parsedPage ParsedPage) {
+	if parsedPage.ContentExtractionStatus != ContentExtractionFailed {
+		return
+	}
+	log.Printf("content extraction failed: url=%q extractor=%q error=%q", pageURL, parsedPage.ContentExtractor, parsedPage.ContentExtractionError)
 }

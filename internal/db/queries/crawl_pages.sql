@@ -38,7 +38,9 @@ INSERT INTO crawl_pages (
     last_modified,
     soft_404,
     fetch_error,
-    would_have_rendered
+    would_have_rendered,
+    content_extractor,
+    content_extraction_status
 ) VALUES (
     $1,
     $2,
@@ -78,7 +80,9 @@ INSERT INTO crawl_pages (
     $36,
     $37,
     $38,
-    $39
+    $39,
+    $40,
+    $41
 )
 ON CONFLICT (crawl_id, url) DO NOTHING;
 
@@ -120,6 +124,8 @@ SELECT
     cp.og_tags,
     cp.json_ld,
     cp.content_blocks,
+    cp.content_extractor,
+    cp.content_extraction_status,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -278,6 +284,8 @@ SELECT
     og_tags,
     json_ld,
     content_blocks,
+    content_extractor,
+    content_extraction_status,
     created_at
 FROM crawl_pages
 WHERE crawl_id = $1
@@ -334,6 +342,8 @@ SELECT
     cp.og_tags,
     cp.json_ld,
     cp.content_blocks,
+    cp.content_extractor,
+    cp.content_extraction_status,
     cp.created_at
 FROM crawl_pages AS cp
 INNER JOIN crawls AS c ON c.id = cp.crawl_id
@@ -435,7 +445,13 @@ SELECT url, etag, last_modified
 FROM crawl_pages
 WHERE crawl_id = sqlc.arg(crawl_id)
   AND status_code BETWEEN 200 AND 299
-  AND (etag IS NOT NULL OR last_modified IS NOT NULL);
+  AND (etag IS NOT NULL OR last_modified IS NOT NULL)
+  -- Only rows the current extraction engine produced successfully can be
+  -- reused via 304: legacy rows predate the extractor, a mismatched engine
+  -- version means the stored content is stale, and failed/empty extractions
+  -- never yielded reusable content. Excluded rows force a fresh 200 fetch.
+  AND content_extractor = sqlc.arg(content_extractor)
+  AND content_extraction_status = 'ok';
 
 -- name: CopyCrawlPageFromBaseline :execrows
 INSERT INTO crawl_pages (
@@ -477,7 +493,9 @@ INSERT INTO crawl_pages (
     last_modified,
     soft_404,
     fetch_error,
-    would_have_rendered
+    would_have_rendered,
+    content_extractor,
+    content_extraction_status
 )
 SELECT
     sqlc.arg(crawl_id),
@@ -523,7 +541,9 @@ SELECT
     -- The page was not re-parsed, so the render verdict carries over from the
     -- baseline crawl. A stale verdict beats a false negative on an incremental
     -- crawl where most pages answer 304 and the detector never runs.
-    crawl_pages.would_have_rendered
+    crawl_pages.would_have_rendered,
+    content_extractor,
+    content_extraction_status
 FROM crawl_pages
 WHERE crawl_pages.crawl_id = sqlc.arg(baseline_crawl_id)
   AND crawl_pages.url = sqlc.arg(url)

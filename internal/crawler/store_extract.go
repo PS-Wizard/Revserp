@@ -1,6 +1,12 @@
 package crawler
 
-import "unicode"
+import (
+	"unicode"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/ps-wizard/revserp/internal/pgnull"
+)
 
 // countParsedLinks returns internal and external link counts for one parsed page.
 func countParsedLinks(parsedPage *ParsedPage) (int, int) {
@@ -227,4 +233,52 @@ func countWords(value string) int {
 	}
 
 	return wordCount
+}
+
+// extractContentExtractor returns the engine version that produced one
+// parsed page, or "" when the page carries no provenance (nil page for a
+// non-HTML fetch or fetch failure, which never attempts native extraction).
+// The extraction worker (parser.go, main_content.go) owns the pipeline and
+// stamps every ParsedPage; the store only persists the value and gates 304
+// baseline reuse on it via MainContentExtractorVersion.
+func extractContentExtractor(parsedPage *ParsedPage) string {
+	if parsedPage == nil {
+		return ""
+	}
+
+	return parsedPage.ContentExtractor
+}
+
+// extractContentExtractionStatus returns one parsed page's extraction status
+// ("ok", "empty", or "failed"), or "" when the page carries none.
+func extractContentExtractionStatus(parsedPage *ParsedPage) string {
+	if parsedPage == nil {
+		return ""
+	}
+
+	return normalizeContentExtractionStatus(parsedPage.ContentExtractionStatus)
+}
+
+// normalizeContentExtractionStatus keeps only known statuses; anything else
+// (including "") persists as NULL rather than tripping the DB CHECK.
+func normalizeContentExtractionStatus(value string) string {
+	switch value {
+	case ContentExtractionOK, ContentExtractionEmpty, ContentExtractionFailed:
+		return value
+	default:
+		return ""
+	}
+}
+
+// nullableContentExtractor persists one parsed page's engine version, or
+// NULL when the page carries no provenance. Non-HTML and fetch-failed
+// results have no ParsedPage, so they never claim a native extraction.
+func nullableContentExtractor(parsedPage *ParsedPage) pgtype.Text {
+	return pgnull.Text(extractContentExtractor(parsedPage))
+}
+
+// nullableContentExtractionStatus persists one parsed page's extraction
+// status, or NULL when the page carries none or an unknown value.
+func nullableContentExtractionStatus(parsedPage *ParsedPage) pgtype.Text {
+	return pgnull.Text(extractContentExtractionStatus(parsedPage))
 }

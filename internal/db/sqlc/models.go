@@ -342,6 +342,8 @@ type CrawlPage struct {
 	HealthBreakdown         []byte
 	WouldHaveRendered       bool
 	UrlKey                  pgtype.Text
+	ContentExtractor        pgtype.Text
+	ContentExtractionStatus pgtype.Text
 }
 
 type CrawlPageWorkerConfig struct {

@@ -4,28 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"sort"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
-
-type pairVerificationCancelContext struct {
-	context.Context
-	checks      atomic.Int64
-	cancelAfter int64
-	cancel      context.CancelFunc
-}
-
-func (ctx *pairVerificationCancelContext) Err() error {
-	if ctx.checks.Add(1) == ctx.cancelAfter {
-		ctx.cancel()
-	}
-	return ctx.Context.Err()
-}
 
 func cancelTestLinks(count int) []shared.LinkFact {
 	linkFacts := make([]shared.LinkFact, 0, count)
@@ -76,8 +60,15 @@ func canonicalGroups(evidence DuplicateEvidence) []string {
 }
 
 func TestDeriveWithContextMatchesPure(t *testing.T) {
-	t.Parallel()
-	pageFacts := buildSyntheticNearDuplicateCorpus(120)
+	if !gaoyaBinaryAvailable() {
+		t.Skip("revserp-gaoya not on PATH (or GAOYA_PATH unset); run with the binary available for full coverage")
+	}
+	base := buildGaoyaBodyText(21, 500)
+	pageFacts := []shared.PageFact{
+		{URL: "https://example.com/base", ContentType: "text/html", Title: "Base guide", VisibleText: base},
+		{URL: "https://example.com/copy", ContentType: "text/html", Title: "Copy guide", VisibleText: buildGaoyaNearCopy(base, 100, "kiwi")},
+		{URL: "https://example.com/other", ContentType: "text/html", Title: "Other guide", VisibleText: buildGaoyaBodyText(22, 500)},
+	}
 	linkFacts := cancelTestLinks(2000)
 
 	pureIssues, pureEvidence := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
@@ -136,54 +127,26 @@ func TestSeoDeriveLinkScanCancelled(t *testing.T) {
 	}
 }
 
-func TestNearDuplicateCancelledDuringVerify(t *testing.T) {
-	pageFacts := buildSyntheticNearDuplicateCorpus(1200)
-	if err := EnrichPageFactsWithContentFingerprintsWithContext(context.Background(), pageFacts); err != nil {
-		t.Fatalf("fingerprint: %v", err)
-	}
-	candidatePairs, err := buildNearDuplicateCandidatePairs(context.Background(), pageFacts)
-	if err != nil {
-		t.Fatalf("candidates: %v", err)
-	}
-	profiles, err := buildNearDuplicateProfiles(context.Background(), pageFacts)
-	if err != nil {
-		t.Fatalf("profiles: %v", err)
-	}
-	pairList := make([][2]int, 0, len(candidatePairs))
-	for pair := range candidatePairs {
-		pairList = append(pairList, pair)
-	}
-	workerCount := min(runtime.NumCPU(), len(pairList))
-	for len(pairList) < workerCount*deriveCtxCheckPairs*2 {
-		pairList = append(pairList, pairList...)
-	}
-	t.Logf("verify workload: pages=%d pairs=%d", len(pageFacts), len(pairList))
+func TestNearDuplicateCancelledDuringGaoyaRun(t *testing.T) {
+	gaoyaStubPath(t)
+	t.Setenv("GAOYA_STUB_MODE", "hang")
+	pageFacts := gaoyaStubTextPages(
+		"https://example.com/a",
+		"https://example.com/b",
+		"https://example.com/c",
+		"https://example.com/d",
+	)
 
-	beforeGoroutines := runtime.NumGoroutine()
-	baseCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ctx := &pairVerificationCancelContext{
-		Context:     baseCtx,
-		cancelAfter: int64(workerCount + 2),
-		cancel:      cancel,
-	}
-	start := time.Now()
-	matches, err := verifyNearDuplicatePairs(ctx, pageFacts, profiles, pairList)
-	elapsed := time.Since(start)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	issues, evidence, err := deriveNearDuplicateIssuesWithEvidence(ctx, pageFacts)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
-	if matches != nil {
-		t.Fatalf("cancelled verify returned %d partial matches", len(matches))
-	}
-	if elapsed > 30*time.Second {
-		t.Fatalf("cancelled verify took %s, workers did not stop promptly", elapsed)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > beforeGoroutines && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if leaked := runtime.NumGoroutine() - beforeGoroutines; leaked > 0 {
-		t.Fatalf("verify leaked %d goroutines after cancellation", leaked)
+	if issues != nil || len(evidence.Groups) != 0 || len(evidence.Relations) != 0 {
+		t.Fatalf("cancelled derive returned partial results: %d issues", len(issues))
 	}
 }

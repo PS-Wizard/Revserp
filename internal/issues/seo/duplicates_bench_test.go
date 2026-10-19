@@ -4,15 +4,13 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
-// buildSyntheticNearDuplicateCorpus mimics a real site: shared nav/footer
-// boilerplate across all pages, section templates shared within page groups
-// (the medium-frequency shingles that drive candidate-pair blowup), and a
-// small unique tail per page.
+// buildSyntheticNearDuplicateCorpus builds a large workload of templated pages
+// for cancellation and scale tests. Section templates repeat across page
+// groups; it makes no claim about which pairs the 0.9 MinHash engine matches.
 func buildSyntheticNearDuplicateCorpus(pageCount int) []shared.PageFact {
 	boilerplate := ""
 	for i := 0; i < 120; i++ {
@@ -45,62 +43,71 @@ func buildSyntheticNearDuplicateCorpus(pageCount int) []shared.PageFact {
 	return pageFacts
 }
 
-func TestNearDuplicateOldVsNew(t *testing.T) {
-	pageFacts := buildSyntheticNearDuplicateCorpus(300)
-	EnrichPageFactsWithContentFingerprints(pageFacts)
-	candidatePairs, err := buildNearDuplicateCandidatePairs(context.Background(), pageFacts)
+// buildGaoyaCopyCorpus builds base pages each with a one-word near-copy plus
+// unrelated pages, all with varied main bodies for the 0.9 threshold.
+func buildGaoyaCopyCorpus(bases int, unrelated int) []shared.PageFact {
+	pageFacts := make([]shared.PageFact, 0, 2*bases+unrelated)
+	for base := 0; base < bases; base++ {
+		body := buildGaoyaBodyText(int64(base+1), 500)
+		pageFacts = append(pageFacts, shared.PageFact{
+			URL:         fmt.Sprintf("https://example.com/guide-%d", base),
+			Title:       fmt.Sprintf("Guide %d", base),
+			VisibleText: body,
+		}, shared.PageFact{
+			URL:         fmt.Sprintf("https://example.com/guide-%d-copy", base),
+			Title:       fmt.Sprintf("Guide %d copy", base),
+			VisibleText: buildGaoyaNearCopy(body, 100+base, "kiwi"),
+		})
+	}
+	for other := 0; other < unrelated; other++ {
+		pageFacts = append(pageFacts, shared.PageFact{
+			URL:         fmt.Sprintf("https://example.com/other-%d", other),
+			Title:       fmt.Sprintf("Other %d", other),
+			VisibleText: buildGaoyaBodyText(int64(1000+other), 500),
+		})
+	}
+	return pageFacts
+}
+
+func TestGaoyaNearDuplicateFindsMainBodyCopies(t *testing.T) {
+	if !gaoyaBinaryAvailable() {
+		t.Skip("revserp-gaoya not on PATH (or GAOYA_PATH unset); run with the binary available for full coverage")
+	}
+	const bases = 10
+	pageFacts := buildGaoyaCopyCorpus(bases, 10)
+	if err := EnrichPageFactsWithContentFingerprintsWithContext(context.Background(), pageFacts); err != nil {
+		t.Fatalf("fingerprints: %v", err)
+	}
+
+	_, evidence, err := deriveNearDuplicateIssuesWithEvidence(context.Background(), pageFacts)
 	if err != nil {
-		t.Fatalf("buildNearDuplicateCandidatePairs: %v", err)
+		t.Fatalf("deriveNearDuplicateIssuesWithEvidence: %v", err)
 	}
-
-	pairList := make([][2]int, 0, len(candidatePairs))
-	for pair := range candidatePairs {
-		pairList = append(pairList, pair)
+	paired := make(map[string]string)
+	for _, relation := range evidence.Relations {
+		paired[relation.LeftPage.URL] = relation.RightPage.URL
 	}
-
-	// Old serial path: rebuild trigrams per pair via the reference function.
-	oldStart := time.Now()
-	oldMatches := map[[2]int]struct{}{}
-	for _, pair := range pairList {
-		left := pageFacts[pair[0]]
-		right := pageFacts[pair[1]]
-		if left.ContentSHA256 == "" || right.ContentSHA256 == "" || left.ContentSHA256 == right.ContentSHA256 {
-			continue
-		}
-		if calculateNearDuplicateContentSimilarity(left, right) >= nearDuplicateContentSimilarityThreshold {
-			oldMatches[pair] = struct{}{}
-		}
-	}
-	oldElapsed := time.Since(oldStart)
-
-	// New path: precompute profiles once + parallel verify.
-	newStart := time.Now()
-	profiles, err := buildNearDuplicateProfiles(context.Background(), pageFacts)
-	if err != nil {
-		t.Fatalf("buildNearDuplicateProfiles: %v", err)
-	}
-	newMatchList, err := verifyNearDuplicatePairs(context.Background(), pageFacts, profiles, pairList)
-	if err != nil {
-		t.Fatalf("verifyNearDuplicatePairs: %v", err)
-	}
-	newElapsed := time.Since(newStart)
-
-	newMatches := map[[2]int]struct{}{}
-	for _, pair := range newMatchList {
-		newMatches[pair] = struct{}{}
-	}
-
-	if len(oldMatches) != len(newMatches) {
-		t.Fatalf("match count differs: old=%d new=%d", len(oldMatches), len(newMatches))
-	}
-	for pair := range oldMatches {
-		if _, ok := newMatches[pair]; !ok {
-			t.Fatalf("new path missing pair present in old: %v", pair)
+	for base := 0; base < bases; base++ {
+		wantLeft := fmt.Sprintf("https://example.com/guide-%d", base)
+		wantRight := fmt.Sprintf("https://example.com/guide-%d-copy", base)
+		if paired[wantLeft] != wantRight {
+			t.Fatalf("base %d paired with %q, want %q (all relations: %v)", base, paired[wantLeft], wantRight, gaoyaRelationURLs(evidence))
 		}
 	}
+	if len(evidence.Relations) != bases {
+		t.Fatalf("got %d relations, want exactly %d (no unrelated pairs)", len(evidence.Relations), bases)
+	}
+}
 
-	t.Logf("pages=%d candidate_pairs=%d matches=%d | old(serial)=%s new(parallel+cached)=%s speedup=%.1fx",
-		len(pageFacts), len(pairList), len(oldMatches),
-		oldElapsed.Round(time.Millisecond), newElapsed.Round(time.Millisecond),
-		float64(oldElapsed)/float64(newElapsed))
+func BenchmarkGaoyaNearDuplicateDetection(b *testing.B) {
+	if !gaoyaBinaryAvailable() {
+		b.Skip("revserp-gaoya not on PATH (or GAOYA_PATH unset)")
+	}
+	pageFacts := buildGaoyaCopyCorpus(2, 2)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := runGaoyaNearDuplicateDetection(context.Background(), pageFacts); err != nil {
+			b.Fatalf("runGaoyaNearDuplicateDetection: %v", err)
+		}
+	}
 }

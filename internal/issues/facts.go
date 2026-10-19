@@ -68,6 +68,7 @@ func loadFactsWithPages(ctx context.Context, queries *sqlc.Queries, crawlID pgty
 			ContentSHA256:           textValue(crawlPage.ContentSha256),
 			Soft404:                 crawlPage.Soft404,
 			FetchError:              textValue(crawlPage.FetchError),
+			ContentExtractionStatus: textValue(crawlPage.ContentExtractionStatus),
 		})
 	}
 	destinationStatuses, err := linkDestinationStatuses(ctx, crawlPages)

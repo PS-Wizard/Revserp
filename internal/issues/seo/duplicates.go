@@ -5,19 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"runtime"
 	"sort"
 	"strings"
-	"sync"
 	"unicode"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
-
-const minimumSharedShingleCountForNearDuplicateCandidate = 2
-const nearDuplicateContentSimilarityThreshold = 0.58
-const nearDuplicateCommonShinglePageCountFloor = 25
-const nearDuplicateCommonShinglePageCountDivisor = 5
 
 const (
 	deriveCtxCheckPages = 256
@@ -96,6 +89,11 @@ func deriveDuplicateContentIssuesWithEvidence(ctx context.Context, pageFacts []s
 }
 
 func normalizeDuplicateContent(pageFact shared.PageFact) string {
+	// Extraction-failed bodies are unreliable: hashing the remaining metadata
+	// would group unrelated failed pages as fake exact body duplicates.
+	if pageFact.ContentExtractionFailed() {
+		return ""
+	}
 	normalizedFields := []string{
 		normalizeDuplicateContentField(pageFact.Title),
 		normalizeDuplicateContentField(pageFact.MetaDescription),
@@ -132,28 +130,8 @@ func groupExactDuplicatePagesByHash(pageFacts []shared.PageFact) map[string][]in
 	return exactDuplicateGroupsByHash
 }
 
-// deriveNearDuplicateIssuesWithEvidence builds near-duplicate issues and records each matching pair as structured relation evidence.
 func deriveNearDuplicateIssuesWithEvidence(ctx context.Context, pageFacts []shared.PageFact) ([]shared.DerivedIssue, DuplicateEvidence, error) {
-	candidatePagePairs, err := buildNearDuplicateCandidatePairs(ctx, pageFacts)
-	if err != nil {
-		return nil, DuplicateEvidence{}, err
-	}
-
-	// Precompute each page's normalized fields and character-trigram sets once.
-	// The similarity check runs over tens of thousands of candidate pairs and a
-	// single page appears in many of them, so rebuilding trigrams per pair (the
-	// old path) recomputed the same sets thousands of times.
-	profiles, err := buildNearDuplicateProfiles(ctx, pageFacts)
-	if err != nil {
-		return nil, DuplicateEvidence{}, err
-	}
-
-	candidatePairList := make([][2]int, 0, len(candidatePagePairs))
-	for candidatePagePair := range candidatePagePairs {
-		candidatePairList = append(candidatePairList, candidatePagePair)
-	}
-
-	matchingPairs, err := verifyNearDuplicatePairs(ctx, pageFacts, profiles, candidatePairList)
+	matchingPairs, err := runGaoyaNearDuplicateDetection(ctx, pageFacts)
 	if err != nil {
 		return nil, DuplicateEvidence{}, err
 	}
@@ -166,14 +144,17 @@ func deriveNearDuplicateIssuesWithEvidence(ctx context.Context, pageFacts []shar
 				return nil, DuplicateEvidence{}, err
 			}
 		}
+		if leftHash := pageFacts[matchingPair.left].ContentSHA256; leftHash != "" && leftHash == pageFacts[matchingPair.right].ContentSHA256 {
+			continue
+		}
 		evidence.Relations = append(evidence.Relations, DuplicateRelation{
 			IssueType:  DuplicateIssueTypeNearDuplicateContent,
-			LeftPage:   DuplicatePage{CrawlPageID: pageFacts[matchingPair[0]].ID, URL: pageFacts[matchingPair[0]].URL},
-			RightPage:  DuplicatePage{CrawlPageID: pageFacts[matchingPair[1]].ID, URL: pageFacts[matchingPair[1]].URL},
-			Similarity: similarityFromProfiles(profiles[matchingPair[0]], profiles[matchingPair[1]]),
+			LeftPage:   DuplicatePage{CrawlPageID: pageFacts[matchingPair.left].ID, URL: pageFacts[matchingPair.left].URL},
+			RightPage:  DuplicatePage{CrawlPageID: pageFacts[matchingPair.right].ID, URL: pageFacts[matchingPair.right].URL},
+			Similarity: matchingPair.similarity,
 		})
-		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair[0], matchingPair[1])
-		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair[1], matchingPair[0])
+		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair.left, matchingPair.right)
+		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair.right, matchingPair.left)
 	}
 	nearDuplicateGroups, err := buildNearDuplicateGroups(ctx, pageFacts, nearDuplicateNeighborsByPageIndex)
 	if err != nil {
@@ -208,259 +189,6 @@ func deriveNearDuplicateIssuesWithEvidence(ctx context.Context, pageFacts []shar
 		))
 	}
 	return derivedIssues, evidence, nil
-}
-
-// nearDuplicateProfile holds a page's precomputed normalized fields and their
-// character-trigram sets, so pairwise similarity avoids rebuilding them.
-type nearDuplicateProfile struct {
-	visibleText     nearDuplicateFieldProfile
-	title           nearDuplicateFieldProfile
-	metaDescription nearDuplicateFieldProfile
-	h1              nearDuplicateFieldProfile
-}
-
-type nearDuplicateFieldProfile struct {
-	normalized string
-	trigrams   map[string]struct{}
-}
-
-func buildNearDuplicateProfiles(ctx context.Context, pageFacts []shared.PageFact) ([]nearDuplicateProfile, error) {
-	profiles := make([]nearDuplicateProfile, len(pageFacts))
-	for pageIndex := range pageFacts {
-		if pageIndex%deriveCtxCheckPages == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		visibleText, err := buildNearDuplicateFieldProfile(ctx, pageFacts[pageIndex].VisibleText)
-		if err != nil {
-			return nil, err
-		}
-		title, err := buildNearDuplicateFieldProfile(ctx, pageFacts[pageIndex].Title)
-		if err != nil {
-			return nil, err
-		}
-		metaDescription, err := buildNearDuplicateFieldProfile(ctx, pageFacts[pageIndex].MetaDescription)
-		if err != nil {
-			return nil, err
-		}
-		h1, err := buildNearDuplicateFieldProfile(ctx, pageFacts[pageIndex].H1)
-		if err != nil {
-			return nil, err
-		}
-		profiles[pageIndex] = nearDuplicateProfile{
-			visibleText:     visibleText,
-			title:           title,
-			metaDescription: metaDescription,
-			h1:              h1,
-		}
-	}
-	return profiles, nil
-}
-
-func buildNearDuplicateFieldProfile(ctx context.Context, value string) (nearDuplicateFieldProfile, error) {
-	normalized := normalizeNearDuplicateField(value)
-	if normalized == "" {
-		return nearDuplicateFieldProfile{}, nil
-	}
-	trigrams, err := buildCharacterTrigrams(ctx, normalized)
-	if err != nil {
-		return nearDuplicateFieldProfile{}, err
-	}
-	return nearDuplicateFieldProfile{normalized: normalized, trigrams: trigrams}, nil
-}
-
-// similarityFromProfiles mirrors calculateNearDuplicateContentSimilarity exactly
-// but reads precomputed trigram sets instead of rebuilding them per pair.
-func similarityFromProfiles(leftProfile nearDuplicateProfile, rightProfile nearDuplicateProfile) float64 {
-	return fieldSimilarityFromProfiles(leftProfile.visibleText, rightProfile.visibleText)*0.55 +
-		fieldSimilarityFromProfiles(leftProfile.title, rightProfile.title)*0.15 +
-		fieldSimilarityFromProfiles(leftProfile.metaDescription, rightProfile.metaDescription)*0.15 +
-		fieldSimilarityFromProfiles(leftProfile.h1, rightProfile.h1)*0.15
-}
-
-func fieldSimilarityFromProfiles(leftProfile nearDuplicateFieldProfile, rightProfile nearDuplicateFieldProfile) float64 {
-	if leftProfile.normalized == "" || rightProfile.normalized == "" {
-		return 0
-	}
-	if leftProfile.normalized == rightProfile.normalized {
-		return 1
-	}
-	sharedTrigramCount := trigramIntersectionSize(leftProfile.trigrams, rightProfile.trigrams)
-	if sharedTrigramCount == 0 {
-		return 0
-	}
-	return float64(2*sharedTrigramCount) / float64(len(leftProfile.trigrams)+len(rightProfile.trigrams))
-}
-
-func trigramIntersectionSize(leftTrigrams map[string]struct{}, rightTrigrams map[string]struct{}) int {
-	if len(leftTrigrams) > len(rightTrigrams) {
-		leftTrigrams, rightTrigrams = rightTrigrams, leftTrigrams
-	}
-	sharedTrigramCount := 0
-	for trigram := range leftTrigrams {
-		if _, exists := rightTrigrams[trigram]; exists {
-			sharedTrigramCount++
-		}
-	}
-	return sharedTrigramCount
-}
-
-// verifyNearDuplicatePairs returns the candidate pairs whose content similarity
-// meets the threshold. Each pair is independent, so verification fans out
-// across CPUs (this is the dominant cost of duplicate detection on large sites).
-// Every worker watches ctx and all workers join before return; on cancellation
-// no partial match list is returned.
-func verifyNearDuplicatePairs(ctx context.Context, pageFacts []shared.PageFact, profiles []nearDuplicateProfile, candidatePairs [][2]int) ([][2]int, error) {
-	if len(candidatePairs) == 0 {
-		return nil, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	workerCount := runtime.NumCPU()
-	if workerCount > len(candidatePairs) {
-		workerCount = len(candidatePairs)
-	}
-	if workerCount < 1 {
-		workerCount = 1
-	}
-
-	matchesByWorker := make([][][2]int, workerCount)
-	workerErrs := make([]error, workerCount)
-	var workerGroup sync.WaitGroup
-	for workerIndex := 0; workerIndex < workerCount; workerIndex++ {
-		workerGroup.Add(1)
-		go func(workerIndex int) {
-			defer workerGroup.Done()
-			var localMatches [][2]int
-			for pairNumber, pairIndex := 0, workerIndex; pairIndex < len(candidatePairs); pairNumber, pairIndex = pairNumber+1, pairIndex+workerCount {
-				if pairNumber%deriveCtxCheckPairs == 0 {
-					if err := ctx.Err(); err != nil {
-						workerErrs[workerIndex] = err
-						return
-					}
-				}
-				candidatePair := candidatePairs[pairIndex]
-				leftPageFact := pageFacts[candidatePair[0]]
-				rightPageFact := pageFacts[candidatePair[1]]
-				if leftPageFact.ContentSHA256 == "" || rightPageFact.ContentSHA256 == "" || leftPageFact.ContentSHA256 == rightPageFact.ContentSHA256 {
-					continue
-				}
-				if similarityFromProfiles(profiles[candidatePair[0]], profiles[candidatePair[1]]) < nearDuplicateContentSimilarityThreshold {
-					continue
-				}
-				localMatches = append(localMatches, candidatePair)
-			}
-			matchesByWorker[workerIndex] = localMatches
-		}(workerIndex)
-	}
-	workerGroup.Wait()
-	for _, workerErr := range workerErrs {
-		if workerErr != nil {
-			return nil, workerErr
-		}
-	}
-
-	var matchingPairs [][2]int
-	for _, localMatches := range matchesByWorker {
-		matchingPairs = append(matchingPairs, localMatches...)
-	}
-	return matchingPairs, nil
-}
-
-func buildNearDuplicateCandidatePairs(ctx context.Context, pageFacts []shared.PageFact) (map[[2]int]struct{}, error) {
-	pageIndexesByShingle := make(map[string][]int)
-	shingleDocumentCounts := make(map[string]int)
-	pageShinglesByIndex := make([][]string, len(pageFacts))
-	for pageFactIndex, pageFact := range pageFacts {
-		if pageFactIndex%deriveCtxCheckPages == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		pageShingles := buildNearDuplicateCandidateShingles(pageFact)
-		pageShinglesByIndex[pageFactIndex] = pageShingles
-		for _, pageShingle := range pageShingles {
-			pageIndexesByShingle[pageShingle] = append(pageIndexesByShingle[pageShingle], pageFactIndex)
-			shingleDocumentCounts[pageShingle]++
-		}
-	}
-
-	maximumCommonShinglePageCount := calculateMaximumCommonShinglePageCount(len(pageFacts))
-	sharedShingleCountsByPair := make(map[[2]int]int)
-	pairCount := 0
-	for pageShingle, pageIndexes := range pageIndexesByShingle {
-		if shingleDocumentCounts[pageShingle] > maximumCommonShinglePageCount {
-			continue
-		}
-		for leftIndex := 0; leftIndex < len(pageIndexes); leftIndex++ {
-			for rightIndex := leftIndex + 1; rightIndex < len(pageIndexes); rightIndex++ {
-				pairCount++
-				if pairCount%deriveCtxCheckPairs == 0 {
-					if err := ctx.Err(); err != nil {
-						return nil, err
-					}
-				}
-				pairKey := [2]int{pageIndexes[leftIndex], pageIndexes[rightIndex]}
-				sharedShingleCountsByPair[pairKey]++
-			}
-		}
-	}
-
-	candidatePagePairs := make(map[[2]int]struct{})
-	for candidatePagePair, sharedShingleCount := range sharedShingleCountsByPair {
-		if sharedShingleCount < minimumSharedShingleCountForNearDuplicateCandidate {
-			continue
-		}
-		candidatePagePairs[candidatePagePair] = struct{}{}
-	}
-	return candidatePagePairs, nil
-}
-
-func calculateMaximumCommonShinglePageCount(totalPageCount int) int {
-	if totalPageCount <= 0 {
-		return nearDuplicateCommonShinglePageCountFloor
-	}
-	maximumCommonShinglePageCount := totalPageCount / nearDuplicateCommonShinglePageCountDivisor
-	if maximumCommonShinglePageCount < nearDuplicateCommonShinglePageCountFloor {
-		return nearDuplicateCommonShinglePageCountFloor
-	}
-	return maximumCommonShinglePageCount
-}
-
-func buildNearDuplicateCandidateShingles(pageFact shared.PageFact) []string {
-	candidateTokens := collectNearDuplicateCandidateTokens(pageFact)
-	if len(candidateTokens) < 2 {
-		return nil
-	}
-	uniqueShingles := make(map[string]struct{})
-	for tokenIndex := 0; tokenIndex < len(candidateTokens)-1; tokenIndex++ {
-		shingle := candidateTokens[tokenIndex] + " " + candidateTokens[tokenIndex+1]
-		uniqueShingles[shingle] = struct{}{}
-	}
-	shingles := make([]string, 0, len(uniqueShingles))
-	for shingle := range uniqueShingles {
-		shingles = append(shingles, shingle)
-	}
-	return shingles
-}
-
-func collectNearDuplicateCandidateTokens(pageFact shared.PageFact) []string {
-	var candidateTokens []string
-	candidateTokens = append(candidateTokens, normalizeNearDuplicateFieldToTokens(pageFact.Title)...)
-	candidateTokens = append(candidateTokens, normalizeNearDuplicateFieldToTokens(pageFact.MetaDescription)...)
-	candidateTokens = append(candidateTokens, normalizeNearDuplicateFieldToTokens(pageFact.H1)...)
-	candidateTokens = append(candidateTokens, normalizeNearDuplicateFieldToTokens(pageFact.VisibleText)...)
-	return candidateTokens
-}
-
-func calculateNearDuplicateContentSimilarity(leftPageFact shared.PageFact, rightPageFact shared.PageFact) float64 {
-	visibleTextSimilarity := calculateFieldSimilarity(leftPageFact.VisibleText, rightPageFact.VisibleText)
-	titleSimilarity := calculateFieldSimilarity(leftPageFact.Title, rightPageFact.Title)
-	metaDescriptionSimilarity := calculateFieldSimilarity(leftPageFact.MetaDescription, rightPageFact.MetaDescription)
-	h1Similarity := calculateFieldSimilarity(leftPageFact.H1, rightPageFact.H1)
-	return visibleTextSimilarity*0.55 + titleSimilarity*0.15 + metaDescriptionSimilarity*0.15 + h1Similarity*0.15
 }
 
 func calculateFieldSimilarity(leftValue string, rightValue string) float64 {
