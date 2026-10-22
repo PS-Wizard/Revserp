@@ -136,6 +136,7 @@ func (a *App) Router() http.Handler {
 			app.Get("/projects/{projectID}/setup", a.handleGetProjectSetup)
 			app.Post("/projects/{projectID}/setup", a.handleStartProjectSetup)
 			app.Get("/projects/{projectID}/keywords", a.handleProjectKeywords)
+			app.Get("/projects/{projectID}/keyword-analysis", a.handleGetProjectKeywordAnalysis)
 			app.Get("/projects/{projectID}/keyword-lists", a.handleGetProjectKeywordLists)
 			app.Post("/projects/{projectID}/keyword-lists", a.handleAddProjectKeyword)
 			app.Delete("/projects/{projectID}/keyword-lists/{keywordID}", a.handleDeleteProjectKeyword)
@@ -224,6 +225,10 @@ func (a *App) Router() http.Handler {
 			app.Group(func(gated chi.Router) {
 				gated.Use(a.requireFeature(FeatureCompetitors, featuresByProjectParam))
 				gated.Get("/projects/{projectID}/competitors", a.handleListProjectCompetitors)
+				gated.Get("/projects/{projectID}/competitors/{competitorID}/keyword-analysis", a.handleGetCompetitorKeywordAnalysis)
+				gated.Get("/projects/{projectID}/competitors/{competitorID}/initialization", a.handleGetCompetitorInitialization)
+				gated.Post("/projects/{projectID}/competitors/{competitorID}/initialization", a.handleStartCompetitorInitialization)
+				gated.Post("/projects/{projectID}/competitors/{competitorID}/initialization/retry", a.handleRetryCompetitorInitialization)
 				gated.Post("/projects/{projectID}/competitors", a.handleCreateProjectCompetitor)
 				gated.Post("/projects/{projectID}/competitors/crawls", a.handleEnqueueProjectCompetitorCrawls)
 				gated.Delete("/projects/{projectID}/competitors/{competitorID}", a.handleDeleteProjectCompetitor)

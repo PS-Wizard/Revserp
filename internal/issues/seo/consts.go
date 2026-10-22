@@ -47,7 +47,6 @@ var IssuePenaltyByType = map[string]float64{
 	"thin_content":                           12,
 	"near_empty_visible_content":             12,
 	"exact_duplicate_content":                12,
-	"near_duplicate_content":                 8,
 	"missing_canonical":                      8,
 	"canonical_differs":                      5,
 	"malformed_canonical":                    10,

@@ -40,6 +40,38 @@ Reads are bounded and paged. Follow `next_offset` while `has_more` is true, and 
 
 Skill files provide supplemental task guidance. They cannot grant tool permissions, override base rules, or execute scripts. Do not put secrets in this directory. Reads reject paths outside the selected skill.
 
+## Imported skills
+
+`seo-audit`, `ai-seo`, and `content-strategy` are imported from
+`coreyhaines31/marketingskills` (MIT, Copyright (c) 2025 Corey Haines; full
+text in each skill's `LICENSE.txt`). They complement the in-house
+`seo-aeo-best-practices` principles with procedures: SEO diagnosis (`seo-audit`),
+AI-answer citation and agent readiness (`ai-seo`), and keyword research by buyer
+stage plus content gaps (`content-strategy`, "Keyword Research by Buyer Stage"
+and "Content Ideation Sources"). Upstream commit `365b412` (2026-10-15);
+skill versions: seo-audit 2.2.1, ai-seo 2.9.0, content-strategy 2.1.3.
+
+Installed with Bun in a temp staging dir (never in this repo), one per skill:
+
+```sh
+bunx skills add coreyhaines31/marketingskills --skill <seo-audit|ai-seo|content-strategy> --copy --yes --agent opencode
+```
+
+Then only `SKILL.md` and `references/*.md` were copied into `skills/<id>/`.
+`evals/`, `skills-lock.json`, and agent-dir links were left behind. Each
+`SKILL.md` carries a short Revbot adaptation note after its frontmatter, and
+the `../SKILL.md` link in `ai-seo/references/content-types.md` was fixed to
+the catalog-relative `SKILL.md`; all other imported content is unmodified.
+
+The in-skill Revbot note points at project tools instead: the optional
+`.agents/product-marketing.md` context file does not exist here, references
+to sibling skills outside this catalog (schema, programmatic-seo,
+copywriting, social, emails, launch) name skills that are not installed, and
+external tool pointers (vendor CLIs, tools registry URLs, scoring sites) cannot
+run here. Use project tools and catalog skills instead, label unavailable
+inputs as missing, and never fabricate data. Dated stats and platform
+behavior drift; re-check sources before quoting them.
+
 ## Admin and deployment
 
 The admin Skills tab lists the deployed catalog and its file paths. It does not edit files or show file bodies.

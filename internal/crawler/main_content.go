@@ -11,10 +11,11 @@ import (
 )
 
 // MainContentExtractorVersion identifies the engine that produced the stored
-// visible text and content blocks. The persistence layer reuses baseline rows
+// visible text and content blocks, including the structural blog archive
+// listing path. The persistence layer reuses baseline rows
 // on 304 only when the extractor version matches and the status is ok,
 // otherwise a stale legacy extraction would be copied forward forever.
-const MainContentExtractorVersion = "go-trafilatura/v2@2.2.6"
+const MainContentExtractorVersion = "go-trafilatura/v2@2.2.6+archive-v1"
 
 // Extraction statuses recorded on ParsedPage. Only ok carries usable body
 // blocks; empty means the engine found no main content and failed means the
@@ -37,9 +38,10 @@ func supportedContentTag(tag string) bool {
 	}
 }
 
-// extractMainContent runs one native Go-Trafilatura extraction and derives
-// both blocks and visible text from the same returned ContentNode.
 func extractMainContent(nativeDoc *html.Node, pageURL *url.URL) ([]ParsedBlock, string, string, string) {
+	if blocks, text, ok := extractArchiveListingBlocks(nativeDoc, pageURL); ok && len(blocks) > 0 {
+		return blocks, text, ContentExtractionOK, ""
+	}
 	opts := trafilatura.Options{
 		OriginalURL:     pageURL,
 		Focus:           trafilatura.Balanced,

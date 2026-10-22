@@ -77,6 +77,20 @@ func (q *Queries) DeleteProjectByIDForUser(ctx context.Context, arg DeleteProjec
 	return result.RowsAffected(), nil
 }
 
+const getProjectBaseURLByID = `-- name: GetProjectBaseURLByID :one
+SELECT base_url
+FROM projects
+WHERE id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetProjectBaseURLByID(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getProjectBaseURLByID, id)
+	var base_url string
+	err := row.Scan(&base_url)
+	return base_url, err
+}
+
 const getProjectByIDForUser = `-- name: GetProjectByIDForUser :one
 SELECT
     p.id,

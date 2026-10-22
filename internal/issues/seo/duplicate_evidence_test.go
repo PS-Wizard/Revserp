@@ -31,24 +31,6 @@ func TestExactDuplicateEvidenceCarriesMembers(t *testing.T) {
 	}
 }
 
-func TestNearDuplicateConnectedComponentBecomesOneGroup(t *testing.T) {
-	t.Parallel()
-	pages := []shared.PageFact{
-		{ID: testDuplicateUUID(1), URL: "https://example.com/a"},
-		{ID: testDuplicateUUID(2), URL: "https://example.com/b"},
-		{ID: testDuplicateUUID(3), URL: "https://example.com/c"},
-	}
-	groups, err := buildNearDuplicateGroups(context.Background(), pages, map[int]map[int]struct{}{
-		0: {1: {}}, 1: {0: {}, 2: {}}, 2: {1: {}},
-	})
-	if err != nil {
-		t.Fatalf("buildNearDuplicateGroups: %v", err)
-	}
-	if len(groups) != 1 || len(groups[0].Members) != 3 {
-		t.Fatalf("got %#v, want one three-page group", groups)
-	}
-}
-
 func testDuplicateUUID(last byte) pgtype.UUID {
 	var bytes [16]byte
 	bytes[15] = last

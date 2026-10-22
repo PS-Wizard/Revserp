@@ -110,7 +110,7 @@ func TestParserParseHTML(t *testing.T) {
 		t.Fatalf("got first block %#v", parsedPage.ContentBlocks[0])
 	}
 
-	if parsedPage.ContentExtractor != "go-trafilatura/v2@2.2.6" {
+	if parsedPage.ContentExtractor != MainContentExtractorVersion {
 		t.Fatalf("got content extractor %q", parsedPage.ContentExtractor)
 	}
 

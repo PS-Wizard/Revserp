@@ -38,19 +38,5 @@ func persistDuplicateEvidence(ctx context.Context, queries *sqlc.Queries, crawlI
 			return fmt.Errorf("link duplicate issues to group: %w", err)
 		}
 	}
-
-	relations := make([]sqlc.CreateCrawlIssueRelationsParams, 0, len(evidence.Relations))
-	for _, relation := range evidence.Relations {
-		relations = append(relations, sqlc.CreateCrawlIssueRelationsParams{
-			CrawlID: crawlID, IssueType: relation.IssueType,
-			LeftCrawlPageID: relation.LeftPage.CrawlPageID, RightCrawlPageID: relation.RightPage.CrawlPageID,
-			Similarity: pgtype.Float8{Float64: relation.Similarity, Valid: true},
-		})
-	}
-	if len(relations) > 0 {
-		if _, err := queries.CreateCrawlIssueRelations(ctx, relations); err != nil {
-			return fmt.Errorf("create duplicate relations: %w", err)
-		}
-	}
 	return nil
 }

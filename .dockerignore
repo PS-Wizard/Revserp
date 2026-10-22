@@ -4,7 +4,6 @@
 bin/
 tmp/
 requests/
-tools/gaoya/target/
 /api
 /worker
 /ai-audit-worker

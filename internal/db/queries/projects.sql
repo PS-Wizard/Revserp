@@ -78,3 +78,9 @@ WHERE p.id = $1
   AND om.org_id = p.organization_id
   AND om.user_id = $2
 RETURNING p.id, p.organization_id, p.name, p.base_url, p.created_at;
+
+-- name: GetProjectBaseURLByID :one
+SELECT base_url
+FROM projects
+WHERE id = $1
+LIMIT 1;

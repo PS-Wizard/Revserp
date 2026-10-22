@@ -11,17 +11,23 @@ import (
 	"github.com/ps-wizard/revserp/internal/competitorgaps"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/issues/shared"
+	"github.com/ps-wizard/revserp/internal/keywords"
+	"github.com/ps-wizard/revserp/internal/projectkeywords"
 )
 
 func (a *App) handleGetCompetitorGap(w http.ResponseWriter, r *http.Request) {
-	_, report, ok := a.loadCompetitorGapReport(w, r)
+	crawl, report, ok := a.loadCompetitorGapReport(w, r)
+	if !ok {
+		return
+	}
+	coverage, ok := a.loadCompetitorGapKeywordCoverage(w, r, crawl)
 	if !ok {
 		return
 	}
 	// Snapshots rebuild when ReportVersion changes, so this must not be
 	// cached as immutable the way a completed crawl's score-breakdown is.
 	setNoStore(w)
-	writeJSON(w, http.StatusOK, report)
+	writeJSON(w, http.StatusOK, competitorGapResponse{Report: report, KeywordCoverage: coverage})
 }
 
 func (a *App) handleListCompetitorGapIssueURLs(w http.ResponseWriter, r *http.Request) {
@@ -243,4 +249,64 @@ func (a *App) loadCompetitorGapReport(w http.ResponseWriter, r *http.Request) (s
 	}
 
 	return crawl, report, true
+}
+
+type competitorGapKeywordCoverage struct {
+	You  []keywords.Seed `json:"you"`
+	Them []keywords.Seed `json:"them"`
+}
+
+type competitorGapResponse struct {
+	competitorgaps.Report
+	KeywordCoverage competitorGapKeywordCoverage `json:"keyword_coverage"`
+}
+
+func (a *App) loadCompetitorGapKeywordCoverage(w http.ResponseWriter, r *http.Request, crawl sqlc.GetCrawlByIDForUserRow) (competitorGapKeywordCoverage, bool) {
+	empty := competitorGapKeywordCoverage{You: []keywords.Seed{}, Them: []keywords.Seed{}}
+	gapCtx, err := a.Queries.GetCrawlGapContext(r.Context(), crawl.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "crawl not found")
+			return empty, false
+		}
+		serverError(w, r, err)
+		return empty, false
+	}
+	if !gapCtx.ParentCrawlID.Valid {
+		writeJSONError(w, http.StatusBadRequest, "parent crawl is missing or not completed")
+		return empty, false
+	}
+	lists, err := projectkeywords.LoadProjectKeywordLists(r.Context(), a.Queries, crawl.ProjectID)
+	if err != nil {
+		serverError(w, r, err)
+		return empty, false
+	}
+	targets := competitorGapNonBrandKeywords(lists)
+	if len(targets) == 0 {
+		return empty, true
+	}
+	youRows, err := a.Queries.ListKeywordCoveragePagesForCrawl(r.Context(), gapCtx.ParentCrawlID)
+	if err != nil {
+		serverError(w, r, err)
+		return empty, false
+	}
+	themRows, err := a.Queries.ListKeywordCoveragePagesForCrawl(r.Context(), crawl.ID)
+	if err != nil {
+		serverError(w, r, err)
+		return empty, false
+	}
+	you := keywords.Cover(keywordCoveragePages(youRows), targets, "")
+	them := keywords.Cover(keywordCoveragePages(themRows), targets, "")
+	return competitorGapKeywordCoverage{You: you, Them: them}, true
+}
+
+func competitorGapNonBrandKeywords(lists projectkeywords.KeywordLists) []string {
+	targets := make([]string, 0, len(lists.Combined))
+	for _, entry := range lists.Combined {
+		if entry.Kind != projectkeywords.ProjectKeywordKindNonBrand {
+			continue
+		}
+		targets = append(targets, entry.Keyword)
+	}
+	return targets
 }

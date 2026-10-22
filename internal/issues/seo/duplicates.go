@@ -15,11 +15,10 @@ import (
 const (
 	deriveCtxCheckPages = 256
 	deriveCtxCheckLinks = 4096
-	deriveCtxCheckPairs = 1024
 	trigramCtxCheckSize = 65536
 )
 
-var nearDuplicateStopWords = map[string]struct{}{
+var titleComparisonStopWords = map[string]struct{}{
 	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {}, "by": {},
 	"for": {}, "from": {}, "in": {}, "is": {}, "it": {}, "of": {}, "on": {}, "or": {},
 	"our": {}, "that": {}, "the": {}, "their": {}, "this": {}, "to": {}, "we": {},
@@ -50,6 +49,9 @@ func EnrichPageFactsWithContentFingerprintsWithContext(ctx context.Context, page
 
 // deriveDuplicateContentIssuesWithEvidence behaves like deriveDuplicateContentIssues but also returns the structured evidence behind the issues.
 func deriveDuplicateContentIssuesWithEvidence(ctx context.Context, pageFacts []shared.PageFact) ([]shared.DerivedIssue, DuplicateEvidence, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, DuplicateEvidence{}, err
+	}
 	var derivedIssues []shared.DerivedIssue
 	var evidence DuplicateEvidence
 	exactDuplicateGroupsByHash := groupExactDuplicatePagesByHash(pageFacts)
@@ -79,12 +81,6 @@ func deriveDuplicateContentIssuesWithEvidence(ctx context.Context, pageFacts []s
 			))
 		}
 	}
-	nearDuplicateIssues, nearDuplicateEvidence, err := deriveNearDuplicateIssuesWithEvidence(ctx, pageFacts)
-	if err != nil {
-		return nil, DuplicateEvidence{}, err
-	}
-	derivedIssues = append(derivedIssues, nearDuplicateIssues...)
-	evidence.Relations = append(evidence.Relations, nearDuplicateEvidence.Relations...)
 	return derivedIssues, evidence, nil
 }
 
@@ -130,70 +126,9 @@ func groupExactDuplicatePagesByHash(pageFacts []shared.PageFact) map[string][]in
 	return exactDuplicateGroupsByHash
 }
 
-func deriveNearDuplicateIssuesWithEvidence(ctx context.Context, pageFacts []shared.PageFact) ([]shared.DerivedIssue, DuplicateEvidence, error) {
-	matchingPairs, err := runGaoyaNearDuplicateDetection(ctx, pageFacts)
-	if err != nil {
-		return nil, DuplicateEvidence{}, err
-	}
-
-	var evidence DuplicateEvidence
-	nearDuplicateNeighborsByPageIndex := make(map[int]map[int]struct{})
-	for pairIndex, matchingPair := range matchingPairs {
-		if pairIndex%deriveCtxCheckPairs == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, DuplicateEvidence{}, err
-			}
-		}
-		if leftHash := pageFacts[matchingPair.left].ContentSHA256; leftHash != "" && leftHash == pageFacts[matchingPair.right].ContentSHA256 {
-			continue
-		}
-		evidence.Relations = append(evidence.Relations, DuplicateRelation{
-			IssueType:  DuplicateIssueTypeNearDuplicateContent,
-			LeftPage:   DuplicatePage{CrawlPageID: pageFacts[matchingPair.left].ID, URL: pageFacts[matchingPair.left].URL},
-			RightPage:  DuplicatePage{CrawlPageID: pageFacts[matchingPair.right].ID, URL: pageFacts[matchingPair.right].URL},
-			Similarity: matchingPair.similarity,
-		})
-		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair.left, matchingPair.right)
-		addNearDuplicateNeighbor(nearDuplicateNeighborsByPageIndex, matchingPair.right, matchingPair.left)
-	}
-	nearDuplicateGroups, err := buildNearDuplicateGroups(ctx, pageFacts, nearDuplicateNeighborsByPageIndex)
-	if err != nil {
-		return nil, DuplicateEvidence{}, err
-	}
-	evidence.Groups = append(evidence.Groups, nearDuplicateGroups...)
-
-	var derivedIssues []shared.DerivedIssue
-	for pageIndex := range pageFacts {
-		if pageIndex%deriveCtxCheckPages == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, DuplicateEvidence{}, err
-			}
-		}
-		matchingPageIndexesByIndex, hasNearDuplicateMatches := nearDuplicateNeighborsByPageIndex[pageIndex]
-		if !hasNearDuplicateMatches || len(matchingPageIndexesByIndex) == 0 {
-			continue
-		}
-		matchingPageIndexes := make([]int, 0, len(matchingPageIndexesByIndex))
-		for matchingPageIndex := range matchingPageIndexesByIndex {
-			matchingPageIndexes = append(matchingPageIndexes, matchingPageIndex)
-		}
-		sort.Ints(matchingPageIndexes)
-		matchingURLs := collectOtherDuplicateURLs(pageFacts, matchingPageIndexes, -1)
-		derivedIssues = append(derivedIssues, newIssue(
-			pageFacts[pageIndex],
-			"content_quality",
-			"near_duplicate_content",
-			"medium",
-			"Page has near-duplicate content",
-			fmt.Sprintf("Normalized page content closely matches %d other page(s): %s.", len(matchingURLs), strings.Join(matchingURLs, ", ")),
-		))
-	}
-	return derivedIssues, evidence, nil
-}
-
 func calculateFieldSimilarity(leftValue string, rightValue string) float64 {
-	leftNormalizedValue := normalizeNearDuplicateField(leftValue)
-	rightNormalizedValue := normalizeNearDuplicateField(rightValue)
+	leftNormalizedValue := normalizeTitleComparisonField(leftValue)
+	rightNormalizedValue := normalizeTitleComparisonField(rightValue)
 	if leftNormalizedValue == "" || rightNormalizedValue == "" {
 		return 0
 	}
@@ -214,19 +149,19 @@ func calculateFieldSimilarity(leftValue string, rightValue string) float64 {
 	return float64(2*sharedTrigramCount) / float64(len(leftTrigrams)+len(rightTrigrams))
 }
 
-func normalizeNearDuplicateField(value string) string {
-	return strings.Join(normalizeNearDuplicateFieldToTokens(value), " ")
+func normalizeTitleComparisonField(value string) string {
+	return strings.Join(normalizeTitleComparisonFieldToTokens(value), " ")
 }
 
-func normalizeNearDuplicateFieldToTokens(value string) []string {
+func normalizeTitleComparisonFieldToTokens(value string) []string {
 	rawTokens := strings.Fields(strings.ToLower(strings.TrimSpace(value)))
 	normalizedTokens := make([]string, 0, len(rawTokens))
 	for _, rawToken := range rawTokens {
-		normalizedToken := normalizeNearDuplicateToken(rawToken)
+		normalizedToken := normalizeTitleComparisonToken(rawToken)
 		if normalizedToken == "" {
 			continue
 		}
-		if _, isStopWord := nearDuplicateStopWords[normalizedToken]; isStopWord {
+		if _, isStopWord := titleComparisonStopWords[normalizedToken]; isStopWord {
 			continue
 		}
 		normalizedTokens = append(normalizedTokens, normalizedToken)
@@ -234,7 +169,7 @@ func normalizeNearDuplicateFieldToTokens(value string) []string {
 	return normalizedTokens
 }
 
-func normalizeNearDuplicateToken(value string) string {
+func normalizeTitleComparisonToken(value string) string {
 	trimmedToken := strings.TrimFunc(value, func(character rune) bool {
 		return !unicode.IsLetter(character) && !unicode.IsDigit(character)
 	})
@@ -261,13 +196,6 @@ func buildCharacterTrigrams(ctx context.Context, value string) (map[string]struc
 		characterTrigrams[value[trigramStartIndex:trigramStartIndex+3]] = struct{}{}
 	}
 	return characterTrigrams, nil
-}
-
-func addNearDuplicateNeighbor(neighborsByPageIndex map[int]map[int]struct{}, sourcePageIndex int, targetPageIndex int) {
-	if _, exists := neighborsByPageIndex[sourcePageIndex]; !exists {
-		neighborsByPageIndex[sourcePageIndex] = make(map[int]struct{})
-	}
-	neighborsByPageIndex[sourcePageIndex][targetPageIndex] = struct{}{}
 }
 
 func collectOtherDuplicateURLs(pageFacts []shared.PageFact, pageIndexes []int, currentPageIndex int) []string {

@@ -14,16 +14,11 @@ RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api \
 
 FROM debian:bookworm-slim
 
-ARG TARGETARCH
-
 WORKDIR /app
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates curl \
+	&& apt-get install -y --no-install-recommends ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
-
-COPY scripts/install-gaoya.sh /tmp/install-gaoya.sh
-RUN sh /tmp/install-gaoya.sh "$TARGETARCH"
 
 COPY --from=build /out/api /app/api
 COPY --from=build /out/worker /app/worker

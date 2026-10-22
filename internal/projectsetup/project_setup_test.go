@@ -326,6 +326,7 @@ func TestStartOrResumeFailedEnqueuesPerStep(t *testing.T) {
 		jobType string
 	}{
 		{FailedStepProfileGeneration, StatusProfileGeneration, BusinessProfileBootstrapJobType},
+		{FailedStepKeywordAnalysis, StatusKeywordAnalysis, KeywordAnalysisJobType},
 		{FailedStepPromptGeneration, StatusPromptGeneration, PromptGenerationJobType},
 		{FailedStepVisibility, StatusPromptGeneration, PromptGenerationJobType},
 	}

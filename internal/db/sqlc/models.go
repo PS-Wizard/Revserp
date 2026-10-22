@@ -201,6 +201,7 @@ type AiWorkerJob struct {
 	AuditID      pgtype.UUID
 	LocalRunID   pgtype.UUID
 	LocationID   pgtype.UUID
+	CompetitorID pgtype.UUID
 }
 
 type AiWorkspaceMonthlyUsage struct {
@@ -219,6 +220,42 @@ type CompetitorGapReport struct {
 	ReportJson        []byte
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+}
+
+type CompetitorKeywordAnalysis struct {
+	ID                pgtype.UUID
+	CompetitorID      pgtype.UUID
+	Keyword           string
+	NormalizedKeyword string
+	Kind              string
+	Rank              pgtype.Int4
+	Traffic           pgtype.Int8
+	Volume            pgtype.Int8
+	Kd                pgtype.Float8
+	Cpc               pgtype.Float8
+	ResultsCount      pgtype.Int8
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
+type CompetitorSetup struct {
+	ID                      pgtype.UUID
+	OrganizationID          pgtype.UUID
+	ProjectID               pgtype.UUID
+	CompetitorID            pgtype.UUID
+	RequestedByUserID       pgtype.UUID
+	ParentCrawlID           pgtype.UUID
+	CrawlID                 pgtype.UUID
+	Status                  string
+	CrawlStatus             string
+	KeywordGenerationStatus string
+	KeywordAnalysisStatus   string
+	Error                   pgtype.Text
+	FailedStep              pgtype.Text
+	StepReasons             []byte
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
+	CompletedAt             pgtype.Timestamptz
 }
 
 type Crawl struct {
@@ -791,6 +828,22 @@ type ProjectKeyword struct {
 	NormalizedKeyword string
 	Kind              string
 	Source            string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
+type ProjectKeywordAnalysis struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	Keyword           string
+	NormalizedKeyword string
+	Kind              string
+	Rank              pgtype.Int4
+	Traffic           pgtype.Int8
+	Volume            pgtype.Int8
+	Kd                pgtype.Float8
+	Cpc               pgtype.Float8
+	ResultsCount      pgtype.Int8
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
 }

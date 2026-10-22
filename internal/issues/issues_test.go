@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -52,18 +53,36 @@ func TestDeriveIssuesBuildsExpectedPageIssues(t *testing.T) {
 	assertIssueType(t, derivedIssues, "low_internal_links_in")
 }
 
-func TestDeriveIssuesBuildsDuplicateContentIssues(t *testing.T) {
-	// Requires the real revserp-gaoya binary (GAOYA_PATH or PATH). Near-duplicates
-	// are visible-text-only MinHash matches at threshold 0.9, so the variant
-	// below is a one-word near-copy of a 500-word main body, not a short
-	// metadata-similar snippet.
+func TestDeriveIssuesBuildsOnlyExactDuplicateContentIssues(t *testing.T) {
+	t.Setenv("GAOYA_PATH", t.TempDir()+"/missing-gaoya")
 	baseBody := duplicateContentBody("w", 500)
 	nearBody := duplicateContentNearCopy(baseBody)
 	otherBody := duplicateContentBody("u", 500)
 	pageFacts := []shared.PageFact{{ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: baseBody}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-copy", Title: "Technical SEO audit service", MetaDescription: "Enterprise technical SEO audits and monitoring.", H1: "Technical SEO audit service", VisibleText: baseBody}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/original-variant", Title: "Enterprise technical SEO auditing services", MetaDescription: "Technical SEO audits, crawl monitoring, and reporting for software teams.", H1: "Enterprise technical SEO auditing services", VisibleText: nearBody}, {ID: pgtype.UUID{Valid: true}, URL: "https://example.com/different", Title: "Brand strategy workshop", MetaDescription: "Messaging workshops for product teams.", H1: "Brand strategy workshop", VisibleText: otherBody}}
-	derivedIssues := DeriveIssues(pageFacts, nil, shared.SiteFacts{})
-	assertIssueType(t, derivedIssues, "exact_duplicate_content")
-	assertIssueType(t, derivedIssues, "near_duplicate_content")
+	derivedIssues, evidence, err := DeriveIssuesWithDuplicateEvidenceWithContext(context.Background(), pageFacts, nil, shared.SiteFacts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactCount := 0
+	for _, issue := range derivedIssues {
+		if issue.IssueType == "near_duplicate_content" {
+			t.Fatal("retired near-duplicate detector emitted an issue")
+		}
+		if issue.IssueType == "exact_duplicate_content" {
+			exactCount++
+			if issue.URL != pageFacts[0].URL && issue.URL != pageFacts[1].URL {
+				t.Fatalf("non-exact page flagged: %s", issue.URL)
+			}
+		}
+	}
+	if exactCount != 2 {
+		t.Fatalf("exact issues = %d, want 2", exactCount)
+	}
+	for _, group := range evidence.Groups {
+		if group.IssueType == "near_duplicate_content" {
+			t.Fatal("retired near-duplicate detector emitted a group")
+		}
+	}
 }
 
 func duplicateContentBody(prefix string, words int) string {

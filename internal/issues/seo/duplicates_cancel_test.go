@@ -32,19 +32,6 @@ func canonicalDerivedIssues(issues []shared.DerivedIssue) []string {
 	return keys
 }
 
-func canonicalRelations(evidence DuplicateEvidence) []string {
-	keys := make([]string, 0, len(evidence.Relations))
-	for _, relation := range evidence.Relations {
-		left, right := relation.LeftPage.URL, relation.RightPage.URL
-		if left > right {
-			left, right = right, left
-		}
-		keys = append(keys, fmt.Sprintf("%s\x00%s\x00%.6f", left, right, relation.Similarity))
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func canonicalGroups(evidence DuplicateEvidence) []string {
 	keys := make([]string, 0, len(evidence.Groups))
 	for _, group := range evidence.Groups {
@@ -60,93 +47,71 @@ func canonicalGroups(evidence DuplicateEvidence) []string {
 }
 
 func TestDeriveWithContextMatchesPure(t *testing.T) {
-	if !gaoyaBinaryAvailable() {
-		t.Skip("revserp-gaoya not on PATH (or GAOYA_PATH unset); run with the binary available for full coverage")
-	}
-	base := buildGaoyaBodyText(21, 500)
 	pageFacts := []shared.PageFact{
-		{URL: "https://example.com/base", ContentType: "text/html", Title: "Base guide", VisibleText: base},
-		{URL: "https://example.com/copy", ContentType: "text/html", Title: "Copy guide", VisibleText: buildGaoyaNearCopy(base, 100, "kiwi")},
-		{URL: "https://example.com/other", ContentType: "text/html", Title: "Other guide", VisibleText: buildGaoyaBodyText(22, 500)},
+		{URL: "https://example.com/base", ContentType: "text/html", Title: "Harbor planning guide", VisibleText: "Check tides and weather before departure."},
+		{URL: "https://example.com/copy", ContentType: "text/html", Title: "Harbor planning guide", VisibleText: "Check tides and weather before departure."},
+		{URL: "https://example.com/variant", ContentType: "text/html", Title: "Harbor planning guide", VisibleText: "Check tides and weather before arrival."},
 	}
 	linkFacts := cancelTestLinks(2000)
-
 	pureIssues, pureEvidence := DeriveIssuesWithDuplicateEvidence(pageFacts, linkFacts)
-	if len(pureEvidence.Relations) == 0 {
-		t.Fatal("fixture must produce near-duplicate relations")
-	}
+	exactGroups := 0
 	for _, group := range pureEvidence.Groups {
-		if group.IssueType == DuplicateIssueTypeNearDuplicateContent {
-			t.Fatal("near-duplicate relations must not add new evidence groups")
+		if group.IssueType == DuplicateIssueTypeExactDuplicateContent {
+			exactGroups++
+			if len(group.Members) != 2 {
+				t.Fatalf("exact group members = %d, want 2", len(group.Members))
+			}
 		}
+	}
+	if exactGroups != 1 {
+		t.Fatalf("exact groups = %d, want 1", exactGroups)
 	}
 	ctxIssues, ctxEvidence, err := DeriveIssuesWithDuplicateEvidenceWithContext(context.Background(), pageFacts, linkFacts)
 	if err != nil {
-		t.Fatalf("WithContext: %v", err)
+		t.Fatal(err)
 	}
 	if got, want := canonicalDerivedIssues(ctxIssues), canonicalDerivedIssues(pureIssues); fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
 		t.Fatalf("issue sets differ: ctx=%d pure=%d", len(got), len(want))
-	}
-	if got, want := canonicalRelations(ctxEvidence), canonicalRelations(pureEvidence); fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
-		t.Fatalf("relation sets differ: ctx=%d pure=%d", len(got), len(want))
 	}
 	if got, want := canonicalGroups(ctxEvidence), canonicalGroups(pureEvidence); fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
 		t.Fatalf("group sets differ: ctx=%d pure=%d", len(got), len(want))
 	}
 }
 
-func TestNearDuplicateCancelledBeforeStart(t *testing.T) {
+func TestExactDuplicateDerivationHonorsCancelledContext(t *testing.T) {
 	t.Parallel()
-	pageFacts := buildSyntheticNearDuplicateCorpus(200)
-	ctx, cancel := context.WithCancel(context.Background())
+	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	issues, evidence, err := deriveNearDuplicateIssuesWithEvidence(ctx, pageFacts)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", err)
-	}
-	if issues != nil || len(evidence.Groups) != 0 || len(evidence.Relations) != 0 {
-		t.Fatalf("cancelled derive returned partial results: %d issues", len(issues))
-	}
 	expired, expireCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer expireCancel()
-	_, _, err = deriveNearDuplicateIssuesWithEvidence(expired, pageFacts)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{"cancelled", cancelled, context.Canceled},
+		{"expired", expired, context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, pages := range [][]shared.PageFact{nil, {{ContentSHA256: "same"}, {ContentSHA256: "same"}}} {
+				issues, evidence, err := deriveDuplicateContentIssuesWithEvidence(tc.ctx, pages)
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("error = %v, want %v", err, tc.want)
+				}
+				if len(issues) != 0 || len(evidence.Groups) != 0 {
+					t.Fatal("cancelled derive returned partial results")
+				}
+			}
+		})
 	}
 }
 
 func TestSeoDeriveLinkScanCancelled(t *testing.T) {
 	t.Parallel()
-	pageFacts := buildSyntheticNearDuplicateCorpus(10)
-	linkFacts := cancelTestLinks(200000)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := DeriveIssuesWithDuplicateEvidenceWithContext(ctx, pageFacts, linkFacts)
+	_, _, err := DeriveIssuesWithDuplicateEvidenceWithContext(ctx, nil, cancelTestLinks(2000))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
-	}
-}
-
-func TestNearDuplicateCancelledDuringGaoyaRun(t *testing.T) {
-	gaoyaStubPath(t)
-	t.Setenv("GAOYA_STUB_MODE", "hang")
-	pageFacts := gaoyaStubTextPages(
-		"https://example.com/a",
-		"https://example.com/b",
-		"https://example.com/c",
-		"https://example.com/d",
-	)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
-	issues, evidence, err := deriveNearDuplicateIssuesWithEvidence(ctx, pageFacts)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", err)
-	}
-	if issues != nil || len(evidence.Groups) != 0 || len(evidence.Relations) != 0 {
-		t.Fatalf("cancelled derive returned partial results: %d issues", len(issues))
 	}
 }

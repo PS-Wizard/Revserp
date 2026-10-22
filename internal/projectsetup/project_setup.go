@@ -27,6 +27,8 @@ const (
 	// StatusProfileGeneration is the setup status after the initial crawl
 	// completes; the profile worker then picks it up.
 	StatusProfileGeneration = "profile_generation"
+	// StatusKeywordAnalysis is the setup status while the keyword analysis worker runs.
+	StatusKeywordAnalysis = "keyword_analysis"
 	// StatusPromptGeneration is the setup status while the prompt worker runs.
 	StatusPromptGeneration = "prompt_generation"
 	// StatusVisibility is the setup status while the first visibility audit runs.
@@ -39,6 +41,8 @@ const (
 	FailedStepCrawling = "crawling"
 	// FailedStepProfileGeneration records the business profile step.
 	FailedStepProfileGeneration = "profile_generation"
+	// FailedStepKeywordAnalysis records the keyword analysis step.
+	FailedStepKeywordAnalysis = "keyword_analysis"
 	// FailedStepPromptGeneration records the prompt generation step.
 	FailedStepPromptGeneration = "prompt_generation"
 	// FailedStepVisibility records the visibility audit step.
@@ -53,6 +57,11 @@ const (
 	// failed-setup retry enqueues it for the prompt_generation and visibility
 	// steps.
 	PromptGenerationJobType = "prompt_generation"
+	// KeywordAnalysisJobType must match the ai_worker_jobs job_type the keyword
+	// analysis worker registers and the database check constraint. The bootstrap
+	// finalizer and failed-setup retries enqueue it for the keyword_analysis
+	// step.
+	KeywordAnalysisJobType = "keyword_analysis"
 )
 
 // Retry errors. The HTTP handler maps ErrInvalidFailedStep and ErrResumeConflict
@@ -211,6 +220,8 @@ func resumeFailedSetup(ctx context.Context, q StartQueries, setup sqlc.ProjectSe
 		return resumeSetup(ctx, q, setup.ProjectID, requestedByUserID, StatusCrawling, "", crawlID)
 	case FailedStepProfileGeneration:
 		return resumeSetup(ctx, q, setup.ProjectID, requestedByUserID, StatusProfileGeneration, BusinessProfileBootstrapJobType, pgtype.UUID{})
+	case FailedStepKeywordAnalysis:
+		return resumeSetup(ctx, q, setup.ProjectID, requestedByUserID, StatusKeywordAnalysis, KeywordAnalysisJobType, pgtype.UUID{})
 	case FailedStepPromptGeneration:
 		return resumeSetup(ctx, q, setup.ProjectID, requestedByUserID, StatusPromptGeneration, PromptGenerationJobType, pgtype.UUID{})
 	case FailedStepVisibility:

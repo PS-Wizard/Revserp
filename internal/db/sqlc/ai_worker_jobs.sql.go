@@ -21,7 +21,7 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, job_type, project_id, audit_id, local_run_id, location_id, status, error_message, started_at, completed_at, created_at, updated_at
+RETURNING id, job_type, project_id, audit_id, local_run_id, location_id, competitor_id, status, error_message, started_at, completed_at, created_at, updated_at
 `
 
 type ClaimNextPendingAIWorkerJobRow struct {
@@ -31,6 +31,7 @@ type ClaimNextPendingAIWorkerJobRow struct {
 	AuditID      pgtype.UUID
 	LocalRunID   pgtype.UUID
 	LocationID   pgtype.UUID
+	CompetitorID pgtype.UUID
 	Status       string
 	ErrorMessage pgtype.Text
 	StartedAt    pgtype.Timestamptz
@@ -49,6 +50,7 @@ func (q *Queries) ClaimNextPendingAIWorkerJob(ctx context.Context) (ClaimNextPen
 		&i.AuditID,
 		&i.LocalRunID,
 		&i.LocationID,
+		&i.CompetitorID,
 		&i.Status,
 		&i.ErrorMessage,
 		&i.StartedAt,
@@ -92,6 +94,49 @@ func (q *Queries) EnqueueAIWorkerJob(ctx context.Context, arg EnqueueAIWorkerJob
 		&i.JobType,
 		&i.ProjectID,
 		&i.AuditID,
+		&i.Status,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const enqueueCompetitorAIWorkerJob = `-- name: EnqueueCompetitorAIWorkerJob :one
+INSERT INTO ai_worker_jobs (job_type, project_id, competitor_id, status)
+VALUES ($1, $2, $3, 'pending')
+RETURNING id, job_type, project_id, competitor_id, status, error_message, started_at, completed_at, created_at, updated_at
+`
+
+type EnqueueCompetitorAIWorkerJobParams struct {
+	JobType      string
+	ProjectID    pgtype.UUID
+	CompetitorID pgtype.UUID
+}
+
+type EnqueueCompetitorAIWorkerJobRow struct {
+	ID           pgtype.UUID
+	JobType      string
+	ProjectID    pgtype.UUID
+	CompetitorID pgtype.UUID
+	Status       string
+	ErrorMessage pgtype.Text
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) EnqueueCompetitorAIWorkerJob(ctx context.Context, arg EnqueueCompetitorAIWorkerJobParams) (EnqueueCompetitorAIWorkerJobRow, error) {
+	row := q.db.QueryRow(ctx, enqueueCompetitorAIWorkerJob, arg.JobType, arg.ProjectID, arg.CompetitorID)
+	var i EnqueueCompetitorAIWorkerJobRow
+	err := row.Scan(
+		&i.ID,
+		&i.JobType,
+		&i.ProjectID,
+		&i.CompetitorID,
 		&i.Status,
 		&i.ErrorMessage,
 		&i.StartedAt,
@@ -174,7 +219,7 @@ WITH stale AS (
     SET status = 'failed', error_message = 'reclaimed: worker restarted', completed_at = NOW(), updated_at = NOW()
     WHERE ai_worker_jobs.status = 'running'
       AND ai_worker_jobs.started_at < $1
-    RETURNING job_type, project_id, audit_id, location_id
+    RETURNING job_type, project_id, audit_id, location_id, competitor_id
 ),
 reclaimed_location_audits AS (
     UPDATE ai_audits AS a
@@ -189,12 +234,14 @@ reclaimed_location_audits AS (
       AND a.location_id IS NOT NULL
       AND a.status IN ('queued', 'running')
     RETURNING a.id
-)
+),
+reclaimed_project_setup AS (
 UPDATE project_setup AS ps
 SET status = 'failed',
     error = 'reclaimed: worker restarted during setup; retry',
     failed_step = CASE stale.job_type
         WHEN 'business_profile_bootstrap' THEN 'profile_generation'
+        WHEN 'keyword_analysis' THEN 'keyword_analysis'
         WHEN 'prompt_generation' THEN 'prompt_generation'
         WHEN 'visibility_run' THEN 'visibility'
     END,
@@ -202,23 +249,56 @@ SET status = 'failed',
     completed_at = now()
 FROM stale
 WHERE ps.project_id = stale.project_id
-  -- A location prompt job must never fail the parent project setup.
+  -- A location prompt job must never fail the parent project setup, and
+  -- competitor jobs fail only the competitor setup below.
   AND stale.location_id IS NULL
+  AND stale.competitor_id IS NULL
+  AND stale.job_type IN ('business_profile_bootstrap', 'keyword_analysis', 'prompt_generation', 'visibility_run')
   AND ps.status = CASE stale.job_type
         WHEN 'business_profile_bootstrap' THEN 'profile_generation'
+        WHEN 'keyword_analysis' THEN 'keyword_analysis'
         WHEN 'prompt_generation' THEN 'prompt_generation'
         WHEN 'visibility_run' THEN 'visibility'
     END
   AND (stale.job_type <> 'visibility_run'
        OR NOT EXISTS (SELECT 1 FROM ai_audits a
                       WHERE a.id = stale.audit_id AND a.location_id IS NOT NULL))
+RETURNING ps.id
+)
+UPDATE competitor_setup AS cs
+SET status = 'failed',
+    error = 'reclaimed: worker restarted during competitor setup; retry',
+    failed_step = CASE stale.job_type
+        WHEN 'competitor_keyword_generation' THEN 'keyword_generation'
+        WHEN 'competitor_keyword_analysis' THEN 'keyword_analysis'
+    END,
+    keyword_generation_status = CASE stale.job_type
+        WHEN 'competitor_keyword_generation' THEN 'failed'
+        ELSE cs.keyword_generation_status
+    END,
+    keyword_analysis_status = CASE stale.job_type
+        WHEN 'competitor_keyword_analysis' THEN 'failed'
+        ELSE cs.keyword_analysis_status
+    END,
+    updated_at = now(),
+    completed_at = now()
+FROM stale
+WHERE cs.project_id = stale.project_id
+  AND cs.competitor_id = stale.competitor_id
+  AND stale.competitor_id IS NOT NULL
+  AND stale.job_type IN ('competitor_keyword_generation', 'competitor_keyword_analysis')
+  AND cs.status = 'running'
+  AND CASE stale.job_type
+        WHEN 'competitor_keyword_generation' THEN cs.keyword_generation_status
+        WHEN 'competitor_keyword_analysis' THEN cs.keyword_analysis_status
+    END = 'running'
 `
 
 // Orphan recovery: any ai_worker_jobs row stuck in 'running' past the cutoff is
 // marked failed. Setup-linked job types additionally fail the matching active
-// setup step in the same statement, so a crashed worker cannot leave a setup
-// active forever. Non-setup jobs (maps_visibility, unknown) keep the plain
-// reclaim behavior.
+// project or competitor setup step in the same statement, so a crashed worker
+// cannot leave a setup active forever. Non-setup jobs (maps_visibility,
+// unknown) keep the plain reclaim behavior.
 func (q *Queries) ReclaimStaleRunningAIWorkerJobs(ctx context.Context, startedAt pgtype.Timestamptz) error {
 	_, err := q.db.Exec(ctx, reclaimStaleRunningAIWorkerJobs, startedAt)
 	return err

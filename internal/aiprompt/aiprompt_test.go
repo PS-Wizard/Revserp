@@ -82,8 +82,8 @@ func TestDefaultSystemPromptStatesNoToolCount(t *testing.T) {
 }
 
 func TestUserControlPolicyVersion(t *testing.T) {
-	if Version != "chat-v7" {
-		t.Fatalf("Version = %q, want chat-v7", Version)
+	if Version != "chat-v8" {
+		t.Fatalf("Version = %q, want chat-v8", Version)
 	}
 	if !strings.Contains(DefaultSystemPrompt, "## User control") {
 		t.Fatal("base prompt missing the user control section")
@@ -101,6 +101,9 @@ func TestBasePromptEvidenceContract(t *testing.T) {
 		"already returned in this conversation when they cover it",
 		"only when the evidence is missing or a refresh is needed",
 		"Never guess.",
+		"explicitly requests AI-generated planning estimates",
+		"best-effort numeric estimates even when measured data is unavailable",
+		"unverified AI estimates, never observed facts",
 		"reuse actual results",
 		"history text alone is background, not a fresh fact",
 		"explicitly asks",

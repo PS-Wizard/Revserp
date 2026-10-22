@@ -97,7 +97,6 @@ var recommendedFixes = map[string]string{
 	"thin_content":                               "Add more useful original content that better answers the page intent and supports the target query.",
 	"near_empty_visible_content":                 "Add substantial visible page content so the page offers more than placeholder or utility copy.",
 	"exact_duplicate_content":                    "Consolidate duplicate pages into a canonical source, merge overlapping copy, and redirect or canonicalize true duplicates.",
-	"near_duplicate_content":                     "Differentiate this page with more unique content or consolidate it with the strongest canonical version if the intent overlaps too heavily.",
 	"missing_canonical":                          "Add a canonical link element pointing to the preferred absolute page URL.",
 	"malformed_canonical":                        "Replace the canonical value with a valid absolute HTTP or HTTPS URL.",
 	"canonical_differs":                          "Confirm the canonical target is intentional; otherwise point the canonical to this page's preferred URL.",

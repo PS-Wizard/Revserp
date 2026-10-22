@@ -255,7 +255,7 @@ type Registry struct {
 
 // NewRegistry returns the registry of tools currently served to the model.
 func NewRegistry() *Registry {
-	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool(), getLocationLandmarksTool(), listSkillsTool(), readSkillTool(), askUserQuestionTool(), addCompetitorTool()}}
+	return &Registry{tools: []Tool{readIssuesTool(), getScoreSummaryTool(), getSearchConsoleDataTool(), getBusinessProfileTool(), readIssueWorkTool(), readPageTool(), renderChartTool(), updateBusinessProfileTool(), getProjectKeywordsTool(), updateProjectKeywordsTool(), webSearchTool(), getSearchSuggestionsTool(), fetchURLTool(), getKeywordCoverageTool(), getLocationLandmarksTool(), listSkillsTool(), readSkillTool(), askUserQuestionTool(), addCompetitorTool(), setKeywordAnalysisTool()}}
 }
 
 // CatalogDefs lists every native tool definition in catalog order, including
@@ -265,7 +265,7 @@ func NewRegistry() *Registry {
 // connection tools are not here: they exist per connection and are gated by
 // the canonical aliases MCPModelToolName builds.
 func CatalogDefs() []Def {
-	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def, getLocationLandmarksTool().Def, listSkillsTool().Def, readSkillTool().Def, askUserQuestionTool().Def, addCompetitorTool().Def}
+	return []Def{readIssuesTool().Def, getScoreSummaryTool().Def, getSearchConsoleDataTool().Def, getBusinessProfileTool().Def, readIssueWorkTool().Def, readPageTool().Def, renderChartTool().Def, updateBusinessProfileTool().Def, getProjectKeywordsTool().Def, updateProjectKeywordsTool().Def, webSearchTool().Def, getSearchSuggestionsTool().Def, fetchURLTool().Def, getKeywordCoverageTool().Def, getLocationLandmarksTool().Def, listSkillsTool().Def, readSkillTool().Def, askUserQuestionTool().Def, addCompetitorTool().Def, setKeywordAnalysisTool().Def}
 }
 
 // ToolFeatures maps every tool with a feature dependency to its feature flag
@@ -352,6 +352,7 @@ func LocationUnsupportedNativeTools() []string {
 		"read_issue_work",
 		"get_search_console_data",
 		"add_competitor",
+		"set_keyword_analysis",
 	}
 }
 

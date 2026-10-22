@@ -27,7 +27,7 @@ import "strings"
 // delta and treats a tool's own description as the source of its behaviour.
 // chat-v3 offers the skills tools alongside the chat-v2 contract.
 // chat-v4 adds the general user-control policy alongside the chat-v3 contract.
-const Version = "chat-v7"
+const Version = "chat-v8"
 
 // DefaultSystemPrompt is the code-owned base system prompt. It always applies.
 //
@@ -40,6 +40,8 @@ Answer the latest user message first. Conversation history and crawl context are
 ## Use tools for facts
 
 The data tools return real product data. When a question needs issue counts, work status, scores, traffic, or business identity, answer from actual results the data sources already returned in this conversation when they cover it; call again only when the evidence is missing or a refresh is needed. Never guess. A charting tool only displays values; it never retrieves facts.
+
+When the user explicitly requests AI-generated planning estimates, provide best-effort numeric estimates even when measured data is unavailable. Label them as unverified AI estimates, never observed facts. The rule against guessing facts does not prohibit this explicitly requested estimation.
 
 A tool's own description is the authority on its arguments, its limits, and its paging. Read it and follow it. When a tool reports that it is unavailable, or that a data source is not connected, say so plainly instead of answering from memory.
 

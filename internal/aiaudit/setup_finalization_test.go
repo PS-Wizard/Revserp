@@ -126,14 +126,14 @@ func TestFinalizeBootstrapSuccessAdvancesAndEnqueuesOnce(t *testing.T) {
 	if err := finalizeBootstrapSuccess(context.Background(), fake, job); err != nil {
 		t.Fatalf("finalizeBootstrapSuccess: %v", err)
 	}
-	if len(fake.enqueues) != 1 || fake.enqueues[0].JobType != promptGenerationJobType || fake.enqueues[0].ProjectID != projectID {
-		t.Fatalf("enqueues = %+v, want exactly one prompt_generation", fake.enqueues)
+	if len(fake.enqueues) != 1 || fake.enqueues[0].JobType != projectsetup.KeywordAnalysisJobType || fake.enqueues[0].ProjectID != projectID {
+		t.Fatalf("enqueues = %+v, want exactly one keyword_analysis", fake.enqueues)
 	}
 	if len(fake.updates) != 1 {
 		t.Fatalf("updates = %d, want 1", len(fake.updates))
 	}
-	if fake.updates[0].Status != projectsetup.StatusPromptGeneration || fake.updates[0].ExpectedStatus != projectsetup.StatusProfileGeneration {
-		t.Fatalf("update = %+v, want prompt_generation from profile_generation", fake.updates[0])
+	if fake.updates[0].Status != projectsetup.StatusKeywordAnalysis || fake.updates[0].ExpectedStatus != projectsetup.StatusProfileGeneration {
+		t.Fatalf("update = %+v, want keyword_analysis from profile_generation", fake.updates[0])
 	}
 	if len(fake.completed) != 1 || fake.completed[0] != job.ID {
 		t.Fatalf("completed = %+v, want the bootstrap job", fake.completed)

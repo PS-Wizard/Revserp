@@ -13,6 +13,7 @@ import (
 
 	"github.com/ps-wizard/revserp/internal/ai"
 	"github.com/ps-wizard/revserp/internal/aichattools"
+	"github.com/ps-wizard/revserp/internal/competitorsetup"
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/localvisibility"
@@ -150,6 +151,10 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 		job, err := w.queries.ClaimNextPendingAIWorkerJob(ctx)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				// Idle tick: advance competitor setups whose crawl step waits
+				// on a child crawl, so initialization finishes with the UI
+				// closed. Best-effort; a failure only delays advancement.
+				w.reconcileCompetitorSetups(ctx)
 				if sleepErr := sleepOrCancel(ctx, w.pollInterval); sleepErr != nil {
 					return
 				}
@@ -181,6 +186,12 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			jobErr = w.handleLocationMapQueryGeneration(ctx, job)
 		case projectsetup.BusinessProfileBootstrapJobType:
 			jobErr = w.handleBusinessProfileBootstrap(ctx, job)
+		case projectsetup.KeywordAnalysisJobType:
+			jobErr = w.handleKeywordAnalysis(ctx, job)
+		case competitorsetup.CompetitorKeywordGenerationJobType:
+			jobErr = w.handleCompetitorKeywordGeneration(ctx, job)
+		case competitorsetup.CompetitorKeywordAnalysisJobType:
+			jobErr = w.handleCompetitorKeywordAnalysis(ctx, job)
 		default:
 			jobErr = fmt.Errorf("unknown job type: %s", job.JobType)
 		}
@@ -209,6 +220,30 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendi
 	case projectsetup.BusinessProfileBootstrapJobType:
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizeBootstrapSuccess(ctx, q, job)
+		})
+	case projectsetup.KeywordAnalysisJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizeKeywordAnalysisSuccess(ctx, q, job)
+		})
+	case competitorsetup.CompetitorKeywordGenerationJobType:
+		if !job.CompetitorID.Valid {
+			return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+				ID:           job.ID,
+				ErrorMessage: pgtype.Text{String: "competitor job has no competitor", Valid: true},
+			})
+		}
+		return w.withCompetitorSetupTx(ctx, func(q competitorsetup.Queries) error {
+			return competitorsetup.FinalizeGenerationSuccess(ctx, q, job)
+		})
+	case competitorsetup.CompetitorKeywordAnalysisJobType:
+		if !job.CompetitorID.Valid {
+			return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+				ID:           job.ID,
+				ErrorMessage: pgtype.Text{String: "competitor job has no competitor", Valid: true},
+			})
+		}
+		return w.withCompetitorSetupTx(ctx, func(q competitorsetup.Queries) error {
+			return competitorsetup.FinalizeAnalysisSuccess(ctx, q, job)
 		})
 	case promptGenerationJobType:
 		if w.isLocationPromptJob(job) {
@@ -260,6 +295,24 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendi
 func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendingAIWorkerJobRow, jobErr error) error {
 	message := jobErr.Error()
 	switch job.JobType {
+	case projectsetup.KeywordAnalysisJobType:
+		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
+			return finalizeKeywordAnalysisFailure(ctx, q, job, message)
+		})
+	case competitorsetup.CompetitorKeywordGenerationJobType:
+		return w.withCompetitorSetupTx(ctx, func(q competitorsetup.Queries) error {
+			if err := markCompetitorJobFailed(ctx, q, job.ID, message); err != nil {
+				return err
+			}
+			return competitorsetup.FinalizeStepFailure(ctx, q, job.CompetitorID, competitorsetup.StepKeywordGeneration, message)
+		})
+	case competitorsetup.CompetitorKeywordAnalysisJobType:
+		return w.withCompetitorSetupTx(ctx, func(q competitorsetup.Queries) error {
+			if err := markCompetitorJobFailed(ctx, q, job.ID, message); err != nil {
+				return err
+			}
+			return competitorsetup.FinalizeStepFailure(ctx, q, job.CompetitorID, competitorsetup.StepKeywordAnalysis, message)
+		})
 	case projectsetup.BusinessProfileBootstrapJobType:
 		return w.withSetupTx(ctx, func(q setupFinalizationQueries) error {
 			return finalizeBootstrapFailure(ctx, q, job, message)
@@ -320,6 +373,56 @@ func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendi
 			ID:           job.ID,
 			ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
 		})
+	}
+}
+
+// markCompetitorJobFailed marks one competitor job failed inside the caller's
+// competitor setup transaction.
+func markCompetitorJobFailed(ctx context.Context, q competitorsetup.Queries, jobID pgtype.UUID, message string) error {
+	if err := q.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+		ID:           jobID,
+		ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
+	}); err != nil {
+		return fmt.Errorf("mark competitor job failed: %w", err)
+	}
+	return nil
+}
+
+// withCompetitorSetupTx runs fn against a transaction-bound competitor setup
+// querier and commits only when fn returns nil.
+func (w *Worker) withCompetitorSetupTx(ctx context.Context, fn func(q competitorsetup.Queries) error) error {
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin competitor setup finalization: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(w.queries.WithTx(tx)); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit competitor setup finalization: %w", err)
+	}
+	return nil
+}
+
+// reconcileCompetitorSetups advances every running competitor setup whose
+// crawl step still waits on its child crawl. Each setup reconciles in its own
+// transaction from the stored parent, reusing the same transition the POST
+// path uses; a completed child enqueues keyword generation, a failed child
+// fails the setup at crawl.
+func (w *Worker) reconcileCompetitorSetups(ctx context.Context) {
+	ids, err := w.queries.ListCompetitorSetupsCrawlRunning(ctx)
+	if err != nil {
+		log.Printf("ai worker: list competitor setups for reconcile: %v", err)
+		return
+	}
+	for _, id := range ids {
+		if err := w.withCompetitorSetupTx(ctx, func(q competitorsetup.Queries) error {
+			_, err := competitorsetup.Reconcile(ctx, q, id)
+			return err
+		}); err != nil {
+			log.Printf("ai worker: reconcile competitor setup %s: %v", id.String(), err)
+		}
 	}
 }
 

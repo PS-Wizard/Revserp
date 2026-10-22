@@ -1,18 +1,13 @@
 package seo
 
 import (
-	"context"
-	"sort"
-
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ps-wizard/revserp/internal/issues/shared"
 )
 
-// Duplicate issue types that carry structured group or relationship evidence.
 const (
 	DuplicateIssueTypeExactDuplicateContent    = "exact_duplicate_content"
-	DuplicateIssueTypeNearDuplicateContent     = "near_duplicate_content"
 	DuplicateIssueTypeDuplicateTitle           = "duplicate_title"
 	DuplicateIssueTypeDuplicateMetaDescription = "duplicate_meta_description"
 )
@@ -23,24 +18,14 @@ type DuplicatePage struct {
 	URL         string
 }
 
-// DuplicateGroup is one exact duplicate group detected during derivation.
 type DuplicateGroup struct {
 	IssueType string
 	Members   []DuplicatePage
 }
 
-// DuplicateRelation is one near-duplicate page pair.
-type DuplicateRelation struct {
-	IssueType  string
-	LeftPage   DuplicatePage
-	RightPage  DuplicatePage
-	Similarity float64
-}
-
 // DuplicateEvidence holds structured duplicate evidence from one derivation.
 type DuplicateEvidence struct {
-	Groups    []DuplicateGroup
-	Relations []DuplicateRelation
+	Groups []DuplicateGroup
 }
 
 func duplicatePages(pageFacts []shared.PageFact, indexes []int) []DuplicatePage {
@@ -49,43 +34,4 @@ func duplicatePages(pageFacts []shared.PageFact, indexes []int) []DuplicatePage 
 		pages = append(pages, DuplicatePage{CrawlPageID: pageFacts[index].ID, URL: pageFacts[index].URL})
 	}
 	return pages
-}
-
-func buildNearDuplicateGroups(ctx context.Context, pageFacts []shared.PageFact, neighbors map[int]map[int]struct{}) ([]DuplicateGroup, error) {
-	visited := make(map[int]bool, len(neighbors))
-	groups := make([]DuplicateGroup, 0)
-	starts := make([]int, 0, len(neighbors))
-	for index := range neighbors {
-		starts = append(starts, index)
-	}
-	sort.Ints(starts)
-	for startNumber, start := range starts {
-		if startNumber%deriveCtxCheckPages == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		if visited[start] {
-			continue
-		}
-		stack := []int{start}
-		visited[start] = true
-		indexes := make([]int, 0)
-		for len(stack) > 0 {
-			index := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			indexes = append(indexes, index)
-			for neighbor := range neighbors[index] {
-				if !visited[neighbor] {
-					visited[neighbor] = true
-					stack = append(stack, neighbor)
-				}
-			}
-		}
-		sort.Ints(indexes)
-		if len(indexes) > 1 {
-			groups = append(groups, DuplicateGroup{IssueType: DuplicateIssueTypeNearDuplicateContent, Members: duplicatePages(pageFacts, indexes)})
-		}
-	}
-	return groups, nil
 }

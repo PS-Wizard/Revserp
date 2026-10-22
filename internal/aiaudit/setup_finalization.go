@@ -50,7 +50,7 @@ type setupFinalizationQueries interface {
 }
 
 // finalizeBootstrapSuccess moves the setup from profile_generation to
-// prompt_generation, enqueues exactly one prompt_generation job, and marks the
+// keyword_analysis, enqueues exactly one keyword_analysis job, and marks the
 // bootstrap job completed. The conditional update is the duplicate guard: only
 // the transaction that wins the transition enqueues, so a duplicate or an
 // already-advanced bootstrap never adds a second job. A recovery run whose
@@ -67,7 +67,7 @@ func finalizeBootstrapSuccess(ctx context.Context, q setupFinalizationQueries, j
 
 	if setup.Status == projectsetup.StatusProfileGeneration {
 		_, err := q.UpdateProjectSetupStatus(ctx, sqlc.UpdateProjectSetupStatusParams{
-			Status:         projectsetup.StatusPromptGeneration,
+			Status:         projectsetup.StatusKeywordAnalysis,
 			ProjectID:      setup.ProjectID,
 			ExpectedStatus: projectsetup.StatusProfileGeneration,
 		})
@@ -75,18 +75,65 @@ func finalizeBootstrapSuccess(ctx context.Context, q setupFinalizationQueries, j
 		case errors.Is(err, pgx.ErrNoRows):
 			// Another transaction already advanced this setup.
 		case err != nil:
-			return fmt.Errorf("advance setup to prompt generation: %w", err)
+			return fmt.Errorf("advance setup to keyword analysis: %w", err)
 		default:
 			if _, err := q.EnqueueAIWorkerJob(ctx, sqlc.EnqueueAIWorkerJobParams{
-				JobType:   promptGenerationJobType,
+				JobType:   projectsetup.KeywordAnalysisJobType,
 				ProjectID: setup.ProjectID,
 			}); err != nil {
-				return fmt.Errorf("enqueue prompt generation job: %w", err)
+				return fmt.Errorf("enqueue keyword analysis job: %w", err)
 			}
 		}
 	}
 
 	return q.MarkAIWorkerJobCompleted(ctx, job.ID)
+}
+
+// finalizeKeywordAnalysisSuccess moves the setup from keyword_analysis to
+// prompt_generation, enqueues exactly one prompt_generation job, and marks the
+// analysis job completed. A manual analysis job with no setup, or a setup not
+// on keyword_analysis, is completed without touching setup.
+func finalizeKeywordAnalysisSuccess(ctx context.Context, q setupFinalizationQueries, job sqlc.ClaimNextPendingAIWorkerJobRow) error {
+	setup, err := q.GetProjectSetupByProjectIDForUpdate(ctx, job.ProjectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return q.MarkAIWorkerJobCompleted(ctx, job.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("lock project setup for keyword analysis: %w", err)
+	}
+	if setup.Status != projectsetup.StatusKeywordAnalysis {
+		return q.MarkAIWorkerJobCompleted(ctx, job.ID)
+	}
+
+	_, err = q.UpdateProjectSetupStatus(ctx, sqlc.UpdateProjectSetupStatusParams{
+		Status:         projectsetup.StatusPromptGeneration,
+		ProjectID:      setup.ProjectID,
+		ExpectedStatus: projectsetup.StatusKeywordAnalysis,
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Another transaction already advanced this setup.
+	case err != nil:
+		return fmt.Errorf("advance setup to prompt generation: %w", err)
+	default:
+		if _, err := q.EnqueueAIWorkerJob(ctx, sqlc.EnqueueAIWorkerJobParams{
+			JobType:   promptGenerationJobType,
+			ProjectID: setup.ProjectID,
+		}); err != nil {
+			return fmt.Errorf("enqueue prompt generation job: %w", err)
+		}
+	}
+
+	return q.MarkAIWorkerJobCompleted(ctx, job.ID)
+}
+
+// finalizeKeywordAnalysisFailure marks the analysis job failed and fails the
+// setup at keyword_analysis only while it is still on that step.
+func finalizeKeywordAnalysisFailure(ctx context.Context, q setupFinalizationQueries, job sqlc.ClaimNextPendingAIWorkerJobRow, message string) error {
+	if err := markJobFailed(ctx, q, job.ID, message); err != nil {
+		return err
+	}
+	return failSetupAtStep(ctx, q, job.ProjectID, projectsetup.StatusKeywordAnalysis, projectsetup.FailedStepKeywordAnalysis, message)
 }
 
 // finalizeBootstrapFailure marks the bootstrap job failed and fails the setup at
