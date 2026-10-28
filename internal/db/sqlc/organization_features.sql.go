@@ -67,6 +67,71 @@ func (q *Queries) GetOrganizationFeatures(ctx context.Context, orgID pgtype.UUID
 	return i, err
 }
 
+const getOrganizationFeaturesByContentDraftID = `-- name: GetOrganizationFeaturesByContentDraftID :one
+SELECT
+    COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
+    COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
+    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.integrations, TRUE)::boolean AS integrations,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
+    COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
+    COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
+    COALESCE(f.max_projects, 5)::integer AS max_projects,
+    COALESCE(
+        f.ai_allowed_reasoning_efforts,
+        ARRAY['none', 'low', 'high', 'max']::TEXT[]
+    ) AS ai_allowed_reasoning_efforts
+FROM content_drafts AS d
+INNER JOIN projects AS p ON p.id = d.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = $1
+LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
+WHERE d.id = $2
+`
+
+type GetOrganizationFeaturesByContentDraftIDParams struct {
+	UserID  pgtype.UUID
+	DraftID pgtype.UUID
+}
+
+type GetOrganizationFeaturesByContentDraftIDRow struct {
+	AutoCrawl                     bool
+	GscConnector                  bool
+	AiChat                        bool
+	Integrations                  bool
+	AiUseInternalPrompt           bool
+	AiMonthlyMessageLimit         int32
+	AiConcurrentTurnLimitPerUser  int32
+	AiVisibilityAuditMonthlyLimit int32
+	MaxCompetitors                int32
+	MaxProjects                   int32
+	AiAllowedReasoningEfforts     []string
+}
+
+// Draft-scoped twin of GetOrganizationFeaturesByConversationID: resolves the
+// governing workspace from the draft's project for the draft-by-id routes,
+// which carry no projectID URL param.
+func (q *Queries) GetOrganizationFeaturesByContentDraftID(ctx context.Context, arg GetOrganizationFeaturesByContentDraftIDParams) (GetOrganizationFeaturesByContentDraftIDRow, error) {
+	row := q.db.QueryRow(ctx, getOrganizationFeaturesByContentDraftID, arg.UserID, arg.DraftID)
+	var i GetOrganizationFeaturesByContentDraftIDRow
+	err := row.Scan(
+		&i.AutoCrawl,
+		&i.GscConnector,
+		&i.AiChat,
+		&i.Integrations,
+		&i.AiUseInternalPrompt,
+		&i.AiMonthlyMessageLimit,
+		&i.AiConcurrentTurnLimitPerUser,
+		&i.AiVisibilityAuditMonthlyLimit,
+		&i.MaxCompetitors,
+		&i.MaxProjects,
+		&i.AiAllowedReasoningEfforts,
+	)
+	return i, err
+}
+
 const getOrganizationFeaturesByConversationID = `-- name: GetOrganizationFeaturesByConversationID :one
 SELECT
     COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,

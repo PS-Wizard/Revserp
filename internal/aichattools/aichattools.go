@@ -42,8 +42,12 @@ type Scope struct {
 	ProjectID  pgtype.UUID
 	CrawlID    pgtype.UUID
 	LocationID pgtype.UUID
-	Queries    *sqlc.Queries
-	DB         Transactor
+	// ContentDraftID scopes the turn to one content draft. Tool schemas never
+	// carry it; the worker fills it from the conversation row, and the draft
+	// tools use it with Scope.ProjectID.
+	ContentDraftID pgtype.UUID
+	Queries        *sqlc.Queries
+	DB             Transactor
 	// GSC is the search console data fetcher, nil when the worker has none.
 	GSC GSCFetcher
 	// RowBudget caps how many database rows one turn may fetch through tools.
@@ -352,7 +356,6 @@ func LocationUnsupportedNativeTools() []string {
 		"read_issue_work",
 		"get_search_console_data",
 		"add_competitor",
-		"set_keyword_analysis",
 	}
 }
 

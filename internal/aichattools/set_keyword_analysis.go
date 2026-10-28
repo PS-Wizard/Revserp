@@ -25,7 +25,7 @@ const setKeywordAnalysisSchema = `{
   "required": ["analyses"],
   "properties": {
     "competitor_id": {"type": "string", "description": "Optional competitor roster UUID. When omitted the estimates attach to the current project; when set it must be a roster competitor of the current project. Never invent one."},
-    "analyses": {"type": "array", "minItems": 1, "maxItems": 40, "description": "Complete estimate list: one entry per keyword phrase with best-effort numeric estimates for all five metrics. Replaces only the listed phrases.",
+    "analyses": {"type": "array", "minItems": 1, "maxItems": 60, "description": "Complete estimate list: one entry per keyword phrase with best-effort numeric estimates for all five metrics. Replaces only the listed phrases.",
       "items": {"type": "object", "required": ["keyword", "kind", "rank", "traffic", "volume", "kd", "cpc"],
         "properties": {
           "keyword": {"type": "string", "maxLength": 200},
@@ -52,7 +52,7 @@ func setKeywordAnalysisTool() Tool {
 		Def: Def{
 			Name:        setKeywordAnalysisName,
 			Label:       "Set keyword analysis",
-			Description: "Save AI-generated metric estimates (rank 1-100, traffic, volume, kd 0-100, cpc) for project or competitor keywords. Estimates are best-effort planning guesses grounded in crawled content, never measured search data: every entry must include best-effort numeric estimates for all five metrics, never null, blank, or missing. No Search Console connection or measured data is required: always estimate every metric from crawled content and general knowledge, never leave a metric blank or ask the user to connect anything. Omits competitor_id for the current project; pass a roster competitor UUID for one competitor. Requires organization owner or manager. Project scoped only: location turns are denied.",
+			Description: "Save AI-generated metric estimates (rank 1-100, traffic, volume, kd 0-100, cpc) for project, competitor, or location keywords. Estimates are best-effort planning guesses grounded in crawled content, never measured search data: every entry must include best-effort numeric estimates for all five metrics, never null, blank, or missing. No Search Console connection or measured data is required: always estimate every metric from crawled content and general knowledge, never leave a metric blank or ask the user to connect anything. Project turns omit competitor_id for the current project or pass a roster competitor UUID for one competitor; location turns never pass competitor_id and the estimates attach to the turn location. Requires organization owner or manager.",
 			Schema:      json.RawMessage(setKeywordAnalysisSchema),
 		},
 		Execute: executeSetKeywordAnalysis,
@@ -60,13 +60,13 @@ func setKeywordAnalysisTool() Tool {
 }
 
 func executeSetKeywordAnalysis(ctx context.Context, args json.RawMessage, s Scope) (Result, error) {
-	if s.LocationID.Valid {
-		return Result{Content: setKeywordAnalysisName + " error: location turns cannot set keyword analysis"}, nil
-	}
 	if s.Queries == nil || s.DB == nil {
 		return Result{}, errors.New("set_keyword_analysis: scope has no queries or transaction support")
 	}
 	exec := setKeywordAnalysisExecutor{queries: s.Queries, db: s.DB}
+	if s.LocationID.Valid {
+		return exec.runLocation(ctx, args, s.ProjectID, s.LocationID, s.UserID)
+	}
 	return exec.run(ctx, args, s.ProjectID, s.UserID)
 }
 
@@ -122,6 +122,70 @@ func (e *setKeywordAnalysisExecutor) run(ctx context.Context, raw json.RawMessag
 		return Result{}, fmt.Errorf("%s: commit: %w", setKeywordAnalysisName, err)
 	}
 	return res, nil
+}
+
+// runLocation saves estimates for the turn location. The location branch
+// reuses the same validation and emits keyword_analysis.updated carrying the
+// location id, so location estimate views invalidate exactly one location.
+func (e *setKeywordAnalysisExecutor) runLocation(ctx context.Context, raw json.RawMessage, projectID, locationID, userID pgtype.UUID) (Result, error) {
+	args, err := parseSetKeywordAnalysisArgs(raw)
+	if err != nil {
+		return Result{Content: setKeywordAnalysisName + " error: " + err.Error()}, nil
+	}
+	if args.CompetitorID != "" {
+		return Result{Content: setKeywordAnalysisName + " error: competitor_id is not valid in a location turn"}, nil
+	}
+	tx, err := e.db.Begin(ctx)
+	if err != nil {
+		return Result{}, fmt.Errorf("%s: begin tx: %w", setKeywordAnalysisName, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := e.queries.WithTx(tx)
+	locked, err := qtx.LockProjectLocationForQueryDraftForUser(ctx, sqlc.LockProjectLocationForQueryDraftForUserParams{
+		LocationID: locationID,
+		ProjectID:  projectID,
+		UserID:     userID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Result{}, &modelError{msg: "location not found or access denied"}
+		}
+		return Result{}, fmt.Errorf("%s: lock location: %w", setKeywordAnalysisName, err)
+	}
+	if err := organizationaccess.RequireOrganizationManager(ctx, qtx, locked.OrganizationID, userID); err != nil {
+		if errors.Is(err, organizationaccess.ErrForbidden) {
+			return Result{}, &modelError{msg: "only organization owners and managers can set keyword analysis"}
+		}
+		return Result{}, fmt.Errorf("%s: check organization manager: %w", setKeywordAnalysisName, err)
+	}
+	validated, err := keywordanalysis.ValidateCompleteEstimates(args.Analyses)
+	if err != nil {
+		return Result{}, &modelError{msg: err.Error()}
+	}
+	if err := keywordanalysis.UpsertLocationAnalyses(ctx, qtx, locationID, validated); err != nil {
+		return Result{}, fmt.Errorf("%s: save location analysis: %w", setKeywordAnalysisName, err)
+	}
+	if err := emitLocationKeywordAnalysisUpdated(ctx, tx, locked.OrganizationID, projectID, locationID, len(validated)); err != nil {
+		return Result{}, fmt.Errorf("%s: emit keyword_analysis.updated: %w", setKeywordAnalysisName, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Result{}, fmt.Errorf("%s: commit: %w", setKeywordAnalysisName, err)
+	}
+	return newSetKeywordAnalysisResult("location", len(validated)), nil
+}
+
+func emitLocationKeywordAnalysisUpdated(ctx context.Context, exec sqlExecer, orgID, projectID, locationID pgtype.UUID, count int) error {
+	payload, err := json.Marshal(map[string]interface{}{
+		"location_id": locationID.String(),
+		"analyses":    count,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = exec.Exec(ctx,
+		`SELECT insert_organization_event($1, $2, 'keyword_analysis.updated', $3, $4::jsonb)`,
+		orgID, projectID, locationID, string(payload))
+	return err
 }
 
 func (e *setKeywordAnalysisExecutor) apply(ctx context.Context, args setKeywordAnalysisArgs, projectID, userID pgtype.UUID, q setKeywordAnalysisQuerier, qtx *sqlc.Queries, exec sqlExecer) (Result, error) {

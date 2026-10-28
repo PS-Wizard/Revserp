@@ -18,6 +18,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 	"github.com/ps-wizard/revserp/internal/issues"
 	"github.com/ps-wizard/revserp/internal/issues/shared"
+	"github.com/ps-wizard/revserp/internal/mail"
 	"github.com/ps-wizard/revserp/internal/schedule"
 )
 
@@ -38,6 +39,11 @@ type Config struct {
 	CrawlTimeout         time.Duration
 	AnalysisTimeout      time.Duration
 	MaxAPIResponseBytes  int64
+	// Mailer sends opt-in crawl finish emails; nil disables them.
+	Mailer *mail.Mailer
+	// FrontendURL is the fallback origin for notification links when the
+	// crawl row carries no request origin.
+	FrontendURL string
 }
 
 // psiOutcome carries one concurrent Google PSI enrichment result.
@@ -510,6 +516,9 @@ func nextAutoCrawlRun(s sqlc.ProjectAutoCrawlSetting, now time.Time) time.Time {
 // The crawl row is marked failed here so it does not sit in 'running' until the
 // stale-crawl reclaim eventually notices it.
 func (w *Worker) runCrawlGuarded(ctx context.Context, claimed claimedCrawlRow) (err error) {
+	// Registered first so it runs last: after the panic handler below has
+	// written the terminal failed status, and after every normal return.
+	defer w.maybeNotifyCrawlFinished(ctx, claimed.ID)
 	defer func() {
 		recovered := recover()
 		if recovered == nil {

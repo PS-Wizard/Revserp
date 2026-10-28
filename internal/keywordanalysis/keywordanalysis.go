@@ -16,8 +16,8 @@ import (
 )
 
 // MaxEstimatesPerScope caps one analysis write well above the keyword lists it
-// covers (10 brand plus 10 non-brand per scope).
-const MaxEstimatesPerScope = 40
+// covers (10 brand plus 20 non-brand per source, two sources per scope).
+const MaxEstimatesPerScope = 60
 
 // Estimate is one AI numeric estimate for a keyword phrase. Metrics stay
 // nullable so intermediate competitor keyword generation rows can persist
@@ -300,6 +300,28 @@ func UpsertCompetitorAnalyses(ctx context.Context, queries *sqlc.Queries, compet
 	return nil
 }
 
+// UpsertLocationAnalyses replaces the stored estimates for the given
+// phrases, leaving other phrases untouched.
+func UpsertLocationAnalyses(ctx context.Context, queries *sqlc.Queries, locationID pgtype.UUID, estimates []ValidatedEstimate) error {
+	for _, estimate := range estimates {
+		if _, err := queries.UpsertLocationKeywordAnalysis(ctx, sqlc.UpsertLocationKeywordAnalysisParams{
+			LocationID:        locationID,
+			Keyword:           estimate.Keyword,
+			NormalizedKeyword: estimate.Key,
+			Kind:              estimate.Kind,
+			Rank:              estimate.Rank,
+			Traffic:           estimate.Traffic,
+			Volume:            estimate.Volume,
+			Kd:                estimate.KD,
+			Cpc:               estimate.CPC,
+			ResultsCount:      estimate.ResultsCount,
+		}); err != nil {
+			return fmt.Errorf("upsert location keyword analysis: %w", err)
+		}
+	}
+	return nil
+}
+
 // ListProjectAnalyses returns the stored project estimates in kind order.
 func ListProjectAnalyses(ctx context.Context, queries *sqlc.Queries, projectID pgtype.UUID) ([]Analysis, error) {
 	rows, err := queries.ListProjectKeywordAnalysisByProject(ctx, projectID)
@@ -318,6 +340,23 @@ func ListCompetitorAnalyses(ctx context.Context, queries *sqlc.Queries, competit
 	rows, err := queries.ListCompetitorKeywordAnalysisByCompetitor(ctx, competitorID)
 	if err != nil {
 		return nil, fmt.Errorf("list competitor keyword analysis: %w", err)
+	}
+	out := make([]Analysis, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Analysis{
+			Keyword: row.Keyword, Kind: row.Kind,
+			Rank: int4Ptr(row.Rank), Traffic: int8Ptr(row.Traffic), Volume: int8Ptr(row.Volume),
+			KD: float8Ptr(row.Kd), CPC: float8Ptr(row.Cpc), ResultsCount: int8Ptr(row.ResultsCount),
+		})
+	}
+	return out, nil
+}
+
+// ListLocationAnalyses returns the stored location estimates in kind order.
+func ListLocationAnalyses(ctx context.Context, queries *sqlc.Queries, locationID pgtype.UUID) ([]Analysis, error) {
+	rows, err := queries.ListLocationKeywordAnalysisByLocation(ctx, locationID)
+	if err != nil {
+		return nil, fmt.Errorf("list location keyword analysis: %w", err)
 	}
 	out := make([]Analysis, 0, len(rows))
 	for _, row := range rows {

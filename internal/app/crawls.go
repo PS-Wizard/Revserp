@@ -31,6 +31,9 @@ const (
 
 type createCrawlRequest struct {
 	ConfigSnapshot json.RawMessage `json:"config_snapshot"`
+	// Notify opts into one email when the crawl finishes. The address
+	// and origin come from the session and request, never the client.
+	Notify bool `json:"notify"`
 }
 
 type crawlResponse struct {
@@ -120,6 +123,16 @@ func (a *App) handleCreateCrawl(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		return
+	}
+	if requestBody.Notify && strings.TrimSpace(user.Email) != "" {
+		if err := queries.SetCrawlNotify(r.Context(), sqlc.SetCrawlNotifyParams{
+			ID:           crawl.ID,
+			NotifyEmail:  pgtype.Text{String: strings.TrimSpace(user.Email), Valid: true},
+			NotifyOrigin: pgtype.Text{String: ResolveEmailOrigin(r, a.Config), Valid: true},
+		}); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {

@@ -12,8 +12,8 @@ import (
 
 func TestComposeSystemContext(t *testing.T) {
 	completedAt := pgtype.Timestamptz{Valid: true}
-	context := composeSystemContext("selected prompt", "Example", "https://example.com", completedAt, "Acme Downtown", "Kathmandu")
-	for _, want := range []string{"selected prompt", "--- Editor links ---", `"revserp-editor"`, "--- Project context ---", "Name: Example", "URL: https://example.com", "--- Location context ---", "Location: Acme Downtown", "Locality: Kathmandu", "--- Crawl context ---"} {
+	context := composeSystemContext("selected prompt", "Example", "https://example.com", completedAt, "Acme Downtown", "Kathmandu", nil)
+	for _, want := range []string{"selected prompt", "--- Project context ---", "Name: Example", "URL: https://example.com", "--- Location context ---", "Location: Acme Downtown", "Locality: Kathmandu", "--- Crawl context ---"} {
 		if !strings.Contains(context, want) {
 			t.Errorf("system context missing %q: %q", want, context)
 		}
@@ -24,7 +24,7 @@ func TestComposeSystemContext(t *testing.T) {
 }
 
 func TestComposeSystemContextOmitsLocationForParent(t *testing.T) {
-	context := composeSystemContext("p", "Example", "https://example.com", pgtype.Timestamptz{}, "", "")
+	context := composeSystemContext("p", "Example", "https://example.com", pgtype.Timestamptz{}, "", "", nil)
 	if strings.Contains(context, "--- Location context ---") {
 		t.Fatalf("parent context must omit the location section: %q", context)
 	}

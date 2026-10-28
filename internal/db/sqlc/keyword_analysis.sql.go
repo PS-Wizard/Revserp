@@ -61,6 +61,47 @@ func (q *Queries) ListCompetitorKeywordAnalysisByCompetitor(ctx context.Context,
 	return items, nil
 }
 
+const listLocationKeywordAnalysisByLocation = `-- name: ListLocationKeywordAnalysisByLocation :many
+SELECT id, location_id, keyword, normalized_keyword, kind, rank, traffic, volume, kd, cpc, results_count, created_at, updated_at
+FROM location_keyword_analysis
+WHERE location_id = $1
+ORDER BY kind ASC, keyword ASC
+`
+
+func (q *Queries) ListLocationKeywordAnalysisByLocation(ctx context.Context, locationID pgtype.UUID) ([]LocationKeywordAnalysis, error) {
+	rows, err := q.db.Query(ctx, listLocationKeywordAnalysisByLocation, locationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LocationKeywordAnalysis
+	for rows.Next() {
+		var i LocationKeywordAnalysis
+		if err := rows.Scan(
+			&i.ID,
+			&i.LocationID,
+			&i.Keyword,
+			&i.NormalizedKeyword,
+			&i.Kind,
+			&i.Rank,
+			&i.Traffic,
+			&i.Volume,
+			&i.Kd,
+			&i.Cpc,
+			&i.ResultsCount,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjectKeywordAnalysisByProject = `-- name: ListProjectKeywordAnalysisByProject :many
 SELECT id, project_id, keyword, normalized_keyword, kind, rank, traffic, volume, kd, cpc, results_count, created_at, updated_at
 FROM project_keyword_analysis
@@ -152,6 +193,71 @@ func (q *Queries) UpsertCompetitorKeywordAnalysis(ctx context.Context, arg Upser
 	err := row.Scan(
 		&i.ID,
 		&i.CompetitorID,
+		&i.Keyword,
+		&i.NormalizedKeyword,
+		&i.Kind,
+		&i.Rank,
+		&i.Traffic,
+		&i.Volume,
+		&i.Kd,
+		&i.Cpc,
+		&i.ResultsCount,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertLocationKeywordAnalysis = `-- name: UpsertLocationKeywordAnalysis :one
+INSERT INTO location_keyword_analysis (
+    location_id, keyword, normalized_keyword, kind,
+    rank, traffic, volume, kd, cpc, results_count
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+)
+ON CONFLICT (location_id, normalized_keyword) DO UPDATE SET
+    keyword = EXCLUDED.keyword,
+    kind = EXCLUDED.kind,
+    rank = EXCLUDED.rank,
+    traffic = EXCLUDED.traffic,
+    volume = EXCLUDED.volume,
+    kd = EXCLUDED.kd,
+    cpc = EXCLUDED.cpc,
+    results_count = EXCLUDED.results_count,
+    updated_at = now()
+RETURNING id, location_id, keyword, normalized_keyword, kind, rank, traffic, volume, kd, cpc, results_count, created_at, updated_at
+`
+
+type UpsertLocationKeywordAnalysisParams struct {
+	LocationID        pgtype.UUID
+	Keyword           string
+	NormalizedKeyword string
+	Kind              string
+	Rank              pgtype.Int4
+	Traffic           pgtype.Int8
+	Volume            pgtype.Int8
+	Kd                pgtype.Float8
+	Cpc               pgtype.Float8
+	ResultsCount      pgtype.Int8
+}
+
+func (q *Queries) UpsertLocationKeywordAnalysis(ctx context.Context, arg UpsertLocationKeywordAnalysisParams) (LocationKeywordAnalysis, error) {
+	row := q.db.QueryRow(ctx, upsertLocationKeywordAnalysis,
+		arg.LocationID,
+		arg.Keyword,
+		arg.NormalizedKeyword,
+		arg.Kind,
+		arg.Rank,
+		arg.Traffic,
+		arg.Volume,
+		arg.Kd,
+		arg.Cpc,
+		arg.ResultsCount,
+	)
+	var i LocationKeywordAnalysis
+	err := row.Scan(
+		&i.ID,
+		&i.LocationID,
 		&i.Keyword,
 		&i.NormalizedKeyword,
 		&i.Kind,

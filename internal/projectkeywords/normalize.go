@@ -45,14 +45,14 @@ func ValidateProjectKeywordPhrase(phrase string) (string, error) {
 
 // NormalizeSuggestedProjectKeywords requires both lists and rejects invalid or oversized input.
 func NormalizeSuggestedProjectKeywords(brandKeywords, nonBrandKeywords []string) (brand, nonBrand []string, err error) {
-	nonBrand, err = normalizeProjectKeywordEntries(nonBrandKeywords)
+	nonBrand, err = normalizeProjectKeywordEntries(nonBrandKeywords, MaxProjectNonBrandKeywordsPerSource)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(nonBrand) == 0 {
 		return nil, nil, fmt.Errorf("%w: non_brand list must not be empty", ErrProjectKeywordInvalid)
 	}
-	brand, err = normalizeProjectKeywordEntries(brandKeywords)
+	brand, err = normalizeProjectKeywordEntries(brandKeywords, MaxProjectBrandKeywordsPerSource)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -77,7 +77,7 @@ func NormalizeSuggestedProjectKeywords(brandKeywords, nonBrandKeywords []string)
 	return brand, nonBrand, nil
 }
 
-func normalizeProjectKeywordEntries(phrases []string) ([]string, error) {
+func normalizeProjectKeywordEntries(phrases []string, limit int) ([]string, error) {
 	out := make([]string, 0, len(phrases))
 	seen := make(map[string]struct{}, len(phrases))
 	for _, phrase := range phrases {
@@ -94,8 +94,8 @@ func normalizeProjectKeywordEntries(phrases []string) ([]string, error) {
 		}
 		seen[key] = struct{}{}
 		out = append(out, display)
-		if len(out) > MaxProjectKeywordsPerKindPerSource {
-			return nil, fmt.Errorf("%w: list exceeds %d phrases", ErrProjectKeywordLimit, MaxProjectKeywordsPerKindPerSource)
+		if len(out) > limit {
+			return nil, fmt.Errorf("%w: list exceeds %d phrases", ErrProjectKeywordLimit, limit)
 		}
 	}
 	return out, nil

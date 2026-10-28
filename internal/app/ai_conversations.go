@@ -17,6 +17,7 @@ type aiConversationResponse struct {
 	ID              string  `json:"id"`
 	ProjectID       string  `json:"project_id"`
 	LocationID      *string `json:"location_id"`
+	ContentDraftID  *string `json:"content_draft_id"`
 	CreatedByUserID string  `json:"created_by_user_id"`
 	Title           string  `json:"title"`
 	CreatedAt       string  `json:"created_at"`
@@ -388,6 +389,10 @@ func newAIConversationResponse(
 		value := conversation.LocationID.String()
 		response.LocationID = &value
 	}
+	if conversation.ContentDraftID.Valid {
+		value := conversation.ContentDraftID.String()
+		response.ContentDraftID = &value
+	}
 	return response
 }
 
@@ -397,6 +402,7 @@ func aiConversationFromListRow(row sqlc.ListAIConversationsForProjectForUserRow)
 	return sqlc.AiConversation{
 		ID: row.ID, ProjectID: row.ProjectID, CreatedByUserID: row.CreatedByUserID,
 		Title: row.Title, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, LocationID: row.LocationID,
+		ContentDraftID: row.ContentDraftID,
 	}
 }
 
@@ -404,6 +410,7 @@ func aiConversationFromGetRow(row sqlc.GetAIConversationByIDForUserRow) sqlc.AiC
 	return sqlc.AiConversation{
 		ID: row.ID, ProjectID: row.ProjectID, CreatedByUserID: row.CreatedByUserID,
 		Title: row.Title, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, LocationID: row.LocationID,
+		ContentDraftID: row.ContentDraftID,
 	}
 }
 

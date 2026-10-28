@@ -335,3 +335,32 @@ FROM crawls AS c
 INNER JOIN projects AS p ON p.id = c.project_id
 WHERE c.id = $1
 LIMIT 1;
+
+-- name: SetCrawlNotify :exec
+UPDATE crawls
+SET notify_email = $2,
+    notify_origin = $3
+WHERE id = $1;
+
+-- name: GetCrawlNotifyState :one
+SELECT
+    c.id,
+    c.project_id,
+    c.status,
+    c.notify_email,
+    c.notify_origin,
+    c.notified_at,
+    p.name AS project_name,
+    p.base_url AS project_base_url
+FROM crawls AS c
+INNER JOIN projects AS p ON p.id = c.project_id
+WHERE c.id = $1
+LIMIT 1;
+
+-- name: MarkCrawlNotified :execrows
+-- Claimed exactly once: concurrent workers can send at most one extra
+-- email before this write, never a second one after it.
+UPDATE crawls
+SET notified_at = now()
+WHERE id = $1
+  AND notified_at IS NULL;

@@ -19,6 +19,7 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ac.project_id = $1
   AND om.user_id = $2
   AND ac.location_id IS NOT DISTINCT FROM $3
+  AND ac.content_draft_id IS NULL
 `
 
 type CountAIConversationsForProjectForUserParams struct {
@@ -34,6 +35,48 @@ func (q *Queries) CountAIConversationsForProjectForUser(ctx context.Context, arg
 	return count, err
 }
 
+const createAIConversationForContentDraft = `-- name: CreateAIConversationForContentDraft :one
+INSERT INTO ai_conversations (project_id, created_by_user_id, title, content_draft_id)
+SELECT p.id, $1, $2, $3
+FROM projects AS p
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+INNER JOIN content_drafts AS d ON d.id = $3 AND d.project_id = p.id
+WHERE p.id = $4
+  AND om.user_id = $1
+RETURNING id, project_id, created_by_user_id, title, created_at, updated_at, location_id, content_draft_id
+`
+
+type CreateAIConversationForContentDraftParams struct {
+	UserID         pgtype.UUID
+	Title          string
+	ContentDraftID pgtype.UUID
+	ProjectID      pgtype.UUID
+}
+
+// A draft's attached conversation. The draft row must belong to the same
+// project the caller is a member of; the unique index on content_draft_id
+// keeps it exactly one conversation per draft.
+func (q *Queries) CreateAIConversationForContentDraft(ctx context.Context, arg CreateAIConversationForContentDraftParams) (AiConversation, error) {
+	row := q.db.QueryRow(ctx, createAIConversationForContentDraft,
+		arg.UserID,
+		arg.Title,
+		arg.ContentDraftID,
+		arg.ProjectID,
+	)
+	var i AiConversation
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.CreatedByUserID,
+		&i.Title,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LocationID,
+		&i.ContentDraftID,
+	)
+	return i, err
+}
+
 const createAIConversationForUser = `-- name: CreateAIConversationForUser :one
 INSERT INTO ai_conversations (project_id, created_by_user_id, title, location_id)
 SELECT p.id, $1, 'New conversation', $2::uuid
@@ -41,7 +84,7 @@ FROM projects AS p
 INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE p.id = $3
   AND om.user_id = $1
-RETURNING id, project_id, created_by_user_id, title, created_at, updated_at, location_id
+RETURNING id, project_id, created_by_user_id, title, created_at, updated_at, location_id, content_draft_id
 `
 
 type CreateAIConversationForUserParams struct {
@@ -61,6 +104,7 @@ func (q *Queries) CreateAIConversationForUser(ctx context.Context, arg CreateAIC
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LocationID,
+		&i.ContentDraftID,
 	)
 	return i, err
 }
@@ -93,6 +137,7 @@ SELECT
     ac.project_id,
     ac.created_by_user_id,
     ac.location_id,
+    ac.content_draft_id,
     COALESCE(
         (
             SELECT COALESCE(
@@ -128,6 +173,7 @@ type GetAIConversationByIDForUserRow struct {
 	ProjectID       pgtype.UUID
 	CreatedByUserID pgtype.UUID
 	LocationID      pgtype.UUID
+	ContentDraftID  pgtype.UUID
 	Title           string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
@@ -141,6 +187,7 @@ func (q *Queries) GetAIConversationByIDForUser(ctx context.Context, arg GetAICon
 		&i.ProjectID,
 		&i.CreatedByUserID,
 		&i.LocationID,
+		&i.ContentDraftID,
 		&i.Title,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -154,6 +201,7 @@ SELECT
     ac.project_id,
     ac.created_by_user_id,
     ac.location_id,
+    ac.content_draft_id,
     COALESCE(
         (
             SELECT COALESCE(
@@ -177,6 +225,7 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 WHERE ac.project_id = $1
   AND om.user_id = $2
   AND ac.location_id IS NOT DISTINCT FROM $3
+  AND ac.content_draft_id IS NULL
 ORDER BY ac.updated_at DESC, ac.id DESC
 LIMIT $5 OFFSET $4
 `
@@ -194,6 +243,7 @@ type ListAIConversationsForProjectForUserRow struct {
 	ProjectID       pgtype.UUID
 	CreatedByUserID pgtype.UUID
 	LocationID      pgtype.UUID
+	ContentDraftID  pgtype.UUID
 	Title           string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
@@ -219,6 +269,7 @@ func (q *Queries) ListAIConversationsForProjectForUser(ctx context.Context, arg 
 			&i.ProjectID,
 			&i.CreatedByUserID,
 			&i.LocationID,
+			&i.ContentDraftID,
 			&i.Title,
 			&i.CreatedAt,
 			&i.UpdatedAt,

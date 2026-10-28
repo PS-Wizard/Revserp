@@ -12,6 +12,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/googleplaces"
 	"github.com/ps-wizard/revserp/internal/gsc"
 	"github.com/ps-wizard/revserp/internal/locationlandmarks"
+	"github.com/ps-wizard/revserp/internal/mail"
 )
 
 // App holds shared application dependencies.
@@ -37,6 +38,9 @@ type App struct {
 	// answers 503 so handlers degrade safely.
 	MCPConnect MCPConnectFunc
 	OrgEvents  *organizationEventHub
+	// Mailer sends invite and crawl notification email. Nil (tests that
+	// build App without New) or unconfigured SMTP answers 503.
+	Mailer *mail.Mailer
 }
 
 // New builds an application with shared dependencies.
@@ -68,5 +72,6 @@ func New(cfg config.Config, dbPool *pgxpool.Pool, authVerifier *internalauth.Ver
 		Landmarks:      locationlandmarks.NewClient(locationlandmarks.Config{APIKey: cfg.GoogleMapsAPIKey}),
 		PlacesListings: googleplaces.NewPlacesListingClient(cfg.GoogleMapsAPIKey, ""),
 		Skills:         aiskills.New(cfg.AISkillsDir),
+		Mailer:         mail.NewFromConfig(cfg),
 	}
 }

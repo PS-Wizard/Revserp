@@ -89,7 +89,7 @@ func AddUserProjectKeyword(ctx context.Context, queries *sqlc.Queries, projectID
 		return Keyword{}, false, fmt.Errorf("project keyword count: %w", err)
 	}
 	for _, count := range counts {
-		if count.Source == ProjectKeywordSourceUser && count.Kind == kind && count.KeywordCount >= MaxProjectKeywordsPerKindPerSource {
+		if count.Source == ProjectKeywordSourceUser && count.Kind == kind && int(count.KeywordCount) >= MaxProjectKeywordsPerSource(kind) {
 			return Keyword{}, false, fmt.Errorf("%w: %s list holds %d phrases", ErrProjectKeywordLimit, kind, count.KeywordCount)
 		}
 	}

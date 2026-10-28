@@ -77,6 +77,7 @@ func (a *App) Router() http.Handler {
 			app.Post("/organizations/{organizationID}/invites", a.handleCreateOrganizationInvite)
 			app.Get("/organizations/{organizationID}/invites", a.handleListOrganizationInvites)
 			app.Post("/organizations/{organizationID}/invites/{inviteID}/revoke", a.handleRevokeOrganizationInvite)
+			app.Post("/organizations/{organizationID}/invites/{inviteID}/email", a.handleEmailOrganizationInvite)
 			app.Get("/projects/{projectID}", a.handleGetProject)
 			app.Patch("/projects/{projectID}", a.handleRenameProject)
 			app.Get("/projects/{projectID}/maps-budget", a.handleGetProjectMapsBudget)
@@ -126,6 +127,7 @@ func (a *App) Router() http.Handler {
 			app.Get("/projects/{projectID}/locations/{locationID}/keyword-lists", a.handleGetLocationKeywordLists)
 			app.Put("/projects/{projectID}/locations/{locationID}/keyword-lists", a.handlePutLocationKeywordLists)
 			app.Get("/projects/{projectID}/locations/{locationID}/keywords", a.handleGetLocationKeywordCoverage)
+			app.Get("/projects/{projectID}/locations/{locationID}/keyword-analysis", a.handleGetLocationKeywordAnalysis)
 			app.Get("/projects/{projectID}/locations/{locationID}/website-audit", a.handleGetLocationWebsiteAuditBreakdown)
 			app.Get("/projects/{projectID}/locations/{locationID}/website-audit/history", a.handleGetLocationWebsiteAuditHistory)
 			app.Get("/projects/{projectID}/locations/{locationID}/website-audit/issue-urls", a.handleListLocationWebsiteAuditIssueURLs)
@@ -155,6 +157,17 @@ func (a *App) Router() http.Handler {
 				gated.Use(a.requireFeature(FeatureAIChat, featuresByProjectParam))
 				gated.Post("/projects/{projectID}/ai/conversations", a.handleCreateAIConversation)
 				gated.Get("/projects/{projectID}/ai/conversations", a.handleListAIConversations)
+				gated.Post("/projects/{projectID}/content/drafts", a.handleCreateContentDraft)
+				gated.Get("/projects/{projectID}/content/drafts", a.handleListContentDrafts)
+			})
+			// Draft-by-id routes carry no projectID param, so they cannot share
+			// the project group above (its resolver 400s without one). They
+			// resolve the same AI-chat workspace gate from the draft's project.
+			app.Group(func(gated chi.Router) {
+				gated.Use(a.requireFeature(FeatureAIChat, featuresByContentDraftParam))
+				gated.Get("/content/drafts/{draftID}", a.handleGetContentDraft)
+				gated.Patch("/content/drafts/{draftID}", a.handleUpdateContentDraft)
+				gated.Delete("/content/drafts/{draftID}", a.handleDeleteContentDraft)
 			})
 			app.Group(func(gated chi.Router) {
 				gated.Use(a.requireFeature(FeatureAIChat, featuresByConversationParam))
@@ -229,6 +242,7 @@ func (a *App) Router() http.Handler {
 				gated.Get("/projects/{projectID}/competitors/{competitorID}/initialization", a.handleGetCompetitorInitialization)
 				gated.Post("/projects/{projectID}/competitors/{competitorID}/initialization", a.handleStartCompetitorInitialization)
 				gated.Post("/projects/{projectID}/competitors/{competitorID}/initialization/retry", a.handleRetryCompetitorInitialization)
+				gated.Post("/projects/{projectID}/competitors/{competitorID}/crawls", a.handleEnqueueCompetitorCrawl)
 				gated.Post("/projects/{projectID}/competitors", a.handleCreateProjectCompetitor)
 				gated.Post("/projects/{projectID}/competitors/crawls", a.handleEnqueueProjectCompetitorCrawls)
 				gated.Delete("/projects/{projectID}/competitors/{competitorID}", a.handleDeleteProjectCompetitor)

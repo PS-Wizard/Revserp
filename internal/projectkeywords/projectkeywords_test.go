@@ -127,8 +127,8 @@ func TestNormalizeSuggestedProjectKeywordsRequiresBoth(t *testing.T) {
 }
 
 func TestNormalizeSuggestedProjectKeywordsRejectsExcessWithoutTruncation(t *testing.T) {
-	if MaxProjectKeywordsPerKindPerSource != 10 {
-		t.Fatalf("cap = %d, want 10", MaxProjectKeywordsPerKindPerSource)
+	if MaxProjectBrandKeywordsPerSource != 10 || MaxProjectNonBrandKeywordsPerSource != 20 {
+		t.Fatalf("caps = %d/%d, want 10/20", MaxProjectBrandKeywordsPerSource, MaxProjectNonBrandKeywordsPerSource)
 	}
 	makeList := func(n int, prefix string) []string {
 		out := make([]string, n)
@@ -137,14 +137,14 @@ func TestNormalizeSuggestedProjectKeywordsRejectsExcessWithoutTruncation(t *test
 		}
 		return out
 	}
-	if _, _, err := NormalizeSuggestedProjectKeywords(makeList(10, "brand"), makeList(10, "need")); err != nil {
-		t.Fatalf("10+10 err = %v, want accepted", err)
+	if _, _, err := NormalizeSuggestedProjectKeywords(makeList(10, "brand"), makeList(20, "need")); err != nil {
+		t.Fatalf("10+20 err = %v, want accepted", err)
+	}
+	if _, _, err := NormalizeSuggestedProjectKeywords([]string{"one"}, makeList(21, "need")); !errors.Is(err, ErrProjectKeywordLimit) {
+		t.Fatalf("21-non-brand err = %v, want keyword limit", err)
 	}
 	if _, _, err := NormalizeSuggestedProjectKeywords(makeList(11, "brand"), []string{"one"}); !errors.Is(err, ErrProjectKeywordLimit) {
 		t.Fatalf("11-brand err = %v, want keyword limit", err)
-	}
-	if _, _, err := NormalizeSuggestedProjectKeywords([]string{"one"}, makeList(11, "need")); !errors.Is(err, ErrProjectKeywordLimit) {
-		t.Fatalf("11-non-brand err = %v, want keyword limit", err)
 	}
 }
 

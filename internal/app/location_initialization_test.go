@@ -14,7 +14,7 @@ import (
 
 func TestLocationInitializationReadyResponse(t *testing.T) {
 	response := newLocationInitializationResponse(locationsetup.Setup{})
-	if response.Status != "ready" || response.Differences != "" || len(response.Steps) != 6 {
+	if response.Status != "ready" || response.Differences != "" || len(response.Steps) != 7 {
 		t.Fatalf("ready response = %#v", response)
 	}
 	for i, step := range response.Steps {
@@ -34,7 +34,7 @@ func TestLocationInitializationPreservesParallelStepsAndSkipReasons(t *testing.T
 	if response.Differences != setup.Differences {
 		t.Fatal("differences were lost")
 	}
-	if response.Steps[4].Status != "running" || response.Steps[5].Status != "skipped" || response.Steps[5].Reason != "insufficient credits" {
+	if response.Steps[5].Status != "running" || response.Steps[6].Status != "skipped" || response.Steps[6].Reason != "insufficient credits" {
 		t.Fatalf("parallel steps = %#v", response.Steps)
 	}
 }

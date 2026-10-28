@@ -26,15 +26,17 @@ const (
 	StepFailed    = "failed"
 	StepSkipped   = "skipped"
 
-	StepPrepare        = "prepare"
-	StepProfile        = "profile"
-	StepQuestions      = "questions"
-	StepMapQueries     = "map_queries"
-	StepAIVisibility   = "ai_visibility"
-	StepMapsVisibility = "maps_visibility"
+	StepPrepare         = "prepare"
+	StepProfile         = "profile"
+	StepKeywordAnalysis = "keyword_analysis"
+	StepQuestions       = "questions"
+	StepMapQueries      = "map_queries"
+	StepAIVisibility    = "ai_visibility"
+	StepMapsVisibility  = "maps_visibility"
 
 	JobLocationProfileGeneration = "location_profile_generation"
 	JobMapQueryGeneration        = "map_query_generation"
+	JobLocationKeywordAnalysis   = "location_keyword_analysis"
 	JobPromptGeneration          = "prompt_generation"
 	JobVisibilityRun             = "visibility_run"
 	JobLocalVisibility           = "local_visibility"
@@ -43,15 +45,16 @@ const (
 	MaxDifferencesLength = 2000
 )
 
-var OrderedSteps = []string{StepPrepare, StepProfile, StepQuestions, StepMapQueries, StepAIVisibility, StepMapsVisibility}
+var OrderedSteps = []string{StepPrepare, StepProfile, StepKeywordAnalysis, StepQuestions, StepMapQueries, StepAIVisibility, StepMapsVisibility}
 
 const (
-	SkipAIVisibilityDisabled = "visibility audits are disabled for this workspace"
-	SkipAIVisibilityQuota    = "visibility audit monthly limit reached"
-	SkipAIVisibilityAccess   = "requester workspace access changed"
-	SkipMapsNoQueries        = "no enabled map queries"
-	SkipMapsUnbound          = "bind a Google Maps listing before starting a ranking run"
-	SkipMapsBudget           = "maps spending allowance is unavailable"
+	SkipAIVisibilityDisabled      = "visibility audits are disabled for this workspace"
+	SkipAIVisibilityQuota         = "visibility audit monthly limit reached"
+	SkipAIVisibilityAccess        = "requester workspace access changed"
+	SkipKeywordAnalysisNoKeywords = "no location keywords saved yet"
+	SkipMapsNoQueries             = "no enabled map queries"
+	SkipMapsUnbound               = "bind a Google Maps listing before starting a ranking run"
+	SkipMapsBudget                = "maps spending allowance is unavailable"
 )
 
 // MaxDisclosedMapsCredits bounds the pre-start quote: starter cap x grid x per-call cost.

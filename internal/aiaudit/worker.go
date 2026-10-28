@@ -79,6 +79,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	w.reclaimStale(ctx)
 
 	go w.runStaleReclaimLoop(ctx)
+	go w.runCompetitorReconcileLoop(ctx)
 
 	done := make(chan struct{}, w.concurrency)
 	for i := range w.concurrency {
@@ -105,6 +106,23 @@ func (w *Worker) runStaleReclaimLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.reclaimStale(ctx)
+		}
+	}
+}
+
+// runCompetitorReconcileLoop advances competitor setups whose crawl step waits
+// on a child crawl. It runs on its own ticker rather than on idle claim ticks,
+// so a busy job queue cannot hold a finished crawl in "running" for minutes.
+func (w *Worker) runCompetitorReconcileLoop(ctx context.Context) {
+	ticker := time.NewTicker(w.pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.reconcileCompetitorSetups(ctx)
 		}
 	}
 }
@@ -151,10 +169,6 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 		job, err := w.queries.ClaimNextPendingAIWorkerJob(ctx)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				// Idle tick: advance competitor setups whose crawl step waits
-				// on a child crawl, so initialization finishes with the UI
-				// closed. Best-effort; a failure only delays advancement.
-				w.reconcileCompetitorSetups(ctx)
 				if sleepErr := sleepOrCancel(ctx, w.pollInterval); sleepErr != nil {
 					return
 				}
@@ -184,6 +198,8 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			jobErr = w.handleLocationProfileGeneration(ctx, job)
 		case LocationMapQueryGenerationJobType:
 			jobErr = w.handleLocationMapQueryGeneration(ctx, job)
+		case LocationKeywordAnalysisJobType:
+			jobErr = w.handleLocationKeywordAnalysis(ctx, job)
 		case projectsetup.BusinessProfileBootstrapJobType:
 			jobErr = w.handleBusinessProfileBootstrap(ctx, job)
 		case projectsetup.KeywordAnalysisJobType:
@@ -284,6 +300,11 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job sqlc.ClaimNextPendi
 			return locationsetup.FinalizeMapQueriesSuccess(ctx, w.pool, job.ProjectID, locationID, job.ID, w.cfg.SerperMapsEndpoint)
 		}
 		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
+	case LocationKeywordAnalysisJobType:
+		if locationID, ok := locationSetupScope(job); ok {
+			return locationsetup.FinalizeKeywordAnalysisSuccess(ctx, w.pool, job.ProjectID, locationID, job.ID)
+		}
+		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
 	default:
 		return w.queries.MarkAIWorkerJobCompleted(ctx, job.ID)
 	}
@@ -363,6 +384,19 @@ func (w *Worker) finalizeJobFailure(ctx context.Context, job sqlc.ClaimNextPendi
 	case LocationMapQueryGenerationJobType:
 		if locationID, ok := locationSetupScope(job); ok {
 			return locationsetup.FinalizeMapQueriesFailure(ctx, w.pool, job.ProjectID, locationID, job.ID, message)
+		}
+		return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
+			ID:           job.ID,
+			ErrorMessage: pgtype.Text{String: capSetupErrorMessage(message), Valid: true},
+		})
+	case LocationKeywordAnalysisJobType:
+		if errors.Is(jobErr, ErrLocationKeywordsEmpty) {
+			if locationID, ok := locationSetupScope(job); ok {
+				return locationsetup.FinalizeKeywordAnalysisEmpty(ctx, w.pool, job.ProjectID, locationID, job.ID)
+			}
+		}
+		if locationID, ok := locationSetupScope(job); ok {
+			return locationsetup.FinalizeKeywordAnalysisFailure(ctx, w.pool, job.ProjectID, locationID, job.ID, message)
 		}
 		return w.queries.MarkAIWorkerJobFailed(ctx, sqlc.MarkAIWorkerJobFailedParams{
 			ID:           job.ID,

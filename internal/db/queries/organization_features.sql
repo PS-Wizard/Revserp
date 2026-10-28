@@ -65,6 +65,32 @@ INNER JOIN organization_members AS om ON om.org_id = p.organization_id
 LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
 WHERE ac.id = sqlc.arg(conversation_id);
 
+-- Draft-scoped twin of GetOrganizationFeaturesByConversationID: resolves the
+-- governing workspace from the draft's project for the draft-by-id routes,
+-- which carry no projectID URL param.
+-- name: GetOrganizationFeaturesByContentDraftID :one
+SELECT
+    COALESCE(f.auto_crawl, TRUE)::boolean AS auto_crawl,
+    COALESCE(f.gsc_connector, TRUE)::boolean AS gsc_connector,
+    COALESCE(f.ai_chat, TRUE)::boolean AS ai_chat,
+    COALESCE(f.integrations, TRUE)::boolean AS integrations,
+    COALESCE(f.ai_use_internal_prompt, FALSE)::boolean AS ai_use_internal_prompt,
+    COALESCE(f.ai_monthly_message_limit, 50)::integer AS ai_monthly_message_limit,
+    COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
+    COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
+    COALESCE(f.max_competitors, 3)::integer AS max_competitors,
+    COALESCE(f.max_projects, 5)::integer AS max_projects,
+    COALESCE(
+        f.ai_allowed_reasoning_efforts,
+        ARRAY['none', 'low', 'high', 'max']::TEXT[]
+    ) AS ai_allowed_reasoning_efforts
+FROM content_drafts AS d
+INNER JOIN projects AS p ON p.id = d.project_id
+INNER JOIN organization_members AS om ON om.org_id = p.organization_id
+    AND om.user_id = sqlc.arg(user_id)
+LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
+WHERE d.id = sqlc.arg(draft_id);
+
 -- name: ListOrganizationFeaturesForAdmin :many
 SELECT
     o.id AS org_id,

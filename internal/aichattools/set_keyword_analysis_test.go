@@ -30,10 +30,12 @@ func TestSetKeywordAnalysisToolRegistered(t *testing.T) {
 	}
 	for _, name := range LocationUnsupportedNativeTools() {
 		if name == setKeywordAnalysisName {
-			return
+			t.Fatalf("location turns must allow %s since the location branch", setKeywordAnalysisName)
 		}
 	}
-	t.Fatalf("location turns must deny %s", setKeywordAnalysisName)
+	if _, ok := NewLocationScopedRegistry(nil).Get(setKeywordAnalysisName); !ok {
+		t.Fatalf("location-scoped registry dropped %s", setKeywordAnalysisName)
+	}
 }
 
 func TestParseSetKeywordAnalysisArgs(t *testing.T) {

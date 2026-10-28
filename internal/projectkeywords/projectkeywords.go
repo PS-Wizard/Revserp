@@ -13,8 +13,10 @@ const (
 	ProjectKeywordSourceUser = "user"
 	// ProjectKeywordSourceRevserp marks Revserp-suggested project keywords.
 	ProjectKeywordSourceRevserp = "revserp"
-	// MaxProjectKeywordsPerKindPerSource caps each kind list per source.
-	MaxProjectKeywordsPerKindPerSource = 10
+	// MaxProjectBrandKeywordsPerSource caps the brand list per source.
+	MaxProjectBrandKeywordsPerSource = 10
+	// MaxProjectNonBrandKeywordsPerSource caps the non-brand list per source.
+	MaxProjectNonBrandKeywordsPerSource = 20
 	// MaxProjectKeywordRunes bounds one phrase in Unicode characters.
 	MaxProjectKeywordRunes = 200
 )
@@ -48,3 +50,11 @@ var (
 	// ErrProjectKeywordLimit marks more than 10 phrases for one kind and source.
 	ErrProjectKeywordLimit = errors.New("project keyword limit")
 )
+
+// MaxProjectKeywordsPerSource returns the per-source cap for one keyword kind.
+func MaxProjectKeywordsPerSource(kind string) int {
+	if kind == ProjectKeywordKindNonBrand {
+		return MaxProjectNonBrandKeywordsPerSource
+	}
+	return MaxProjectBrandKeywordsPerSource
+}

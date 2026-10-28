@@ -52,6 +52,23 @@ func (a *App) handleGetProjectKeywordAnalysis(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, keywordAnalysisResponse{Keywords: analyses})
 }
 
+// handleGetLocationKeywordAnalysis returns the stored AI metric estimates
+// for one location's keywords. Estimates are model guesses, never measured
+// search data; a location without estimates returns an empty list.
+func (a *App) handleGetLocationKeywordAnalysis(w http.ResponseWriter, r *http.Request) {
+	_, locationID, _, _, ok := a.layer4Location(w, r)
+	if !ok {
+		return
+	}
+	analyses, err := keywordanalysis.ListLocationAnalyses(r.Context(), a.Queries, locationID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	setNoStore(w)
+	writeJSON(w, http.StatusOK, keywordAnalysisResponse{Keywords: analyses})
+}
+
 // handleGetCompetitorKeywordAnalysis returns the stored competitor keywords
 // with their AI metric estimates. Estimates are model guesses grounded in the
 // competitor crawl, never measured search data.

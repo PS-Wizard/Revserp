@@ -51,6 +51,7 @@ type AiConversation struct {
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
 	LocationID      pgtype.UUID
+	ContentDraftID  pgtype.UUID
 }
 
 type AiMcpApproval struct {
@@ -258,6 +259,20 @@ type CompetitorSetup struct {
 	CompletedAt             pgtype.Timestamptz
 }
 
+type ContentDraft struct {
+	ID              pgtype.UUID
+	OrgID           pgtype.UUID
+	ProjectID       pgtype.UUID
+	CreatedByUserID pgtype.UUID
+	Title           string
+	MetaTitle       string
+	MetaDescription string
+	TargetKeyword   string
+	Body            string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type Crawl struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID
@@ -281,6 +296,9 @@ type Crawl struct {
 	CompetitorID      pgtype.UUID
 	ParentCrawlID     pgtype.UUID
 	AnalysisProgress  []byte
+	NotifyEmail       pgtype.Text
+	NotifyOrigin      pgtype.Text
+	NotifiedAt        pgtype.Timestamptz
 }
 
 type CrawlIssue struct {
@@ -580,6 +598,22 @@ type LocationKeyword struct {
 	UpdatedAt         pgtype.Timestamptz
 }
 
+type LocationKeywordAnalysis struct {
+	ID                pgtype.UUID
+	LocationID        pgtype.UUID
+	Keyword           string
+	NormalizedKeyword string
+	Kind              string
+	Rank              pgtype.Int4
+	Traffic           pgtype.Int8
+	Volume            pgtype.Int8
+	Kd                pgtype.Float8
+	Cpc               pgtype.Float8
+	ResultsCount      pgtype.Int8
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
 type LocationLandmark struct {
 	ID            pgtype.UUID
 	LocationID    pgtype.UUID
@@ -607,27 +641,28 @@ type LocationListingSearch struct {
 }
 
 type LocationSetup struct {
-	ID                   pgtype.UUID
-	OrganizationID       pgtype.UUID
-	ProjectID            pgtype.UUID
-	LocationID           pgtype.UUID
-	RequestedByUserID    pgtype.UUID
-	Differences          string
-	Status               string
-	Error                pgtype.Text
-	PrepareStatus        string
-	ProfileStatus        string
-	QuestionsStatus      string
-	MapQueriesStatus     string
-	AiVisibilityStatus   string
-	MapsVisibilityStatus string
-	StepReasons          []byte
-	AiAuditID            pgtype.UUID
-	MapsRunID            pgtype.UUID
-	EstimatedMapsCredits pgtype.Int4
-	CreatedAt            pgtype.Timestamptz
-	UpdatedAt            pgtype.Timestamptz
-	CompletedAt          pgtype.Timestamptz
+	ID                    pgtype.UUID
+	OrganizationID        pgtype.UUID
+	ProjectID             pgtype.UUID
+	LocationID            pgtype.UUID
+	RequestedByUserID     pgtype.UUID
+	Differences           string
+	Status                string
+	Error                 pgtype.Text
+	PrepareStatus         string
+	ProfileStatus         string
+	QuestionsStatus       string
+	MapQueriesStatus      string
+	AiVisibilityStatus    string
+	MapsVisibilityStatus  string
+	StepReasons           []byte
+	AiAuditID             pgtype.UUID
+	MapsRunID             pgtype.UUID
+	EstimatedMapsCredits  pgtype.Int4
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+	CompletedAt           pgtype.Timestamptz
+	KeywordAnalysisStatus string
 }
 
 type LocationWebsiteScope struct {

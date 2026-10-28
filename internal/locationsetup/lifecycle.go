@@ -33,6 +33,17 @@ func FinalizeProfileSuccess(ctx context.Context, pool *pgxpool.Pool, projectID, 
 	if err := completeStep(ctx, tx, setup, StepProfile); err != nil {
 		return err
 	}
+	if setup.Steps[StepKeywordAnalysis] == StepPending {
+		if _, err := tx.Exec(ctx, `INSERT INTO ai_worker_jobs (job_type, project_id, location_id, status)
+			VALUES ('location_keyword_analysis', $1, $2, 'pending') ON CONFLICT DO NOTHING`,
+			projectID, locationID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE location_setup SET keyword_analysis_status = 'running', updated_at = now()
+			WHERE project_id = $1 AND location_id = $2`, projectID, locationID); err != nil {
+			return err
+		}
+	}
 	if setup.Steps[StepQuestions] == StepPending {
 		if _, err := tx.Exec(ctx, `INSERT INTO ai_worker_jobs (job_type, project_id, location_id, status)
 			VALUES ('prompt_generation', $1, $2, 'pending') ON CONFLICT DO NOTHING`,
@@ -54,6 +65,69 @@ func FinalizeProfileSuccess(ctx context.Context, pool *pgxpool.Pool, projectID, 
 			WHERE project_id = $1 AND location_id = $2`, projectID, locationID); err != nil {
 			return err
 		}
+	}
+	return tx.Commit(ctx)
+}
+
+// FinalizeKeywordAnalysisSuccess completes the keyword-estimates step. The
+// questions and map-queries branches advance independently of it.
+func FinalizeKeywordAnalysisSuccess(ctx context.Context, pool *pgxpool.Pool, projectID, locationID, jobID pgtype.UUID) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := markJobCompleted(ctx, tx, jobID); err != nil {
+		return err
+	}
+	setup, err := getSetupTx(ctx, tx, projectID, locationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	if setup.Steps[StepKeywordAnalysis] != StepRunning {
+		return tx.Commit(ctx)
+	}
+	if err := completeStep(ctx, tx, setup, StepKeywordAnalysis); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// FinalizeKeywordAnalysisFailure fails the keyword-estimates step. Other
+// branches still finish on their own; the POST resume relaunches only
+// unfinished work.
+func FinalizeKeywordAnalysisFailure(ctx context.Context, pool *pgxpool.Pool, projectID, locationID, jobID pgtype.UUID, message string) error {
+	return failOwnedJob(ctx, pool, projectID, locationID, jobID, StepKeywordAnalysis, message)
+}
+
+// FinalizeKeywordAnalysisEmpty skips the step when the location has no saved
+// keywords yet. Estimates need input phrases, and an empty location is
+// normal (keywords arrive later via the UI or RevBot), never a setup
+// failure; the RevBot estimate tool backfills them on demand.
+func FinalizeKeywordAnalysisEmpty(ctx context.Context, pool *pgxpool.Pool, projectID, locationID, jobID pgtype.UUID) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := markJobCompleted(ctx, tx, jobID); err != nil {
+		return err
+	}
+	setup, err := getSetupTx(ctx, tx, projectID, locationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	if setup.Steps[StepKeywordAnalysis] != StepRunning {
+		return tx.Commit(ctx)
+	}
+	if err := skipStep(ctx, tx, setup, StepKeywordAnalysis, SkipKeywordAnalysisNoKeywords); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -135,6 +209,18 @@ func launchUnfinishedTx(ctx context.Context, tx pgx.Tx, setup Setup, mapsEndpoin
 		}
 		setup.Steps[StepProfile] = StepRunning
 	}
+	if setup.Steps[StepProfile] == StepCompleted && setup.Steps[StepKeywordAnalysis] == StepPending {
+		if _, err := tx.Exec(ctx, `INSERT INTO ai_worker_jobs (job_type, project_id, location_id, status)
+			VALUES ('location_keyword_analysis', $1, $2, 'pending') ON CONFLICT DO NOTHING`,
+			setup.ProjectID, setup.LocationID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE location_setup SET keyword_analysis_status = 'running', updated_at = now()
+			WHERE project_id = $1 AND location_id = $2`, setup.ProjectID, setup.LocationID); err != nil {
+			return err
+		}
+		setup.Steps[StepKeywordAnalysis] = StepRunning
+	}
 	if questions && setup.Steps[StepQuestions] == StepPending {
 		if _, err := tx.Exec(ctx, `INSERT INTO ai_worker_jobs (job_type, project_id, location_id, status)
 			VALUES ('prompt_generation', $1, $2, 'pending') ON CONFLICT DO NOTHING`,
@@ -178,7 +264,7 @@ func launchUnfinishedTx(ctx context.Context, tx pgx.Tx, setup Setup, mapsEndpoin
 func ReconcileRunningSetups(ctx context.Context, pool *pgxpool.Pool, mapsEndpoint string) error {
 	rows, err := pool.Query(ctx, `SELECT project_id, location_id FROM location_setup
 		WHERE status = 'running' AND 'pending' IN (prepare_status, profile_status,
-			questions_status, map_queries_status, ai_visibility_status, maps_visibility_status)
+			keyword_analysis_status, questions_status, map_queries_status, ai_visibility_status, maps_visibility_status)
 		ORDER BY updated_at LIMIT 50`)
 	if err != nil {
 		return err
@@ -252,6 +338,7 @@ func reclaimSetup(ctx context.Context, pool *pgxpool.Pool, projectID, locationID
 		scoped  string
 	}{
 		{StepProfile, JobLocationProfileGeneration, ""},
+		{StepKeywordAnalysis, JobLocationKeywordAnalysis, ""},
 		{StepQuestions, JobPromptGeneration, ""},
 		{StepMapQueries, JobMapQueryGeneration, ""},
 	}

@@ -220,6 +220,34 @@ func featuresByConversationParam(a *App, r *http.Request) (OrgFeatures, error) {
 	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.MaxProjects, row.AiAllowedReasoningEfforts), nil
 }
 
+// featuresByContentDraftParam resolves a draft route to its project workspace.
+func featuresByContentDraftParam(a *App, r *http.Request) (OrgFeatures, error) {
+	draftID, err := parseUUIDParam(chi.URLParam(r, "draftID"))
+	if err != nil {
+		return allFeaturesEnabled(), featureParamError("invalid draft id")
+	}
+	var userID pgtype.UUID
+	if p, ok := principalFromContext(r.Context()); ok && p.User.ID.Valid {
+		userID = p.User.ID
+	} else if cached, ok := r.Context().Value(cachedUserContextKey{}).(sqlc.User); ok && cached.ID.Valid {
+		userID = cached.ID
+	} else {
+		user, _, err := a.ensureCurrentUser(r, a.Queries)
+		if err != nil {
+			return allFeaturesEnabled(), err
+		}
+		userID = user.ID
+	}
+	row, err := a.Queries.GetOrganizationFeaturesByContentDraftID(r.Context(), sqlc.GetOrganizationFeaturesByContentDraftIDParams{
+		DraftID: draftID,
+		UserID:  userID,
+	})
+	if err != nil {
+		return allFeaturesEnabled(), err
+	}
+	return featuresFromRow(row.AutoCrawl, row.GscConnector, row.AiChat, row.Integrations, row.AiUseInternalPrompt, row.AiMonthlyMessageLimit, row.AiConcurrentTurnLimitPerUser, row.MaxCompetitors, row.MaxProjects, row.AiAllowedReasoningEfforts), nil
+}
+
 // featuresByActiveOrg resolves cookie routes against the session's active workspace.
 // No active org fails open (same as a missing organization_features row).
 func featuresByActiveOrg(a *App, r *http.Request) (OrgFeatures, error) {

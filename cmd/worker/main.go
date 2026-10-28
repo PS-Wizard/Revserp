@@ -11,6 +11,7 @@ import (
 	"github.com/ps-wizard/revserp/internal/config"
 	"github.com/ps-wizard/revserp/internal/crawler"
 	internaldb "github.com/ps-wizard/revserp/internal/db"
+	"github.com/ps-wizard/revserp/internal/mail"
 	"github.com/ps-wizard/revserp/internal/worker"
 )
 
@@ -47,6 +48,8 @@ func run() error {
 		CrawlRetryBase:        cfg.CrawlRetryBase,
 		CrawlRetryMax:         cfg.CrawlRetryMax,
 		CrawlTimeout:          cfg.CrawlTimeout,
+		Mailer:                mail.NewFromConfig(cfg),
+		FrontendURL:           cfg.FrontendURL,
 		AnalysisTimeout:       cfg.AnalysisTimeout,
 		MaxAPIResponseBytes:   cfg.MaxAPIResponseBytes,
 	}, renderer)

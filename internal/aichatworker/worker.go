@@ -289,10 +289,8 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 	var mcpStatus string
 	var mcpHandles *mcpHandleSet
 	closeMCP := func() {}
-	if scope.LocationID.Valid {
-		registry = aichattools.NewLocationScopedRegistry(claimed.DisabledTools)
-	} else {
-		registry = aichattools.NewFilteredRegistry(claimed.DisabledTools)
+	registry, withMCP := registryForTurnScope(claimed.DisabledTools, scope)
+	if withMCP {
 		mcpStatus, mcpHandles, closeMCP = w.setupMCP(ctx, scope, claimed.DisabledTools, registry)
 	}
 	if closeMCP != nil {
@@ -308,6 +306,7 @@ func (w *Worker) run(parent context.Context, claimed turn) {
 		ProjectID:         scope.ProjectID,
 		CrawlID:           scope.CrawlID,
 		LocationID:        scope.LocationID,
+		ContentDraftID:    scope.ContentDraftID,
 		Queries:           queries,
 		DB:                w.pool,
 		GSC:               w.GSC,
@@ -1105,22 +1104,28 @@ type turnScope struct {
 	ProjectID  pgtype.UUID
 	CrawlID    pgtype.UUID
 	LocationID pgtype.UUID
+	// ContentDraftID scopes the turn to one content draft; invalid means a
+	// normal conversation. The draft tools read it from here, never from
+	// model arguments.
+	ContentDraftID pgtype.UUID
 }
 
 func (w *Worker) loadContext(ctx context.Context, claimed turn) (turnHistory, turnScope, int, error) {
 	var projectName string
+	var draftTitle, draftKeyword string
 	var baseURL string
 	var scope turnScope
 	var useInternalPrompt bool
 	var locationName, locationLocality string
 	if err := w.pool.QueryRow(ctx, `
-SELECT p.name, p.base_url, t.crawl_id, COALESCE(f.ai_use_internal_prompt, FALSE)::boolean, p.id, t.created_by_user_id, c.location_id, COALESCE(l.name, ''), COALESCE(l.locality, '')
+SELECT p.name, p.base_url, t.crawl_id, COALESCE(f.ai_use_internal_prompt, FALSE)::boolean, p.id, t.created_by_user_id, c.location_id, COALESCE(l.name, ''), COALESCE(l.locality, ''), c.content_draft_id, COALESCE(d.title, ''), COALESCE(d.target_keyword, '')
 FROM ai_turns AS t
 JOIN ai_conversations AS c ON c.id = t.conversation_id
 JOIN projects AS p ON p.id = c.project_id
 LEFT JOIN project_locations AS l ON l.id = c.location_id
+LEFT JOIN content_drafts AS d ON d.id = c.content_draft_id
 LEFT JOIN organization_features AS f ON f.org_id = p.organization_id
-WHERE t.id = $1 AND t.conversation_id = $2`, claimed.ID, claimed.ConversationID).Scan(&projectName, &baseURL, &scope.CrawlID, &useInternalPrompt, &scope.ProjectID, &scope.UserID, &scope.LocationID, &locationName, &locationLocality); err != nil {
+WHERE t.id = $1 AND t.conversation_id = $2`, claimed.ID, claimed.ConversationID).Scan(&projectName, &baseURL, &scope.CrawlID, &useInternalPrompt, &scope.ProjectID, &scope.UserID, &scope.LocationID, &locationName, &locationLocality, &scope.ContentDraftID, &draftTitle, &draftKeyword); err != nil {
 		return turnHistory{}, turnScope{}, 0, err
 	}
 
@@ -1146,7 +1151,11 @@ WHERE crawl.id = $1
 		internalPrompt = configRow.InternalSystemPrompt
 		externalPrompt = configRow.ExternalSystemPrompt
 	}
-	system := composeSystemContext(aiprompt.ComposeSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt, locationName, locationLocality)
+	var draft *contentDraftPrompt
+	if scope.ContentDraftID.Valid {
+		draft = &contentDraftPrompt{Title: draftTitle, TargetKeyword: draftKeyword}
+	}
+	system := composeSystemContext(aiprompt.ComposeSystemPrompt(useInternalPrompt, internalPrompt, externalPrompt), projectName, baseURL, completedAt, locationName, locationLocality, draft)
 
 	var currentUser string
 	var currentBlocks []byte
@@ -1390,12 +1399,32 @@ func parseUserImages(blocks []byte) []ai.Image {
 	return images
 }
 
-func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtype.Timestamptz, locationName, locationLocality string) string {
+// registryForTurnScope picks the turn's tool registry. Location turns keep
+// their restricted registry without MCP; draft turns get the draft tools on
+// top of the normal catalog and keep MCP so Revbot can publish to a CMS from
+// the draft; normal turns are unchanged. The second result reports whether
+// MCP sessions attach to the turn.
+func registryForTurnScope(disabled []string, scope turnScope) (*aichattools.Registry, bool) {
+	if scope.LocationID.Valid {
+		return aichattools.NewLocationScopedRegistry(disabled), false
+	}
+	if scope.ContentDraftID.Valid {
+		return aichattools.NewContentDraftRegistry(disabled), true
+	}
+	return aichattools.NewFilteredRegistry(disabled), true
+}
+
+// contentDraftPrompt carries the draft metadata shown to the model for a
+// draft-scoped conversation. Nil means a normal conversation.
+type contentDraftPrompt struct {
+	Title         string
+	TargetKeyword string
+}
+
+func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtype.Timestamptz, locationName, locationLocality string, draft *contentDraftPrompt) string {
 	var builder strings.Builder
 	builder.WriteString(prompt)
-	builder.WriteString("\n\n--- Editor links ---\n")
-	builder.WriteString("When opening a page would help the user and its exact URL is known from the user or tool data, add an editor link after the answer. Put each editor link on its own final line. Use [Open in editor: Page name](https://example.com/page \"revserp-editor\") as the format, replacing the label and URL. Only use pages from the selected crawl. Never invent or alter a URL.\n")
-	builder.WriteString("\n\n--- Project context ---\n")
+	builder.WriteString("\n--- Project context ---\n")
 	fmt.Fprintf(&builder, "Name: %s\nURL: %s\n", projectName, baseURL)
 	if locationName != "" || locationLocality != "" {
 		builder.WriteString("\n--- Location context ---\n")
@@ -1407,6 +1436,17 @@ func composeSystemContext(prompt, projectName, baseURL string, completedAt pgtyp
 			fmt.Fprintf(&builder, "Locality: %s\n", locationLocality)
 		}
 		builder.WriteString("Answer about this location only. Use the location tools for its own profile and selected keywords. Never present parent project totals, parent keyword lists, or parent Search Console data as this location's data.\n")
+	}
+	if draft != nil {
+		builder.WriteString("\n--- Content draft ---\n")
+		fmt.Fprintf(&builder, "This conversation is attached to ONE content draft (title: %q", draft.Title)
+		if draft.TargetKeyword != "" {
+			fmt.Fprintf(&builder, "; target keyword: %q", draft.TargetKeyword)
+		}
+		builder.WriteString("). The draft is displayed beside this chat and the user may edit it directly, so call read_draft before editing existing text.\n")
+		builder.WriteString("Write article content ONLY through the draft tools (set_outline, write_section, edit_draft); never paste the article into chat. Reply in chat with a brief summary of what changed. The body is markdown; no images.\n")
+		builder.WriteString("Workflow for a new piece: (1) if audience, target keyword, angle, or length are unclear, ask once with ask_user_question (offer concrete options; use the project keyword and gaps tools to propose keywords); (2) set_outline including meta title (60 chars max) and meta description (155 chars max); (3) write_section once per heading (including ### subsections), in order; (4) do a final polish pass with edit_draft (the content-strategy and unslop skills, loaded with the skill tools, can help) and briefly report keyword coverage and length.\n")
+		builder.WriteString("When the user asks to publish to a connected CMS, call read_draft and use the CMS tools; convert the markdown body to the CMS's expected format (HTML for WordPress).\n")
 	}
 	if completedAt.Valid {
 		builder.WriteString("\n--- Crawl context ---\n")

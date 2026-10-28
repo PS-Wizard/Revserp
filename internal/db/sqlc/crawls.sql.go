@@ -451,6 +451,49 @@ func (q *Queries) GetCrawlHasLlmsTxt(ctx context.Context, id pgtype.UUID) (pgtyp
 	return has_llms_txt, err
 }
 
+const getCrawlNotifyState = `-- name: GetCrawlNotifyState :one
+SELECT
+    c.id,
+    c.project_id,
+    c.status,
+    c.notify_email,
+    c.notify_origin,
+    c.notified_at,
+    p.name AS project_name,
+    p.base_url AS project_base_url
+FROM crawls AS c
+INNER JOIN projects AS p ON p.id = c.project_id
+WHERE c.id = $1
+LIMIT 1
+`
+
+type GetCrawlNotifyStateRow struct {
+	ID             pgtype.UUID
+	ProjectID      pgtype.UUID
+	Status         string
+	NotifyEmail    pgtype.Text
+	NotifyOrigin   pgtype.Text
+	NotifiedAt     pgtype.Timestamptz
+	ProjectName    string
+	ProjectBaseUrl string
+}
+
+func (q *Queries) GetCrawlNotifyState(ctx context.Context, id pgtype.UUID) (GetCrawlNotifyStateRow, error) {
+	row := q.db.QueryRow(ctx, getCrawlNotifyState, id)
+	var i GetCrawlNotifyStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Status,
+		&i.NotifyEmail,
+		&i.NotifyOrigin,
+		&i.NotifiedAt,
+		&i.ProjectName,
+		&i.ProjectBaseUrl,
+	)
+	return i, err
+}
+
 const getLatestCompletedHomeCrawlIDForProject = `-- name: GetLatestCompletedHomeCrawlIDForProject :one
 SELECT id
 FROM crawls
@@ -721,6 +764,23 @@ func (q *Queries) MarkCrawlFailed(ctx context.Context, arg MarkCrawlFailedParams
 	return result.RowsAffected(), nil
 }
 
+const markCrawlNotified = `-- name: MarkCrawlNotified :execrows
+UPDATE crawls
+SET notified_at = now()
+WHERE id = $1
+  AND notified_at IS NULL
+`
+
+// Claimed exactly once: concurrent workers can send at most one extra
+// email before this write, never a second one after it.
+func (q *Queries) MarkCrawlNotified(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markCrawlNotified, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markCrawlRunning = `-- name: MarkCrawlRunning :exec
 UPDATE crawls
 SET status = 'running',
@@ -764,6 +824,24 @@ UPDATE issue_work_attempts
 // fails the linked project_setup rows atomically with the reclaimed crawls.
 func (q *Queries) ReclaimStaleRunningCrawls(ctx context.Context, startedAt pgtype.Timestamptz) error {
 	_, err := q.db.Exec(ctx, reclaimStaleRunningCrawls, startedAt)
+	return err
+}
+
+const setCrawlNotify = `-- name: SetCrawlNotify :exec
+UPDATE crawls
+SET notify_email = $2,
+    notify_origin = $3
+WHERE id = $1
+`
+
+type SetCrawlNotifyParams struct {
+	ID           pgtype.UUID
+	NotifyEmail  pgtype.Text
+	NotifyOrigin pgtype.Text
+}
+
+func (q *Queries) SetCrawlNotify(ctx context.Context, arg SetCrawlNotifyParams) error {
+	_, err := q.db.Exec(ctx, setCrawlNotify, arg.ID, arg.NotifyEmail, arg.NotifyOrigin)
 	return err
 }
 

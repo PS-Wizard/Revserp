@@ -105,6 +105,35 @@ func (a *App) handleRetryCompetitorInitialization(w http.ResponseWriter, r *http
 	a.handleStartCompetitorInitialization(w, r)
 }
 
+// handleEnqueueCompetitorCrawl queues a crawl for one competitor against the
+// selected (?crawl=) audit, without touching its initialization setup.
+func (a *App) handleEnqueueCompetitorCrawl(w http.ResponseWriter, r *http.Request) {
+	competitor, userID, ok := a.loadInitializationCompetitorForStart(w, r)
+	if !ok {
+		return
+	}
+	parentCrawlID, err := resolveInitializationParentCrawlID(r, a.Queries, competitor.ProjectID, userID)
+	if err != nil {
+		var paramErr featureParamError
+		if errors.As(err, &paramErr) || err.Error() == "a completed project crawl is required" {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+	crawlID, err := enqueueInitializationCrawl(r.Context(), a.Queries, parentCrawlID, competitor.ID, userID)
+	if err != nil {
+		if err.Error() == "a completed project crawl is required" {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"crawls": []map[string]string{{"id": crawlID.String()}}})
+}
+
 func enqueueInitializationCrawl(ctx context.Context, queries *sqlc.Queries, parentCrawlID, competitorID, userID pgtype.UUID) (pgtype.UUID, error) {
 	crawlID, err := competitorcrawls.EnqueueOneCompetitorCrawl(ctx, queries, parentCrawlID, competitorID, userID)
 	if err != nil {

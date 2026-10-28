@@ -31,7 +31,7 @@ func TestOverallStatus(t *testing.T) {
 	if got := OverallStatus(mixed); got != StatusCompleted {
 		t.Fatalf("completed+skipped = %q, want completed", got)
 	}
-	running := stepMap(StepCompleted, StepCompleted, StepRunning, StepPending, StepPending, StepPending)
+	running := stepMap(StepCompleted, StepCompleted, StepRunning, StepPending, StepPending, StepPending, StepPending)
 	if got := OverallStatus(running); got != StatusRunning {
 		t.Fatalf("partial = %q, want running", got)
 	}
@@ -43,7 +43,7 @@ func TestOverallStatus(t *testing.T) {
 }
 
 func TestLaunchableBranchesAreIndependent(t *testing.T) {
-	steps := stepMap(StepCompleted, StepCompleted, StepCompleted, StepCompleted, StepFailed, StepCompleted)
+	steps := stepMap(StepCompleted, StepCompleted, StepCompleted, StepCompleted, StepCompleted, StepFailed, StepCompleted)
 	_, questions, mapQueries, aiAudit, mapsRun := Launchable(steps)
 	if questions || mapQueries || mapsRun {
 		t.Fatalf("finished branches relaunch: q=%v m=%v maps=%v", questions, mapQueries, mapsRun)
@@ -54,7 +54,7 @@ func TestLaunchableBranchesAreIndependent(t *testing.T) {
 }
 
 func TestLaunchableWaitsForProfile(t *testing.T) {
-	steps := stepMap(StepCompleted, StepRunning, StepPending, StepPending, StepPending, StepPending)
+	steps := stepMap(StepCompleted, StepRunning, StepPending, StepPending, StepPending, StepPending, StepPending)
 	profile, questions, mapQueries, aiAudit, mapsRun := Launchable(steps)
 	if !profile || questions || mapQueries || aiAudit || mapsRun {
 		t.Fatalf("branches launch before profile: %v %v %v %v %v", profile, questions, mapQueries, aiAudit, mapsRun)

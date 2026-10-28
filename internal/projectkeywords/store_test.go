@@ -87,8 +87,8 @@ func TestAddUserProjectKeywordEnforcesLimit(t *testing.T) {
 	queries, pool, ctx := newProjectKeywordsTestQueries(t)
 	projectID := newProjectKeywordsTestProject(t, ctx, pool)
 
-	if MaxProjectKeywordsPerKindPerSource != 10 {
-		t.Fatalf("cap = %d, want 10", MaxProjectKeywordsPerKindPerSource)
+	if MaxProjectBrandKeywordsPerSource != 10 || MaxProjectNonBrandKeywordsPerSource != 20 {
+		t.Fatalf("caps = %d/%d, want 10/20", MaxProjectBrandKeywordsPerSource, MaxProjectNonBrandKeywordsPerSource)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO project_keywords (project_id, keyword, normalized_keyword, kind, source)
 		SELECT $1, 'revserp brand ' || g, 'revserp brand ' || g, 'brand', 'revserp' FROM generate_series(1, 10) g`, projectID); err != nil {

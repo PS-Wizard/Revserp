@@ -14,7 +14,7 @@ import (
 func Get(ctx context.Context, db DB, projectID, locationID pgtype.UUID) (Setup, error) {
 	return scanSetupRow(db.QueryRow(ctx, `SELECT id, organization_id, project_id, location_id, requested_by_user_id,
 		COALESCE(differences, ''), status, COALESCE(error, ''),
-		prepare_status, profile_status, questions_status, map_queries_status,
+		prepare_status, profile_status, keyword_analysis_status, questions_status, map_queries_status,
 		ai_visibility_status, maps_visibility_status, COALESCE(step_reasons, '{}'::jsonb),
 		ai_audit_id, maps_run_id, estimated_maps_credits
 		FROM location_setup WHERE project_id = $1 AND location_id = $2 LIMIT 1`, projectID, locationID))
@@ -23,7 +23,7 @@ func Get(ctx context.Context, db DB, projectID, locationID pgtype.UUID) (Setup, 
 func getSetupTx(ctx context.Context, tx pgx.Tx, projectID, locationID pgtype.UUID) (Setup, error) {
 	return scanSetupRow(tx.QueryRow(ctx, `SELECT id, organization_id, project_id, location_id, requested_by_user_id,
 		COALESCE(differences, ''), status, COALESCE(error, ''),
-		prepare_status, profile_status, questions_status, map_queries_status,
+		prepare_status, profile_status, keyword_analysis_status, questions_status, map_queries_status,
 		ai_visibility_status, maps_visibility_status, COALESCE(step_reasons, '{}'::jsonb),
 		ai_audit_id, maps_run_id, estimated_maps_credits
 		FROM location_setup WHERE project_id = $1 AND location_id = $2 LIMIT 1 FOR UPDATE`, projectID, locationID))
@@ -31,22 +31,23 @@ func getSetupTx(ctx context.Context, tx pgx.Tx, projectID, locationID pgtype.UUI
 
 func scanSetupRow(row pgx.Row) (Setup, error) {
 	var (
-		s                                      Setup
-		prep, prof, ques, maps, aiVis, mapsVis string
-		reasonsRaw                             []byte
-		estimated                              pgtype.Int4
+		s                                             Setup
+		prep, prof, keyAn, ques, maps, aiVis, mapsVis string
+		reasonsRaw                                    []byte
+		estimated                                     pgtype.Int4
 	)
 	s.Steps = map[string]string{}
 	s.Reasons = map[string]string{}
 	err := row.Scan(&s.ID, &s.OrganizationID, &s.ProjectID, &s.LocationID,
 		&s.RequestedByUserID, &s.Differences, &s.Status, &s.Error,
-		&prep, &prof, &ques, &maps, &aiVis, &mapsVis, &reasonsRaw,
+		&prep, &prof, &keyAn, &ques, &maps, &aiVis, &mapsVis, &reasonsRaw,
 		&s.AIAuditID, &s.MapsRunID, &estimated)
 	if err != nil {
 		return Setup{}, err
 	}
 	s.Steps[StepPrepare] = prep
 	s.Steps[StepProfile] = prof
+	s.Steps[StepKeywordAnalysis] = keyAn
 	s.Steps[StepQuestions] = ques
 	s.Steps[StepMapQueries] = maps
 	s.Steps[StepAIVisibility] = aiVis
@@ -157,12 +158,12 @@ func resetUnfinishedSteps(ctx context.Context, tx pgx.Tx, setup Setup, userID pg
 	}
 	_, err = tx.Exec(ctx, `UPDATE location_setup
 		SET status = 'running', error = NULL, requested_by_user_id = $3,
-		    prepare_status = $4, profile_status = $5, questions_status = $6,
-		    map_queries_status = $7, ai_visibility_status = $8, maps_visibility_status = $9,
-		    step_reasons = $10, completed_at = NULL, updated_at = now()
+		    prepare_status = $4, profile_status = $5, keyword_analysis_status = $6, questions_status = $7,
+		    map_queries_status = $8, ai_visibility_status = $9, maps_visibility_status = $10,
+		    step_reasons = $11, completed_at = NULL, updated_at = now()
 		WHERE project_id = $1 AND location_id = $2`,
 		setup.ProjectID, setup.LocationID, userID,
-		next[StepPrepare], next[StepProfile], next[StepQuestions],
+		next[StepPrepare], next[StepProfile], next[StepKeywordAnalysis], next[StepQuestions],
 		next[StepMapQueries], next[StepAIVisibility], next[StepMapsVisibility], encoded)
 	if err != nil {
 		return Setup{}, err
