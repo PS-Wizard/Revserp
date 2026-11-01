@@ -263,6 +263,7 @@ func (a *App) Router() http.Handler {
 			app.Post("/crawls/{crawlID}/cancel", a.handleCancelCrawl)
 			app.Get("/crawls/{crawlID}/score-breakdown", a.handleGetCrawlScoreBreakdown)
 			app.Get("/crawls/{crawlID}/page-health", a.handleGetCrawlPageHealth)
+			app.Get("/crawls/{crawlID}/details", a.handleGetCrawlDetails)
 			app.Get("/crawls/{crawlID}/commentary", a.handleGetCrawlCommentary)
 			app.Get("/crawls/{crawlID}/score-breakdown/export.csv", a.handleExportCrawlScoreBreakdownCSV)
 			app.Get("/crawls/{crawlID}/score-breakdown/export.xlsx", a.handleExportCrawlScoreBreakdownXLSX)
