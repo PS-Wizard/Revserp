@@ -91,8 +91,8 @@ func TestOrgWithNoRowResolvesToEverythingEnabled(t *testing.T) {
 	if row.MaxCompetitors != 3 {
 		t.Errorf("unrestricted workspace max_competitors = %d, want 3", row.MaxCompetitors)
 	}
-	if row.MaxProjects != 5 {
-		t.Errorf("unrestricted workspace max_projects = %d, want 5", row.MaxProjects)
+	if row.MaxProjects != 1 {
+		t.Errorf("unrestricted workspace max_projects = %d, want 1", row.MaxProjects)
 	}
 	if !slices.Equal(row.AiAllowedReasoningEfforts, canonicalAIReasoningEfforts) {
 		t.Errorf("unrestricted workspace efforts = %v, want %v", row.AiAllowedReasoningEfforts, canonicalAIReasoningEfforts)

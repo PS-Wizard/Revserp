@@ -88,8 +88,8 @@ func TestDefaultAIChatSettings(t *testing.T) {
 	if features.MaxCompetitors != 3 {
 		t.Fatalf("default max_competitors = %d, want 3", features.MaxCompetitors)
 	}
-	if features.MaxProjects != 5 {
-		t.Fatalf("default max_projects = %d, want 5", features.MaxProjects)
+	if features.MaxProjects != 1 {
+		t.Fatalf("default max_projects = %d, want 1", features.MaxProjects)
 	}
 	if !slices.Equal(features.AIAllowedReasoningEfforts, []string{"none", "low", "high", "max"}) {
 		t.Fatalf("default efforts = %v, want all canonical efforts", features.AIAllowedReasoningEfforts)

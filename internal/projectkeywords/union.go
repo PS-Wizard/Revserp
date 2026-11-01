@@ -13,8 +13,10 @@ type StoredProjectKeyword struct {
 // BuildProjectKeywordLists groups stored rows by source and derives the
 // deduplicated combined union. Combined entries merge on the Go-folded key, so
 // rows stored under an older key form still collapse instead of duplicating.
-// One phrase in both sources keeps the user text and classification with both
-// source badges.
+// One phrase in several sources keeps the winning text and classification
+// (user first, then revserp, then competitor) with every source badge.
+// Checked competitor rows never appear in the per-source lists; they only
+// extend Combined with the competitor badge.
 func BuildProjectKeywordLists(rows []StoredProjectKeyword) KeywordLists {
 	lists := KeywordLists{
 		UserDefined:      []Keyword{},
@@ -22,16 +24,19 @@ func BuildProjectKeywordLists(rows []StoredProjectKeyword) KeywordLists {
 		Combined:         []CombinedKeyword{},
 	}
 	combinedByKey := make(map[string]int, len(rows))
-	for pass := 0; pass < 2; pass++ {
+	for pass := 0; pass < 3; pass++ {
 		for _, row := range rows {
-			userRow := row.Source == ProjectKeywordSourceUser
-			if (pass == 0) != userRow {
+			want := (pass == 0 && row.Source == ProjectKeywordSourceUser) ||
+				(pass == 1 && row.Source == ProjectKeywordSourceRevserp) ||
+				(pass == 2 && row.Source == ProjectKeywordSourceCompetitor)
+			if !want {
 				continue
 			}
 			entry := Keyword{ID: row.ID, Keyword: row.Keyword, Kind: row.Kind}
-			if userRow {
+			switch row.Source {
+			case ProjectKeywordSourceUser:
 				lists.UserDefined = append(lists.UserDefined, entry)
-			} else {
+			case ProjectKeywordSourceRevserp:
 				lists.RevserpSuggested = append(lists.RevserpSuggested, entry)
 			}
 			if idx, dup := combinedByKey[projectKeywordUnionKey(row)]; dup {

@@ -45,14 +45,14 @@ func ValidateProjectKeywordPhrase(phrase string) (string, error) {
 
 // NormalizeSuggestedProjectKeywords requires both lists and rejects invalid or oversized input.
 func NormalizeSuggestedProjectKeywords(brandKeywords, nonBrandKeywords []string) (brand, nonBrand []string, err error) {
-	nonBrand, err = normalizeProjectKeywordEntries(nonBrandKeywords, MaxProjectNonBrandKeywordsPerSource)
+	nonBrand, err = normalizeProjectKeywordEntries(nonBrandKeywords, MaxProjectSuggestedKeywordsPerKind)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(nonBrand) == 0 {
 		return nil, nil, fmt.Errorf("%w: non_brand list must not be empty", ErrProjectKeywordInvalid)
 	}
-	brand, err = normalizeProjectKeywordEntries(brandKeywords, MaxProjectBrandKeywordsPerSource)
+	brand, err = normalizeProjectKeywordEntries(brandKeywords, MaxProjectSuggestedKeywordsPerKind)
 	if err != nil {
 		return nil, nil, err
 	}

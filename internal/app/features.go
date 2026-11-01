@@ -32,7 +32,7 @@ const (
 	defaultAIMonthlyMessageLimit        int32 = 50
 	defaultAIConcurrentTurnLimitPerUser int32 = 2
 	defaultMaxCompetitors               int32 = 3
-	defaultMaxProjects                  int32 = 5
+	defaultMaxProjects                  int32 = 1
 )
 
 var canonicalAIReasoningEfforts = []string{"none", "low", "high", "max"}

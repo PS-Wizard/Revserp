@@ -1,5 +1,5 @@
 // Package projectkeywords owns project keyword normalization, the combined
-// union of user and revserp keyword sources, and project keyword row helpers.
+// union of user, revserp, and checked competitor keyword sources, and project keyword row helpers.
 package projectkeywords
 
 import "errors"
@@ -13,10 +13,16 @@ const (
 	ProjectKeywordSourceUser = "user"
 	// ProjectKeywordSourceRevserp marks Revserp-suggested project keywords.
 	ProjectKeywordSourceRevserp = "revserp"
+	// ProjectKeywordSourceCompetitor marks checked competitor keywords. One
+	// checked keyword adds a Combined entry with this source; the
+	// user-defined and Revserp-suggested lists never carry it.
+	ProjectKeywordSourceCompetitor = "competitor"
 	// MaxProjectBrandKeywordsPerSource caps the brand list per source.
 	MaxProjectBrandKeywordsPerSource = 10
 	// MaxProjectNonBrandKeywordsPerSource caps the non-brand list per source.
 	MaxProjectNonBrandKeywordsPerSource = 20
+	// MaxProjectSuggestedKeywordsPerKind caps Revserp-suggested brand and non-brand lists.
+	MaxProjectSuggestedKeywordsPerKind = 10
 	// MaxProjectKeywordRunes bounds one phrase in Unicode characters.
 	MaxProjectKeywordRunes = 200
 )
@@ -28,7 +34,7 @@ type Keyword struct {
 	Kind    string `json:"kind"`
 }
 
-// CombinedKeyword is one deduplicated phrase across both keyword sources.
+// CombinedKeyword is one deduplicated phrase across all keyword sources.
 type CombinedKeyword struct {
 	Keyword string   `json:"keyword"`
 	Kind    string   `json:"kind"`

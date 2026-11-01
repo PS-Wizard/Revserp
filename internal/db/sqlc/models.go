@@ -835,6 +835,17 @@ type ProjectCompetitor struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type ProjectCompetitorKeywordSelection struct {
+	ID                pgtype.UUID
+	ProjectID         pgtype.UUID
+	CompetitorID      pgtype.UUID
+	Keyword           string
+	NormalizedKeyword string
+	Kind              string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
 type ProjectGoogleAnalyticsConnection struct {
 	ID                  pgtype.UUID
 	ProjectID           pgtype.UUID

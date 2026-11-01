@@ -137,11 +137,11 @@ func TestNormalizeSuggestedProjectKeywordsRejectsExcessWithoutTruncation(t *test
 		}
 		return out
 	}
-	if _, _, err := NormalizeSuggestedProjectKeywords(makeList(10, "brand"), makeList(20, "need")); err != nil {
-		t.Fatalf("10+20 err = %v, want accepted", err)
+	if _, _, err := NormalizeSuggestedProjectKeywords(makeList(10, "brand"), makeList(10, "need")); err != nil {
+		t.Fatalf("10+10 err = %v, want accepted", err)
 	}
-	if _, _, err := NormalizeSuggestedProjectKeywords([]string{"one"}, makeList(21, "need")); !errors.Is(err, ErrProjectKeywordLimit) {
-		t.Fatalf("21-non-brand err = %v, want keyword limit", err)
+	if _, _, err := NormalizeSuggestedProjectKeywords([]string{"one"}, makeList(11, "need")); !errors.Is(err, ErrProjectKeywordLimit) {
+		t.Fatalf("11-non-brand err = %v, want keyword limit", err)
 	}
 	if _, _, err := NormalizeSuggestedProjectKeywords(makeList(11, "brand"), []string{"one"}); !errors.Is(err, ErrProjectKeywordLimit) {
 		t.Fatalf("11-brand err = %v, want keyword limit", err)

@@ -274,7 +274,7 @@ func TestDeleteKeywordIsolation(t *testing.T) {
 		t.Errorf("member DELETE status = %d, want 403", rr.Code)
 	}
 
-	for name, id := range map[string]string{"revserp": revserpID.String(), "foreign": foreignID.String(), "missing": "00000000-0000-0000-0000-000000000099"} {
+	for name, id := range map[string]string{"foreign": foreignID.String(), "missing": "00000000-0000-0000-0000-000000000099"} {
 		rr = callKeywordLists(t, fx.app, http.MethodDelete, fx.ownerID, fx.projectID.String(), id, "")
 		if rr.Code != http.StatusNotFound {
 			t.Errorf("DELETE %s status = %d, want 404", name, rr.Code)
@@ -291,6 +291,14 @@ func TestDeleteKeywordIsolation(t *testing.T) {
 	}
 	if len(after.RevserpSuggested) != 1 {
 		t.Fatalf("revserp after delete = %#v, want suggested row kept", after.RevserpSuggested)
+	}
+
+	rr = callKeywordLists(t, fx.app, http.MethodDelete, fx.ownerID, fx.projectID.String(), revserpID.String(), "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("owner DELETE revserp status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := decodeKeywordLists(t, rr).RevserpSuggested; len(got) != 0 {
+		t.Fatalf("revserp after delete = %#v, want empty", got)
 	}
 
 	if got := workerJobCount(t, fx); got != beforeJobs {

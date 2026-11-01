@@ -25,6 +25,7 @@ func TestProjectKeywordMigrationRoundTripPreservesLegacyTerms(t *testing.T) {
 		"SET LOCAL search_path TO " + schema,
 		"CREATE TABLE projects (id UUID PRIMARY KEY)",
 		"CREATE TABLE project_business_profile (project_id UUID PRIMARY KEY, branded_keywords JSONB NOT NULL, non_branded_keywords JSONB NOT NULL, target_keywords JSONB NOT NULL)",
+		"CREATE TABLE project_competitor_keyword_selections (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), project_id UUID NOT NULL, competitor_id UUID NOT NULL, keyword TEXT NOT NULL, normalized_keyword TEXT NOT NULL, kind TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
 	} {
 		if _, err := tx.Exec(ctx, statement); err != nil {
 			t.Fatal(err)

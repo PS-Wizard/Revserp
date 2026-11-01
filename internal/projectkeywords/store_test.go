@@ -112,7 +112,7 @@ func TestAddUserProjectKeywordEnforcesLimit(t *testing.T) {
 	}
 }
 
-func TestDeleteUserProjectKeywordIsolation(t *testing.T) {
+func TestDeleteProjectKeywordIsolation(t *testing.T) {
 	queries, pool, ctx := newProjectKeywordsTestQueries(t)
 	projectID := newProjectKeywordsTestProject(t, ctx, pool)
 	otherID := newProjectKeywordsTestProject(t, ctx, pool)
@@ -137,16 +137,16 @@ func TestDeleteUserProjectKeywordIsolation(t *testing.T) {
 		t.Fatalf("seed other project: %v", err)
 	}
 
-	if err := DeleteUserProjectKeyword(ctx, queries, projectID, revserpID); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("revserp delete err = %v, want no rows", err)
+	if err := DeleteProjectKeyword(ctx, queries, projectID, revserpID); err != nil {
+		t.Fatalf("revserp delete err = %v", err)
 	}
-	if err := DeleteUserProjectKeyword(ctx, queries, projectID, otherUUID); !errors.Is(err, pgx.ErrNoRows) {
+	if err := DeleteProjectKeyword(ctx, queries, projectID, otherUUID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("other project delete err = %v, want no rows", err)
 	}
-	if err := DeleteUserProjectKeyword(ctx, queries, projectID, mineUUID); err != nil {
+	if err := DeleteProjectKeyword(ctx, queries, projectID, mineUUID); err != nil {
 		t.Fatalf("own delete: %v", err)
 	}
-	if err := DeleteUserProjectKeyword(ctx, queries, projectID, mineUUID); !errors.Is(err, pgx.ErrNoRows) {
+	if err := DeleteProjectKeyword(ctx, queries, projectID, mineUUID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("repeat delete err = %v, want no rows", err)
 	}
 }
@@ -260,10 +260,10 @@ func TestOverlongAndUnicodeLegacyRowsStayUsable(t *testing.T) {
 		t.Fatalf("padded combined entries = %d, want 1", paddedEntries)
 	}
 
-	if err := DeleteUserProjectKeyword(ctx, queries, projectID, longID); err != nil {
+	if err := DeleteProjectKeyword(ctx, queries, projectID, longID); err != nil {
 		t.Fatalf("delete overlong: %v", err)
 	}
-	if err := DeleteUserProjectKeyword(ctx, queries, projectID, spacedID); err != nil {
+	if err := DeleteProjectKeyword(ctx, queries, projectID, spacedID); err != nil {
 		t.Fatalf("delete unicode-spaced: %v", err)
 	}
 }

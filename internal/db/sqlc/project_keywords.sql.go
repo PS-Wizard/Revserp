@@ -44,6 +44,23 @@ func (q *Queries) CountProjectKeywordsByProject(ctx context.Context, projectID p
 	return items, nil
 }
 
+const deleteProjectKeyword = `-- name: DeleteProjectKeyword :one
+DELETE FROM project_keywords WHERE id = $1 AND project_id = $2
+RETURNING id
+`
+
+type DeleteProjectKeywordParams struct {
+	ID        pgtype.UUID
+	ProjectID pgtype.UUID
+}
+
+func (q *Queries) DeleteProjectKeyword(ctx context.Context, arg DeleteProjectKeywordParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, deleteProjectKeyword, arg.ID, arg.ProjectID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const deleteRevserpProjectKeywordsByProject = `-- name: DeleteRevserpProjectKeywordsByProject :exec
 DELETE FROM project_keywords WHERE project_id = $1 AND source = 'revserp'
 `
@@ -51,23 +68,6 @@ DELETE FROM project_keywords WHERE project_id = $1 AND source = 'revserp'
 func (q *Queries) DeleteRevserpProjectKeywordsByProject(ctx context.Context, projectID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteRevserpProjectKeywordsByProject, projectID)
 	return err
-}
-
-const deleteUserProjectKeyword = `-- name: DeleteUserProjectKeyword :one
-DELETE FROM project_keywords WHERE id = $1 AND project_id = $2 AND source = 'user'
-RETURNING id
-`
-
-type DeleteUserProjectKeywordParams struct {
-	ID        pgtype.UUID
-	ProjectID pgtype.UUID
-}
-
-func (q *Queries) DeleteUserProjectKeyword(ctx context.Context, arg DeleteUserProjectKeywordParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, deleteUserProjectKeyword, arg.ID, arg.ProjectID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
 }
 
 const getProjectKeywordByProjectSourceNormalized = `-- name: GetProjectKeywordByProjectSourceNormalized :one

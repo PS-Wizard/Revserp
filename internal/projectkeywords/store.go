@@ -11,8 +11,11 @@ import (
 	"github.com/ps-wizard/revserp/internal/db/sqlc"
 )
 
-// LoadProjectKeywordLists reads one project's stored keywords and derives the
-// combined union. It accepts a transaction-scoped Queries.
+// LoadProjectKeywordLists reads one project's stored keywords plus its checked
+// competitor keyword selections and derives the combined union. Checked
+// competitor keywords extend Combined with the competitor source badge; the
+// user-defined and Revserp-suggested lists stay unchanged. It accepts a
+// transaction-scoped Queries.
 func LoadProjectKeywordLists(ctx context.Context, queries *sqlc.Queries, projectID pgtype.UUID) (KeywordLists, error) {
 	rows, err := queries.ListProjectKeywordsByProject(ctx, projectID)
 	if err != nil {
@@ -26,6 +29,22 @@ func LoadProjectKeywordLists(ctx context.Context, queries *sqlc.Queries, project
 			Normalized: row.NormalizedKeyword,
 			Kind:       row.Kind,
 			Source:     row.Source,
+		})
+	}
+	selections, err := queries.ListCompetitorKeywordSelectionsByProject(ctx, projectID)
+	if err != nil {
+		return KeywordLists{}, fmt.Errorf("competitor keyword selections load: %w", err)
+	}
+	for _, selection := range selections {
+		if selection.Kind != ProjectKeywordKindNonBrand {
+			continue
+		}
+		stored = append(stored, StoredProjectKeyword{
+			ID:         selection.ID.String(),
+			Keyword:    selection.Keyword,
+			Normalized: selection.NormalizedKeyword,
+			Kind:       selection.Kind,
+			Source:     ProjectKeywordSourceCompetitor,
 		})
 	}
 	return BuildProjectKeywordLists(stored), nil
@@ -100,10 +119,10 @@ func AddUserProjectKeyword(ctx context.Context, queries *sqlc.Queries, projectID
 	return Keyword{ID: row.ID.String(), Keyword: row.Keyword, Kind: row.Kind}, true, nil
 }
 
-// DeleteUserProjectKeyword deletes one user phrase scoped to its project.
-// Missing rows, other projects, and revserp rows surface pgx.ErrNoRows.
-func DeleteUserProjectKeyword(ctx context.Context, queries *sqlc.Queries, projectID, keywordID pgtype.UUID) error {
-	_, err := queries.DeleteUserProjectKeyword(ctx, sqlc.DeleteUserProjectKeywordParams{
+// DeleteProjectKeyword deletes one user or Revserp phrase scoped to its project.
+// Missing rows and other projects surface pgx.ErrNoRows.
+func DeleteProjectKeyword(ctx context.Context, queries *sqlc.Queries, projectID, keywordID pgtype.UUID) error {
+	_, err := queries.DeleteProjectKeyword(ctx, sqlc.DeleteProjectKeywordParams{
 		ID:        keywordID,
 		ProjectID: projectID,
 	})

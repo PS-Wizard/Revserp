@@ -24,6 +24,6 @@ RETURNING id, project_id, keyword, normalized_keyword, kind, source, created_at,
 -- name: DeleteRevserpProjectKeywordsByProject :exec
 DELETE FROM project_keywords WHERE project_id = $1 AND source = 'revserp';
 
--- name: DeleteUserProjectKeyword :one
-DELETE FROM project_keywords WHERE id = $1 AND project_id = $2 AND source = 'user'
+-- name: DeleteProjectKeyword :one
+DELETE FROM project_keywords WHERE id = $1 AND project_id = $2
 RETURNING id;

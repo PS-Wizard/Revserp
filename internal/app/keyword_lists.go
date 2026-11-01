@@ -211,7 +211,7 @@ func (a *App) handleDeleteProjectKeyword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := projectkeywords.DeleteUserProjectKeyword(r.Context(), queries, projectID, keywordID); err != nil {
+	if err := projectkeywords.DeleteProjectKeyword(r.Context(), queries, projectID, keywordID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			_ = tx.Rollback(r.Context())
 			writeJSONError(w, http.StatusNotFound, "keyword not found")

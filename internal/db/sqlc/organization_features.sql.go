@@ -23,7 +23,7 @@ SELECT
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(f.max_competitors, 3)::integer AS max_competitors,
-    COALESCE(f.max_projects, 5)::integer AS max_projects,
+    COALESCE(f.max_projects, 1)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -78,7 +78,7 @@ SELECT
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(f.max_competitors, 3)::integer AS max_competitors,
-    COALESCE(f.max_projects, 5)::integer AS max_projects,
+    COALESCE(f.max_projects, 1)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -143,7 +143,7 @@ SELECT
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(f.max_competitors, 3)::integer AS max_competitors,
-    COALESCE(f.max_projects, 5)::integer AS max_projects,
+    COALESCE(f.max_projects, 1)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -205,7 +205,7 @@ SELECT
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(f.max_competitors, 3)::integer AS max_competitors,
-    COALESCE(f.max_projects, 5)::integer AS max_projects,
+    COALESCE(f.max_projects, 1)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
@@ -268,7 +268,7 @@ SELECT
     COALESCE(f.ai_concurrent_turn_limit_per_user, 2)::integer AS ai_concurrent_turn_limit_per_user,
     COALESCE(f.ai_visibility_audit_monthly_limit, 10)::integer AS ai_visibility_audit_monthly_limit,
     COALESCE(f.max_competitors, 3)::integer AS max_competitors,
-    COALESCE(f.max_projects, 5)::integer AS max_projects,
+    COALESCE(f.max_projects, 1)::integer AS max_projects,
     COALESCE(
         f.ai_allowed_reasoning_efforts,
         ARRAY['none', 'low', 'high', 'max']::TEXT[]
