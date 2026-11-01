@@ -259,6 +259,32 @@ func (q *Queries) GetAITurnForUser(ctx context.Context, arg GetAITurnForUserPara
 	return i, err
 }
 
+const getAIWorkspaceMonthlyUsage = `-- name: GetAIWorkspaceMonthlyUsage :one
+SELECT
+    COALESCE(u.used_messages, 0)::integer AS used_messages,
+    COALESCE(u.used_audits, 0)::integer AS used_audits
+FROM organizations AS o
+LEFT JOIN ai_workspace_monthly_usage AS u
+    ON u.organization_id = o.id
+    AND u.period_start = date_trunc('month', now() AT TIME ZONE 'UTC')::date
+WHERE o.id = $1
+`
+
+type GetAIWorkspaceMonthlyUsageRow struct {
+	UsedMessages int32
+	UsedAudits   int32
+}
+
+// Current UTC calendar month usage for one workspace. LEFT JOIN from
+// organizations so a workspace with no usage row returns zeros instead of
+// ErrNoRows, mirroring the enabled-by-default features queries.
+func (q *Queries) GetAIWorkspaceMonthlyUsage(ctx context.Context, organizationID pgtype.UUID) (GetAIWorkspaceMonthlyUsageRow, error) {
+	row := q.db.QueryRow(ctx, getAIWorkspaceMonthlyUsage, organizationID)
+	var i GetAIWorkspaceMonthlyUsageRow
+	err := row.Scan(&i.UsedMessages, &i.UsedAudits)
+	return i, err
+}
+
 const getCompletedCrawlForProject = `-- name: GetCompletedCrawlForProject :one
 SELECT id
 FROM crawls

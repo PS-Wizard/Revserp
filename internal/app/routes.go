@@ -54,6 +54,7 @@ func (a *App) Router() http.Handler {
 		protected.Group(func(app chi.Router) {
 			app.Use(a.requirePrincipal)
 			app.Get("/me", a.handleMe)
+			app.Get("/me/usage", a.handleMeUsage)
 			app.Get("/me/onboarding", a.handleGetOnboarding)
 			app.Put("/me/onboarding", a.handlePutOnboarding)
 			app.Get("/me/announcements/seen", a.handleListAnnouncementSeen)

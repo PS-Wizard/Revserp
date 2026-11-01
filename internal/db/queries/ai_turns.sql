@@ -257,3 +257,16 @@ WHERE turn_id = sqlc.arg(turn_id) AND role = 'assistant' AND status = 'pending';
 -- name: CreateFailedAITurnEvent :exec
 INSERT INTO ai_turn_events(turn_id, event_type, payload)
 VALUES (sqlc.arg(turn_id), 'failed', '{"error_code":"worker_interrupted"}'::jsonb);
+
+-- name: GetAIWorkspaceMonthlyUsage :one
+-- Current UTC calendar month usage for one workspace. LEFT JOIN from
+-- organizations so a workspace with no usage row returns zeros instead of
+-- ErrNoRows, mirroring the enabled-by-default features queries.
+SELECT
+    COALESCE(u.used_messages, 0)::integer AS used_messages,
+    COALESCE(u.used_audits, 0)::integer AS used_audits
+FROM organizations AS o
+LEFT JOIN ai_workspace_monthly_usage AS u
+    ON u.organization_id = o.id
+    AND u.period_start = date_trunc('month', now() AT TIME ZONE 'UTC')::date
+WHERE o.id = sqlc.arg(organization_id);
